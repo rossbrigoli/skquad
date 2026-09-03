@@ -2434,17 +2434,6 @@ func (s *Server) recordSystemAudit(ctx context.Context, action, resourceType, re
 	})
 }
 
-func (s *Server) upsertAgentCR(ctx context.Context, agent *domain.Agent) error {
-	identity, err := s.store.GetAgentIdentity(ctx, agent.ID)
-	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return s.crWriter.UpsertAgent(ctx, agent, nil)
-		}
-		return err
-	}
-	return s.crWriter.UpsertAgent(ctx, agent, identity)
-}
-
 func (s *Server) syncAffectedAgentsFromTaskChange(ctx context.Context, beforeAgentID, afterAgentID string) error {
 	if beforeAgentID != "" {
 		if err := s.syncAgentStatusFromPendingWork(ctx, beforeAgentID); err != nil {
