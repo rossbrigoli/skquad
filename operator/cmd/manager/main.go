@@ -28,26 +28,51 @@ func init() {
 	utilruntime.Must(skquadv1.AddToScheme(scheme))
 }
 
+// leaderElectionID identifies this operator in the leader election lease. It is
+// a contract: a second manager using a different id would not contend for the
+// same lease, and both would reconcile the same custom resources.
+const leaderElectionID = "skquad-operator.skquad.io"
+
+// config holds the manager settings that come from the command line.
+type config struct {
+	metricsAddr    string
+	probeAddr      string
+	leaderElection bool
+}
+
+// registerFlags binds the manager's flags to a given flag set. Production uses
+// the process flag set; tests pass an isolated one so registration can be
+// asserted without polluting global state.
+func registerFlags(fs *flag.FlagSet, cfg *config, zapOpts *zap.Options) {
+	fs.StringVar(&cfg.metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
+	fs.StringVar(&cfg.probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	fs.BoolVar(&cfg.leaderElection, "leader-elect", false, "Enable leader election for controller manager.")
+	zapOpts.BindFlags(fs)
+}
+
+// managerOptions translates parsed configuration into controller-runtime manager
+// options.
+func managerOptions(cfg config) ctrl.Options {
+	return ctrl.Options{
+		Scheme: scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: cfg.metricsAddr,
+		},
+		HealthProbeBindAddress: cfg.probeAddr,
+		LeaderElection:         cfg.leaderElection,
+		LeaderElectionID:       leaderElectionID,
+	}
+}
+
 func main() {
-	var metricsAddr string
-	var probeAddr string
-	var leaderElection bool
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&leaderElection, "leader-elect", false, "Enable leader election for controller manager.")
+	cfg := &config{}
 	opts := zap.Options{Development: true}
-	opts.BindFlags(flag.CommandLine)
+	registerFlags(flag.CommandLine, cfg, &opts)
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         leaderElection,
-		LeaderElectionID:       "skquad-operator.skquad.io",
-	})
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), managerOptions(*cfg))
 	if err != nil {
 		ctrl.Log.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -56,7 +81,7 @@ func main() {
 	if err := (&controller.SquadReconciler{
 		Client:                      mgr.GetClient(),
 		Scheme:                      mgr.GetScheme(),
-		APIServerServiceAccountName: envOrDefault("SKQUAD_API_SERVER_SERVICE_ACCOUNT_NAME", "skquad-api-server"),
+		APIServerServiceAccountName: envOrDefault(envAPIServerServiceAccount, "skquad-api-server"),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create Squad controller")
 		os.Exit(1)
@@ -84,6 +109,10 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// envAPIServerServiceAccount overrides the ServiceAccount the Squad reconciler
+// grants to the API server inside squad namespaces.
+const envAPIServerServiceAccount = "SKQUAD_API_SERVER_SERVICE_ACCOUNT_NAME"
 
 func envOrDefault(name string, fallback string) string {
 	if value := os.Getenv(name); value != "" {
