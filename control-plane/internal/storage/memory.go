@@ -1092,6 +1092,42 @@ func (m *MemoryStore) ListBoardTaskExecutions(_ context.Context, boardID string)
 	return out, nil
 }
 
+// ReapExpiredTaskExecutions expires dead attempts and re-queues their tasks.
+// Mirrors the Postgres implementation: only active attempts whose lease
+// lapsed before cutoff are expired, and a task is re-queued to todo only
+// when no other live attempt remains.
+func (m *MemoryStore) ReapExpiredTaskExecutions(_ context.Context, cutoff time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	reaped := 0
+	reapedTasks := map[string]struct{}{}
+	for _, exec := range m.taskExecs {
+		if exec.Status != domain.TaskExecutionActive || !exec.LeaseExpiresAt.Before(cutoff) {
+			continue
+		}
+		exec.Status = domain.TaskExecutionExpired
+		exec.ResultSummary = "lease expired without completion"
+		exec.CompletedAt = now
+		exec.UpdatedAt = now
+		reaped++
+		reapedTasks[exec.TaskID] = struct{}{}
+	}
+	for taskID := range reapedTasks {
+		task, ok := m.tasks[taskID]
+		if !ok || task.Status != domain.TaskInProgress {
+			continue
+		}
+		if m.taskHasActiveExecutionLocked(taskID, now) {
+			continue
+		}
+		task.Status = domain.TaskTodo
+		task.Position = m.nextTaskPosition(task.BoardID, domain.TaskTodo)
+		task.UpdatedAt = now
+	}
+	return reaped, nil
+}
+
 func (m *MemoryStore) taskHasActiveExecutionLocked(taskID string, now time.Time) bool {
 	for _, exec := range m.taskExecs {
 		if exec.TaskID == taskID && exec.Status == domain.TaskExecutionActive && exec.LeaseExpiresAt.After(now) {

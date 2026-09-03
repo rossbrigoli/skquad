@@ -283,6 +283,7 @@ variables:
 | `SKQUAD_INBOX_POLL_INTERVAL_SECONDS` | Positive inbox fallback poll interval and work-wait timeout. Runtime default is `5`; the current loop waits for the lower of task/inbox intervals after an idle iteration. |
 | `SKQUAD_INBOX_BATCH_SIZE` | Maximum inbox messages handled per loop iteration. Defaults to `5`. |
 | `SKQUAD_TASK_TIMEOUT_SECONDS` | Maximum wall-clock seconds the runtime waits for a task handler before blocking the task. Defaults to `900`. |
+| `SKQUAD_HEARTBEAT_INTERVAL_SECONDS` | In-flight lease heartbeat interval while a task handler runs. Defaults to `40` (≈ lease/3), so two consecutive missed ticks are required before the 2-minute lease lapses. |
 | `SKQUAD_MAX_LLM_STEPS` | Maximum LiteLLM/tool-call iterations per task. Defaults to `8`. |
 | `SKQUAD_TASK_SUMMARY_MAX_CHARS` | Maximum task completion summary sent back to the control plane. Defaults to `4000`. |
 | `SKQUAD_PLUGIN_MODULES` | Comma-separated plugin import specs (`module`, `module:factory`, `module:plugin`, or `module:Plugin`). |

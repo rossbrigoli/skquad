@@ -925,6 +925,103 @@ func TestBoardExposesActiveExecutionState(t *testing.T) {
 	require.Empty(t, after.ExecutionID, "a finished execution must stop showing as in flight")
 }
 
+func TestBoardAfterReaperShowsTaskRequeued(t *testing.T) {
+	t.Parallel()
+
+	crWriter := &fakeCRWriter{}
+	store := storage.NewMemoryStore()
+	handler := NewWithCRWriter(testConfig(), store, crWriter)
+
+	var squad domain.Squad
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+		"name": "Reaper Board Squad",
+	}, http.StatusCreated, &squad)
+
+	var agent domain.Agent
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
+		"name": "Reaper Board Agent",
+	}, http.StatusCreated, &agent)
+
+	var identity domain.AgentIdentity
+	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+agent.ID+"/identity", nil, http.StatusCreated, &identity)
+	credential := crWriter.credentialTokens[identity.CredentialRef]
+	require.NotEmpty(t, credential)
+
+	var task domain.Task
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/board/tasks", map[string]any{
+		"title":             "Dead worker task",
+		"assignee_agent_id": agent.ID,
+	}, http.StatusCreated, &task)
+
+	var claimed domain.Task
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", nil, http.StatusOK, &claimed)
+	require.NotEmpty(t, claimed.ExecutionID)
+
+	// The worker dies: reap with a cutoff past the 2-minute claim lease.
+	n, err := store.ReapExpiredTaskExecutions(context.Background(), time.Now().Add(3*time.Minute))
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	var board struct {
+		Board domain.Board  `json:"board"`
+		Tasks []domain.Task `json:"tasks"`
+	}
+	doJSON(t, handler, http.MethodGet, "/api/v1/squads/"+squad.ID+"/board", nil, http.StatusOK, &board)
+	require.Len(t, board.Tasks, 1)
+	require.Equal(t, domain.TaskTodo, board.Tasks[0].Status, "reaped task must be back in the todo queue")
+	require.Empty(t, board.Tasks[0].ExecutionID, "reaped task must not look in flight")
+	require.True(t, board.Tasks[0].LeaseExpiresAt.IsZero())
+}
+
+func TestRunExecutionReaperReapsLapsedLeaseAndStops(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := storage.NewMemoryStore()
+
+	squad, err := store.CreateSquad(ctx, &domain.Squad{Name: "reaper-worker", OwnerID: "owner-1", Status: domain.SquadActive})
+	require.NoError(t, err)
+	agent, err := store.CreateAgent(ctx, &domain.Agent{SquadID: squad.ID, Name: "reaper-worker-agent", Status: domain.AgentIdle})
+	require.NoError(t, err)
+	board, err := store.GetBoard(ctx, squad.ID)
+	require.NoError(t, err)
+	task, err := store.CreateTask(ctx, &domain.Task{
+		BoardID: board.ID, SquadID: squad.ID, Title: "lapsed lease",
+		Status: domain.TaskTodo, AssigneeAgentID: agent.ID,
+		CreatedByType: "user", CreatedByID: "owner-1",
+	})
+	require.NoError(t, err)
+
+	// Claim with a 1ms lease so it lapses immediately.
+	claimed, err := store.ClaimNextTask(ctx, agent.ID, "worker-1", time.Millisecond)
+	require.NoError(t, err)
+	require.Equal(t, task.ID, claimed.ID)
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		RunExecutionReaper(runCtx, store, 10*time.Millisecond, 0)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got, err := store.GetTask(ctx, task.ID)
+		require.NoError(t, err)
+		if got.Status == domain.TaskTodo {
+			break
+		}
+		require.True(t, time.Now().Before(deadline), "task was not re-queued by the reaper in time")
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reaper did not stop on context cancel")
+	}
+}
+
 func TestAgentRuntimeRejectsStaleTaskExecutionFence(t *testing.T) {
 	t.Parallel()
 

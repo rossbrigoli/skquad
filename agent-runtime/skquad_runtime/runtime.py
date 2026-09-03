@@ -41,6 +41,7 @@ class BootstrapConfig:
     inbox_poll_interval_seconds: float
     inbox_batch_size: int
     task_timeout_seconds: float
+    heartbeat_interval_seconds: float
     max_llm_steps: int
     task_summary_max_chars: int
     plugin_modules: tuple[str, ...]
@@ -295,6 +296,7 @@ def load_bootstrap_config(environ: Mapping[str, str] | None = None) -> Bootstrap
         inbox_poll_interval_seconds=env_float(env, "SKQUAD_INBOX_POLL_INTERVAL_SECONDS", 5.0),
         inbox_batch_size=env_int(env, "SKQUAD_INBOX_BATCH_SIZE", 5),
         task_timeout_seconds=env_float(env, "SKQUAD_TASK_TIMEOUT_SECONDS", 900.0),
+        heartbeat_interval_seconds=env_float(env, "SKQUAD_HEARTBEAT_INTERVAL_SECONDS", 40.0),
         max_llm_steps=env_int(env, "SKQUAD_MAX_LLM_STEPS", 8),
         task_summary_max_chars=env_int(env, "SKQUAD_TASK_SUMMARY_MAX_CHARS", 4000),
         plugin_modules=parse_csv(env.get("SKQUAD_PLUGIN_MODULES", "")),
@@ -984,7 +986,8 @@ def run_task_once(
     control_plane.heartbeat("busy", task)
     started = monotonic()
     try:
-        result = handle_task_with_timeout(handler, task, config)
+        with TaskLeaseHeartbeat(control_plane, task, config.heartbeat_interval_seconds):
+            result = handle_task_with_timeout(handler, task, config)
     except TimeoutError as exc:
         LOGGER.warning(
             "agent task timed out",
@@ -1031,6 +1034,59 @@ def run_task_once(
     if state is not None:
         state.task_finished(task.id, result.status, duration)
     return final_task
+
+
+class TaskLeaseHeartbeat:
+    """Refresh the execution lease while a task handler is running.
+
+    The control plane treats an expired lease as a dead worker, so a live
+    handler must keep the lease alive for the whole duration of the work.
+    The thread starts after the claim-time heartbeat and is joined before
+    the terminal (complete/block/idle) call so it can never heartbeat after
+    the execution has left the active state.
+
+    Heartbeat failures are logged and retried on the next tick: a transient
+    network blip must not kill a live task. If the control plane is truly
+    unreachable the lease lapses, the reaper re-queues the task, and the
+    late terminal call fails on fencing — self-healing.
+    """
+
+    def __init__(self, client: ControlPlaneClient, task: RuntimeTask, interval_seconds: float) -> None:
+        self._client = client
+        self._task = task
+        self._interval = interval_seconds
+        self._stop: threading.Event | None = None
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> "TaskLeaseHeartbeat":
+        if not self._task.execution_id or self._interval <= 0:
+            return self
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, name="skquad-lease-heartbeat", daemon=True
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._stop is None or self._thread is None:
+            return
+        self._stop.set()
+        # Bound the join: a hung HTTP call must not block the terminal call.
+        # The thread is a daemon, so a late tick cannot block process exit.
+        self._thread.join(timeout=max(1.0, self._interval))
+
+    def _run(self) -> None:
+        assert self._stop is not None
+        while not self._stop.wait(self._interval):
+            try:
+                self._client.heartbeat("busy", self._task)
+            except Exception:
+                LOGGER.warning(
+                    "lease heartbeat failed; retrying on next tick",
+                    extra={"task_id": self._task.id},
+                    exc_info=True,
+                )
 
 
 def handle_task_with_timeout(

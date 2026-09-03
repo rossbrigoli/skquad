@@ -1242,7 +1242,7 @@ func (p *PostgresStore) ListTasks(ctx context.Context, boardID string, status do
 	}
 	defer rows.Close()
 
-	var tasks []*domain.Task
+	tasks := []*domain.Task{}
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
@@ -1442,6 +1442,73 @@ func (p *PostgresStore) HeartbeatTaskExecution(ctx context.Context, agentID stri
 		return nil, ErrConflict
 	}
 	return exec, err
+}
+
+// ReapExpiredTaskExecutions expires dead attempts and re-queues their tasks.
+// Two conditional statements in one transaction: a heartbeat or complete that
+// lands after the cutoff wins (its own WHERE clause matches first), so the
+// reaper is idempotent and safe under concurrent replicas.
+func (p *PostgresStore) ReapExpiredTaskExecutions(ctx context.Context, cutoff time.Time) (int, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return 0, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx, `
+		UPDATE task_executions
+		SET status         = $2,
+		    completed_at   = now(),
+		    result_summary = 'lease expired without completion',
+		    updated_at     = now()
+		WHERE status = $1
+		  AND lease_expires_at < $3
+		RETURNING task_id::text
+	`, domain.TaskExecutionActive, domain.TaskExecutionExpired, cutoff)
+	if err != nil {
+		return 0, mapPgErr(err)
+	}
+	taskIDs := []string{}
+	for rows.Next() {
+		var taskID string
+		if err := rows.Scan(&taskID); err != nil {
+			rows.Close()
+			return 0, mapPgErr(err)
+		}
+		taskIDs = append(taskIDs, taskID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, mapPgErr(err)
+	}
+	if len(taskIDs) == 0 {
+		return 0, mapPgErr(tx.Commit(ctx))
+	}
+
+	// Re-queue only tasks with no remaining live attempt: a task can
+	// transiently hold two active executions (a lapsed one plus a fresh one
+	// from a lazy reclaim), and the fresh lease must keep it in-progress.
+	_, err = tx.Exec(ctx, `
+		UPDATE tasks
+		SET status     = $2,
+		    updated_at = now()
+		WHERE id = ANY($1)
+		  AND status = $3
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM task_executions e
+		    WHERE e.task_id = tasks.id
+		      AND e.status = $4
+		      AND e.lease_expires_at > now()
+		  )
+	`, taskIDs, domain.TaskTodo, domain.TaskInProgress, domain.TaskExecutionActive)
+	if err != nil {
+		return 0, mapPgErr(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, mapPgErr(err)
+	}
+	return len(taskIDs), nil
 }
 
 func (p *PostgresStore) CompleteTaskExecution(ctx context.Context, agentID string, taskID string, executionID string, fencingToken string, status domain.TaskStatus, summary string) (*domain.Task, error) {

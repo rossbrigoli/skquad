@@ -1,6 +1,7 @@
 import json
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -488,6 +489,100 @@ class RuntimeBootstrapTest(unittest.TestCase):
             self.assertEqual(task.status, "blocked")
             self.assertEqual(client.blocked, ["task-1"])
             self.assertEqual(state.snapshot().task_timeouts, 1)
+
+    def test_run_task_once_keeps_lease_alive_during_long_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            credential = Path(tmp) / "agent"
+            credential.write_text("credential", encoding="utf-8")
+            config = load_bootstrap_config(
+                {
+                    "SKQUAD_AGENT_ID": "agent-1",
+                    "SKQUAD_SQUAD_ID": "squad-1",
+                    "SKQUAD_AGENT_CREDENTIAL_PATH": str(credential),
+                    "SKQUAD_TASK_LOOP_ENABLED": "false",
+                    "SKQUAD_HEARTBEAT_INTERVAL_SECONDS": "0.05",
+                }
+            )
+            client = TimestampedHeartbeatClient(claimed_task=fake_task("task-1"))
+
+            run_task_once(config, SleepingTaskHandler(0.3), client)
+
+            # Claim-time heartbeat plus at least one in-flight tick, then the
+            # terminal idle heartbeat.
+            self.assertGreaterEqual(len(client.heartbeats), 3)
+            self.assertTrue(all(status == "busy" for status, _ in client.heartbeats[:-1]))
+            self.assertEqual(client.heartbeats[-1][0], "idle")
+
+    def test_run_task_once_stops_lease_heartbeat_on_all_exit_paths(self):
+        handlers = (
+            StaticTaskHandler(TaskResult(status="done", summary="ok")),
+            SleepingTaskHandler(0.05),  # timeout path (0.01s timeout)
+            RaisingTaskHandler(),
+        )
+        for handler in handlers:
+            with self.subTest(handler=type(handler).__name__):
+                with tempfile.TemporaryDirectory() as tmp:
+                    credential = Path(tmp) / "agent"
+                    credential.write_text("credential", encoding="utf-8")
+                    config = load_bootstrap_config(
+                        {
+                            "SKQUAD_AGENT_ID": "agent-1",
+                            "SKQUAD_SQUAD_ID": "squad-1",
+                            "SKQUAD_AGENT_CREDENTIAL_PATH": str(credential),
+                            "SKQUAD_TASK_LOOP_ENABLED": "false",
+                            "SKQUAD_TASK_TIMEOUT_SECONDS": "0.01",
+                            "SKQUAD_HEARTBEAT_INTERVAL_SECONDS": "0.05",
+                        }
+                    )
+                    client = FakeControlPlaneClient(claimed_task=fake_task("task-1"))
+
+                    run_task_once(config, handler, client)
+
+                    alive = [
+                        t.name
+                        for t in threading.enumerate()
+                        if t.name == "skquad-lease-heartbeat"
+                    ]
+                    self.assertEqual(alive, [])
+
+    def test_run_task_once_survives_lease_heartbeat_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            credential = Path(tmp) / "agent"
+            credential.write_text("credential", encoding="utf-8")
+            config = load_bootstrap_config(
+                {
+                    "SKQUAD_AGENT_ID": "agent-1",
+                    "SKQUAD_SQUAD_ID": "squad-1",
+                    "SKQUAD_AGENT_CREDENTIAL_PATH": str(credential),
+                    "SKQUAD_TASK_LOOP_ENABLED": "false",
+                    "SKQUAD_HEARTBEAT_INTERVAL_SECONDS": "0.05",
+                }
+            )
+            client = FailingTickHeartbeatClient(claimed_task=fake_task("task-1"))
+
+            task = run_task_once(config, SleepingTaskHandler(0.15), client)
+
+            self.assertEqual(task.status, "done")
+            self.assertEqual(client.completed, [("task-1", "done")])
+            self.assertGreaterEqual(client.failed_ticks, 1)
+
+    def test_load_bootstrap_config_heartbeat_interval_default_and_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            credential = Path(tmp) / "agent"
+            credential.write_text("credential", encoding="utf-8")
+            base = {
+                "SKQUAD_AGENT_ID": "agent-1",
+                "SKQUAD_SQUAD_ID": "squad-1",
+                "SKQUAD_AGENT_CREDENTIAL_PATH": str(credential),
+                "SKQUAD_TASK_LOOP_ENABLED": "false",
+            }
+            default_config = load_bootstrap_config(base)
+            override_config = load_bootstrap_config(
+                {**base, "SKQUAD_HEARTBEAT_INTERVAL_SECONDS": "7.5"}
+            )
+
+            self.assertEqual(default_config.heartbeat_interval_seconds, 40.0)
+            self.assertEqual(override_config.heartbeat_interval_seconds, 7.5)
 
     def test_run_inbox_once_acks_successful_messages(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1044,6 +1139,29 @@ class FakeControlPlaneClient:
         task_id = task.id if isinstance(task, RuntimeTask) else task
         self.blocked.append(task_id)
         return fake_task(task_id, status="blocked")
+
+
+class TimestampedHeartbeatClient(FakeControlPlaneClient):
+    def heartbeat(self, status, task=None):
+        self.heartbeats.append((status, time.monotonic()))
+        return {}
+
+
+class FailingTickHeartbeatClient(FakeControlPlaneClient):
+    """The claim-time heartbeat succeeds; in-flight ticks raise."""
+
+    def __init__(self, claimed_task):
+        super().__init__(claimed_task)
+        self.busy_calls = 0
+        self.failed_ticks = 0
+
+    def heartbeat(self, status, task=None):
+        if status == "busy" and task is not None:
+            self.busy_calls += 1
+            if self.busy_calls > 1:
+                self.failed_ticks += 1
+                raise RuntimeError("network blip")
+        return {}
 
 
 class WaitingControlPlaneClient(FakeControlPlaneClient):

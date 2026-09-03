@@ -73,6 +73,11 @@ func main() {
 		slog.Info("using kubernetes CR writer", "namespace", cfg.K8sNamespace, "group_version", cfg.K8sGroupVersion)
 	}
 
+	// The execution reaper runs on every store (dev parity) and on every
+	// replica: its store update is conditional and idempotent.
+	go httpapi.RunExecutionReaper(context.Background(), store, cfg.ReaperInterval, cfg.ReaperGrace)
+	slog.Info("started task execution reaper", "interval", cfg.ReaperInterval, "grace", cfg.ReaperGrace)
+
 	handler := httpapi.NewWithDependencies(cfg, store, oidcAuth, crWriter)
 
 	server := &http.Server{

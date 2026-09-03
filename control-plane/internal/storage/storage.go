@@ -98,6 +98,13 @@ type TaskStore interface {
 	ListBoardTaskExecutions(ctx context.Context, boardID string) ([]*domain.TaskExecution, error)
 	HeartbeatTaskExecution(ctx context.Context, agentID string, executionID string, fencingToken string, leaseFor time.Duration) (*domain.TaskExecution, error)
 	CompleteTaskExecution(ctx context.Context, agentID string, taskID string, executionID string, fencingToken string, status domain.TaskStatus, summary string) (*domain.Task, error)
+	// ReapExpiredTaskExecutions marks active executions whose lease expired
+	// before cutoff as expired and re-queues their tasks (in-progress → todo)
+	// when no other live execution remains. Returns the number of executions
+	// reaped. Safe to run concurrently: the updates are conditional, so a
+	// heartbeat or complete that lands after cutoff wins and the row is left
+	// untouched.
+	ReapExpiredTaskExecutions(ctx context.Context, cutoff time.Time) (int, error)
 }
 
 // AgentMemoryStore persists bounded agent long-term memory.

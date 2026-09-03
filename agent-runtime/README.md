@@ -38,6 +38,13 @@ agent-runtime/
   before falling back to the configured poll interval.
 - Enforces configurable task execution limits: `SKQUAD_TASK_TIMEOUT_SECONDS`,
   `SKQUAD_MAX_LLM_STEPS`, and `SKQUAD_TASK_SUMMARY_MAX_CHARS`.
+- Keeps the execution lease alive while a task handler runs: a background
+  thread refreshes the lease every `SKQUAD_HEARTBEAT_INTERVAL_SECONDS`
+  (default 40s, ≈ lease/3) so long-running tasks are not mistaken for dead
+  workers by the control-plane reaper. Heartbeat failures are logged and
+  retried on the next tick; the thread is joined before the terminal
+  complete/block/idle call so it can never heartbeat after the execution has
+  left the active state.
 - Provides a default `LiteLLMTaskHandler` that reads the mounted LLM gateway
   virtual key, calls the OpenAI-compatible gateway through LiteLLM using the
   explicit `SKQUAD_DEFAULT_MODEL` model alias, discovers fresh task-scoped
