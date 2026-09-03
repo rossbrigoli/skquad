@@ -45,7 +45,7 @@ jobs:
         working-directory: control-plane
         run: |
           go tool cover -func=coverage.out | tail -n 25
-          python3 ../scripts/go-coverage-gate.py coverage.out --min 55
+          python3 ../scripts/go-coverage-gate.py coverage.out --min 62
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-control-plane
