@@ -27,8 +27,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: control-plane/go.mod
           cache-dependency-path: control-plane/go.sum
@@ -46,7 +46,7 @@ jobs:
         run: |
           go tool cover -func=coverage.out | tail -n 25
           python3 ../scripts/go-coverage-gate.py coverage.out --min 55
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage-control-plane
           path: control-plane/coverage.out
@@ -55,8 +55,8 @@ jobs:
     name: Operator
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: operator/go.mod
           cache-dependency-path: operator/go.sum
@@ -71,7 +71,7 @@ jobs:
         run: |
           go tool cover -func=coverage.out | tail -n 25
           python3 ../scripts/go-coverage-gate.py coverage.out --min 70
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage-operator
           path: operator/coverage.out
@@ -80,8 +80,8 @@ jobs:
     name: Agent runtime
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install package
@@ -101,7 +101,7 @@ jobs:
       - name: Coverage gate
         working-directory: agent-runtime
         run: python -m coverage report --fail-under=80
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage-agent-runtime
           path: agent-runtime/coverage.xml
@@ -127,8 +127,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Validate Python metadata and config
@@ -214,17 +214,17 @@ jobs:
     name: Integration smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: control-plane/go.mod
           cache-dependency-path: |
             control-plane/go.sum
             operator/go.sum
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: Install agent runtime
         working-directory: agent-runtime
         run: |
@@ -237,8 +237,8 @@ jobs:
     name: Helm chart
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
       - name: Lint chart
         run: helm lint charts/skquad
       - name: Render default chart
@@ -298,17 +298,17 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Install dependencies
         run: npm ci
       - name: Unit tests with coverage
         run: npm run test:coverage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage-web
           path: web/coverage/lcov.info
