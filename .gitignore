@@ -33,3 +33,9 @@ kubeconfig
 secrets/
 *.pem
 *.key
+
+# Test coverage output
+coverage/
+.coverage/
+.coverage
+*.tsbuildinfo

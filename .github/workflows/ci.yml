@@ -12,6 +12,20 @@ jobs:
   control-plane:
     name: Control plane
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: skquad
+          POSTGRES_USER: skquad
+          POSTGRES_PASSWORD: skquad-ci-db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U skquad -d skquad"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -23,7 +37,19 @@ jobs:
         run: go vet ./...
       - name: Go test
         working-directory: control-plane
-        run: go test ./...
+        env:
+          # Enables the Postgres-backed store tests; without it they skip.
+          SKQUAD_TEST_DATABASE_URL: postgres://skquad:skquad-ci-db@127.0.0.1:5432/skquad?sslmode=disable
+        run: go test ./... -coverpkg=./... -coverprofile=coverage.out
+      - name: Coverage report and gate
+        working-directory: control-plane
+        run: |
+          go tool cover -func=coverage.out | tail -n 25
+          python3 ../scripts/go-coverage-gate.py coverage.out --min 55
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-control-plane
+          path: control-plane/coverage.out
 
   operator:
     name: Operator
@@ -39,7 +65,16 @@ jobs:
         run: go vet ./...
       - name: Go test
         working-directory: operator
-        run: go test ./...
+        run: go test ./... -coverpkg=./... -coverprofile=coverage.out
+      - name: Coverage report and gate
+        working-directory: operator
+        run: |
+          go tool cover -func=coverage.out | tail -n 25
+          python3 ../scripts/go-coverage-gate.py coverage.out --min 70
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-operator
+          path: operator/coverage.out
 
   agent-runtime:
     name: Agent runtime
@@ -54,9 +89,22 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
-      - name: Unit tests
+      - name: Install coverage tooling
         working-directory: agent-runtime
-        run: python -m unittest discover -s tests
+        run: python -m pip install coverage
+      - name: Unit tests with coverage
+        working-directory: agent-runtime
+        run: |
+          python -m coverage run --source=skquad_runtime -m unittest discover -s tests
+          python -m coverage report
+          python -m coverage xml -o coverage.xml
+      - name: Coverage gate
+        working-directory: agent-runtime
+        run: python -m coverage report --fail-under=80
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-agent-runtime
+          path: agent-runtime/coverage.xml
       - name: Compile Python
         working-directory: agent-runtime
         run: python -m py_compile skquad_runtime/*.py tests/*.py
@@ -258,6 +306,12 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Unit tests with coverage
+        run: npm run test:coverage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-web
+          path: web/coverage/lcov.info
       - name: Build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
