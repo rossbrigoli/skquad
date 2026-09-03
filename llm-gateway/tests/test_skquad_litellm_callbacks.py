@@ -28,8 +28,12 @@ TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent.parent
 GATEWAY_DIR = TESTS_DIR.parent
 
-if str(GATEWAY_DIR) not in sys.path:
-    sys.path.insert(0, str(GATEWAY_DIR))
+# The suite runs from two layouts: the repo checkout (llm-gateway/tests next to
+# the module) and inside the gateway container with tests bind-mounted at /tests,
+# where the module lives in /app. Put both candidates on sys.path.
+for _candidate in (GATEWAY_DIR, Path("/app")):
+    if str(_candidate) not in sys.path:
+        sys.path.insert(0, str(_candidate))
 
 
 try:  # pragma: no cover - depends on environment
@@ -414,8 +418,15 @@ class CallbackWiringTests(unittest.TestCase):
     """The gateway config and the callback must agree with the API contract."""
 
     def test_config_references_proxy_handler_instance(self) -> None:
-        config = (GATEWAY_DIR / "config.yaml").read_text()
-        self.assertIn("skquad_litellm_callbacks.proxy_handler_instance", config)
+        candidates = [
+            GATEWAY_DIR / "config.yaml",
+            Path("/app/config.yaml"),
+            REPO_ROOT / "llm-gateway" / "config.yaml",
+        ]
+        config_path = next((path for path in candidates if path.exists()), None)
+        if config_path is None:  # pragma: no cover - only outside a repo checkout
+            self.skipTest("gateway config.yaml not available")
+        self.assertIn("skquad_litellm_callbacks.proxy_handler_instance", config_path.read_text())
 
     def test_metering_payload_keys_match_control_plane_contract(self) -> None:
         """Every key the callback sends must exist on gatewayMeteringRequest.
