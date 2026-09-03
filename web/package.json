@@ -7,7 +7,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "next": "^16.3.3",
@@ -17,8 +20,10 @@
   "devDependencies": {
     "@types/node": "^20.19.43",
     "@types/react": "^18.3.0",
+    "@vitest/coverage-v8": "^2.1.9",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.3.3",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^2.1.9"
   }
 }
