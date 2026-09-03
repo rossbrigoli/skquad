@@ -342,7 +342,7 @@ export default function Home() {
   const selectedSquad = (squads.data || []).find((squad) => squad.id === selectedSquadID) || null;
   const selectedAgent = (agents.data || []).find((agent) => agent.id === selectedAgentID) || null;
   const openTasks = selectedSquad && board.data
-    ? board.data.tasks.filter((task) => task.status !== "done").length
+    ? (board.data.tasks || []).filter((task) => task.status !== "done").length
     : null;
 
   useEffect(() => {
