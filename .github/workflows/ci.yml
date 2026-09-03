@@ -241,7 +241,10 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version-file: control-plane/go.mod
+          # This job builds both Go modules. operator/go.mod requires a newer
+          # language version than control-plane/go.mod, and setup-go v7 pins
+          # GOTOOLCHAIN=local, so the toolchain has to be the higher of the two.
+          go-version-file: operator/go.mod
           cache-dependency-path: |
             control-plane/go.sum
             operator/go.sum
