@@ -55,10 +55,15 @@ async def send_metering_event(status: str, kwargs: Mapping[str, Any], response_o
 
 
 def callback_metadata(kwargs: Mapping[str, Any]) -> Mapping[str, Any]:
+    # LiteLLM carries call metadata in two places: nested under litellm_params and
+    # directly on kwargs. Prefer litellm_params, but the top-level copy must remain
+    # reachable - short-circuiting on an empty nested dict here silently drops
+    # metering events (and therefore billing) for every call that only carries
+    # metadata at the top level.
     litellm_params = kwargs.get("litellm_params") or {}
     if isinstance(litellm_params, Mapping):
-        metadata = litellm_params.get("metadata") or {}
-        if isinstance(metadata, Mapping):
+        metadata = litellm_params.get("metadata")
+        if isinstance(metadata, Mapping) and metadata:
             return metadata
     metadata = kwargs.get("metadata") or {}
     if isinstance(metadata, Mapping):
@@ -92,7 +97,10 @@ def post_json(url: str, token: str, payload: Mapping[str, Any]) -> None:
         with request.urlopen(req, timeout=5) as response:
             if response.status < 200 or response.status >= 300:
                 LOGGER.warning("skquad metering callback returned status %s", response.status)
-    except error.URLError as exc:
+    except Exception as exc:  # noqa: BLE001 - telemetry must never fail the LLM call
+        # URLError covers most transport failures, but http.client and socket can
+        # surface bare OSErrors. Metering is best-effort: losing one event is
+        # acceptable, failing the proxied request is not.
         LOGGER.warning("skquad metering callback failed: %s", exc)
 
 

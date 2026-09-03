@@ -149,8 +149,31 @@ jobs:
               assert required in config
           assert pathlib.Path("skquad_litellm_callbacks.py").exists()
           PY
+      - name: Install coverage tooling
+        working-directory: llm-gateway
+        run: python -m pip install --quiet coverage
+      - name: Callback unit tests with coverage
+        working-directory: llm-gateway
+        run: |
+          python -m coverage run --source=skquad_litellm_callbacks -m unittest discover -s tests -t tests
+          python -m coverage report
+          python -m coverage xml -o coverage.xml
+      - name: Coverage gate
+        working-directory: llm-gateway
+        run: python -m coverage report --fail-under=90
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-llm-gateway
+          path: llm-gateway/coverage.xml
       - name: Build gateway image
         run: docker build -t skquad-llm-gateway-ci ./llm-gateway
+      - name: Callback unit tests against real LiteLLM
+        run: |
+          docker run --rm \
+            -v "$PWD/llm-gateway/tests:/tests:ro" \
+            --entrypoint python \
+            skquad-llm-gateway-ci \
+            -m unittest discover -s /tests -t /tests
       - name: Smoke test Skquad callback import
         run: |
           docker run --rm --entrypoint python skquad-llm-gateway-ci - <<'PY'
@@ -159,6 +182,7 @@ jobs:
           assert skquad_litellm_callbacks.proxy_handler_instance is not None
           print("OK: Skquad LiteLLM callback imports")
           PY
+
       - name: Smoke test Prisma client against Postgres
         run: |
           docker run --rm -i --network host --entrypoint python \
