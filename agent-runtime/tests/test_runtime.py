@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 import sys
 import tempfile
 import threading
@@ -9,6 +10,7 @@ from pathlib import Path
 from skquad_runtime.runtime import (
     ControlPlaneClient,
     DefaultMessageHandler,
+    LLMMessageHandler,
     LiteLLMTaskHandler,
     MessageResult,
     RuntimeMemory,
@@ -20,6 +22,7 @@ from skquad_runtime.runtime import (
     TaskResult,
     ToolResult,
     bootstrap_status,
+    chat_system_prompt,
     create_app,
     load_bootstrap_config,
     load_runtime_plugins,
@@ -1395,6 +1398,235 @@ def ready_config(tmp):
             "SKQUAD_TASK_LOOP_ENABLED": "false",
         }
     )
+
+
+class FakeChatClient(FakeControlPlaneClient):
+    def __init__(self, claimed_task, messages=None, history=None):
+        super().__init__(claimed_task, messages=messages)
+        self.history = history or []
+        self.replies = []
+
+    def list_message_history(self):
+        return self.history
+
+    def send_chat_reply(self, text, correlation_id="", to_agent_id=""):
+        self.replies.append((text, correlation_id, to_agent_id))
+        return fake_message("reply-1", "reply", status="pending")
+
+
+def fake_completion_response(content):
+    return {"choices": [{"message": {"content": content}}]}
+
+
+def user_msg(message_id, text):
+    return RuntimeMessage(
+        id=message_id,
+        from_type="user",
+        from_id="user-1",
+        to_agent_id="agent-1",
+        squad_id="squad-1",
+        message_type="consult",
+        payload={"message": text},
+        status="pending",
+        correlation_id="",
+    )
+
+
+def agent_msg(message_id, text):
+    return RuntimeMessage(
+        id=message_id,
+        from_type="agent",
+        from_id="agent-1",
+        to_agent_id="agent-1",
+        squad_id="squad-1",
+        message_type="reply",
+        payload={"message": text},
+        status="delivered",
+        correlation_id="",
+    )
+
+
+class LLMMessageHandlerTest(unittest.TestCase):
+    def _config(self, tmp, **extra):
+        credential = Path(tmp) / "agent"
+        credential.write_text("credential", encoding="utf-8")
+        virtual = Path(tmp) / "llm-gateway"
+        virtual.write_text("virtual-key", encoding="utf-8")
+        env = {
+            "SKQUAD_AGENT_ID": "agent-1",
+            "SKQUAD_SQUAD_ID": "squad-1",
+            "SKQUAD_AGENT_CREDENTIAL_PATH": str(credential),
+            "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH": str(virtual),
+            "SKQUAD_LLM_GATEWAY_URL": "http://llm-gateway:4000",
+            "SKQUAD_DEFAULT_MODEL": "gpt-4o",
+            "SKQUAD_AGENT_ROLE": "helper",
+            "SKQUAD_TASK_LOOP_ENABLED": "false",
+        }
+        env.update(extra)
+        return load_bootstrap_config(env)
+
+    def test_user_message_calls_llm_and_posts_reply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            seen = {}
+
+            def fake_completion(**kwargs):
+                seen.update(kwargs)
+                return fake_completion_response("Hello! How can I help?")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=fake_completion, client=client)
+
+            result = handler.handle_message(user_msg("m-1", "Hi there"), config)
+
+            self.assertTrue(result.ok)
+            # to_agent_id is left empty so the client defaults it to its own
+            # agent id (the reply is addressed to the agent itself).
+            self.assertEqual(client.replies, [("Hello! How can I help?", "m-1", "")])
+            self.assertEqual(seen["model"], "gpt-4o")
+            self.assertEqual(seen["api_base"], "http://llm-gateway:4000")
+            self.assertEqual(seen["api_key"], "virtual-key")
+            roles = [m["role"] for m in seen["messages"]]
+            self.assertEqual(roles, ["system", "user"])
+            self.assertEqual(seen["messages"][1]["content"], "Hi there")
+
+    def test_agent_message_acked_without_llm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            calls = []
+
+            def fake_completion(**kwargs):
+                calls.append(kwargs)
+                return fake_completion_response("should not be called")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=fake_completion, client=client)
+
+            result = handler.handle_message(agent_msg("m-1", "internal note"), config)
+
+            self.assertTrue(result.ok)
+            self.assertEqual(calls, [])
+            self.assertEqual(client.replies, [])
+
+    def test_agent_delegate_and_handoff_still_fail_for_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(client=client)
+
+            for message_type in ("delegate", "handoff"):
+                message = replace(agent_msg("m-1", "work please"), message_type=message_type)
+                result = handler.handle_message(message, config)
+                self.assertFalse(result.ok)
+                self.assertIn("specialized handler", result.summary)
+            self.assertEqual(client.replies, [])
+
+    def test_history_included_in_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            seen = {}
+
+            def fake_completion(**kwargs):
+                seen.update(kwargs)
+                return fake_completion_response("ok")
+
+            history = [user_msg("h-1", "Hi"), agent_msg("h-2", "Hello there")]
+            client = FakeChatClient(claimed_task=None, messages=[], history=history)
+            handler = LLMMessageHandler(completion=fake_completion, client=client)
+
+            result = handler.handle_message(user_msg("m-1", "What's the weather?"), config)
+
+            self.assertTrue(result.ok)
+            contents = [m["content"] for m in seen["messages"]]
+            self.assertEqual(
+                contents[1:], ["Hi", "Hello there", "What's the weather?"]
+            )
+            roles = [m["role"] for m in seen["messages"]]
+            self.assertEqual(roles, ["system", "user", "assistant", "user"])
+
+    def test_history_excludes_current_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            seen = {}
+
+            def fake_completion(**kwargs):
+                seen.update(kwargs)
+                return fake_completion_response("ok")
+
+            # The current message is already in the history (it is pending and
+            # addressed to the agent); it must not be duplicated in the prompt.
+            current = user_msg("m-1", "Repeat yourself")
+            history = [user_msg("h-1", "Hi"), current]
+            client = FakeChatClient(claimed_task=None, messages=[], history=history)
+            handler = LLMMessageHandler(completion=fake_completion, client=client)
+
+            handler.handle_message(current, config)
+
+            contents = [m["content"] for m in seen["messages"]]
+            self.assertEqual(contents[1:], ["Hi", "Repeat yourself"])
+
+    def test_missing_virtual_key_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            credential = Path(tmp) / "agent"
+            credential.write_text("credential", encoding="utf-8")
+            config = load_bootstrap_config(
+                {
+                    "SKQUAD_AGENT_ID": "agent-1",
+                    "SKQUAD_SQUAD_ID": "squad-1",
+                    "SKQUAD_AGENT_CREDENTIAL_PATH": str(credential),
+                    "SKQUAD_LLM_GATEWAY_URL": "http://llm-gateway:4000",
+                    "SKQUAD_DEFAULT_MODEL": "gpt-4o",
+                    "SKQUAD_TASK_LOOP_ENABLED": "false",
+                }
+            )
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(client=client)
+
+            result = handler.handle_message(user_msg("m-1", "Hi"), config)
+
+            self.assertFalse(result.ok)
+            self.assertIn("virtual key", result.summary)
+            self.assertEqual(client.replies, [])
+
+    def test_empty_user_text_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(client=client)
+
+            result = handler.handle_message(user_msg("m-1", "   "), config)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(client.replies, [])
+
+    def test_llm_error_fails_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+
+            def boom(**kwargs):
+                raise RuntimeError("gateway down")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=boom, client=client)
+
+            result = handler.handle_message(user_msg("m-1", "Hi"), config)
+
+            self.assertFalse(result.ok)
+            self.assertIn("LLM call failed", result.summary)
+            self.assertEqual(client.replies, [])
+
+    def test_chat_system_prompt_mentions_role(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            prompt = chat_system_prompt(config)
+            self.assertIn("helper", prompt)
+            self.assertIn("real time", prompt)
+
+    def test_configured_system_prompt_overrides_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp, SKQUAD_AGENT_SYSTEM_PROMPT="You are a terse pirate.")
+            prompt = chat_system_prompt(config)
+            self.assertEqual(prompt, "You are a terse pirate.")
 
 
 if __name__ == "__main__":

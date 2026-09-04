@@ -89,6 +89,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				{Name: "SKQUAD_AGENT_ID", Value: agent.Spec.AgentID},
 				{Name: "SKQUAD_SQUAD_ID", Value: agent.Spec.SquadID},
 				{Name: "SKQUAD_AGENT_ROLE", Value: agent.Spec.Role},
+				{Name: "SKQUAD_AGENT_SYSTEM_PROMPT", Value: agent.Spec.SystemPrompt},
 				{Name: "SKQUAD_DEFAULT_PROVIDER_ID", Value: agent.Spec.DefaultProviderID},
 				{Name: "SKQUAD_DEFAULT_MODEL", Value: agent.Spec.DefaultModel},
 				{Name: "SKQUAD_IDLE_TIMEOUT", Value: agent.Spec.IdleTimeout},

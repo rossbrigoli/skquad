@@ -36,13 +36,21 @@ func TestSquadAgentTaskFlow(t *testing.T) {
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
 		"name":                "Architect",
 		"role":                "technical lead",
+		"system_prompt":       "You are a pragmatic architecture lead.",
 		"default_provider_id": "",
 		"default_model":       "openai/gpt-4o-mini",
 	}, http.StatusCreated, &agent)
 	require.NotEmpty(t, agent.ID)
 	require.Equal(t, squad.ID, agent.SquadID)
 	require.Equal(t, "openai/gpt-4o-mini", agent.DefaultModel)
+	require.Equal(t, "You are a pragmatic architecture lead.", agent.SystemPrompt)
 	require.Equal(t, 300, agent.IdleTimeoutSec)
+
+	var patchedAgent domain.Agent
+	doJSON(t, handler, http.MethodPatch, "/api/v1/agents/"+agent.ID, map[string]any{
+		"system_prompt": "You review designs and call out risk.",
+	}, http.StatusOK, &patchedAgent)
+	require.Equal(t, "You review designs and call out risk.", patchedAgent.SystemPrompt)
 
 	var task domain.Task
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/board/tasks", map[string]any{
@@ -1483,6 +1491,56 @@ func TestAgentMessageFailuresRetryThenDeadLetter(t *testing.T) {
 	var audit []domain.AuditEntry
 	doJSON(t, handler, http.MethodGet, "/api/v1/squads/"+squad.ID+"/audit", nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "message.fail")
+}
+
+func TestAgentMessageHistoryIncludesNonPendingMessages(t *testing.T) {
+	t.Parallel()
+
+	crWriter := &fakeCRWriter{}
+	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
+
+	var squad domain.Squad
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+		"name": "Message History Squad",
+	}, http.StatusCreated, &squad)
+	var sender domain.Agent
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
+		"name": "Sender",
+	}, http.StatusCreated, &sender)
+	var recipient domain.Agent
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
+		"name": "Recipient",
+	}, http.StatusCreated, &recipient)
+
+	var senderIdentity domain.AgentIdentity
+	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+sender.ID+"/identity", nil, http.StatusCreated, &senderIdentity)
+	senderCredential := crWriter.credentialTokens[senderIdentity.CredentialRef]
+	var recipientIdentity domain.AgentIdentity
+	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+recipient.ID+"/identity", nil, http.StatusCreated, &recipientIdentity)
+	recipientCredential := crWriter.credentialTokens[recipientIdentity.CredentialRef]
+
+	var sent domain.Message
+	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, "/api/v1/agents/me/messages", map[string]any{
+		"to_agent_id": recipient.ID,
+		"type":        "consult",
+		"message":     "hello recipient",
+	}, http.StatusCreated, &sent)
+
+	// Ack the message so it is no longer pending. The history endpoint must
+	// still return it (it is the full chat history, not just the pending queue).
+	var acked domain.Message
+	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodPost, "/api/v1/agents/me/messages/"+sent.ID+"/ack", nil, http.StatusOK, &acked)
+	require.Equal(t, domain.MessageDelivered, acked.Status)
+
+	var pending []domain.Message
+	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodGet, "/api/v1/agents/me/messages", nil, http.StatusOK, &pending)
+	require.Empty(t, pending)
+
+	var history []domain.Message
+	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodGet, "/api/v1/agents/me/messages/history", nil, http.StatusOK, &history)
+	require.Len(t, history, 1)
+	require.Equal(t, sent.ID, history[0].ID)
+	require.Equal(t, domain.MessageDelivered, history[0].Status)
 }
 
 func TestExpiredAgentMessagesDoNotKeepAgentBusy(t *testing.T) {

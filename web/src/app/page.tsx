@@ -67,7 +67,7 @@ export default function Home() {
   const [agentCosts, setAgentCosts] = useState<Record<string, MeteringSummary>>({});
   const [newSquadForm, setNewSquadForm] = useState({ name: "", mission: "" });
   const [squadMissionDraft, setSquadMissionDraft] = useState("");
-  const [agentForm, setAgentForm] = useState({ name: "", role: "", default_model: "", idle_timeout_sec: "300" });
+  const [agentForm, setAgentForm] = useState({ name: "", role: "", system_prompt: "", default_model: "", idle_timeout_sec: "300" });
   const [taskForm, setTaskForm] = useState({ title: "", description: "", assignee_agent_id: "" });
   const [chatDraft, setChatDraft] = useState("");
   const [providerForm, setProviderForm] = useState({ name: "", kind: "openai", base_url: "", api_key_ref: "", default_model: "", models: "" });
@@ -164,20 +164,35 @@ export default function Home() {
       return;
     }
     let cancelled = false;
-    setChat({ data: null, loading: true, error: "" });
-    apiGet<Message[]>(`/agents/${selectedAgentID}/chat`, token)
-      .then((messages) => {
-        if (!cancelled) {
-          setChat({ data: messages, loading: false, error: "" });
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setChat(errorState(error, []));
-        }
-      });
+    let timer: ReturnType<typeof setInterval> | undefined;
+
+    const load = (showLoading: boolean) => {
+      if (showLoading) {
+        setChat({ data: null, loading: true, error: "" });
+      }
+      apiGet<Message[]>(`/agents/${selectedAgentID}/chat`, token)
+        .then((messages) => {
+          if (!cancelled) {
+            setChat({ data: messages, loading: false, error: "" });
+          }
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setChat(errorState(error, []));
+          }
+        });
+    };
+
+    load(true);
+    // Poll for new replies so the chat window updates in near real time
+    // without requiring a manual refresh.
+    timer = setInterval(() => load(false), 5000);
+
     return () => {
       cancelled = true;
+      if (timer) {
+        clearInterval(timer);
+      }
     };
   }, [selectedAgentID, token, refreshTick]);
 
@@ -402,11 +417,12 @@ export default function Home() {
       const created = await apiPost<Agent>(`/squads/${selectedSquadID}/agents`, token, {
         name: agentForm.name,
         role: agentForm.role,
+        system_prompt: agentForm.system_prompt,
         default_model: agentForm.default_model,
         permissions: [],
         idle_timeout_sec: Number(agentForm.idle_timeout_sec) || 300,
       });
-      setAgentForm({ name: "", role: "", default_model: "", idle_timeout_sec: "300" });
+      setAgentForm({ name: "", role: "", system_prompt: "", default_model: "", idle_timeout_sec: "300" });
       setSelectedAgentID(created.id);
     });
   }

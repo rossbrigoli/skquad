@@ -86,6 +86,7 @@ CREATE TABLE agents (
     name          text NOT NULL,
     squad_id      uuid NOT NULL REFERENCES squads(id) ON DELETE CASCADE,
     role          text,                 -- from operating model
+    system_prompt text NOT NULL DEFAULT '', -- optional persona for chat/tasks
     identity_id   uuid REFERENCES agent_identities(id),
     credentials_ref text,               -- K8s secret ref
     default_provider_id uuid REFERENCES llm_providers(id),

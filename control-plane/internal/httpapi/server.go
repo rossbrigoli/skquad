@@ -130,6 +130,7 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/tasks", s.listCurrentAgentTasks)
 			r.Get("/resources", s.listCurrentAgentResources)
 			r.Get("/messages", s.listCurrentAgentMessages)
+			r.Get("/messages/history", s.listCurrentAgentMessageHistory)
 			r.Post("/messages", s.createCurrentAgentMessage)
 			r.Post("/messages/{messageID}/ack", s.ackCurrentAgentMessage)
 			r.Post("/messages/{messageID}/fail", s.failCurrentAgentMessage)
@@ -874,6 +875,7 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name              string          `json:"name"`
 		Role              string          `json:"role"`
+		SystemPrompt      string          `json:"system_prompt"`
 		DefaultProviderID string          `json:"default_provider_id"`
 		DefaultModel      string          `json:"default_model"`
 		Permissions       json.RawMessage `json:"permissions"`
@@ -898,6 +900,7 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		SquadID:         squad.ID,
 		Name:            req.Name,
 		Role:            req.Role,
+		SystemPrompt:    strings.TrimSpace(req.SystemPrompt),
 		DefaultProvider: strings.TrimSpace(req.DefaultProviderID),
 		DefaultModel:    strings.TrimSpace(req.DefaultModel),
 		Permissions:     req.Permissions,
@@ -942,6 +945,7 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name              *string          `json:"name"`
 		Role              *string          `json:"role"`
+		SystemPrompt      *string          `json:"system_prompt"`
 		DefaultProviderID *string          `json:"default_provider_id"`
 		DefaultModel      *string          `json:"default_model"`
 		Permissions       *json.RawMessage `json:"permissions"`
@@ -960,6 +964,9 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Role != nil {
 		agent.Role = *req.Role
+	}
+	if req.SystemPrompt != nil {
+		agent.SystemPrompt = strings.TrimSpace(*req.SystemPrompt)
 	}
 	if req.DefaultProviderID != nil {
 		agent.DefaultProvider = strings.TrimSpace(*req.DefaultProviderID)
@@ -1597,6 +1604,19 @@ func (s *Server) getCurrentAgentTaskContext(w http.ResponseWriter, r *http.Reque
 func (s *Server) listCurrentAgentMessages(w http.ResponseWriter, r *http.Request) {
 	principal := currentAgent(r.Context())
 	messages, err := s.store.ListPendingMessages(r.Context(), principal.Agent.ID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, messages)
+}
+
+// listCurrentAgentMessageHistory returns the full chat history addressed to the
+// current agent (all statuses), oldest first. The runtime uses this to build a
+// contextual prompt when replying to user chat messages.
+func (s *Server) listCurrentAgentMessageHistory(w http.ResponseWriter, r *http.Request) {
+	principal := currentAgent(r.Context())
+	messages, err := s.store.ListAgentMessageHistory(r.Context(), principal.Agent.ID)
 	if err != nil {
 		writeStorageError(w, err)
 		return

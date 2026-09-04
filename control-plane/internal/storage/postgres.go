@@ -250,7 +250,7 @@ func (p *PostgresStore) enqueueAgentOutboxTx(ctx context.Context, tx pgx.Tx, ope
 
 func getAgentTx(ctx context.Context, tx pgx.Tx, id string) (*domain.Agent, error) {
 	row := tx.QueryRow(ctx, `
-		SELECT id::text, squad_id::text, name, role, coalesce(identity_id::text, ''),
+		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
 		       coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
@@ -516,11 +516,11 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 	defer tx.Rollback(ctx)
 
 	row := tx.QueryRow(ctx, `
-		INSERT INTO agents (squad_id, name, role, default_provider, default_model, permissions, idle_timeout_sec, status)
-		VALUES ($1, $2, $3, nullif($4, '')::uuid, $5, $6, $7, $8)
-		RETURNING id::text, squad_id::text, name, role, coalesce(identity_id::text, ''),
+		INSERT INTO agents (squad_id, name, role, system_prompt, default_provider, default_model, permissions, idle_timeout_sec, status)
+		VALUES ($1, $2, $3, $4, nullif($5, '')::uuid, $6, $7, $8, $9)
+		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
 		          coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
-	`, a.SquadID, a.Name, a.Role, a.DefaultProvider, a.DefaultModel, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status))
+	`, a.SquadID, a.Name, a.Role, a.SystemPrompt, a.DefaultProvider, a.DefaultModel, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status))
 	created, err := scanAgent(row)
 	if err != nil {
 		return nil, err
@@ -536,7 +536,7 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 
 func (p *PostgresStore) GetAgent(ctx context.Context, id string) (*domain.Agent, error) {
 	row := p.pool.QueryRow(ctx, `
-		SELECT id::text, squad_id::text, name, role, coalesce(identity_id::text, ''),
+		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
 		       coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
@@ -555,16 +555,17 @@ func (p *PostgresStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*doma
 		UPDATE agents
 		SET name = $2,
 		    role = $3,
-		    default_provider = nullif($4, '')::uuid,
-		    default_model = $5,
-		    permissions = $6,
-		    idle_timeout_sec = $7,
-		    status = $8,
+		    system_prompt = $4,
+		    default_provider = nullif($5, '')::uuid,
+		    default_model = $6,
+		    permissions = $7,
+		    idle_timeout_sec = $8,
+		    status = $9,
 		    updated_at = now()
 		WHERE id = $1
-		RETURNING id::text, squad_id::text, name, role, coalesce(identity_id::text, ''),
+		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
 		          coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
-	`, a.ID, a.Name, a.Role, a.DefaultProvider, a.DefaultModel, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status))
+	`, a.ID, a.Name, a.Role, a.SystemPrompt, a.DefaultProvider, a.DefaultModel, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status))
 	updated, err := scanAgent(row)
 	if err != nil {
 		return nil, err
@@ -586,7 +587,7 @@ func (p *PostgresStore) DeleteAgent(ctx context.Context, id string) error {
 	defer tx.Rollback(ctx)
 
 	row := tx.QueryRow(ctx, `
-		SELECT id::text, squad_id::text, name, role, coalesce(identity_id::text, ''),
+		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
 		       coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
@@ -610,7 +611,7 @@ func (p *PostgresStore) DeleteAgent(ctx context.Context, id string) error {
 
 func (p *PostgresStore) ListAgents(ctx context.Context, squadID string) ([]*domain.Agent, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT id::text, squad_id::text, name, role, coalesce(identity_id::text, ''),
+		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
 		       coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
 		FROM agents
 		WHERE squad_id = $1
@@ -643,7 +644,7 @@ func (p *PostgresStore) SetAgentStatus(ctx context.Context, id string, status do
 		UPDATE agents
 		SET status = $2, updated_at = now()
 		WHERE id = $1
-		RETURNING id::text, squad_id::text, name, role, coalesce(identity_id::text, ''),
+		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
 		          coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
 	`, id, status)
 	agent, err := scanAgent(row)
@@ -1954,6 +1955,7 @@ func scanAgent(row scanner) (*domain.Agent, error) {
 		&a.SquadID,
 		&a.Name,
 		&a.Role,
+		&a.SystemPrompt,
 		&a.IdentityID,
 		&a.DefaultProvider,
 		&a.DefaultModel,

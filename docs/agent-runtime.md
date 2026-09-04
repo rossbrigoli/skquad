@@ -217,14 +217,29 @@ packaging/registry slice.
   enforces access grants).
 
 Current implementation note: the runtime client can fetch pending inbox
-messages and acknowledge each message after an injected handler succeeds. The
-default runtime loop handles a bounded inbox batch and then at most one task per
-iteration, so a hot inbox and a hot task queue cannot starve each other. The
-default message handler acknowledges simple `ping`, `reply`, and `consult`
-delivery; unsupported `delegate`/`handoff` messages and handler exceptions are
-reported through `/api/v1/agents/me/messages/:id/fail`, which lets the control
-plane increment attempts, schedule retry, expire stale messages, or dead-letter
-messages that exhaust their retry budget.
+messages, fetch the agent's full chat history
+(`GET /api/v1/agents/me/messages/history`), and acknowledge each message after
+an injected handler succeeds. The default runtime loop handles a bounded inbox
+batch and then at most one task per iteration, so a hot inbox and a hot task
+queue cannot starve each other.
+
+The shipped message handler (`LLMMessageHandler`) powers the agent chat window:
+
+- **User-authored messages** (sent from the web UI via
+  `POST /api/v1/agents/:id/chat`) are answered by calling the LLM gateway with
+  the agent's recent chat history as context. The system prompt is the agent's
+  `system_prompt` when set, otherwise a default built from its role. The LLM
+  response is posted back into the agent's own chat history as an
+  agent-authored `reply` (correlated to the original message).
+- **Agent-authored messages** (`ping`, `reply`, `consult` — including the
+  replies this handler posts) are acknowledged without an LLM call, so a reply
+  never triggers another reply.
+
+Unsupported `delegate`/`handoff` messages and handler exceptions are reported
+through `/api/v1/agents/me/messages/:id/fail`, which lets the control plane
+increment attempts, schedule retry, expire stale messages, or dead-letter
+messages that exhaust their retry budget. The web chat window polls every 5
+seconds so replies appear without a manual refresh.
 
 ---
 

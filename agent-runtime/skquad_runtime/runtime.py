@@ -46,6 +46,7 @@ class BootstrapConfig:
     task_summary_max_chars: int
     plugin_modules: tuple[str, ...]
     enabled_plugins: tuple[str, ...]
+    system_prompt: str = ""
 
     @property
     def missing_required(self) -> list[str]:
@@ -279,6 +280,7 @@ def load_bootstrap_config(environ: Mapping[str, str] | None = None) -> Bootstrap
         agent_id=env.get("SKQUAD_AGENT_ID", ""),
         squad_id=env.get("SKQUAD_SQUAD_ID", ""),
         role=env.get("SKQUAD_AGENT_ROLE", ""),
+        system_prompt=env.get("SKQUAD_AGENT_SYSTEM_PROMPT", ""),
         default_provider_id=env.get("SKQUAD_DEFAULT_PROVIDER_ID", ""),
         default_model=env.get("SKQUAD_DEFAULT_MODEL", ""),
         idle_timeout=env.get("SKQUAD_IDLE_TIMEOUT", ""),
@@ -393,6 +395,32 @@ class ControlPlaneClient:
             f"/api/v1/agents/me/messages/{message_id}/fail",
             {"reason": reason},
         )
+        return runtime_message(payload)
+
+    def list_message_history(self) -> list[RuntimeMessage]:
+        payload = self._json("GET", "/api/v1/agents/me/messages/history", None)
+        return [runtime_message(item) for item in payload]
+
+    def send_chat_reply(
+        self,
+        text: str,
+        correlation_id: str = "",
+        to_agent_id: str = "",
+    ) -> RuntimeMessage:
+        """Post an agent-authored reply into the agent's own chat history.
+
+        The reply is addressed to the agent itself so it shows up in the agent
+        chat window. It is acked by the message handler (agent-authored
+        messages are not re-processed by the LLM), which avoids a reply loop.
+        """
+        body: dict[str, object] = {
+            "to_agent_id": to_agent_id or self.agent_id,
+            "type": "reply",
+            "message": text,
+        }
+        if correlation_id:
+            body["correlation_id"] = correlation_id
+        payload = self._json("POST", "/api/v1/agents/me/messages", body)
         return runtime_message(payload)
 
     def task_context(self, task_id: str) -> RuntimeTaskContext:
@@ -581,6 +609,137 @@ class DefaultMessageHandler:
             ok=False,
             summary=f"message type {message.message_type!r} requires a specialized handler",
         )
+
+
+def chat_system_prompt(config: BootstrapConfig) -> str:
+    if config.system_prompt.strip():
+        return config.system_prompt.strip()
+    role = config.role or "skquad agent"
+    return (
+        f"You are {role}, an AI assistant in a Skquad squad. "
+        "You are chatting with a user in real time. "
+        "Answer helpfully and concisely in plain text. "
+        "Do not use internal task status markers such as 'SKQUAD_STATUS'."
+    )
+
+
+class LLMMessageHandler:
+    """Answer user chat messages with the agent's LLM.
+
+    User-authored messages (``from_type == "user"``) are answered by calling the
+    LLM gateway with the agent's recent chat history as context. The response is
+    posted back into the agent's own chat history as an agent-authored reply so
+    it appears in the agent chat window.
+
+    Agent-authored messages (``from_type == "agent"``) — including the replies
+    this handler posts and agent-to-agent collaboration messages — are acked
+    without an LLM call, so a reply never triggers a second LLM call (no reply
+    loop).
+    """
+
+    def __init__(
+        self,
+        completion: Callable[..., object] | None = None,
+        model: str | None = None,
+        max_history: int = 20,
+        client: "ControlPlaneClient | None" = None,
+    ) -> None:
+        self._completion = completion
+        self.model = model
+        self.max_history = max_history
+        self._client = client
+
+    def _control_plane(self, config: BootstrapConfig) -> "ControlPlaneClient":
+        if self._client is not None:
+            return self._client
+        return ControlPlaneClient.from_bootstrap(config)
+
+    def handle_message(self, message: RuntimeMessage, config: BootstrapConfig) -> MessageResult:
+        if message.from_type != "user":
+            if message.message_type in ("delegate", "handoff"):
+                return MessageResult(
+                    ok=False,
+                    summary=f"message type {message.message_type!r} requires a specialized handler",
+                )
+            return MessageResult(
+                ok=True,
+                summary=f"acked {message.from_type} message ({message.message_type})",
+            )
+
+        virtual_key = read_secret_value(config.virtual_key_path)
+        if virtual_key is None:
+            return MessageResult(ok=False, summary="LLM gateway virtual key is not loaded")
+        if not config.llm_gateway_url:
+            return MessageResult(ok=False, summary="SKQUAD_LLM_GATEWAY_URL is required")
+        model = self.model or config.default_model or config.default_provider_id
+        if not model:
+            return MessageResult(ok=False, summary="SKQUAD_DEFAULT_MODEL is required")
+
+        user_text = str(message.payload.get("message", "") or "").strip()
+        if not user_text:
+            return MessageResult(ok=False, summary="user chat message had no text")
+
+        chat_messages = self._build_chat_messages(message, config)
+        completion = self._completion or self._default_completion()
+        try:
+            response = completion(
+                model=model,
+                messages=chat_messages,
+                api_base=config.llm_gateway_url.rstrip("/"),
+                api_key=virtual_key,
+                metadata={
+                    "skquad_agent_id": config.agent_id,
+                    "skquad_squad_id": config.squad_id,
+                    "skquad_message_id": message.id,
+                },
+            )
+        except Exception as exc:
+            return MessageResult(ok=False, summary=f"LLM call failed: {exc}")
+
+        reply_text = str(message_value(first_message(response), "content") or "").strip()
+        if not reply_text:
+            return MessageResult(ok=False, summary="LLM returned an empty reply")
+
+        try:
+            self._control_plane(config).send_chat_reply(
+                reply_text, correlation_id=message.correlation_id or message.id
+            )
+        except Exception as exc:
+            return MessageResult(ok=False, summary=f"failed to post chat reply: {exc}")
+
+        return MessageResult(ok=True, summary="replied to user chat message")
+
+    def _build_chat_messages(
+        self, message: RuntimeMessage, config: BootstrapConfig
+    ) -> list[dict[str, object]]:
+        try:
+            history = self._control_plane(config).list_message_history()
+        except Exception:
+            history = []
+        prior = [
+            item
+            for item in history
+            if item.id != message.id
+            and item.from_type in ("user", "agent")
+            and str(item.payload.get("message", "") or "").strip()
+        ]
+        if self.max_history and self.max_history > 0:
+            prior = prior[-self.max_history :]
+        chat: list[dict[str, object]] = [
+            {"role": "system", "content": chat_system_prompt(config)}
+        ]
+        for item in prior:
+            role = "user" if item.from_type == "user" else "assistant"
+            chat.append({"role": role, "content": str(item.payload.get("message", ""))})
+        chat.append({"role": "user", "content": str(message.payload.get("message", ""))})
+        return chat
+
+    def _default_completion(self) -> Callable[..., object]:
+        try:
+            from litellm import completion
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("litellm is required for the LLM message handler") from exc
+        return completion
 
 
 class LiteLLMTaskHandler:
@@ -1355,7 +1514,7 @@ def main() -> None:
         worker = threading.Thread(
             target=run_task_loop,
             args=(config, LiteLLMTaskHandler(plugins=plugins, max_steps=config.max_llm_steps)),
-            kwargs={"message_handler": DefaultMessageHandler(), "state": state},
+            kwargs={"message_handler": LLMMessageHandler(), "state": state},
             daemon=True,
         )
         worker.start()

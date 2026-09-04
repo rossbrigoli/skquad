@@ -41,6 +41,8 @@ spec:
                   type: string
                 role:
                   type: string
+                systemPrompt:
+                  type: string
                 defaultProviderId:
                   type: string
                 defaultModel:

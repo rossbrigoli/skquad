@@ -148,6 +148,7 @@ completing the same task after a lease has moved on.
 |--------|------|-------------|
 | `POST` | `/api/v1/agents/me/messages` | Send a message (`{ to_agent_id, type, payload, max_attempts?, ttl_seconds? }`). |
 | `GET` | `/api/v1/agents/me/messages` | Get this agent's retry-due pending inbox. |
+| `GET` | `/api/v1/agents/me/messages/history` | Full chat history for this agent (all statuses, oldest first). Used by the runtime to build LLM chat context. |
 | `POST` | `/api/v1/agents/me/messages/:id/ack` | Acknowledge a delivered message. |
 | `POST` | `/api/v1/agents/me/messages/:id/fail` | Report handler failure; schedules retry or dead-letters after attempts expire. |
 | `GET` | `/api/v1/agents/me/work/wait?timeout_seconds=N` | Long-poll for this agent's assigned task or ready inbox changes. Backed by Postgres `LISTEN/NOTIFY`; returns `{ work_available }` and falls back to timeout. |

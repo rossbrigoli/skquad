@@ -20,6 +20,7 @@ export type Agent = {
   squad_id: string;
   name: string;
   role?: string;
+  system_prompt?: string;
   identity_id?: string;
   default_provider_id?: string;
   default_model?: string;

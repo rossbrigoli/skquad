@@ -85,6 +85,7 @@ func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identit
 		"agentId":           agent.ID,
 		"squadId":           agent.SquadID,
 		"role":              agent.Role,
+		"systemPrompt":      agent.SystemPrompt,
 		"defaultProviderId": agent.DefaultProvider,
 		"defaultModel":      agent.DefaultModel,
 		"image":             w.agentImage,

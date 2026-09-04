@@ -71,6 +71,7 @@ type Agent struct {
 	SquadID         string          `json:"squad_id"`
 	Name            string          `json:"name"`
 	Role            string          `json:"role"`
+	SystemPrompt    string          `json:"system_prompt,omitempty"`
 	IdentityID      string          `json:"identity_id,omitempty"`
 	DefaultProvider string          `json:"default_provider_id,omitempty"`
 	DefaultModel    string          `json:"default_model,omitempty"`

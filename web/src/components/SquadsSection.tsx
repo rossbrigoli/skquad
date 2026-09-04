@@ -102,8 +102,8 @@ export function SquadsSection({
   agents: ApiState<Agent[]>;
   selectedAgentID: string;
   onSelectAgent: (id: string) => void;
-  agentForm: { name: string; role: string; default_model: string; idle_timeout_sec: string };
-  setAgentForm: (form: { name: string; role: string; default_model: string; idle_timeout_sec: string }) => void;
+  agentForm: { name: string; role: string; system_prompt: string; default_model: string; idle_timeout_sec: string };
+  setAgentForm: (form: { name: string; role: string; system_prompt: string; default_model: string; idle_timeout_sec: string }) => void;
   onCreateAgent: (event: FormEvent<HTMLFormElement>) => void;
   onCreateIdentity: (id: string) => void;
   onRotateIdentity: (id: string) => void;
@@ -337,8 +337,8 @@ function AgentsTab({
   agents: ApiState<Agent[]>;
   selectedAgentID: string;
   onSelectAgent: (id: string) => void;
-  agentForm: { name: string; role: string; default_model: string; idle_timeout_sec: string };
-  setAgentForm: (form: { name: string; role: string; default_model: string; idle_timeout_sec: string }) => void;
+  agentForm: { name: string; role: string; system_prompt: string; default_model: string; idle_timeout_sec: string };
+  setAgentForm: (form: { name: string; role: string; system_prompt: string; default_model: string; idle_timeout_sec: string }) => void;
   onCreateAgent: (event: FormEvent<HTMLFormElement>) => void;
   onCreateIdentity: (id: string) => void;
   onRotateIdentity: (id: string) => void;
@@ -375,6 +375,15 @@ function AgentsTab({
         <label>
           Role
           <textarea value={agentForm.role} onChange={(event) => setAgentForm({ ...agentForm, role: event.target.value })} rows={3} />
+        </label>
+        <label>
+          System Prompt
+          <textarea
+            value={agentForm.system_prompt}
+            onChange={(event) => setAgentForm({ ...agentForm, system_prompt: event.target.value })}
+            rows={3}
+            placeholder="Optional persona/instructions for this agent's chat and tasks"
+          />
         </label>
         <label>
           Default model

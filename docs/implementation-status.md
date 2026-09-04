@@ -8,13 +8,13 @@ or `Accepted` status means "design accepted", not "fully implemented".
 
 | Area | Implemented |
 | --- | --- |
-| Control plane API | Dev auth, OIDC bearer validation, squads, agents, boards, tasks, registry, permissions, access grants, audit/metering reads, gateway metering callback, lease-backed/fenced agent task APIs, retry/dead-letter-aware message APIs, agent work-wait endpoint, context APIs, Kubernetes outbox intents, and the task execution reaper (expires lapsed leases and re-queues stuck tasks; see [`execution-reaper.md`](execution-reaper.md)). |
+| Control plane API | Dev auth, OIDC bearer validation, squads, agents, boards, tasks, registry, permissions, access grants, audit/metering reads, gateway metering callback, lease-backed/fenced agent task APIs, retry/dead-letter-aware message APIs, agent chat history endpoint, agent work-wait endpoint, context APIs, Kubernetes outbox intents, and the task execution reaper (expires lapsed leases and re-queues stuck tasks; see [`execution-reaper.md`](execution-reaper.md)). |
 | Persistence | In-memory dev store and PostgreSQL store selected by `SKQUAD_DATABASE_URL`; current schema includes domain state, task executions/results, messages, agent memory, metering, audit, identities, Kubernetes outbox, and Postgres `LISTEN/NOTIFY` triggers for task/inbox wake-ups. |
 | Kubernetes operator | `Squad` and `Agent` CRDs, namespace/base-resource reconciliation, agent Deployments, finalizer cleanup, desired-active wake-up, and idle-timeout scale-down. |
 | Helm chart | CRDs, API server, operator, LiteLLM gateway, web app, optional PostgreSQL, ingress toggle, external Secret knobs, image values, runtime config wiring, and RBAC for current controllers. |
-| Agent runtime | Bootstrap/readiness, mounted Secret loading, task loop with control-plane work waiting plus fallback polling, task execution fence propagation, in-flight lease heartbeat while a handler runs, inbox draining, LiteLLM handler, importlib plugin loading, per-task context fetch, permission-filtered tool exposure, and bounded memory persistence. |
+| Agent runtime | Bootstrap/readiness, mounted Secret loading, task loop with control-plane work waiting plus fallback polling, task execution fence propagation, in-flight lease heartbeat while a handler runs, inbox draining, LiteLLM task handler, LLM-backed replies to user chat messages (history-aware, agent `system_prompt` persona), importlib plugin loading, per-task context fetch, permission-filtered tool exposure, and bounded memory persistence. |
 | LiteLLM gateway | Charted LiteLLM proxy, Postgres-backed virtual-key storage, master-key wiring, callback module, image smoke tests, and API-side virtual-key generation for active provider grants. |
-| Web app | Authenticated Next.js 16 shell with first-pass squad, agent, task, identity, chat, registry, grant, audit, and metering workflows. Current package audit is clean at `moderate` and above. |
+| Web app | Authenticated Next.js 16 shell with first-pass squad, agent (including system-prompt persona), task, identity, near-real-time polling chat, registry, grant, audit, and metering workflows. Current package audit is clean at `moderate` and above. |
 | CI/CD | Real validation CI, integration smoke, deployable images, GHCR publishing, optional Docker Hub mirroring, and lab GitOps promotion path. |
 
 ## Explicit Boundaries
