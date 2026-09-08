@@ -771,9 +771,30 @@ func (s *Server) deleteSquad(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	agents, err := s.store.ListAgents(r.Context(), squad.ID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	identities := make([]*domain.AgentIdentity, 0, len(agents))
+	for _, agent := range agents {
+		identity, err := s.store.GetAgentIdentity(r.Context(), agent.ID)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				continue
+			}
+			writeStorageError(w, err)
+			return
+		}
+		identities = append(identities, identity)
+	}
 	if err := s.store.DeleteSquad(r.Context(), squad.ID); err != nil {
 		writeStorageError(w, err)
 		return
+	}
+	for _, identity := range identities {
+		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.CredentialRef)
+		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.VirtualKeyRef)
 	}
 	s.recordUserAudit(r, "squad.delete", "squad", squad.ID, squad.ID, nil)
 	w.WriteHeader(http.StatusNoContent)
@@ -999,9 +1020,21 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Capture the credential refs before the row (and its cascaded identity
+	// rows) disappears, so the Kubernetes secrets can be cleaned up after.
+	identity, err := s.store.GetAgentIdentity(r.Context(), agent.ID)
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		writeStorageError(w, err)
+		return
+	}
 	if err := s.store.DeleteAgent(r.Context(), agent.ID); err != nil {
 		writeStorageError(w, err)
 		return
+	}
+	// Best-effort: an orphaned credential secret must not block the delete.
+	if identity != nil {
+		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.CredentialRef)
+		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.VirtualKeyRef)
 	}
 	s.recordUserAudit(r, "agent.delete", "agent", agent.ID, agent.SquadID, nil)
 	w.WriteHeader(http.StatusNoContent)

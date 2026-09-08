@@ -278,6 +278,11 @@ func (m *MemoryStore) DeleteSquad(_ context.Context, id string) error {
 	if !ok {
 		return ErrNotFound
 	}
+	for _, agent := range m.agents {
+		if agent.SquadID == id {
+			m.enqueueAgentOutboxLocked(domain.KubernetesOpDeleteAgent, agent)
+		}
+	}
 	m.enqueueSquadOutboxLocked(domain.KubernetesOpDeleteSquad, squad)
 	delete(m.squads, id)
 	if boardID, ok := m.boardsBySquad[id]; ok {
@@ -291,6 +296,10 @@ func (m *MemoryStore) DeleteSquad(_ context.Context, id string) error {
 	}
 	for agentID, agent := range m.agents {
 		if agent.SquadID == id {
+			if identityID, ok := m.identityAgent[agentID]; ok {
+				delete(m.identities, identityID)
+				delete(m.identityAgent, agentID)
+			}
 			delete(m.agents, agentID)
 		}
 	}
@@ -381,6 +390,10 @@ func (m *MemoryStore) DeleteAgent(_ context.Context, id string) error {
 	}
 	m.enqueueAgentOutboxLocked(domain.KubernetesOpDeleteAgent, agent)
 	delete(m.agents, id)
+	if identityID, ok := m.identityAgent[id]; ok {
+		delete(m.identities, identityID)
+		delete(m.identityAgent, id)
+	}
 	for _, task := range m.tasks {
 		if task.AssigneeAgentID == id {
 			task.AssigneeAgentID = ""

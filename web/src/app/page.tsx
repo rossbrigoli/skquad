@@ -471,6 +471,26 @@ export default function Home() {
     });
   }
 
+  async function deleteSquad(squadID: string) {
+    const squad = (squads.data || []).find((item) => item.id === squadID);
+    if (!window.confirm(`Delete squad "${squad?.name || squadID}" including its agents, tasks, chat history and access grants? This cannot be undone.`)) {
+      return;
+    }
+    await runAction("Squad deleted", async () => {
+      await apiDelete(`/squads/${squadID}`, token);
+    });
+  }
+
+  async function deleteAgent(agentID: string) {
+    const agent = (agents.data || []).find((item) => item.id === agentID);
+    if (!window.confirm(`Delete agent "${agent?.name || agentID}", unassign its tasks, and remove its chat history and credentials? This cannot be undone.`)) {
+      return;
+    }
+    await runAction("Agent deleted", async () => {
+      await apiDelete(`/agents/${agentID}`, token);
+    });
+  }
+
   async function sendChat(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedAgentID || chatDraft.trim() === "") {
@@ -634,6 +654,7 @@ export default function Home() {
                 selectedSquadID={selectedSquadID}
                 selectedSquad={selectedSquad}
                 onSelectSquad={setSelectedSquadID}
+                onDeleteSquad={deleteSquad}
                 newSquadForm={newSquadForm}
                 setNewSquadForm={setNewSquadForm}
                 onCreateSquad={submitSquad}
@@ -645,6 +666,7 @@ export default function Home() {
                 agents={agents}
                 selectedAgentID={selectedAgentID}
                 onSelectAgent={setSelectedAgentID}
+                onDeleteAgent={deleteAgent}
                 agentForm={agentForm}
                 setAgentForm={setAgentForm}
                 onCreateAgent={submitAgent}

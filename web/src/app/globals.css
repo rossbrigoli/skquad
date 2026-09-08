@@ -398,6 +398,16 @@ button {
   font-size: 0.82rem;
 }
 
+.danger {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.danger:hover {
+  border-color: var(--bad);
+  background: var(--bad-soft);
+}
+
 .button-row {
   display: flex;
   flex-wrap: wrap;

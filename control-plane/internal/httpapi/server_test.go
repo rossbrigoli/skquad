@@ -577,6 +577,59 @@ func TestSquadAndAgentMutationsWriteCustomResources(t *testing.T) {
 	}, outboxOperations(events))
 }
 
+func TestDeleteSquadDeletesAgentsAndCredentials(t *testing.T) {
+	t.Parallel()
+
+	store := storage.NewMemoryStore()
+	crWriter := &fakeCRWriter{}
+	handler := NewWithCRWriter(testConfig(), store, crWriter)
+
+	var squad domain.Squad
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+		"name": "Cleanup Squad",
+	}, http.StatusCreated, &squad)
+
+	var firstAgent domain.Agent
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
+		"name": "First",
+	}, http.StatusCreated, &firstAgent)
+	var firstIdentity domain.AgentIdentity
+	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+firstAgent.ID+"/identity", nil, http.StatusCreated, &firstIdentity)
+
+	var secondAgent domain.Agent
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
+		"name": "Second",
+	}, http.StatusCreated, &secondAgent)
+	var secondIdentity domain.AgentIdentity
+	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+secondAgent.ID+"/identity", nil, http.StatusCreated, &secondIdentity)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/squads/"+squad.ID, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	_, err := store.GetAgent(context.Background(), firstAgent.ID)
+	require.ErrorIs(t, err, storage.ErrNotFound)
+	_, err = store.GetAgentIdentity(context.Background(), firstAgent.ID)
+	require.ErrorIs(t, err, storage.ErrNotFound)
+
+	events, err := store.ListKubernetesOutbox(context.Background(), "", 20)
+	require.NoError(t, err)
+	ops := outboxOperations(events)
+	firstDelete := indexOf(ops, domain.KubernetesOpDeleteAgent+":"+firstAgent.ID)
+	secondDelete := indexOf(ops, domain.KubernetesOpDeleteAgent+":"+secondAgent.ID)
+	squadDelete := indexOf(ops, domain.KubernetesOpDeleteSquad+":"+squad.ID)
+	require.NotEqual(t, -1, firstDelete)
+	require.NotEqual(t, -1, secondDelete)
+	require.NotEqual(t, -1, squadDelete)
+	require.Less(t, firstDelete, squadDelete)
+	require.Less(t, secondDelete, squadDelete)
+	require.Contains(t, crWriter.deletedCredentialRefs, firstIdentity.CredentialRef)
+	require.Contains(t, crWriter.deletedCredentialRefs, firstIdentity.VirtualKeyRef)
+	require.Contains(t, crWriter.deletedCredentialRefs, secondIdentity.CredentialRef)
+	require.Contains(t, crWriter.deletedCredentialRefs, secondIdentity.VirtualKeyRef)
+}
+
 func TestAgentIdentityCreateAndRotate(t *testing.T) {
 	t.Parallel()
 
@@ -622,6 +675,13 @@ func TestAgentIdentityCreateAndRotate(t *testing.T) {
 	require.Empty(t, crWriter.ops)
 	require.Contains(t, crWriter.deletedCredentialRefs, identity.CredentialRef)
 	require.Contains(t, crWriter.deletedCredentialRefs, identity.VirtualKeyRef)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/agents/"+agent.ID, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	require.Contains(t, crWriter.deletedCredentialRefs, rotated.CredentialRef)
+	require.Contains(t, crWriter.deletedCredentialRefs, rotated.VirtualKeyRef)
 }
 
 func TestAgentIdentityProvisionsLiteLLMVirtualKey(t *testing.T) {
@@ -1825,6 +1885,15 @@ func outboxOperations(events []*domain.KubernetesOutboxEvent) []string {
 		operations = append(operations, event.Operation+":"+event.AggregateID)
 	}
 	return operations
+}
+
+func indexOf(values []string, needle string) int {
+	for i, value := range values {
+		if value == needle {
+			return i
+		}
+	}
+	return -1
 }
 
 type fakeCRWriter struct {

@@ -462,6 +462,33 @@ func (p *PostgresStore) DeleteSquad(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	rows, err := tx.Query(ctx, `
+		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
+		       coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
+		FROM agents
+		WHERE squad_id = $1
+		ORDER BY name
+	`, id)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	defer rows.Close()
+	var agents []*domain.Agent
+	for rows.Next() {
+		agent, err := scanAgent(rows)
+		if err != nil {
+			return err
+		}
+		agents = append(agents, agent)
+	}
+	if err := rows.Err(); err != nil {
+		return mapPgErr(err)
+	}
+	for _, agent := range agents {
+		if err := p.enqueueAgentOutboxTx(ctx, tx, domain.KubernetesOpDeleteAgent, agent); err != nil {
+			return err
+		}
+	}
 	if err := p.enqueueSquadOutboxTx(ctx, tx, domain.KubernetesOpDeleteSquad, squad); err != nil {
 		return err
 	}

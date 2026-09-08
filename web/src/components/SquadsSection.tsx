@@ -44,6 +44,7 @@ export function SquadsSection({
   selectedSquadID,
   selectedSquad,
   onSelectSquad,
+  onDeleteSquad,
   newSquadForm,
   setNewSquadForm,
   onCreateSquad,
@@ -78,6 +79,7 @@ export function SquadsSection({
   onMoveTask,
   onAssignTask,
   onDeleteTask,
+  onDeleteAgent,
   accessGrants,
   grantForm,
   setGrantForm,
@@ -91,6 +93,7 @@ export function SquadsSection({
   selectedSquadID: string;
   selectedSquad: Squad | null;
   onSelectSquad: (id: string) => void;
+  onDeleteSquad: (id: string) => void;
   newSquadForm: { name: string; mission: string };
   setNewSquadForm: (form: { name: string; mission: string }) => void;
   onCreateSquad: (event: FormEvent<HTMLFormElement>) => void;
@@ -125,6 +128,7 @@ export function SquadsSection({
   onMoveTask: (taskID: string, status: TaskStatus) => void;
   onAssignTask: (taskID: string, assigneeAgentID: string) => void;
   onDeleteTask: (taskID: string) => void;
+  onDeleteAgent: (id: string) => void;
   accessGrants: ApiState<AccessGrant[]>;
   grantForm: { grantee_type: "user" | "agent"; grantee_id: string; permissions: string };
   setGrantForm: (form: { grantee_type: "user" | "agent"; grantee_id: string; permissions: string }) => void;
@@ -162,6 +166,7 @@ export function SquadsSection({
                     <th>Status</th>
                     <th>Namespace</th>
                     <th>Mission</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -178,6 +183,18 @@ export function SquadsSection({
                       <td>{squad.status || "active"}</td>
                       <td>{squad.namespace || "-"}</td>
                       <td>{squad.mission || "-"}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="secondary small danger"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onDeleteSquad(squad.id);
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -233,6 +250,7 @@ export function SquadsSection({
               agents={agents}
               selectedAgentID={selectedAgentID}
               onSelectAgent={onSelectAgent}
+              onDeleteAgent={onDeleteAgent}
               agentForm={agentForm}
               setAgentForm={setAgentForm}
               onCreateAgent={onCreateAgent}
@@ -332,6 +350,7 @@ function AgentsTab({
   resources,
   onGrantPermission,
   onRevokePermission,
+  onDeleteAgent,
   agentCosts,
 }: {
   agents: ApiState<Agent[]>;
@@ -353,6 +372,7 @@ function AgentsTab({
   resources: ApiState<RegistryResource[]>;
   onGrantPermission: (event: FormEvent<HTMLFormElement>) => void;
   onRevokePermission: (permission: AgentPermission) => void;
+  onDeleteAgent: (id: string) => void;
   agentCosts: Record<string, MeteringSummary>;
 }) {
   const agentItems = agents.data || [];
@@ -413,6 +433,7 @@ function AgentsTab({
                   <th>Model</th>
                   <th>Cost</th>
                   <th>Identity</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -436,6 +457,18 @@ function AgentsTab({
                           Rotate
                         </button>
                       </div>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="secondary small danger"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onDeleteAgent(agent.id);
+                        }}
+                      >
+                        Delete
+                      </button>
                     </td>
                   </tr>
                 ))}
