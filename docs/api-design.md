@@ -184,6 +184,11 @@ blocks and via `notify-owner`. Agents cannot forge `task_completed`.
 
 ## 9. Resource Registry
 
+> The web UI presents this as **Resources**; API routes remain `/registry/*`.
+> Listing is readable by every authenticated user, registration/update/
+> deprecation are platform-admin only, and the UI hides write actions from
+> non-admins (read-only catalog).
+
 > **Registration** is platform-admin only. **Granting** is squad-owner only.
 
 ### 9.1 LLM Providers

@@ -751,6 +751,7 @@ export default function Home() {
                 onCreateResource={submitResource}
                 onDeprecateProvider={deprecateProvider}
                 onDeprecateResource={deprecateResource}
+                isAdmin={isAdmin}
               />
             )}
 
@@ -788,7 +789,7 @@ function sectionTitle(section: Section) {
   return {
     inbox: "Inbox",
     squads: "Squads",
-    registry: "Registry",
+    registry: "Resources",
     admin: "Admin",
   }[section];
 }

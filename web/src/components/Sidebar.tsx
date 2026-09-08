@@ -48,7 +48,7 @@ export function Sidebar({
         className={activeSection === "registry" ? "nav-item active" : "nav-item"}
         onClick={() => onSelectSection("registry")}
       >
-        Registry
+        Resources
       </button>
       {activeSection === "registry" && (
         <div className="subnav">

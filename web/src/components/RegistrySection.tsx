@@ -25,6 +25,7 @@ export function RegistrySection({
   onCreateResource,
   onDeprecateProvider,
   onDeprecateResource,
+  isAdmin,
 }: {
   registrySub: RegistrySubsection;
   providers: ApiState<LLMProvider[]>;
@@ -37,6 +38,7 @@ export function RegistrySection({
   onCreateResource: (event: FormEvent<HTMLFormElement>) => void;
   onDeprecateProvider: (id: string) => void;
   onDeprecateResource: (resource: RegistryResource) => void;
+  isAdmin: boolean;
 }) {
   const label = registrySubsections.find((item) => item.id === registrySub)?.label || "";
 
@@ -44,6 +46,7 @@ export function RegistrySection({
     const providerItems = providers.data || [];
     return (
       <div className="workflow-grid">
+        {isAdmin && (
         <form className="form-panel" onSubmit={onCreateProvider}>
           <h3>Register LLM Provider</h3>
           <label>
@@ -72,9 +75,10 @@ export function RegistrySection({
           </label>
           <button type="submit">Register Provider</button>
         </form>
+        )}
 
         <div className="span-2">
-          <h3 className="panel-title">Provider Catalog</h3>
+          <h3 className="panel-title">Provider Catalog{isAdmin ? "" : " (read-only)"}</h3>
           <StateNotice state={providers} empty="No providers registered" />
           {providerItems.length > 0 && (
             <div className="table-wrap">
@@ -85,7 +89,7 @@ export function RegistrySection({
                     <th>Kind</th>
                     <th>Model</th>
                     <th>Status</th>
-                    <th />
+                    {isAdmin && <th />}
                   </tr>
                 </thead>
                 <tbody>
@@ -98,11 +102,13 @@ export function RegistrySection({
                       <td>{provider.kind}</td>
                       <td>{provider.default_model || "-"}</td>
                       <td>{provider.status}</td>
-                      <td>
-                        <button type="button" className="secondary small" onClick={() => onDeprecateProvider(provider.id)}>
-                          Deprecate
-                        </button>
-                      </td>
+                      {isAdmin && (
+                        <td>
+                          <button type="button" className="secondary small" onClick={() => onDeprecateProvider(provider.id)}>
+                            Deprecate
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -120,6 +126,7 @@ export function RegistrySection({
 
   return (
     <div className="workflow-grid">
+      {isAdmin && (
       <form className="form-panel" onSubmit={onCreateResource}>
         <h3>Register {singular(label)}</h3>
         <label>
@@ -144,9 +151,10 @@ export function RegistrySection({
         </label>
         <button type="submit">Register</button>
       </form>
+      )}
 
       <div className="span-2">
-        <h3 className="panel-title">{label} Catalog</h3>
+        <h3 className="panel-title">{label} Catalog{isAdmin ? "" : " (read-only)"}</h3>
         <StateNotice state={filteredState} empty={`No ${label.toLowerCase()} registered`} />
         {typeItems.length > 0 && (
           <div className="table-wrap">
@@ -156,7 +164,7 @@ export function RegistrySection({
                   <th>Name</th>
                   <th>Endpoint</th>
                   <th>Status</th>
-                  <th />
+                  {isAdmin && <th />}
                 </tr>
               </thead>
               <tbody>
@@ -168,11 +176,13 @@ export function RegistrySection({
                     </td>
                     <td>{resource.endpoint || "-"}</td>
                     <td>{resource.status}</td>
-                    <td>
-                      <button type="button" className="secondary small" onClick={() => onDeprecateResource(resource)}>
-                        Deprecate
-                      </button>
-                    </td>
+                    {isAdmin && (
+                      <td>
+                        <button type="button" className="secondary small" onClick={() => onDeprecateResource(resource)}>
+                          Deprecate
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
