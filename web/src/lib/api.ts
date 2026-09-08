@@ -92,6 +92,17 @@ export type Message = {
   delivered_at?: string;
 };
 
+export type InboxMessage = {
+  id: string;
+  squad_id: string;
+  from_agent_id?: string;
+  task_id?: string;
+  kind: "task_completed" | "action_required";
+  message: string;
+  read_at?: string;
+  created_at: string;
+};
+
 export type ResourceType = "llm_provider" | "skill" | "tool" | "api" | "knowledge_base" | "project_workspace";
 
 export type LLMProvider = {

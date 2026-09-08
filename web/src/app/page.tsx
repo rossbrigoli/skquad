@@ -13,6 +13,7 @@ import {
   BoardPayload,
   LLMProvider,
   MeteringSummary,
+  InboxMessage,
   Message,
   RegistryResource,
   ResourceType,
@@ -31,6 +32,7 @@ import { RegistrySubsection, Section, Sidebar } from "../components/Sidebar";
 import { SquadTab, SquadsSection } from "../components/SquadsSection";
 import { RegistrySection } from "../components/RegistrySection";
 import { AdminSection } from "../components/AdminSection";
+import { InboxSection } from "../components/InboxSection";
 import { registryTypes } from "../components/shared";
 
 const emptyState = {
@@ -45,6 +47,7 @@ export default function Home() {
   const [token, setToken] = useState("");
   const [draftToken, setDraftToken] = useState("");
   const [activeSection, setActiveSection] = useState<Section>("squads");
+  const [inbox, setInbox] = useState<ApiState<InboxMessage[]>>({ data: [], loading: false, error: "" });
   const [registrySub, setRegistrySub] = useState<RegistrySubsection>("llm-providers");
   const [squadTab, setSquadTab] = useState<SquadTab>("overview");
   const [selectedSquadID, setSelectedSquadID] = useState("");
@@ -195,6 +198,31 @@ export default function Home() {
       }
     };
   }, [selectedAgentID, token, refreshTick]);
+
+  // The inbox badge lives in the sidebar, so it loads regardless of section
+  // and refreshes on a gentle interval to catch agent notifications arriving.
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      apiGet<InboxMessage[]>("/inbox", token).then(
+        (items) => {
+          if (!cancelled) {
+            setInbox({ data: items, loading: false, error: "" });
+          }
+        },
+        (error) => {
+          if (!cancelled) {
+            setInbox((current) => ({ data: current.data ?? [], loading: false, error: errorState(error).error }));
+          }
+        },
+      );
+    load();
+    const timer = window.setInterval(load, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [token, refreshTick]);
 
   useEffect(() => {
     if (activeSection !== "registry" && activeSection !== "squads") {
@@ -491,6 +519,12 @@ export default function Home() {
     });
   }
 
+  async function markInboxRead(messageID: string) {
+    await runAction("Notification marked read", async () => {
+      await apiPost<InboxMessage>(`/inbox/${messageID}/read`, token, {});
+    });
+  }
+
   async function sendChat(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedAgentID || chatDraft.trim() === "") {
@@ -628,6 +662,7 @@ export default function Home() {
       <div className="app-body">
         <Sidebar
           activeSection={activeSection}
+          inboxUnread={(inbox.data || []).filter((item) => !item.read_at).length}
           onSelectSection={setActiveSection}
           registrySub={registrySub}
           onSelectRegistrySub={setRegistrySub}
@@ -647,6 +682,8 @@ export default function Home() {
 
           <section className="content-band">
             {actionMessage && <div className={actionMessage.includes(":") ? "notice error compact" : "notice good compact"}>{actionMessage}</div>}
+
+            {activeSection === "inbox" && <InboxSection inbox={inbox} onMarkRead={markInboxRead} />}
 
             {activeSection === "squads" && (
               <SquadsSection
@@ -749,6 +786,7 @@ function errorState<T>(reason: unknown, fallback: T | null = null): ApiState<T> 
 
 function sectionTitle(section: Section) {
   return {
+    inbox: "Inbox",
     squads: "Squads",
     registry: "Registry",
     admin: "Admin",

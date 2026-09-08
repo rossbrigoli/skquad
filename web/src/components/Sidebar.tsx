@@ -1,6 +1,6 @@
 "use client";
 
-export type Section = "squads" | "registry" | "admin";
+export type Section = "inbox" | "squads" | "registry" | "admin";
 export type RegistrySubsection = "llm-providers" | "skills" | "tools" | "apis" | "knowledge-bases" | "project-workspaces";
 
 export const registrySubsections: Array<{ id: RegistrySubsection; label: string }> = [
@@ -18,15 +18,24 @@ export function Sidebar({
   registrySub,
   onSelectRegistrySub,
   showAdmin,
+  inboxUnread = 0,
 }: {
   activeSection: Section;
   onSelectSection: (section: Section) => void;
   registrySub: RegistrySubsection;
   onSelectRegistrySub: (sub: RegistrySubsection) => void;
   showAdmin: boolean;
+  inboxUnread?: number;
 }) {
   return (
     <aside className="sidebar" aria-label="Primary navigation">
+      <button
+        type="button"
+        className={activeSection === "inbox" ? "nav-item active" : "nav-item"}
+        onClick={() => onSelectSection("inbox")}
+      >
+        Inbox{inboxUnread > 0 ? ` · ${inboxUnread}` : ""}
+      </button>
       <button
         type="button"
         className={activeSection === "squads" ? "nav-item active" : "nav-item"}

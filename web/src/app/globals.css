@@ -408,6 +408,31 @@ button {
   background: var(--bad-soft);
 }
 
+.inbox-unread {
+  border-left: 3px solid var(--accent);
+}
+
+.inbox-read {
+  opacity: 0.65;
+}
+
+.inbox-kind {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 0.75rem;
+}
+
+.inbox-kind.done {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.inbox-kind.action {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
 .button-row {
   display: flex;
   flex-wrap: wrap;

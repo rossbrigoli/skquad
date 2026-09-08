@@ -165,6 +165,23 @@ creation for `delegate`/`handoff` is tracked as a later workflow slice.
 
 ---
 
+## 8a. Inbox (owner notifications)
+
+The inbox is owner-facing: it only contains notifications addressed to the
+squad owner, not the full agent chat/message traffic.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/inbox?unread=true&limit=N` | List the caller's inbox messages, newest first (limit 1–200, default 100) |
+| `POST` | `/inbox/{messageID}/read` | Mark a notification read (idempotent) |
+| `POST` | `/agents/me/notify-owner` | Agent asks the squad owner for an action, e.g. approval to proceed (`{"message": "..."}`) |
+
+Kinds: `task_completed` is emitted by the control plane when an agent completes a
+task (moves it to `in-review`/`done`); `action_required` is emitted when a task
+blocks and via `notify-owner`. Agents cannot forge `task_completed`.
+
+---
+
 ## 9. Resource Registry
 
 > **Registration** is platform-admin only. **Granting** is squad-owner only.

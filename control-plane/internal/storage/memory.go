@@ -46,6 +46,7 @@ type MemoryStore struct {
 	taskExecs     map[string]*domain.TaskExecution
 	agentMemory   map[string]*domain.AgentMemory
 	messages      map[string]*domain.Message
+	inbox         map[string]*domain.InboxMessage
 	k8sOutbox     map[string]*domain.KubernetesOutboxEvent
 }
 
@@ -71,6 +72,7 @@ func NewMemoryStore() *MemoryStore {
 		taskExecs:     map[string]*domain.TaskExecution{},
 		agentMemory:   map[string]*domain.AgentMemory{},
 		messages:      map[string]*domain.Message{},
+		inbox:         map[string]*domain.InboxMessage{},
 		k8sOutbox:     map[string]*domain.KubernetesOutboxEvent{},
 	}
 }
@@ -1625,6 +1627,66 @@ func cloneAgentMemory(memory *domain.AgentMemory) *domain.AgentMemory {
 	v.Metadata = slices.Clone(memory.Metadata)
 	v.Embedding = slices.Clone(memory.Embedding)
 	return &v
+}
+
+func (m *MemoryStore) CreateInboxMessage(_ context.Context, msg *domain.InboxMessage) (*domain.InboxMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.users[msg.UserID]; !ok {
+		return nil, ErrNotFound
+	}
+	if _, ok := m.squads[msg.SquadID]; !ok {
+		return nil, ErrNotFound
+	}
+	created := *msg
+	created.ID = uuid.NewString()
+	if created.Kind == "" {
+		created.Kind = domain.InboxActionRequired
+	}
+	created.CreatedAt = time.Now().UTC()
+	m.inbox[created.ID] = &created
+	copyMsg := created
+	return &copyMsg, nil
+}
+
+func (m *MemoryStore) ListInboxMessages(_ context.Context, userID string, unreadOnly bool, limit int) ([]*domain.InboxMessage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	out := []*domain.InboxMessage{}
+	for _, msg := range m.inbox {
+		if msg.UserID != userID {
+			continue
+		}
+		if unreadOnly && !msg.ReadAt.IsZero() {
+			continue
+		}
+		copyMsg := *msg
+		out = append(out, &copyMsg)
+	}
+	slices.SortFunc(out, func(a, b *domain.InboxMessage) int {
+		return b.CreatedAt.Compare(a.CreatedAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) MarkInboxMessageRead(_ context.Context, userID string, id string) (*domain.InboxMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	msg, ok := m.inbox[id]
+	if !ok || msg.UserID != userID {
+		return nil, ErrNotFound
+	}
+	if msg.ReadAt.IsZero() {
+		msg.ReadAt = time.Now().UTC()
+	}
+	copyMsg := *msg
+	return &copyMsg, nil
 }
 
 func cloneMessage(m *domain.Message) *domain.Message {

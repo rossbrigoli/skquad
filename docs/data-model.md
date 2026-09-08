@@ -301,6 +301,26 @@ Current implementation note: the embedded migration creates this durable inbox
 schema, and the control plane exposes enqueue, retry-due inbox listing,
 acknowledgement, failure reporting, expiry, and dead-letter transitions.
 
+### inbox_messages (owner notifications, migration 0006)
+
+```sql
+CREATE TABLE inbox_messages (
+    id            uuid PRIMARY KEY,
+    squad_id      uuid NOT NULL REFERENCES squads(id) ON DELETE CASCADE,
+    user_id       uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    from_agent_id uuid REFERENCES agents(id) ON DELETE SET NULL,
+    task_id       uuid REFERENCES tasks(id) ON DELETE SET NULL,
+    kind          text CHECK (kind IN ('task_completed','action_required')),
+    message       text NOT NULL DEFAULT '',
+    read_at       timestamptz,
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+```
+
+Rows are created server-side: automatically on task completion/blocking, or
+when an agent calls `POST /agents/me/notify-owner`. They are visible only to
+the addressed `user_id`.
+
 ---
 
 ## 7. Audit Log

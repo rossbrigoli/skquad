@@ -45,6 +45,7 @@ type Store interface {
 	storage.TaskStore
 	storage.AgentMemoryStore
 	storage.MessageStore
+	storage.InboxStore
 	storage.WorkNotificationStore
 }
 
@@ -132,6 +133,7 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/messages", s.listCurrentAgentMessages)
 			r.Get("/messages/history", s.listCurrentAgentMessageHistory)
 			r.Post("/messages", s.createCurrentAgentMessage)
+			r.Post("/notify-owner", s.notifyOwnerFromAgent)
 			r.Post("/messages/{messageID}/ack", s.ackCurrentAgentMessage)
 			r.Post("/messages/{messageID}/fail", s.failCurrentAgentMessage)
 			r.Get("/work/wait", s.waitCurrentAgentWork)
@@ -147,6 +149,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Use(s.authenticate)
 
 			r.Get("/auth/me", s.me)
+
+			r.Get("/inbox", s.listInbox)
+			r.Post("/inbox/{messageID}/read", s.markInboxRead)
 
 			r.Post("/squads", s.createSquad)
 			r.Get("/squads", s.listSquads)
@@ -1038,6 +1043,98 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordUserAudit(r, "agent.delete", "agent", agent.ID, agent.SquadID, nil)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+const maxInboxMessageChars = 2000
+
+// notifySquadOwner files an owner-facing inbox notification. It is best-effort
+// by design: a notification failure must never fail the underlying task flow.
+func (s *Server) notifySquadOwner(ctx context.Context, squadID string, kind domain.InboxKind, fromAgentID string, taskID string, message string) {
+	squad, err := s.store.GetSquad(ctx, squadID)
+	if err != nil || squad.OwnerID == "" {
+		return
+	}
+	_, _ = s.store.CreateInboxMessage(ctx, &domain.InboxMessage{
+		SquadID:     squadID,
+		UserID:      squad.OwnerID,
+		FromAgentID: fromAgentID,
+		TaskID:      taskID,
+		Kind:        kind,
+		Message:     trimRunes(strings.TrimSpace(message), maxInboxMessageChars),
+	})
+}
+
+func (s *Server) listInbox(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r.Context())
+	unreadOnly := r.URL.Query().Get("unread") == "true"
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 200 {
+			writeError(w, http.StatusBadRequest, "bad_request", "limit must be between 1 and 200")
+			return
+		}
+		limit = n
+	}
+	messages, err := s.store.ListInboxMessages(r.Context(), u.ID, unreadOnly, limit)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, messages)
+}
+
+func (s *Server) markInboxRead(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r.Context())
+	updated, err := s.store.MarkInboxMessageRead(r.Context(), u.ID, chi.URLParam(r, "messageID"))
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// notifyOwnerFromAgent lets an agent ask the squad owner for an action (for
+// example approval to proceed). task_completed is server-emitted only.
+func (s *Server) notifyOwnerFromAgent(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Message string `json:"message"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	message := trimRunes(strings.TrimSpace(req.Message), maxInboxMessageChars)
+	if message == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "message is required")
+		return
+	}
+	principal := currentAgent(r.Context())
+	squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if squad.OwnerID == "" {
+		writeError(w, http.StatusNotFound, "not_found", "squad owner not found for notification")
+		return
+	}
+	created, err := s.store.CreateInboxMessage(r.Context(), &domain.InboxMessage{
+		SquadID:     principal.Agent.SquadID,
+		UserID:      squad.OwnerID,
+		FromAgentID: principal.Agent.ID,
+		Kind:        domain.InboxActionRequired,
+		Message:     message,
+	})
+	if errors.Is(err, storage.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "squad owner not found for notification")
+		return
+	}
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	s.recordAgentAudit(r, principal.Agent.ID, "inbox.notify_owner", "inbox_message", created.ID, principal.Agent.SquadID, nil)
+	writeJSON(w, http.StatusCreated, created)
 }
 
 func (s *Server) createAgentIdentity(w http.ResponseWriter, r *http.Request) {
@@ -2006,6 +2103,8 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.recordAgentAudit(r, principal.Agent.ID, "task.complete", "task", updated.ID, updated.SquadID, nil)
+	s.notifySquadOwner(r.Context(), updated.SquadID, domain.InboxTaskCompleted, principal.Agent.ID, updated.ID,
+		fmt.Sprintf("Agent %s moved task %q to %s", principal.Agent.Name, updated.Title, req.Status))
 	if req.PersistMemory && strings.TrimSpace(req.Summary) != "" {
 		metadata, err := json.Marshal(map[string]any{
 			"kind":         "task_completion",
@@ -2069,6 +2168,12 @@ func (s *Server) blockCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordAgentAudit(r, principal.Agent.ID, "task.block", "task", updated.ID, updated.SquadID, nil)
+	blockNote := strings.TrimSpace(req.Summary)
+	if blockNote != "" {
+		blockNote = ": " + blockNote
+	}
+	s.notifySquadOwner(r.Context(), updated.SquadID, domain.InboxActionRequired, principal.Agent.ID, updated.ID,
+		fmt.Sprintf("Agent %s blocked task %q%s", principal.Agent.Name, updated.Title, blockNote))
 	writeJSON(w, http.StatusOK, updated)
 }
 

@@ -1867,6 +1867,61 @@ func (p *PostgresStore) FailMessage(ctx context.Context, agentID string, message
 	return scanMessage(row)
 }
 
+func (p *PostgresStore) CreateInboxMessage(ctx context.Context, msg *domain.InboxMessage) (*domain.InboxMessage, error) {
+	kind := msg.Kind
+	if kind == "" {
+		kind = domain.InboxActionRequired
+	}
+	row := p.pool.QueryRow(ctx, `
+		INSERT INTO inbox_messages (squad_id, user_id, from_agent_id, task_id, kind, message)
+		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6)
+		RETURNING id::text, squad_id::text, user_id::text, coalesce(from_agent_id::text, ''),
+		          coalesce(task_id::text, ''), kind, message, read_at, created_at
+	`, msg.SquadID, msg.UserID, msg.FromAgentID, msg.TaskID, kind, msg.Message)
+	return scanInboxMessage(row)
+}
+
+func (p *PostgresStore) ListInboxMessages(ctx context.Context, userID string, unreadOnly bool, limit int) ([]*domain.InboxMessage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT id::text, squad_id::text, user_id::text, coalesce(from_agent_id::text, ''),
+		       coalesce(task_id::text, ''), kind, message, read_at, created_at
+		FROM inbox_messages
+		WHERE user_id = $1 AND ($2::boolean OR read_at IS NULL)
+		ORDER BY created_at DESC
+		LIMIT $3
+	`, userID, unreadOnly, limit)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+	var out []*domain.InboxMessage
+	for rows.Next() {
+		msg, err := scanInboxMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return out, nil
+}
+
+func (p *PostgresStore) MarkInboxMessageRead(ctx context.Context, userID string, id string) (*domain.InboxMessage, error) {
+	row := p.pool.QueryRow(ctx, `
+		UPDATE inbox_messages
+		SET read_at = COALESCE(read_at, now())
+		WHERE id = $1 AND user_id = $2
+		RETURNING id::text, squad_id::text, user_id::text, coalesce(from_agent_id::text, ''),
+		          coalesce(task_id::text, ''), kind, message, read_at, created_at
+	`, id, userID)
+	return scanInboxMessage(row)
+}
+
 func (p *PostgresStore) WaitForAgentWork(ctx context.Context, agentID string, timeout time.Duration) (bool, error) {
 	conn, err := p.pool.Acquire(ctx)
 	if err != nil {
@@ -2239,6 +2294,28 @@ func scanMessage(row scanner) (*domain.Message, error) {
 	}
 	if deliveredAt.Valid {
 		msg.DeliveredAt = deliveredAt.Time
+	}
+	return &msg, nil
+}
+
+func scanInboxMessage(row scanner) (*domain.InboxMessage, error) {
+	var msg domain.InboxMessage
+	var readAt sql.NullTime
+	if err := row.Scan(
+		&msg.ID,
+		&msg.SquadID,
+		&msg.UserID,
+		&msg.FromAgentID,
+		&msg.TaskID,
+		&msg.Kind,
+		&msg.Message,
+		&readAt,
+		&msg.CreatedAt,
+	); err != nil {
+		return nil, mapPgErr(err)
+	}
+	if readAt.Valid {
+		msg.ReadAt = readAt.Time
 	}
 	return &msg, nil
 }

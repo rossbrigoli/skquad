@@ -275,6 +275,35 @@ type Message struct {
 	DeliveredAt    time.Time       `json:"delivered_at,omitempty"`
 }
 
+// InboxKind classifies owner-facing notifications.
+type InboxKind string
+
+const (
+	// InboxTaskCompleted is emitted by the control plane when an agent moves a
+	// task to in-review/done. Agents cannot forge it via the notify endpoint.
+	InboxTaskCompleted InboxKind = "task_completed"
+	// InboxActionRequired is emitted when a task blocks and agents may request
+	// it explicitly (e.g. approval to proceed).
+	InboxActionRequired InboxKind = "action_required"
+)
+
+// InboxMessage is a notification addressed to a squad owner, not part of the
+// agent-to-agent message queue.
+type InboxMessage struct {
+	ID          string    `json:"id"`
+	SquadID     string    `json:"squad_id"`
+	UserID      string    `json:"user_id"`
+	FromAgentID string    `json:"from_agent_id,omitempty"`
+	TaskID      string    `json:"task_id,omitempty"`
+	Kind        InboxKind `json:"kind"`
+	Message     string    `json:"message"`
+	ReadAt      time.Time `json:"read_at,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// IsRead reports whether the owner has acknowledged the notification.
+func (m *InboxMessage) IsRead() bool { return !m.ReadAt.IsZero() }
+
 // Board is a squad's Kanban board (one per squad).
 type Board struct {
 	ID        string    `json:"id"`

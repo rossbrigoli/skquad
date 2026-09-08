@@ -123,6 +123,14 @@ type MessageStore interface {
 	FailMessage(ctx context.Context, agentID string, messageID string, reason string) (*domain.Message, error)
 }
 
+// InboxStore persists owner-facing notifications (task completions, action
+// requests). Visibility is scoped to the addressed user.
+type InboxStore interface {
+	CreateInboxMessage(ctx context.Context, msg *domain.InboxMessage) (*domain.InboxMessage, error)
+	ListInboxMessages(ctx context.Context, userID string, unreadOnly bool, limit int) ([]*domain.InboxMessage, error)
+	MarkInboxMessageRead(ctx context.Context, userID string, id string) (*domain.InboxMessage, error)
+}
+
 // WorkNotificationStore lets runtimes wait for assigned task or inbox changes
 // without polling the control plane on a fixed interval.
 type WorkNotificationStore interface {
