@@ -1098,3 +1098,32 @@ tr:last-child td {
     flex-basis: 100%;
   }
 }
+
+/* --- Squad LLM --- */
+
+.notice.warn {
+  border-color: #ecd9a0;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.field-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.form-panel button:disabled,
+.form-panel button:disabled:hover {
+  border-color: var(--line-strong);
+  background: var(--line);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.notice > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
