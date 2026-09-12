@@ -350,6 +350,9 @@ button {
 .form-panel input,
 .form-panel select,
 .form-panel textarea,
+.modal-body input,
+.modal-body select,
+.modal-body textarea,
 .task-card select {
   width: 100%;
   min-height: 38px;
@@ -360,7 +363,8 @@ button {
   color: var(--text);
 }
 
-.form-panel textarea {
+.form-panel textarea,
+.modal-body textarea {
   resize: vertical;
 }
 
@@ -591,6 +595,7 @@ tr:last-child td {
 }
 
 .form-panel label,
+.modal-body label,
 .task-card label {
   display: grid;
   gap: 5px;
@@ -1126,4 +1131,185 @@ tr:last-child td {
 .notice > button {
   flex-shrink: 0;
   white-space: nowrap;
+}
+
+/* --- Create-form modals --- */
+
+.primary {
+  min-height: 38px;
+  border: 1px solid var(--accent-strong);
+  border-radius: 6px;
+  padding: 0 14px;
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.primary:hover {
+  background: var(--accent-strong);
+}
+
+.primary:disabled,
+.primary:disabled:hover,
+.secondary:disabled,
+.secondary:disabled:hover {
+  border-color: var(--line-strong);
+  background: var(--line);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.section-stack {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  margin-top: 16px;
+}
+
+.section-stack > .notice,
+.section-stack > .table-wrap,
+.section-stack > .board-grid,
+.split-grid > section > .notice {
+  margin-top: 0;
+}
+
+.section-stack > .filter-bar {
+  margin-bottom: 0;
+}
+
+.list-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.list-head .panel-title {
+  margin: 0;
+}
+
+.list-detail {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.split-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.split-grid > section {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+html:has(.modal[open]) {
+  overflow: hidden;
+}
+
+.modal {
+  width: min(560px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 64px rgba(29, 36, 51, 0.24);
+}
+
+.modal::backdrop {
+  background: rgba(29, 36, 51, 0.45);
+}
+
+.modal-card {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.modal-close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.4rem;
+  line-height: 1;
+}
+
+.modal-close:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.modal-body {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+
+.modal-body .notice {
+  margin-top: 0;
+}
+
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 12px 12px;
+  background: var(--panel-soft);
+}
+
+@media (max-width: 900px) {
+  .split-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Below tablet width the dialog becomes a bottom sheet. */
+  .modal {
+    width: 100vw;
+    max-height: 92vh;
+    margin: auto 0 0;
+    border-radius: 12px 12px 0 0;
+  }
+
+  .modal-card {
+    max-height: 92vh;
+  }
 }

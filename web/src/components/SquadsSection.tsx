@@ -22,6 +22,7 @@ import {
   SquadLLMStatus,
   StateNotice,
   agentUsesSquadLLM,
+  countLabel,
   formatCost,
   formatRelativeTime,
   leaseState,
@@ -34,6 +35,7 @@ import {
   resourceLabel,
   taskStatuses,
 } from "./shared";
+import { ListHeader, Modal, useModalForm } from "./Modal";
 import { SquadCockpit } from "./SquadCockpit";
 
 export type SquadTab = "overview" | "agents" | "tasks" | "grants";
@@ -105,7 +107,7 @@ export function SquadsSection({
   onDeleteSquad: (id: string) => void;
   newSquadForm: { name: string; mission: string; provider_id: string; model: string };
   setNewSquadForm: (form: { name: string; mission: string; provider_id: string; model: string }) => void;
-  onCreateSquad: (event: FormEvent<HTMLFormElement>) => void;
+  onCreateSquad: () => Promise<string | null>;
   missionDraft: string;
   setMissionDraft: (value: string) => void;
   squadLLMDraft: SquadLLM;
@@ -119,7 +121,7 @@ export function SquadsSection({
   onSelectAgent: (id: string) => void;
   agentForm: { name: string; role: string; system_prompt: string; default_model: string; idle_timeout_sec: string };
   setAgentForm: (form: { name: string; role: string; system_prompt: string; default_model: string; idle_timeout_sec: string }) => void;
-  onCreateAgent: (event: FormEvent<HTMLFormElement>) => void;
+  onCreateAgent: () => Promise<string | null>;
   onCreateIdentity: (id: string) => void;
   onRotateIdentity: (id: string) => void;
   chat: ApiState<Message[]>;
@@ -131,12 +133,12 @@ export function SquadsSection({
   setPermissionForm: (form: { resource_type: ResourceType; resource_id: string }) => void;
   providers: ApiState<LLMProvider[]>;
   resources: ApiState<RegistryResource[]>;
-  onGrantPermission: (event: FormEvent<HTMLFormElement>) => void;
+  onGrantPermission: () => Promise<string | null>;
   onRevokePermission: (permission: AgentPermission) => void;
   board: ApiState<BoardPayload>;
   taskForm: { title: string; description: string; assignee_agent_id: string };
   setTaskForm: (form: { title: string; description: string; assignee_agent_id: string }) => void;
-  onCreateTask: (event: FormEvent<HTMLFormElement>) => void;
+  onCreateTask: () => Promise<string | null>;
   onMoveTask: (taskID: string, status: TaskStatus) => void;
   onAssignTask: (taskID: string, assigneeAgentID: string) => void;
   onDeleteTask: (taskID: string) => void;
@@ -144,7 +146,7 @@ export function SquadsSection({
   accessGrants: ApiState<AccessGrant[]>;
   grantForm: { grantee_type: "user" | "agent"; grantee_id: string; permissions: string };
   setGrantForm: (form: { grantee_type: "user" | "agent"; grantee_id: string; permissions: string }) => void;
-  onCreateGrant: (event: FormEvent<HTMLFormElement>) => void;
+  onCreateGrant: () => Promise<string | null>;
   onRevokeGrant: (id: string) => void;
   squadMetering: ApiState<MeteringSummary>;
   squadAudit: ApiState<AuditEntry[]>;
@@ -153,77 +155,80 @@ export function SquadsSection({
   const squadItems = squads.data || [];
   const providerItems = providers.data || [];
   const llmStatus = resolveSquadLLM(selectedSquad, providerItems);
+  const squadModal = useModalForm(onCreateSquad);
+  const grantModal = useModalForm(onCreateGrant);
   return (
     <>
-      <div className="workflow-grid">
-        <form className="form-panel" onSubmit={onCreateSquad}>
-          <h3>Create Squad</h3>
-          <label>
-            Name
-            <input value={newSquadForm.name} onChange={(event) => setNewSquadForm({ ...newSquadForm, name: event.target.value })} required />
-          </label>
-          <label>
-            Mission
-            <textarea value={newSquadForm.mission} onChange={(event) => setNewSquadForm({ ...newSquadForm, mission: event.target.value })} rows={4} />
-          </label>
-          <LLMPicker
-            providers={providerItems}
-            loading={providers.loading}
-            value={{ provider_id: newSquadForm.provider_id, model: newSquadForm.model }}
-            onChange={(llm) => setNewSquadForm({ ...newSquadForm, provider_id: llm.provider_id, model: llm.model })}
-            required
-          />
-          <button type="submit">Create</button>
-        </form>
-
-        <div className="span-2">
-          <StateNotice state={squads} empty="No squads yet" />
-          {squadItems.length > 0 && (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Status</th>
-                    <th>Namespace</th>
-                    <th>Mission</th>
-                    <th>Actions</th>
+      <div className="section-stack">
+        <ListHeader title="Squads" detail={countLabel(squadItems.length, "squad")}>
+          <button type="button" className="primary" onClick={squadModal.show}>
+            + New squad
+          </button>
+        </ListHeader>
+        <StateNotice state={squads} empty="No squads yet" />
+        {squadItems.length > 0 && (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Status</th>
+                  <th>Namespace</th>
+                  <th>Mission</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {squadItems.map((squad) => (
+                  <tr
+                    key={squad.id}
+                    className={squad.id === selectedSquadID ? "selected-row" : ""}
+                    onClick={() => onSelectSquad(squad.id)}
+                  >
+                    <td>
+                      <strong>{squad.name}</strong>
+                      <small>{squad.id}</small>
+                    </td>
+                    <td>{squad.status || "active"}</td>
+                    <td>{squad.namespace || "-"}</td>
+                    <td>{squad.mission || "-"}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="secondary small danger"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onDeleteSquad(squad.id);
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {squadItems.map((squad) => (
-                    <tr
-                      key={squad.id}
-                      className={squad.id === selectedSquadID ? "selected-row" : ""}
-                      onClick={() => onSelectSquad(squad.id)}
-                    >
-                      <td>
-                        <strong>{squad.name}</strong>
-                        <small>{squad.id}</small>
-                      </td>
-                      <td>{squad.status || "active"}</td>
-                      <td>{squad.namespace || "-"}</td>
-                      <td>{squad.mission || "-"}</td>
-                      <td>
-                        <button
-                          type="button"
-                          className="secondary small danger"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onDeleteSquad(squad.id);
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
+
+      <Modal {...squadModal.props} title="New squad" submitLabel="Create squad">
+        <label>
+          Name
+          <input value={newSquadForm.name} onChange={(event) => setNewSquadForm({ ...newSquadForm, name: event.target.value })} required />
+        </label>
+        <label>
+          Mission
+          <textarea value={newSquadForm.mission} onChange={(event) => setNewSquadForm({ ...newSquadForm, mission: event.target.value })} rows={4} />
+        </label>
+        <LLMPicker
+          providers={providerItems}
+          loading={providers.loading}
+          value={{ provider_id: newSquadForm.provider_id, model: newSquadForm.model }}
+          onChange={(llm) => setNewSquadForm({ ...newSquadForm, provider_id: llm.provider_id, model: llm.model })}
+          required
+        />
+      </Modal>
 
       {selectedSquad && (
         <>
@@ -319,9 +324,26 @@ export function SquadsSection({
           )}
 
           {squadTab === "grants" && (
-            <div className="workflow-grid">
-              <form className="form-panel" onSubmit={onCreateGrant}>
-                <h3>Create Access Grant</h3>
+            <div className="section-stack">
+              <ListHeader title="Access Grants" detail="Other users, or agents in other squads, allowed to talk to this squad's agents">
+                <button type="button" className="primary" onClick={grantModal.show}>
+                  + New grant
+                </button>
+              </ListHeader>
+              <StateNotice state={accessGrants} empty="No access grants" />
+              <div className="stack-list">
+                {(accessGrants.data || []).map((grant) => (
+                  <article className="message-item" key={grant.id}>
+                    <strong>{grant.grantee_type}: {grant.grantee_id}</strong>
+                    <span>{grant.permissions || "talk"}</span>
+                    <button type="button" className="secondary small" onClick={() => onRevokeGrant(grant.id)}>
+                      Revoke
+                    </button>
+                  </article>
+                ))}
+              </div>
+
+              <Modal {...grantModal.props} title="New access grant" submitLabel="Create grant">
                 <label>
                   Grantee type
                   <select value={grantForm.grantee_type} onChange={(event) => setGrantForm({ ...grantForm, grantee_type: event.target.value as "user" | "agent" })}>
@@ -337,24 +359,7 @@ export function SquadsSection({
                   Permissions
                   <input value={grantForm.permissions} onChange={(event) => setGrantForm({ ...grantForm, permissions: event.target.value })} />
                 </label>
-                <button type="submit">Create Grant</button>
-              </form>
-
-              <div className="span-2">
-                <h3 className="panel-title">Squad Access Grants</h3>
-                <StateNotice state={accessGrants} empty="No access grants" />
-                <div className="stack-list">
-                  {(accessGrants.data || []).map((grant) => (
-                    <article className="message-item" key={grant.id}>
-                      <strong>{grant.grantee_type}: {grant.grantee_id}</strong>
-                      <span>{grant.permissions || "talk"}</span>
-                      <button type="button" className="secondary small" onClick={() => onRevokeGrant(grant.id)}>
-                        Revoke
-                      </button>
-                    </article>
-                  ))}
-                </div>
-              </div>
+              </Modal>
             </div>
           )}
         </>
@@ -394,7 +399,7 @@ function AgentsTab({
   onSelectAgent: (id: string) => void;
   agentForm: { name: string; role: string; system_prompt: string; default_model: string; idle_timeout_sec: string };
   setAgentForm: (form: { name: string; role: string; system_prompt: string; default_model: string; idle_timeout_sec: string }) => void;
-  onCreateAgent: (event: FormEvent<HTMLFormElement>) => void;
+  onCreateAgent: () => Promise<string | null>;
   onCreateIdentity: (id: string) => void;
   onRotateIdentity: (id: string) => void;
   chat: ApiState<Message[]>;
@@ -406,7 +411,7 @@ function AgentsTab({
   setPermissionForm: (form: { resource_type: ResourceType; resource_id: string }) => void;
   providers: ApiState<LLMProvider[]>;
   resources: ApiState<RegistryResource[]>;
-  onGrantPermission: (event: FormEvent<HTMLFormElement>) => void;
+  onGrantPermission: () => Promise<string | null>;
   onRevokePermission: (permission: AgentPermission) => void;
   onDeleteAgent: (id: string) => void;
   agentCosts: Record<string, MeteringSummary>;
@@ -424,11 +429,142 @@ function AgentsTab({
     .map((resource) => ({ type: resource.type, id: resource.id, name: resource.name }));
   const llmReady = llmStatus.state === "ready";
   const llmBlocked = !llmReady && providersLoading ? "Loading LLM providers" : llmBlockedMessage(llmStatus);
+  const agentModal = useModalForm(onCreateAgent);
+  const accessModal = useModalForm(onGrantPermission);
 
   return (
-    <div className="workflow-grid">
-      <form className="form-panel" onSubmit={onCreateAgent}>
-        <h3>Add Agent</h3>
+    <div className="section-stack">
+      <ListHeader title="Agents" detail={countLabel(agentItems.length, "agent")}>
+        <button type="button" className="primary" onClick={agentModal.show} disabled={!llmReady}>
+          + New agent
+        </button>
+      </ListHeader>
+      {llmBlocked && <div className="notice warn compact">{llmBlocked}</div>}
+      <StateNotice state={agents} empty="No agents in this squad" />
+      {agentItems.length > 0 && (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th>Status</th>
+                <th>Model</th>
+                <th>Cost</th>
+                <th>Identity</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {agentItems.map((agent) => (
+                <tr key={agent.id} className={agent.id === selectedAgentID ? "selected-row" : ""} onClick={() => onSelectAgent(agent.id)}>
+                  <td>
+                    <strong>{agent.name}</strong>
+                    <small>{agent.role || agent.id}</small>
+                  </td>
+                  <td>
+                    <span className={`agent-state ${agentStateClass(agent.status)}`}>{agent.status || "idle"}</span>
+                  </td>
+                  <td>{agent.default_model || agent.default_provider_id || "-"}</td>
+                  <td className="numeric">{agentCosts[agent.id] ? formatCost(agentCosts[agent.id]) : "-"}</td>
+                  <td>
+                    <div className="button-row">
+                      <button type="button" className="secondary small" onClick={() => onCreateIdentity(agent.id)}>
+                        Create
+                      </button>
+                      <button type="button" className="secondary small" onClick={() => onRotateIdentity(agent.id)}>
+                        Rotate
+                      </button>
+                    </div>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="secondary small danger"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onDeleteAgent(agent.id);
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="split-grid">
+        <section>
+          <ListHeader
+            title="Permissions"
+            detail={selectedAgent ? `Resources ${selectedAgent.name} may use` : "Select an agent to manage its permissions"}
+          >
+            <button type="button" className="secondary" onClick={accessModal.show} disabled={!selectedAgent}>
+              + Grant access
+            </button>
+          </ListHeader>
+          {selectedAgent && llmReady && !permissions.loading && (
+            <AgentLLMStatus
+              agent={selectedAgent}
+              permissions={permissions.data || []}
+              status={llmStatus}
+              onApply={() => onApplySquadLLM(selectedAgent.id)}
+            />
+          )}
+          <StateNotice state={permissions} empty="No resources granted" />
+          <div className="stack-list">
+            {(permissions.data || []).map((permission) => (
+              <article className="message-item" key={permission.id}>
+                <strong>{permission.resource_type === "llm_provider" ? "LLM access" : permission.resource_type}</strong>
+                <span>{resourceLabel(permission, providerItems, resourceItems)}</span>
+                {permission.resource_type === "llm_provider" ? (
+                  <small>Managed by the squad LLM</small>
+                ) : (
+                  <button type="button" className="secondary small" onClick={() => onRevokePermission(permission)}>
+                    Revoke
+                  </button>
+                )}
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <form className="form-panel" onSubmit={onSendChat}>
+          <h3>Agent Chat</h3>
+          {selectedAgent ? (
+            <>
+              <div className="message-list">
+                <StateNotice state={chat} empty="No chat messages yet" />
+                {(chat.data || []).map((message) => {
+                  const note = messageDeliveryNote(message);
+                  return (
+                    <article key={message.id} className="message-item">
+                      <strong>{message.from_type}</strong>
+                      <span>{messageText(message)}</span>
+                      <small>
+                        <span className={`delivery ${deliveryClass(message.status)}`}>{message.status}</span> · {message.type}
+                        {note && ` · ${note}`}
+                      </small>
+                      {message.terminal_reason && <small className="delivery-reason">{message.terminal_reason}</small>}
+                    </article>
+                  );
+                })}
+              </div>
+              <label>
+                Message to {selectedAgent.name}
+                <textarea value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} rows={3} />
+              </label>
+              <button type="submit">Send</button>
+            </>
+          ) : (
+            <div className="notice compact">Select an agent to view or send messages</div>
+          )}
+        </form>
+      </div>
+
+      <Modal {...agentModal.props} title="New agent" submitLabel="Add agent" submitDisabled={!llmReady}>
         {llmBlocked && <div className="notice warn compact">{llmBlocked}</div>}
         <label>
           Name
@@ -472,70 +608,11 @@ function AgentsTab({
             onChange={(event) => setAgentForm({ ...agentForm, idle_timeout_sec: event.target.value })}
           />
         </label>
-        <button type="submit" disabled={!llmReady}>Add Agent</button>
-      </form>
+      </Modal>
 
-      <div className="span-2">
-        <StateNotice state={agents} empty="No agents in this squad" />
-        {agentItems.length > 0 && (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Agent</th>
-                  <th>Status</th>
-                  <th>Model</th>
-                  <th>Cost</th>
-                  <th>Identity</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {agentItems.map((agent) => (
-                  <tr key={agent.id} className={agent.id === selectedAgentID ? "selected-row" : ""} onClick={() => onSelectAgent(agent.id)}>
-                    <td>
-                      <strong>{agent.name}</strong>
-                      <small>{agent.role || agent.id}</small>
-                    </td>
-                    <td>
-                      <span className={`agent-state ${agentStateClass(agent.status)}`}>{agent.status || "idle"}</span>
-                    </td>
-                    <td>{agent.default_model || agent.default_provider_id || "-"}</td>
-                    <td className="numeric">{agentCosts[agent.id] ? formatCost(agentCosts[agent.id]) : "-"}</td>
-                    <td>
-                      <div className="button-row">
-                        <button type="button" className="secondary small" onClick={() => onCreateIdentity(agent.id)}>
-                          Create
-                        </button>
-                        <button type="button" className="secondary small" onClick={() => onRotateIdentity(agent.id)}>
-                          Rotate
-                        </button>
-                      </div>
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="secondary small danger"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onDeleteAgent(agent.id);
-                        }}
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      <div className="form-panel">
-        <h3>Grant Resource Access</h3>
+      <Modal {...accessModal.props} title="Grant resource access" submitLabel="Grant">
         {selectedAgent ? (
-          <form className="nested-form" onSubmit={onGrantPermission}>
+          <>
             <label>
               Agent
               <input value={selectedAgent.name} readOnly />
@@ -552,7 +629,7 @@ function AgentsTab({
             </label>
             <label>
               Resource
-              <select value={permissionForm.resource_id} onChange={(event) => setPermissionForm({ ...permissionForm, resource_id: event.target.value })}>
+              <select value={permissionForm.resource_id} onChange={(event) => setPermissionForm({ ...permissionForm, resource_id: event.target.value })} required>
                 <option value="">Select resource</option>
                 {grantableResources.map((resource) => (
                   <option key={`${resource.type}:${resource.id}`} value={resource.id}>
@@ -561,72 +638,11 @@ function AgentsTab({
                 ))}
               </select>
             </label>
-            <button type="submit">Grant</button>
-          </form>
+          </>
         ) : (
           <div className="notice compact">Select an agent before granting resources</div>
         )}
-      </div>
-
-      <div>
-        <h3 className="panel-title">Agent Permissions</h3>
-        {selectedAgent && llmReady && !permissions.loading && (
-          <AgentLLMStatus
-            agent={selectedAgent}
-            permissions={permissions.data || []}
-            status={llmStatus}
-            onApply={() => onApplySquadLLM(selectedAgent.id)}
-          />
-        )}
-        <StateNotice state={permissions} empty="No resources granted" />
-        <div className="stack-list">
-          {(permissions.data || []).map((permission) => (
-            <article className="message-item" key={permission.id}>
-              <strong>{permission.resource_type === "llm_provider" ? "LLM access" : permission.resource_type}</strong>
-              <span>{resourceLabel(permission, providerItems, resourceItems)}</span>
-              {permission.resource_type === "llm_provider" ? (
-                <small>Managed by the squad LLM</small>
-              ) : (
-                <button type="button" className="secondary small" onClick={() => onRevokePermission(permission)}>
-                  Revoke
-                </button>
-              )}
-            </article>
-          ))}
-        </div>
-      </div>
-
-      <form className="form-panel" onSubmit={onSendChat}>
-        <h3>Agent Chat</h3>
-        {selectedAgent ? (
-          <>
-            <div className="message-list">
-              <StateNotice state={chat} empty="No chat messages yet" />
-              {(chat.data || []).map((message) => {
-                const note = messageDeliveryNote(message);
-                return (
-                  <article key={message.id} className="message-item">
-                    <strong>{message.from_type}</strong>
-                    <span>{messageText(message)}</span>
-                    <small>
-                      <span className={`delivery ${deliveryClass(message.status)}`}>{message.status}</span> · {message.type}
-                      {note && ` · ${note}`}
-                    </small>
-                    {message.terminal_reason && <small className="delivery-reason">{message.terminal_reason}</small>}
-                  </article>
-                );
-              })}
-            </div>
-            <label>
-              Message to {selectedAgent.name}
-              <textarea value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} rows={3} />
-            </label>
-            <button type="submit">Send</button>
-          </>
-        ) : (
-          <div className="notice compact">Select an agent to view or send messages</div>
-        )}
-      </form>
+      </Modal>
     </div>
   );
 }
@@ -649,7 +665,7 @@ function TasksTab({
   squadID: string;
   taskForm: { title: string; description: string; assignee_agent_id: string };
   setTaskForm: (form: { title: string; description: string; assignee_agent_id: string }) => void;
-  onCreateTask: (event: FormEvent<HTMLFormElement>) => void;
+  onCreateTask: () => Promise<string | null>;
   onMoveTask: (taskID: string, status: TaskStatus) => void;
   onAssignTask: (taskID: string, assigneeAgentID: string) => void;
   onDeleteTask: (taskID: string) => void;
@@ -657,6 +673,7 @@ function TasksTab({
   // "" = everyone, "__unassigned" = no agent assigned, otherwise an agent id.
   const [assigneeFilter, setAssigneeFilter] = useState("");
   const [activeOnly, setActiveOnly] = useState(false);
+  const taskModal = useModalForm(onCreateTask);
 
   useEffect(() => {
     setAssigneeFilter(window.localStorage.getItem(`${assigneeFilterKey}:${squadID}`) || "");
@@ -702,9 +719,90 @@ function TasksTab({
   const runningCount = allTasks.filter((task) => leaseState(task) !== "idle").length;
 
   return (
-    <div className="workflow-grid">
-      <form className="form-panel" onSubmit={onCreateTask}>
-        <h3>Create Task</h3>
+    <div className="section-stack">
+      <ListHeader title="Task Board">
+        <button type="button" className="primary" onClick={taskModal.show}>
+          + New task
+        </button>
+      </ListHeader>
+
+      <div className="filter-bar">
+        <label>
+          Assignee
+          <select value={assigneeFilter} onChange={(event) => changeAssigneeFilter(event.target.value)}>
+            <option value="">Everyone</option>
+            <option value="__unassigned">Unassigned</option>
+            {agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          className={activeOnly ? "filter-toggle active" : "filter-toggle"}
+          onClick={() => setActiveOnly((current) => !current)}
+          aria-pressed={activeOnly}
+        >
+          In flight only{runningCount > 0 ? ` · ${runningCount}` : ""}
+        </button>
+        <span className="filter-count">
+          {tasks.length === allTasks.length
+            ? `${allTasks.length} tasks`
+            : `${tasks.length} of ${allTasks.length} tasks`}
+        </span>
+      </div>
+
+      <StateNotice state={board} empty="No tasks yet" />
+      {allTasks.length > 0 && tasks.length === 0 && (
+        <div className="notice compact">No tasks match the current filter</div>
+      )}
+      {tasks.length > 0 && (
+        <div className="board-grid">
+          {taskStatuses.map((status) => (
+            <section className="task-column" key={status}>
+              <h3>{status}</h3>
+              {tasks.filter((task) => task.status === status).map((task) => (
+                <article className="task-card" key={task.id}>
+                  <TaskExecutionBadge task={task} agents={agents} />
+                  <strong>{task.title}</strong>
+                  <p>{task.description || "-"}</p>
+                  {task.created_by_type === "agent" && (
+                    <span className="provenance">Created by agent {agentName(agents, task.created_by_id)}</span>
+                  )}
+                  <label>
+                    Status
+                    <select value={task.status} onChange={(event) => onMoveTask(task.id, event.target.value as TaskStatus)}>
+                      {taskStatuses.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Assignee
+                    <select value={task.assignee_agent_id || ""} onChange={(event) => onAssignTask(task.id, event.target.value)}>
+                      <option value="">Unassigned</option>
+                      {agents.map((agent) => (
+                        <option key={agent.id} value={agent.id}>
+                          {agent.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button type="button" className="secondary small" onClick={() => onDeleteTask(task.id)}>
+                    Delete
+                  </button>
+                </article>
+              ))}
+            </section>
+          ))}
+        </div>
+      )}
+
+      <Modal {...taskModal.props} title="New task" submitLabel="Create task">
         <label>
           Title
           <input value={taskForm.title} onChange={(event) => setTaskForm({ ...taskForm, title: event.target.value })} required />
@@ -724,86 +822,7 @@ function TasksTab({
             ))}
           </select>
         </label>
-        <button type="submit">Create Task</button>
-      </form>
-
-      <div className="span-2">
-        <div className="filter-bar">
-          <label>
-            Assignee
-            <select value={assigneeFilter} onChange={(event) => changeAssigneeFilter(event.target.value)}>
-              <option value="">Everyone</option>
-              <option value="__unassigned">Unassigned</option>
-              {agents.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            className={activeOnly ? "filter-toggle active" : "filter-toggle"}
-            onClick={() => setActiveOnly((current) => !current)}
-            aria-pressed={activeOnly}
-          >
-            In flight only{runningCount > 0 ? ` · ${runningCount}` : ""}
-          </button>
-          <span className="filter-count">
-            {tasks.length === allTasks.length
-              ? `${allTasks.length} tasks`
-              : `${tasks.length} of ${allTasks.length} tasks`}
-          </span>
-        </div>
-
-        <StateNotice state={board} empty="No tasks yet" />
-        {allTasks.length > 0 && tasks.length === 0 && (
-          <div className="notice compact">No tasks match the current filter</div>
-        )}
-        {tasks.length > 0 && (
-          <div className="board-grid">
-            {taskStatuses.map((status) => (
-              <section className="task-column" key={status}>
-                <h3>{status}</h3>
-                {tasks.filter((task) => task.status === status).map((task) => (
-                  <article className="task-card" key={task.id}>
-                    <TaskExecutionBadge task={task} agents={agents} />
-                    <strong>{task.title}</strong>
-                    <p>{task.description || "-"}</p>
-                    {task.created_by_type === "agent" && (
-                      <span className="provenance">Created by agent {agentName(agents, task.created_by_id)}</span>
-                    )}
-                    <label>
-                      Status
-                      <select value={task.status} onChange={(event) => onMoveTask(task.id, event.target.value as TaskStatus)}>
-                        {taskStatuses.map((item) => (
-                          <option key={item} value={item}>
-                            {item}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Assignee
-                      <select value={task.assignee_agent_id || ""} onChange={(event) => onAssignTask(task.id, event.target.value)}>
-                        <option value="">Unassigned</option>
-                        {agents.map((agent) => (
-                          <option key={agent.id} value={agent.id}>
-                            {agent.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <button type="button" className="secondary small" onClick={() => onDeleteTask(task.id)}>
-                      Delete
-                    </button>
-                  </article>
-                ))}
-              </section>
-            ))}
-          </div>
-        )}
-      </div>
+      </Modal>
     </div>
   );
 }

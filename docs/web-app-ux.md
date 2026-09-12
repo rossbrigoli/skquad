@@ -78,6 +78,15 @@
   orphaned agents.
 - **LLMs belong to squads:** LLM providers are not a Resources subsection. A
   squad picks its LLM when it is created, and its agents inherit it.
+- **Create actions open dialogs:** each list has a **+ New …** (or **+
+  Register …**) button in its header, and the form opens in a modal dialog
+  rather than sitting permanently beside the list, which gives lists and the
+  task board the full width. A dialog closes only when the save succeeds; on
+  an error it stays open with the message inside it and the user's input
+  intact. Escape, Cancel and the close button dismiss it, a click on the
+  backdrop does not, and drafts survive being dismissed. Below tablet width the
+  dialog becomes a bottom sheet. Editing in place (squad settings) and the
+  agent chat composer stay inline.
 - **Theme:** white / light-grey surfaces with an orange accent, an
   enterprise-oriented light theme.
 
