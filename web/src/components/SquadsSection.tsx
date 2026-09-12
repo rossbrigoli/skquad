@@ -18,13 +18,19 @@ import {
   TaskStatus,
 } from "../lib/api";
 import {
+  SquadLLM,
+  SquadLLMStatus,
   StateNotice,
+  agentUsesSquadLLM,
   formatCost,
   formatRelativeTime,
   leaseState,
   messageDeliveryNote,
   messageText,
+  pickModel,
+  providerModels,
   registryTypes,
+  resolveSquadLLM,
   resourceLabel,
   taskStatuses,
 } from "./shared";
@@ -50,7 +56,10 @@ export function SquadsSection({
   onCreateSquad,
   missionDraft,
   setMissionDraft,
-  onUpdateMission,
+  squadLLMDraft,
+  setSquadLLMDraft,
+  onUpdateSettings,
+  onApplySquadLLM,
   squadTab,
   setSquadTab,
   agents,
@@ -94,12 +103,15 @@ export function SquadsSection({
   selectedSquad: Squad | null;
   onSelectSquad: (id: string) => void;
   onDeleteSquad: (id: string) => void;
-  newSquadForm: { name: string; mission: string };
-  setNewSquadForm: (form: { name: string; mission: string }) => void;
+  newSquadForm: { name: string; mission: string; provider_id: string; model: string };
+  setNewSquadForm: (form: { name: string; mission: string; provider_id: string; model: string }) => void;
   onCreateSquad: (event: FormEvent<HTMLFormElement>) => void;
   missionDraft: string;
   setMissionDraft: (value: string) => void;
-  onUpdateMission: (event: FormEvent<HTMLFormElement>) => void;
+  squadLLMDraft: SquadLLM;
+  setSquadLLMDraft: (llm: SquadLLM) => void;
+  onUpdateSettings: (event: FormEvent<HTMLFormElement>) => void;
+  onApplySquadLLM: (agentID: string) => void;
   squadTab: SquadTab;
   setSquadTab: (tab: SquadTab) => void;
   agents: ApiState<Agent[]>;
@@ -139,6 +151,8 @@ export function SquadsSection({
   agentCosts: Record<string, MeteringSummary>;
 }) {
   const squadItems = squads.data || [];
+  const providerItems = providers.data || [];
+  const llmStatus = resolveSquadLLM(selectedSquad, providerItems);
   return (
     <>
       <div className="workflow-grid">
@@ -152,6 +166,13 @@ export function SquadsSection({
             Mission
             <textarea value={newSquadForm.mission} onChange={(event) => setNewSquadForm({ ...newSquadForm, mission: event.target.value })} rows={4} />
           </label>
+          <LLMPicker
+            providers={providerItems}
+            loading={providers.loading}
+            value={{ provider_id: newSquadForm.provider_id, model: newSquadForm.model }}
+            onChange={(llm) => setNewSquadForm({ ...newSquadForm, provider_id: llm.provider_id, model: llm.model })}
+            required
+          />
           <button type="submit">Create</button>
         </form>
 
@@ -224,7 +245,7 @@ export function SquadsSection({
           {squadTab === "overview" && (
             <>
               <SquadCockpit agents={agents} board={board} metering={squadMetering} audit={squadAudit} />
-              <form className="form-panel span-3" style={{ marginTop: 16 }} onSubmit={onUpdateMission}>
+              <form className="form-panel span-3" style={{ marginTop: 16 }} onSubmit={onUpdateSettings}>
                 <h3>{selectedSquad.name}</h3>
                 <div className="key-grid">
                   <span>ID</span>
@@ -240,7 +261,16 @@ export function SquadsSection({
                   Mission
                   <textarea value={missionDraft} onChange={(event) => setMissionDraft(event.target.value)} rows={3} />
                 </label>
-                <button type="submit">Save Mission</button>
+                <LLMPicker
+                  providers={providerItems}
+                  loading={providers.loading}
+                  value={squadLLMDraft}
+                  onChange={setSquadLLMDraft}
+                />
+                <small className="field-note">
+                  Agents added from now on use this LLM. Existing agents keep theirs until you choose Apply squad LLM on the Agents tab.
+                </small>
+                <button type="submit">Save settings</button>
               </form>
             </>
           )}
@@ -268,6 +298,9 @@ export function SquadsSection({
               onGrantPermission={onGrantPermission}
               onRevokePermission={onRevokePermission}
               agentCosts={agentCosts}
+              llmStatus={llmStatus}
+              providersLoading={providers.loading}
+              onApplySquadLLM={onApplySquadLLM}
             />
           )}
 
@@ -352,6 +385,9 @@ function AgentsTab({
   onRevokePermission,
   onDeleteAgent,
   agentCosts,
+  llmStatus,
+  providersLoading,
+  onApplySquadLLM,
 }: {
   agents: ApiState<Agent[]>;
   selectedAgentID: string;
@@ -374,20 +410,26 @@ function AgentsTab({
   onRevokePermission: (permission: AgentPermission) => void;
   onDeleteAgent: (id: string) => void;
   agentCosts: Record<string, MeteringSummary>;
+  llmStatus: SquadLLMStatus;
+  providersLoading: boolean;
+  onApplySquadLLM: (agentID: string) => void;
 }) {
   const agentItems = agents.data || [];
   const selectedAgent = agentItems.find((agent) => agent.id === selectedAgentID) || null;
   const providerItems = providers.data || [];
   const resourceItems = resources.data || [];
-  const grantableResources = [
-    ...providerItems.map((provider) => ({ type: "llm_provider" as ResourceType, id: provider.id, name: provider.name })),
-    ...resourceItems.map((resource) => ({ type: resource.type, id: resource.id, name: resource.name })),
-  ].filter((item) => item.type === permissionForm.resource_type);
+  // LLM access comes from the squad, so providers are not offered as grants.
+  const grantableResources = resourceItems
+    .filter((resource) => resource.type === permissionForm.resource_type)
+    .map((resource) => ({ type: resource.type, id: resource.id, name: resource.name }));
+  const llmReady = llmStatus.state === "ready";
+  const llmBlocked = !llmReady && providersLoading ? "Loading LLM providers" : llmBlockedMessage(llmStatus);
 
   return (
     <div className="workflow-grid">
       <form className="form-panel" onSubmit={onCreateAgent}>
         <h3>Add Agent</h3>
+        {llmBlocked && <div className="notice warn compact">{llmBlocked}</div>}
         <label>
           Name
           <input value={agentForm.name} onChange={(event) => setAgentForm({ ...agentForm, name: event.target.value })} required />
@@ -405,10 +447,22 @@ function AgentsTab({
             placeholder="Optional persona/instructions for this agent's chat and tasks"
           />
         </label>
-        <label>
-          Default model
-          <input value={agentForm.default_model} onChange={(event) => setAgentForm({ ...agentForm, default_model: event.target.value })} placeholder="provider/model" />
-        </label>
+        {llmStatus.state === "ready" && (
+          <label>
+            Model
+            <select
+              value={pickModel(llmStatus.models, agentForm.default_model, llmStatus.llm.model)}
+              onChange={(event) => setAgentForm({ ...agentForm, default_model: event.target.value })}
+            >
+              {llmStatus.models.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+            <small className="field-note">Served by {llmStatus.provider.name}, the provider this squad uses.</small>
+          </label>
+        )}
         <label>
           Idle timeout seconds
           <input
@@ -418,7 +472,7 @@ function AgentsTab({
             onChange={(event) => setAgentForm({ ...agentForm, idle_timeout_sec: event.target.value })}
           />
         </label>
-        <button type="submit">Add Agent</button>
+        <button type="submit" disabled={!llmReady}>Add Agent</button>
       </form>
 
       <div className="span-2">
@@ -489,7 +543,6 @@ function AgentsTab({
             <label>
               Resource type
               <select value={permissionForm.resource_type} onChange={(event) => setPermissionForm({ resource_type: event.target.value as ResourceType, resource_id: "" })}>
-                <option value="llm_provider">LLM Provider</option>
                 {registryTypes.map((item) => (
                   <option key={item.type} value={item.type}>
                     {item.label}
@@ -517,15 +570,27 @@ function AgentsTab({
 
       <div>
         <h3 className="panel-title">Agent Permissions</h3>
+        {selectedAgent && llmReady && !permissions.loading && (
+          <AgentLLMStatus
+            agent={selectedAgent}
+            permissions={permissions.data || []}
+            status={llmStatus}
+            onApply={() => onApplySquadLLM(selectedAgent.id)}
+          />
+        )}
         <StateNotice state={permissions} empty="No resources granted" />
         <div className="stack-list">
           {(permissions.data || []).map((permission) => (
             <article className="message-item" key={permission.id}>
-              <strong>{permission.resource_type}</strong>
+              <strong>{permission.resource_type === "llm_provider" ? "LLM access" : permission.resource_type}</strong>
               <span>{resourceLabel(permission, providerItems, resourceItems)}</span>
-              <button type="button" className="secondary small" onClick={() => onRevokePermission(permission)}>
-                Revoke
-              </button>
+              {permission.resource_type === "llm_provider" ? (
+                <small>Managed by the squad LLM</small>
+              ) : (
+                <button type="button" className="secondary small" onClick={() => onRevokePermission(permission)}>
+                  Revoke
+                </button>
+              )}
             </article>
           ))}
         </div>
@@ -812,4 +877,119 @@ function deliveryClass(status: string): string {
     return "warn";
   }
   return "ok";
+}
+
+// Shown in both Create Squad and a squad's Overview, so a squad can gain or
+// change its LLM after creation. Deprecated providers are hidden unless one is
+// already selected, because the gateway refuses them.
+function LLMPicker({
+  providers,
+  loading,
+  value,
+  onChange,
+  required = false,
+}: {
+  providers: LLMProvider[];
+  loading: boolean;
+  value: SquadLLM;
+  onChange: (llm: SquadLLM) => void;
+  required?: boolean;
+}) {
+  const options = providers.filter((provider) => provider.status === "active" || provider.id === value.provider_id);
+  const models = providerModels(providers.find((provider) => provider.id === value.provider_id));
+
+  if (loading && providers.length === 0) {
+    return <div className="notice compact">Loading LLM providers</div>;
+  }
+  if (options.length === 0) {
+    return (
+      <div className="notice warn compact">
+        No LLM providers are registered yet. A platform admin can add one under Admin.
+      </div>
+    );
+  }
+  return (
+    <>
+      <label>
+        LLM provider
+        <select
+          value={value.provider_id}
+          required={required}
+          onChange={(event) => {
+            const next = providers.find((provider) => provider.id === event.target.value);
+            onChange({ provider_id: event.target.value, model: pickModel(providerModels(next), value.model) });
+          }}
+        >
+          {!value.provider_id && <option value="">Choose a provider</option>}
+          {options.map((provider) => (
+            <option key={provider.id} value={provider.id}>
+              {`${provider.name}${provider.status === "active" ? "" : " (deprecated)"}`}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Model
+        <select
+          value={pickModel(models, value.model)}
+          required={required}
+          disabled={models.length === 0}
+          onChange={(event) => onChange({ ...value, model: event.target.value })}
+        >
+          {models.length === 0 && <option value="">No models available</option>}
+          {models.map((model) => (
+            <option key={model} value={model}>
+              {model}
+            </option>
+          ))}
+        </select>
+      </label>
+    </>
+  );
+}
+
+function AgentLLMStatus({
+  agent,
+  permissions,
+  status,
+  onApply,
+}: {
+  agent: Agent;
+  permissions: AgentPermission[];
+  status: SquadLLMStatus;
+  onApply: () => void;
+}) {
+  if (status.state !== "ready") {
+    return null;
+  }
+  if (agentUsesSquadLLM(agent, permissions, status)) {
+    return (
+      <div className="notice good compact">
+        Uses the squad LLM: {status.provider.name} · {agent.default_model}
+      </div>
+    );
+  }
+  return (
+    <div className="notice warn compact">
+      <span>{agent.name} is not on the squad LLM ({status.provider.name}).</span>
+      <button type="button" className="secondary small" onClick={onApply}>
+        Apply squad LLM
+      </button>
+    </div>
+  );
+}
+
+function llmBlockedMessage(status: SquadLLMStatus): string {
+  switch (status.state) {
+    case "ready":
+      return "";
+    case "unset":
+      return "This squad has no LLM yet. Choose one on the Overview tab before adding agents.";
+    case "unknown":
+      return "This squad's LLM provider is no longer registered. Choose another on the Overview tab.";
+    case "deprecated":
+      return `${status.provider.name} has been deprecated. Choose another LLM provider on the Overview tab.`;
+    case "no-models":
+      return `${status.provider.name} has no models configured. Choose another provider on the Overview tab, or ask a platform admin to add models.`;
+  }
 }

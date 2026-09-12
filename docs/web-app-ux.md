@@ -1,6 +1,6 @@
 # skquad — Web App & UX Design
 
-> **Status:** Draft v1; first-pass squad, agent, task, registry, grant, admin,
+> **Status:** Draft v1; first-pass squad, agent, task, resource, grant, admin,
 > identity, and chat workflows are implemented in the current web app.
 >
 > The web app is a **SPA** (React / Next.js) — the primary interface for users.
@@ -31,15 +31,16 @@
 
 ```
 1. Login (OIDC)
-2. "Create a squad" → name + mission
-3. "Add an agent" → name + role
+2. "Create a squad" → name + mission + LLM provider and model
+3. "Add an agent" → name + role (inherits the squad's LLM; pick one of its models)
    → one-click "Create agent identity"
-4. "Pick an LLM provider" → choose a predefined provider
-5. Done → the squad board is ready
+4. Done → the squad board is ready
 ```
 
 - Each step is a single screen with sensible defaults.
-- The **predefined LLM provider** makes step 4 trivial (no key entry).
+- The **LLM is chosen once, when the squad is created**, from the predefined
+  providers a platform admin has registered (no key entry). The first active
+  provider is preselected, so the common path needs no extra clicks.
 - A **progress indicator** shows how close the user is to "done."
 - After onboarding, the user lands on the **squad board**.
 
@@ -51,9 +52,9 @@
 ┌──────────────────────────────────────────────────────────────┐
 │ [sq] skquad   [Open tasks · N] [Mode · Dev] [API ●]     [👤] │
 ├──────────┬───────────────────────────────────────────────────┤
-│ Squads   │  Squad: <name>                                    │
-│ Registry │  [Overview] [Agents] [Tasks] [Access Grants]      │
-│  · LLM   │  ┌──────────────────────────────────────────────┐ │
+│ Inbox    │  Squad: <name>                                    │
+│ Squads   │  [Overview] [Agents] [Tasks] [Access Grants]      │
+│ Resources│  ┌──────────────────────────────────────────────┐ │
 │  · Skills│  │ TODO │ IN-PROGRESS │ IN-REVIEW │ DONE │ BLOCK │ │
 │  · Tools │  │ ┌───┐│  ┌───┐      │           │      │       │ │
 │  · APIs  │  │ └───┘│  └───┘      │           │      │       │ │
@@ -66,14 +67,17 @@
   selected squad, auth mode, API connectivity) and the user profile avatar on
   the right. The avatar opens a dropdown with name, email, role, and the API
   token form.
-- **Sidebar (main menu):** Squads, Registry (with one subsection per resource
-  type), and Admin. Admin is shown only to `platform_admin` users; dev mode
-  auto-promotes the dev principal to `platform_admin`, so it is visible in DEV
-  deployments.
+- **Sidebar (main menu):** Inbox, Squads, Resources (with one subsection per
+  resource type: Skills, Tools, APIs, Knowledge Bases, Project Workspaces), and
+  Admin. Admin is shown only to `platform_admin` users; dev mode auto-promotes
+  the dev principal to `platform_admin`, so it is visible in DEV deployments.
+  The API routes behind Resources remain `/registry/*`.
 - **Squad-centric IA:** Agents and Tasks are not top-level menu items. They are
   tabs inside the selected squad's detail view (Overview / Agents / Tasks /
   Access Grants), so agents are always created inside a squad and there are no
   orphaned agents.
+- **LLMs belong to squads:** LLM providers are not a Resources subsection. A
+  squad picks its LLM when it is created, and its agents inherit it.
 - **Theme:** white / light-grey surfaces with an orange accent, an
   enterprise-oriented light theme.
 
@@ -97,16 +101,20 @@ drop, and live updates remain follow-up work.
 ### 4.2 Agent Panel
 - **List of agents** in the squad (name, role, state: idle/busy).
 - **Agent detail:**
-  - Role, default LLM provider/model.
+  - Role, and the **model** it uses — always one served by the squad's LLM
+    provider.
   - **Identity** — status, "Create identity" / "Rotate" (owner).
-  - **Permissions** — which registry resources the agent may use (grant/revoke).
+  - **Permissions** — which resources the agent may use (grant/revoke). LLM
+    access is not granted here: it comes from the squad's LLM.
   - **Metering** — tokens + cost for this agent.
 - **Chat** — open a 1:1 chat with the agent.
 
-Current implementation: users can create agents, create/rotate their identities,
-select an agent, view queued chat history, enqueue consult messages, and manage
-the selected agent's registry resource permissions. Per-agent metering panels
-remain follow-up work.
+Current implementation: users can create agents (choosing a model from the
+squad's LLM provider), create/rotate their identities, select an agent, view
+queued chat history, enqueue consult messages, and manage the selected agent's
+resource permissions. An agent that is not on the squad's LLM — one created
+before squads had an LLM, or after the squad's LLM changed — shows an **Apply
+squad LLM** action. Per-agent metering panels remain follow-up work.
 
 ### 4.3 Chat (secondary)
 - A 1:1 conversation with an agent (ad-hoc questions / steering).
@@ -115,10 +123,19 @@ remain follow-up work.
 
 ### 4.4 Squad Settings
 - **Mission** — what the squad is for.
+- **LLM** — the provider and default model the squad's agents use. Chosen at
+  creation and changeable later from the squad's Overview tab. A change applies
+  to agents added afterwards; existing agents move over with **Apply squad
+  LLM**, and an agent that already has an identity needs it rotated before the
+  LLM gateway serves the new provider.
 - **Operating model** — the role of each agent + how they collaborate (editable
   structured form).
 - **Access grants** — grant/revoke other users (or other squads' agents) access
   to talk to the squad's agents.
+
+Current implementation: mission and LLM are editable on the Overview tab. The
+squad's LLM is stored in its `operating_model` as `llm.provider_id` and
+`llm.model` until the control plane has a first-class field for it.
 
 ### 4.5 Metering
 - **Per squad** — aggregate tokens + cost over time (charts).
@@ -127,16 +144,16 @@ remain follow-up work.
 - **Platform-wide** (admin) — across all squads.
 - Cost shown only where the provider has pricing configured.
 
-### 4.6 Registry (platform admin)
-- **Subsections** by resource type: LLM Providers, Skills, Tools, APIs,
-  Knowledge Bases, Project Workspaces (sidebar sub-navigation).
+### 4.6 Resources (platform admin)
+- **Subsections** by resource type: Skills, Tools, APIs, Knowledge Bases,
+  Project Workspaces (sidebar sub-navigation). LLM providers are not listed
+  here — see 4.8.
 - **Register** a resource (definition + credential ref).
 - **Deprecate** a resource.
-- For LLM providers: models + per-token pricing.
 
-Current implementation: platform admins can register and deprecate LLM providers
-and generic registry resources, and squad owners can grant/revoke selected
-registry resources to the selected agent.
+Current implementation: platform admins can register and deprecate resources,
+other users see a read-only catalog, and squad owners can grant/revoke selected
+resources to the selected agent.
 
 ### 4.7 Audit (admin / owner)
 - Queryable log: filter by actor, squad, action, time range.
@@ -146,9 +163,14 @@ Current implementation: the admin screen loads platform audit and metering
 summary endpoints when the current user has access.
 
 ### 4.8 Admin / Settings (platform admin)
+- **LLM providers** — register and deprecate the providers squads choose from:
+  endpoint, models, and per-token pricing.
 - Platform config (OIDC, defaults, idle timeout, observability toggle).
 - User management (roles, activate/deactivate).
 - Platform health.
+
+Current implementation: platform admins register and deprecate LLM providers
+here.
 
 ---
 
@@ -158,11 +180,12 @@ summary endpoints when the current user has access.
 |--------|:--------------:|:-----------:|:------------:|
 | Squad board | ✅ | ✅ (own) | ✅ (`read` grant) |
 | Agent panel (identity/permissions) | ✅ | ✅ (own) | — |
-| Squad settings (mission/operating model) | ✅ | ✅ (own) | — |
+| Squad settings (mission/LLM/operating model) | ✅ | ✅ (own) | — |
 | Access grants | ✅ | ✅ (own) | — |
 | Chat with agent | ✅ | ✅ (own) | ✅ (`talk` grant) |
 | Metering (squad) | ✅ | ✅ (own) | — |
-| Registry | ✅ | — | — |
+| Resources | ✅ | read-only | read-only |
+| LLM providers | ✅ | choose for own squads | — |
 | Audit | ✅ (all) | ✅ (own) | — |
 | User management | ✅ | — | — |
 
