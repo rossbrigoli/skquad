@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   agentUsesSquadLLM,
+  countLabel,
   formatCost,
   formatRelativeTime,
   leaseState,
@@ -367,5 +368,13 @@ describe("permissionsWithLLM", () => {
 
   it("grants the provider to an agent with no permissions", () => {
     expect(permissionsWithLLM([], "p-1")).toEqual([{ resource_type: "llm_provider", resource_id: "p-1" }]);
+  });
+});
+
+describe("countLabel", () => {
+  it("pluralises every count except one", () => {
+    expect(countLabel(0, "squad")).toBe("0 squads");
+    expect(countLabel(1, "squad")).toBe("1 squad");
+    expect(countLabel(3, "API")).toBe("3 APIs");
   });
 });

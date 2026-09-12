@@ -456,10 +456,9 @@ export default function Home() {
     setToken(next);
   }
 
-  async function submitSquad(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitSquad(): Promise<string | null> {
     const llm = normalizedLLM(newSquadForm, providers.data || []);
-    await runAction("Squad created", async () => {
+    return runFormAction("Squad created", async () => {
       const created = await apiPost<Squad>("/squads", token, {
         name: newSquadForm.name,
         mission: newSquadForm.mission,
@@ -489,15 +488,13 @@ export default function Home() {
   // for its runtime, and an llm_provider grant the gateway turns into its
   // allowed models. Creating an agent does not write grants, so the squad's
   // provider is granted in a second call straight after.
-  async function submitAgent(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitAgent(): Promise<string | null> {
     if (!selectedSquadID) {
-      return;
+      return "Select a squad before adding agents.";
     }
     const status = resolveSquadLLM(selectedSquad, providers.data || []);
     if (status.state !== "ready") {
-      setActionMessage("Cannot add agent: this squad needs a working LLM first. Choose one on the Overview tab.");
-      return;
+      return "This squad needs a working LLM first. Choose one on the Overview tab.";
     }
     const model = pickModel(status.models, agentForm.default_model, status.llm.model);
     const blankAgent = { name: "", role: "", system_prompt: "", default_model: "", idle_timeout_sec: "300" };
@@ -518,17 +515,19 @@ export default function Home() {
       setAgentForm(blankAgent);
       setSelectedAgentID(created.id);
       refresh("Agent created");
+      return null;
     } catch (error) {
       const message = errorState(error).error || "Request failed";
       if (!createdID) {
-        setActionMessage(message);
-        return;
+        return message;
       }
-      // The agent exists but cannot reach the gateway yet. Clear the form so a
-      // retry does not create a duplicate, and point at the one-click fix.
+      // The agent exists but cannot reach the gateway yet, so the dialog
+      // closes (a retry would create a duplicate) and the page banner points
+      // at the one-click fix.
       setAgentForm(blankAgent);
       setSelectedAgentID(createdID);
       refresh(`Agent created, but granting the squad LLM failed: ${message}. Use Apply squad LLM on the agent to retry.`);
+      return null;
     }
   }
 
@@ -567,12 +566,11 @@ export default function Home() {
     });
   }
 
-  async function submitTask(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitTask(): Promise<string | null> {
     if (!selectedSquadID) {
-      return;
+      return "Select a squad before creating tasks.";
     }
-    await runAction("Task created", async () => {
+    return runFormAction("Task created", async () => {
       await apiPost<Task>(`/squads/${selectedSquadID}/board/tasks`, token, taskForm);
       setTaskForm({ title: "", description: "", assignee_agent_id: "" });
     });
@@ -639,9 +637,8 @@ export default function Home() {
     });
   }
 
-  async function submitProvider(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await runAction("Provider registered", async () => {
+  async function submitProvider(): Promise<string | null> {
+    return runFormAction("Provider registered", async () => {
       await apiPost<LLMProvider>("/registry/llm-providers", token, {
         name: providerForm.name,
         kind: providerForm.kind,
@@ -655,12 +652,11 @@ export default function Home() {
     });
   }
 
-  async function submitResource(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitResource(): Promise<string | null> {
     // The visible subsection is the only source of truth for the resource type,
     // so the posted route always matches the form the user is looking at.
     const route = registrySub;
-    await runAction("Resource registered", async () => {
+    return runFormAction("Resource registered", async () => {
       await apiPost<RegistryResource>(`/registry/${route}`, token, {
         name: resourceForm.name,
         description: resourceForm.description,
@@ -688,12 +684,14 @@ export default function Home() {
     });
   }
 
-  async function grantAgentPermission(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedAgentID || permissionForm.resource_id === "") {
-      return;
+  async function grantAgentPermission(): Promise<string | null> {
+    if (!selectedAgentID) {
+      return "Select an agent before granting resources.";
     }
-    await runAction("Agent permission updated", async () => {
+    if (permissionForm.resource_id === "") {
+      return "Choose a resource to grant.";
+    }
+    return runFormAction("Agent permission updated", async () => {
       const current = agentPermissions.data || [];
       const next = [
         ...current.map((item) => ({ resource_type: item.resource_type, resource_id: item.resource_id })),
@@ -716,12 +714,11 @@ export default function Home() {
     });
   }
 
-  async function submitAccessGrant(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitAccessGrant(): Promise<string | null> {
     if (!selectedSquadID) {
-      return;
+      return "Select a squad before creating access grants.";
     }
-    await runAction("Access grant created", async () => {
+    return runFormAction("Access grant created", async () => {
       await apiPost<AccessGrant>(`/squads/${selectedSquadID}/access-grants`, token, grantForm);
       setGrantForm({ ...grantForm, grantee_id: "" });
     });
@@ -741,6 +738,19 @@ export default function Home() {
     } catch (error) {
       const state = errorState(error);
       setActionMessage(state.error || "Request failed");
+    }
+  }
+
+  // Create dialogs show failures inside the dialog, so the error is returned to
+  // the caller instead of being written to the page banner hidden behind it.
+  async function runFormAction(success: string, action: () => Promise<void>): Promise<string | null> {
+    setActionMessage("");
+    try {
+      await action();
+      refresh(success);
+      return null;
+    } catch (error) {
+      return errorState(error).error || "Request failed";
     }
   }
 
