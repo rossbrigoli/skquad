@@ -244,6 +244,51 @@ func TestPostgresStoreTaskExecutionLeaseAndFencing(t *testing.T) {
 	}
 }
 
+func TestPostgresStoreInboxListIncludesReadByDefault(t *testing.T) {
+	store := postgresTestStore(t)
+	f := newPGFixture(t, store)
+	ctx := context.Background()
+
+	created, err := store.CreateInboxMessage(ctx, &domain.InboxMessage{
+		SquadID:     f.squad.ID,
+		UserID:      f.user.ID,
+		FromAgentID: f.agent.ID,
+		Kind:        domain.InboxActionRequired,
+		Message:     "needs approval",
+	})
+	if err != nil {
+		t.Fatalf("create inbox message: %v", err)
+	}
+
+	empty, err := store.ListInboxMessages(ctx, "00000000-0000-0000-0000-000000000000", false, 100)
+	if err != nil {
+		t.Fatalf("list empty inbox: %v", err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("empty inbox = %#v, want non-nil empty slice", empty)
+	}
+
+	if _, err := store.MarkInboxMessageRead(ctx, f.user.ID, created.ID); err != nil {
+		t.Fatalf("mark read: %v", err)
+	}
+
+	all, err := store.ListInboxMessages(ctx, f.user.ID, false, 100)
+	if err != nil {
+		t.Fatalf("list inbox: %v", err)
+	}
+	if len(all) != 1 || all[0].ID != created.ID || !all[0].IsRead() {
+		t.Fatalf("default inbox list = %#v, want the read message", all)
+	}
+
+	unread, err := store.ListInboxMessages(ctx, f.user.ID, true, 100)
+	if err != nil {
+		t.Fatalf("list unread inbox: %v", err)
+	}
+	if unread == nil || len(unread) != 0 {
+		t.Fatalf("unread inbox = %#v, want non-nil empty slice", unread)
+	}
+}
+
 func TestPostgresStoreReapExpiredTaskExecutions(t *testing.T) {
 	store := postgresTestStore(t)
 	f := newPGFixture(t, store)

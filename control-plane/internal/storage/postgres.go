@@ -1889,7 +1889,7 @@ func (p *PostgresStore) ListInboxMessages(ctx context.Context, userID string, un
 		SELECT id::text, squad_id::text, user_id::text, coalesce(from_agent_id::text, ''),
 		       coalesce(task_id::text, ''), kind, message, read_at, created_at
 		FROM inbox_messages
-		WHERE user_id = $1 AND ($2::boolean OR read_at IS NULL)
+		WHERE user_id = $1 AND (NOT $2::boolean OR read_at IS NULL)
 		ORDER BY created_at DESC
 		LIMIT $3
 	`, userID, unreadOnly, limit)
@@ -1897,7 +1897,7 @@ func (p *PostgresStore) ListInboxMessages(ctx context.Context, userID string, un
 		return nil, mapPgErr(err)
 	}
 	defer rows.Close()
-	var out []*domain.InboxMessage
+	out := []*domain.InboxMessage{}
 	for rows.Next() {
 		msg, err := scanInboxMessage(rows)
 		if err != nil {

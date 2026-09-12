@@ -55,6 +55,10 @@ func TestInboxTaskCompletionNotificationAndRead(t *testing.T) {
 	doJSON(t, handler, http.MethodGet, "/api/v1/inbox?unread=true", nil, http.StatusOK, &unread)
 	require.Empty(t, unread)
 
+	doJSON(t, handler, http.MethodGet, "/api/v1/inbox", nil, http.StatusOK, &inbox)
+	require.Len(t, inbox, 1)
+	require.True(t, inbox[0].IsRead())
+
 	// Marking read again is idempotent.
 	doJSON(t, handler, http.MethodPost, "/api/v1/inbox/"+inbox[0].ID+"/read", nil, http.StatusOK, &read)
 	require.True(t, read.IsRead())
