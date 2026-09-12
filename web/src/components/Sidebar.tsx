@@ -1,10 +1,9 @@
 "use client";
 
 export type Section = "inbox" | "squads" | "registry" | "admin";
-export type RegistrySubsection = "llm-providers" | "skills" | "tools" | "apis" | "knowledge-bases" | "project-workspaces";
+export type RegistrySubsection = "skills" | "tools" | "apis" | "knowledge-bases" | "project-workspaces";
 
 export const registrySubsections: Array<{ id: RegistrySubsection; label: string }> = [
-  { id: "llm-providers", label: "LLM Providers" },
   { id: "skills", label: "Skills" },
   { id: "tools", label: "Tools" },
   { id: "apis", label: "APIs" },

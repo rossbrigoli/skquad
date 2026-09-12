@@ -1,6 +1,6 @@
 "use client";
 
-import { AgentPermission, ApiState, LLMProvider, Message, MeteringSummary, RegistryResource, ResourceType, Task, TaskStatus } from "../lib/api";
+import { Agent, AgentPermission, ApiState, LLMProvider, Message, MeteringSummary, RegistryResource, ResourceType, Squad, Task, TaskStatus } from "../lib/api";
 
 export const taskStatuses: TaskStatus[] = ["todo", "in-progress", "in-review", "done", "blocked"];
 
@@ -104,4 +104,128 @@ export function messageDeliveryNote(message: Message): string {
     parts.push(`expires ${formatRelativeTime(message.expires_at)}`);
   }
   return parts.join(" · ");
+}
+
+// A squad's LLM lives in its operating_model until the control plane grows a
+// first-class field for it; every agent added to the squad inherits it.
+export type SquadLLM = { provider_id: string; model: string };
+
+export function squadLLM(squad: Pick<Squad, "operating_model"> | null | undefined): SquadLLM | null {
+  const llm = asRecord(asRecord(squad?.operating_model)?.llm);
+  const rawProvider = llm?.provider_id;
+  const providerID = typeof rawProvider === "string" ? rawProvider.trim() : "";
+  if (!providerID) {
+    return null;
+  }
+  const rawModel = llm?.model;
+  return { provider_id: providerID, model: typeof rawModel === "string" ? rawModel.trim() : "" };
+}
+
+// PATCHing a squad replaces operating_model wholesale, so the LLM is merged in
+// rather than written alone and any other operating-model keys survive.
+export function withSquadLLM(operatingModel: unknown, llm: SquadLLM | null): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...(asRecord(operatingModel) || {}) };
+  if (llm && llm.provider_id) {
+    next.llm = { provider_id: llm.provider_id, model: llm.model };
+  } else {
+    delete next.llm;
+  }
+  return next;
+}
+
+// Mirrors the control plane's allowedGatewayModels: a provider grants its
+// default model plus every entry in its models list. The gateway rejects any
+// other name, so these are the only models an agent can actually use.
+export function providerModels(provider: LLMProvider | null | undefined): string[] {
+  if (!provider) {
+    return [];
+  }
+  const models: string[] = [];
+  const add = (value: unknown) => {
+    const model = typeof value === "string" ? value.trim() : "";
+    if (model && !models.includes(model)) {
+      models.push(model);
+    }
+  };
+  add(provider.default_model);
+  if (Array.isArray(provider.models)) {
+    provider.models.forEach(add);
+  }
+  return models;
+}
+
+export type SquadLLMStatus =
+  | { state: "unset" }
+  | { state: "unknown"; llm: SquadLLM }
+  | { state: "deprecated"; llm: SquadLLM; provider: LLMProvider }
+  | { state: "no-models"; llm: SquadLLM; provider: LLMProvider }
+  | { state: "ready"; llm: SquadLLM; provider: LLMProvider; models: string[] };
+
+// The gateway skips inactive providers and refuses to provision a key with no
+// models, so both are surfaced as distinct states rather than treated as ready.
+export function resolveSquadLLM(squad: Pick<Squad, "operating_model"> | null | undefined, providers: LLMProvider[]): SquadLLMStatus {
+  const llm = squadLLM(squad);
+  if (!llm) {
+    return { state: "unset" };
+  }
+  const provider = providers.find((item) => item.id === llm.provider_id);
+  if (!provider) {
+    return { state: "unknown", llm };
+  }
+  if (provider.status !== "active") {
+    return { state: "deprecated", llm, provider };
+  }
+  const models = providerModels(provider);
+  if (models.length === 0) {
+    return { state: "no-models", llm, provider };
+  }
+  return { state: "ready", llm, provider, models };
+}
+
+export function pickModel(models: string[], ...preferred: Array<string | undefined>): string {
+  for (const candidate of preferred) {
+    const model = candidate?.trim();
+    if (model && models.includes(model)) {
+      return model;
+    }
+  }
+  return models[0] || "";
+}
+
+// An agent is on the squad's LLM only when all three pieces the runtime and
+// gateway need agree: its default provider, a gateway grant for that provider,
+// and a model the provider actually serves.
+export function agentUsesSquadLLM(
+  agent: Pick<Agent, "default_provider_id" | "default_model">,
+  permissions: Array<Pick<AgentPermission, "resource_type" | "resource_id">>,
+  status: SquadLLMStatus,
+): boolean {
+  if (status.state !== "ready") {
+    return false;
+  }
+  return agent.default_provider_id === status.llm.provider_id
+    && status.models.includes(agent.default_model || "")
+    && permissions.some((item) => item.resource_type === "llm_provider" && item.resource_id === status.llm.provider_id);
+}
+
+// LLM access is squad-managed, so applying it replaces any existing provider
+// grant and leaves every non-LLM grant exactly as it was.
+export function permissionsWithLLM(
+  permissions: Array<Pick<AgentPermission, "resource_type" | "resource_id">>,
+  providerID: string,
+): Array<{ resource_type: ResourceType; resource_id: string }> {
+  return [
+    ...permissions
+      .filter((item) => item.resource_type !== "llm_provider")
+      .map((item) => ({ resource_type: item.resource_type, resource_id: item.resource_id })),
+    { resource_type: "llm_provider", resource_id: providerID },
+  ];
+}
+
+export function countLabel(count: number, noun: string): string {
+  return `${count} ${count === 1 ? noun : `${noun}s`}`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }

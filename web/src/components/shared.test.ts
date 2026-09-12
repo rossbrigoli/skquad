@@ -1,13 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  agentUsesSquadLLM,
+  countLabel,
   formatCost,
   formatRelativeTime,
   leaseState,
   messageDeliveryNote,
   messageText,
+  permissionsWithLLM,
+  pickModel,
+  providerModels,
+  resolveSquadLLM,
   resourceLabel,
+  squadLLM,
+  withSquadLLM,
 } from "../components/shared";
+import type { SquadLLMStatus } from "../components/shared";
 import type {
   AgentPermission,
   LLMProvider,
@@ -193,5 +202,179 @@ describe("messageDeliveryNote", () => {
   it("ignores an unparseable expiry rather than throwing", () => {
     const note = messageDeliveryNote(msg({ attempts: 1, expires_at: "garbage" }));
     expect(note).toContain("attempt 1");
+  });
+});
+
+function provider(overrides: Partial<LLMProvider>): LLMProvider {
+  return { id: "p-1", name: "Provider", kind: "openai", base_url: "", status: "active", ...overrides } as LLMProvider;
+}
+
+describe("squadLLM", () => {
+  it("reads the provider and model from operating_model", () => {
+    expect(squadLLM({ operating_model: { llm: { provider_id: "p-1", model: "m-1" } } })).toEqual({ provider_id: "p-1", model: "m-1" });
+  });
+
+  it("is null when the squad has no LLM", () => {
+    expect(squadLLM(null)).toBeNull();
+    expect(squadLLM({ operating_model: {} })).toBeNull();
+    expect(squadLLM({ operating_model: { llm: { model: "m-1" } } })).toBeNull();
+  });
+
+  it("treats a malformed operating model as unset rather than throwing", () => {
+    expect(squadLLM({ operating_model: "garbage" })).toBeNull();
+    expect(squadLLM({ operating_model: [1, 2] })).toBeNull();
+    expect(squadLLM({ operating_model: { llm: "p-1" } })).toBeNull();
+    expect(squadLLM({ operating_model: { llm: { provider_id: "  " } } })).toBeNull();
+  });
+
+  it("tolerates a missing model", () => {
+    expect(squadLLM({ operating_model: { llm: { provider_id: "p-1" } } })).toEqual({ provider_id: "p-1", model: "" });
+  });
+});
+
+describe("withSquadLLM", () => {
+  it("keeps other operating-model keys when setting the LLM", () => {
+    expect(withSquadLLM({ cadence: "weekly" }, { provider_id: "p-1", model: "m-1" }))
+      .toEqual({ cadence: "weekly", llm: { provider_id: "p-1", model: "m-1" } });
+  });
+
+  it("replaces a previous LLM", () => {
+    expect(withSquadLLM({ llm: { provider_id: "old", model: "x" } }, { provider_id: "p-2", model: "m-2" }))
+      .toEqual({ llm: { provider_id: "p-2", model: "m-2" } });
+  });
+
+  it("removes the LLM when given none", () => {
+    expect(withSquadLLM({ cadence: "weekly", llm: { provider_id: "p-1", model: "m" } }, null)).toEqual({ cadence: "weekly" });
+  });
+
+  it("starts from an empty object when the operating model is not an object", () => {
+    expect(withSquadLLM(undefined, { provider_id: "p-1", model: "m" })).toEqual({ llm: { provider_id: "p-1", model: "m" } });
+    expect(withSquadLLM([1], { provider_id: "p-1", model: "m" })).toEqual({ llm: { provider_id: "p-1", model: "m" } });
+  });
+
+  it("does not mutate its input", () => {
+    const original = { cadence: "weekly" };
+    withSquadLLM(original, { provider_id: "p-1", model: "m" });
+    expect(original).toEqual({ cadence: "weekly" });
+  });
+});
+
+describe("providerModels", () => {
+  it("lists the default model first, then the models list, without duplicates", () => {
+    expect(providerModels(provider({ default_model: "b", models: ["a", "b", " c "] }))).toEqual(["b", "a", "c"]);
+  });
+
+  it("ignores non-string and blank entries", () => {
+    expect(providerModels(provider({ default_model: " ", models: ["a", 3, "", null] }))).toEqual(["a"]);
+  });
+
+  it("handles a missing provider or models list", () => {
+    expect(providerModels(null)).toEqual([]);
+    expect(providerModels(provider({ default_model: "only" }))).toEqual(["only"]);
+    expect(providerModels(provider({ models: "not-an-array" }))).toEqual([]);
+  });
+});
+
+describe("resolveSquadLLM", () => {
+  const providers = [
+    provider({ id: "p-active", default_model: "m-1", models: ["m-2"] }),
+    provider({ id: "p-old", status: "deprecated", default_model: "m-9" }),
+    provider({ id: "p-empty" }),
+  ];
+  const squadOn = (providerID: string) => ({ operating_model: { llm: { provider_id: providerID, model: "m-1" } } });
+
+  it("is unset when the squad has no LLM", () => {
+    expect(resolveSquadLLM({ operating_model: {} }, providers)).toEqual({ state: "unset" });
+  });
+
+  it("is unknown when the provider is not in the list", () => {
+    expect(resolveSquadLLM(squadOn("p-gone"), providers).state).toBe("unknown");
+  });
+
+  it("flags a deprecated provider, which the gateway would skip", () => {
+    expect(resolveSquadLLM(squadOn("p-old"), providers).state).toBe("deprecated");
+  });
+
+  it("flags an active provider that serves no models", () => {
+    expect(resolveSquadLLM(squadOn("p-empty"), providers).state).toBe("no-models");
+  });
+
+  it("is ready with the provider's models", () => {
+    const status = resolveSquadLLM(squadOn("p-active"), providers);
+    expect(status.state).toBe("ready");
+    expect(status.state === "ready" && status.models).toEqual(["m-1", "m-2"]);
+  });
+});
+
+describe("pickModel", () => {
+  const models = ["m-1", "m-2"];
+
+  it("returns the first preferred model the provider serves", () => {
+    expect(pickModel(models, "m-9", "m-2")).toBe("m-2");
+  });
+
+  it("falls back to the provider's first model", () => {
+    expect(pickModel(models, "nope", undefined, "")).toBe("m-1");
+  });
+
+  it("is empty when the provider serves nothing", () => {
+    expect(pickModel([], "m-1")).toBe("");
+  });
+});
+
+describe("agentUsesSquadLLM", () => {
+  const ready: SquadLLMStatus = {
+    state: "ready",
+    llm: { provider_id: "p-1", model: "m-1" },
+    provider: provider({ id: "p-1" }),
+    models: ["m-1", "m-2"],
+  };
+  const grant = [{ resource_type: "llm_provider", resource_id: "p-1" }] as AgentPermission[];
+
+  it("is true when provider, grant and model all line up", () => {
+    expect(agentUsesSquadLLM({ default_provider_id: "p-1", default_model: "m-2" }, grant, ready)).toBe(true);
+  });
+
+  it("is false without the gateway grant", () => {
+    expect(agentUsesSquadLLM({ default_provider_id: "p-1", default_model: "m-1" }, [], ready)).toBe(false);
+  });
+
+  it("is false on a different provider", () => {
+    expect(agentUsesSquadLLM({ default_provider_id: "p-2", default_model: "m-1" }, grant, ready)).toBe(false);
+  });
+
+  it("is false for a model the provider does not serve", () => {
+    expect(agentUsesSquadLLM({ default_provider_id: "p-1", default_model: "gpt-x" }, grant, ready)).toBe(false);
+  });
+
+  it("is false whenever the squad LLM is not ready", () => {
+    expect(agentUsesSquadLLM({ default_provider_id: "p-1", default_model: "m-1" }, grant, { state: "unset" })).toBe(false);
+  });
+});
+
+describe("permissionsWithLLM", () => {
+  it("replaces existing provider grants and keeps everything else", () => {
+    const current = [
+      { resource_type: "tool", resource_id: "t-1" },
+      { resource_type: "llm_provider", resource_id: "old" },
+      { resource_type: "skill", resource_id: "s-1" },
+    ] as AgentPermission[];
+    expect(permissionsWithLLM(current, "p-1")).toEqual([
+      { resource_type: "tool", resource_id: "t-1" },
+      { resource_type: "skill", resource_id: "s-1" },
+      { resource_type: "llm_provider", resource_id: "p-1" },
+    ]);
+  });
+
+  it("grants the provider to an agent with no permissions", () => {
+    expect(permissionsWithLLM([], "p-1")).toEqual([{ resource_type: "llm_provider", resource_id: "p-1" }]);
+  });
+});
+
+describe("countLabel", () => {
+  it("pluralises every count except one", () => {
+    expect(countLabel(0, "squad")).toBe("0 squads");
+    expect(countLabel(1, "squad")).toBe("1 squad");
+    expect(countLabel(3, "API")).toBe("3 APIs");
   });
 });

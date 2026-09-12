@@ -12,6 +12,7 @@ export type Squad = {
   owner_id?: string;
   namespace?: string;
   status?: string;
+  operating_model?: unknown;
   created_at?: string;
 };
 

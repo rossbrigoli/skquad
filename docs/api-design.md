@@ -188,6 +188,13 @@ blocks and via `notify-owner`. Agents cannot forge `task_completed`.
 > Listing is readable by every authenticated user, registration/update/
 > deprecation are platform-admin only, and the UI hides write actions from
 > non-admins (read-only catalog).
+>
+> LLM providers are the exception in the UI: they are managed under **Admin**
+> rather than Resources, and each squad selects one provider and default model
+> when it is created. The choice is stored in the squad's `operating_model` as
+> `{"llm": {"provider_id": "...", "model": "..."}}`. Agents added to the squad
+> inherit it through `default_provider_id` / `default_model` plus an
+> `llm_provider` grant, which the gateway turns into the agent's allowed models.
 
 > **Registration** is platform-admin only. **Granting** is squad-owner only.
 

@@ -33,7 +33,16 @@ import { SquadTab, SquadsSection } from "../components/SquadsSection";
 import { RegistrySection } from "../components/RegistrySection";
 import { AdminSection } from "../components/AdminSection";
 import { InboxSection } from "../components/InboxSection";
-import { registryTypes } from "../components/shared";
+import {
+  SquadLLM,
+  permissionsWithLLM,
+  pickModel,
+  providerModels,
+  registryTypes,
+  resolveSquadLLM,
+  squadLLM,
+  withSquadLLM,
+} from "../components/shared";
 
 const emptyState = {
   data: null,
@@ -48,7 +57,7 @@ export default function Home() {
   const [draftToken, setDraftToken] = useState("");
   const [activeSection, setActiveSection] = useState<Section>("squads");
   const [inbox, setInbox] = useState<ApiState<InboxMessage[]>>({ data: [], loading: false, error: "" });
-  const [registrySub, setRegistrySub] = useState<RegistrySubsection>("llm-providers");
+  const [registrySub, setRegistrySub] = useState<RegistrySubsection>("skills");
   const [squadTab, setSquadTab] = useState<SquadTab>("overview");
   const [selectedSquadID, setSelectedSquadID] = useState("");
   const [selectedAgentID, setSelectedAgentID] = useState("");
@@ -68,14 +77,15 @@ export default function Home() {
   const [squadMetering, setSquadMetering] = useState<ApiState<MeteringSummary>>({ data: null, loading: false, error: "" });
   const [squadAudit, setSquadAudit] = useState<ApiState<AuditEntry[]>>({ data: [], loading: false, error: "" });
   const [agentCosts, setAgentCosts] = useState<Record<string, MeteringSummary>>({});
-  const [newSquadForm, setNewSquadForm] = useState({ name: "", mission: "" });
+  const [newSquadForm, setNewSquadForm] = useState({ name: "", mission: "", provider_id: "", model: "" });
   const [squadMissionDraft, setSquadMissionDraft] = useState("");
+  const [squadLLMDraft, setSquadLLMDraft] = useState<SquadLLM>({ provider_id: "", model: "" });
   const [agentForm, setAgentForm] = useState({ name: "", role: "", system_prompt: "", default_model: "", idle_timeout_sec: "300" });
   const [taskForm, setTaskForm] = useState({ title: "", description: "", assignee_agent_id: "" });
   const [chatDraft, setChatDraft] = useState("");
   const [providerForm, setProviderForm] = useState({ name: "", kind: "openai", base_url: "", api_key_ref: "", default_model: "", models: "" });
   const [resourceForm, setResourceForm] = useState(emptyResourceForm);
-  const [permissionForm, setPermissionForm] = useState({ resource_type: "llm_provider" as ResourceType, resource_id: "" });
+  const [permissionForm, setPermissionForm] = useState({ resource_type: "skill" as ResourceType, resource_id: "" });
   const [grantForm, setGrantForm] = useState({ grantee_type: "user" as "user" | "agent", grantee_id: "", permissions: "talk" });
 
   useEffect(() => {
@@ -158,8 +168,23 @@ export default function Home() {
     const selected = (squads.data || []).find((squad) => squad.id === selectedSquadID);
     if (selected) {
       setSquadMissionDraft(selected.mission || "");
+      setSquadLLMDraft(squadLLM(selected) || { provider_id: "", model: "" });
     }
   }, [selectedSquadID, squads.data]);
+
+  // Create Squad starts on the first active provider so the common path stays
+  // one click; the user can still pick another before creating.
+  useEffect(() => {
+    if (newSquadForm.provider_id) {
+      return;
+    }
+    const first = (providers.data || []).find((provider) => provider.status === "active");
+    if (first) {
+      setNewSquadForm((current) => (
+        current.provider_id ? current : { ...current, provider_id: first.id, model: providerModels(first)[0] || "" }
+      ));
+    }
+  }, [providers.data, newSquadForm.provider_id]);
 
   useEffect(() => {
     if (!selectedAgentID) {
@@ -224,21 +249,42 @@ export default function Home() {
     };
   }, [token, refreshTick]);
 
+  // Providers feed the squad LLM picker and agent model list on Squads, and
+  // provider management on Admin. Resources no longer lists them.
+  useEffect(() => {
+    if (activeSection !== "squads" && activeSection !== "admin") {
+      return;
+    }
+    let cancelled = false;
+    setProviders({ data: null, loading: true, error: "" });
+    apiGet<LLMProvider[]>("/registry/llm-providers", token)
+      .then((items) => {
+        if (!cancelled) {
+          setProviders({ data: items, loading: false, error: "" });
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setProviders(errorState(error, []));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSection, token, refreshTick]);
+
   useEffect(() => {
     if (activeSection !== "registry" && activeSection !== "squads") {
       return;
     }
     let cancelled = false;
-    setProviders({ data: null, loading: true, error: "" });
     setResources({ data: null, loading: true, error: "" });
-    Promise.allSettled([
-      apiGet<LLMProvider[]>("/registry/llm-providers", token),
-      ...registryTypes.map((item) => apiGet<RegistryResource[]>(`/registry/${item.path}`, token)),
-    ]).then(([providerResult, ...resourceResults]) => {
+    Promise.allSettled(
+      registryTypes.map((item) => apiGet<RegistryResource[]>(`/registry/${item.path}`, token)),
+    ).then((resourceResults) => {
       if (cancelled) {
         return;
       }
-      setProviders(stateFromResult(providerResult, []));
       const combined: RegistryResource[] = [];
       let error = "";
       for (const result of resourceResults) {
@@ -410,48 +456,101 @@ export default function Home() {
     setToken(next);
   }
 
-  async function submitSquad(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await runAction("Squad created", async () => {
+  async function submitSquad(): Promise<string | null> {
+    const llm = normalizedLLM(newSquadForm, providers.data || []);
+    return runFormAction("Squad created", async () => {
       const created = await apiPost<Squad>("/squads", token, {
         name: newSquadForm.name,
         mission: newSquadForm.mission,
-        operating_model: {},
+        operating_model: withSquadLLM({}, llm),
       });
-      setNewSquadForm({ name: "", mission: "" });
+      setNewSquadForm({ ...newSquadForm, name: "", mission: "" });
       setSelectedSquadID(created.id);
     });
   }
 
-  async function updateSquadMission(event: FormEvent<HTMLFormElement>) {
+  async function updateSquadSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedSquad) {
       return;
     }
+    const llm = normalizedLLM(squadLLMDraft, providers.data || []) || squadLLM(selectedSquad);
     await runAction("Squad updated", async () => {
       await apiPatch<Squad>(`/squads/${selectedSquad.id}`, token, {
         name: selectedSquad.name,
         mission: squadMissionDraft,
+        operating_model: withSquadLLM(selectedSquad.operating_model, llm),
       });
     });
   }
 
-  async function submitAgent(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  // An agent reaches an LLM through three things: a default provider and model
+  // for its runtime, and an llm_provider grant the gateway turns into its
+  // allowed models. Creating an agent does not write grants, so the squad's
+  // provider is granted in a second call straight after.
+  async function submitAgent(): Promise<string | null> {
     if (!selectedSquadID) {
-      return;
+      return "Select a squad before adding agents.";
     }
-    await runAction("Agent created", async () => {
+    const status = resolveSquadLLM(selectedSquad, providers.data || []);
+    if (status.state !== "ready") {
+      return "This squad needs a working LLM first. Choose one on the Overview tab.";
+    }
+    const model = pickModel(status.models, agentForm.default_model, status.llm.model);
+    const blankAgent = { name: "", role: "", system_prompt: "", default_model: "", idle_timeout_sec: "300" };
+    setActionMessage("");
+    let createdID = "";
+    try {
       const created = await apiPost<Agent>(`/squads/${selectedSquadID}/agents`, token, {
         name: agentForm.name,
         role: agentForm.role,
         system_prompt: agentForm.system_prompt,
-        default_model: agentForm.default_model,
+        default_provider_id: status.llm.provider_id,
+        default_model: model,
         permissions: [],
         idle_timeout_sec: Number(agentForm.idle_timeout_sec) || 300,
       });
-      setAgentForm({ name: "", role: "", system_prompt: "", default_model: "", idle_timeout_sec: "300" });
+      createdID = created.id;
+      await apiPut<AgentPermission[]>(`/agents/${created.id}/permissions`, token, permissionsWithLLM([], status.llm.provider_id));
+      setAgentForm(blankAgent);
       setSelectedAgentID(created.id);
+      refresh("Agent created");
+      return null;
+    } catch (error) {
+      const message = errorState(error).error || "Request failed";
+      if (!createdID) {
+        return message;
+      }
+      // The agent exists but cannot reach the gateway yet, so the dialog
+      // closes (a retry would create a duplicate) and the page banner points
+      // at the one-click fix.
+      setAgentForm(blankAgent);
+      setSelectedAgentID(createdID);
+      refresh(`Agent created, but granting the squad LLM failed: ${message}. Use Apply squad LLM on the agent to retry.`);
+      return null;
+    }
+  }
+
+  async function applySquadLLM(agentID: string) {
+    const status = resolveSquadLLM(selectedSquad, providers.data || []);
+    const agent = (agents.data || []).find((item) => item.id === agentID);
+    if (status.state !== "ready" || !agent) {
+      return;
+    }
+    const model = pickModel(status.models, agent.default_model, status.llm.model);
+    // A new grant reaches the gateway only when the agent's key is
+    // re-provisioned, which happens on identity rotation.
+    const hadGrant = agentID === selectedAgentID
+      && (agentPermissions.data || []).some((item) => item.resource_type === "llm_provider" && item.resource_id === status.llm.provider_id);
+    const success = agent.identity_id && !hadGrant
+      ? "Squad LLM applied. Rotate this agent's identity so the LLM gateway picks up the change"
+      : "Squad LLM applied";
+    await runAction(success, async () => {
+      // PUT replaces every grant, so build on the server's current list
+      // rather than possibly stale client state.
+      const current = await apiGet<AgentPermission[]>(`/agents/${agentID}/permissions`, token);
+      await apiPatch<Agent>(`/agents/${agentID}`, token, { default_provider_id: status.llm.provider_id, default_model: model });
+      await apiPut<AgentPermission[]>(`/agents/${agentID}/permissions`, token, permissionsWithLLM(current, status.llm.provider_id));
     });
   }
 
@@ -467,12 +566,11 @@ export default function Home() {
     });
   }
 
-  async function submitTask(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitTask(): Promise<string | null> {
     if (!selectedSquadID) {
-      return;
+      return "Select a squad before creating tasks.";
     }
-    await runAction("Task created", async () => {
+    return runFormAction("Task created", async () => {
       await apiPost<Task>(`/squads/${selectedSquadID}/board/tasks`, token, taskForm);
       setTaskForm({ title: "", description: "", assignee_agent_id: "" });
     });
@@ -539,9 +637,8 @@ export default function Home() {
     });
   }
 
-  async function submitProvider(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await runAction("Provider registered", async () => {
+  async function submitProvider(): Promise<string | null> {
+    return runFormAction("Provider registered", async () => {
       await apiPost<LLMProvider>("/registry/llm-providers", token, {
         name: providerForm.name,
         kind: providerForm.kind,
@@ -555,15 +652,11 @@ export default function Home() {
     });
   }
 
-  async function submitResource(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (registrySub === "llm-providers") {
-      return;
-    }
+  async function submitResource(): Promise<string | null> {
     // The visible subsection is the only source of truth for the resource type,
     // so the posted route always matches the form the user is looking at.
     const route = registrySub;
-    await runAction("Resource registered", async () => {
+    return runFormAction("Resource registered", async () => {
       await apiPost<RegistryResource>(`/registry/${route}`, token, {
         name: resourceForm.name,
         description: resourceForm.description,
@@ -591,12 +684,14 @@ export default function Home() {
     });
   }
 
-  async function grantAgentPermission(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedAgentID || permissionForm.resource_id === "") {
-      return;
+  async function grantAgentPermission(): Promise<string | null> {
+    if (!selectedAgentID) {
+      return "Select an agent before granting resources.";
     }
-    await runAction("Agent permission updated", async () => {
+    if (permissionForm.resource_id === "") {
+      return "Choose a resource to grant.";
+    }
+    return runFormAction("Agent permission updated", async () => {
       const current = agentPermissions.data || [];
       const next = [
         ...current.map((item) => ({ resource_type: item.resource_type, resource_id: item.resource_id })),
@@ -619,12 +714,11 @@ export default function Home() {
     });
   }
 
-  async function submitAccessGrant(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitAccessGrant(): Promise<string | null> {
     if (!selectedSquadID) {
-      return;
+      return "Select a squad before creating access grants.";
     }
-    await runAction("Access grant created", async () => {
+    return runFormAction("Access grant created", async () => {
       await apiPost<AccessGrant>(`/squads/${selectedSquadID}/access-grants`, token, grantForm);
       setGrantForm({ ...grantForm, grantee_id: "" });
     });
@@ -644,6 +738,19 @@ export default function Home() {
     } catch (error) {
       const state = errorState(error);
       setActionMessage(state.error || "Request failed");
+    }
+  }
+
+  // Create dialogs show failures inside the dialog, so the error is returned to
+  // the caller instead of being written to the page banner hidden behind it.
+  async function runFormAction(success: string, action: () => Promise<void>): Promise<string | null> {
+    setActionMessage("");
+    try {
+      await action();
+      refresh(success);
+      return null;
+    } catch (error) {
+      return errorState(error).error || "Request failed";
     }
   }
 
@@ -697,7 +804,10 @@ export default function Home() {
                 onCreateSquad={submitSquad}
                 missionDraft={squadMissionDraft}
                 setMissionDraft={setSquadMissionDraft}
-                onUpdateMission={updateSquadMission}
+                squadLLMDraft={squadLLMDraft}
+                setSquadLLMDraft={setSquadLLMDraft}
+                onUpdateSettings={updateSquadSettings}
+                onApplySquadLLM={applySquadLLM}
                 squadTab={squadTab}
                 setSquadTab={setSquadTab}
                 agents={agents}
@@ -741,15 +851,10 @@ export default function Home() {
             {activeSection === "registry" && (
               <RegistrySection
                 registrySub={registrySub}
-                providers={providers}
                 resources={resources}
-                providerForm={providerForm}
-                setProviderForm={setProviderForm}
                 resourceForm={resourceForm}
                 setResourceForm={setResourceForm}
-                onCreateProvider={submitProvider}
                 onCreateResource={submitResource}
-                onDeprecateProvider={deprecateProvider}
                 onDeprecateResource={deprecateResource}
                 isAdmin={isAdmin}
               />
@@ -762,6 +867,11 @@ export default function Home() {
                 selectedAgent={selectedAgent}
                 metering={metering}
                 audit={audit}
+                providers={providers}
+                providerForm={providerForm}
+                setProviderForm={setProviderForm}
+                onCreateProvider={submitProvider}
+                onDeprecateProvider={deprecateProvider}
               />
             )}
           </section>
@@ -822,4 +932,18 @@ function uniquePermissions(items: Array<{ resource_type: ResourceType; resource_
     seen.add(key);
     return true;
   });
+}
+
+// Saves the model the picker actually displays: when a stored model is no
+// longer served by its provider, the picker shows the provider's first model,
+// so that is what gets saved rather than the stale name.
+function normalizedLLM(value: SquadLLM, providers: LLMProvider[]): SquadLLM | null {
+  if (!value.provider_id) {
+    return null;
+  }
+  const provider = providers.find((item) => item.id === value.provider_id);
+  return {
+    provider_id: value.provider_id,
+    model: provider ? pickModel(providerModels(provider), value.model) : value.model,
+  };
 }
