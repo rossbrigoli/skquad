@@ -7,10 +7,10 @@
 > **metering, cost, BYOM routing, and agent permissions**. It is implemented
 > with the **LiteLLM proxy**.
 >
-> The LiteLLM proxy, virtual-key provisioning, and metering callback path are
-> implemented. Key refresh/revocation and full permission/budget lifecycle
-> hardening remain follow-up work; see
-> [`implementation-status.md`](implementation-status.md).
+> The LiteLLM proxy, virtual-key provisioning, the metering callback path, and
+> key lifecycle enforcement (update/revoke on permission change, drift
+> reconciliation) are implemented. Full budget hardening remains follow-up
+> work; see [`implementation-status.md`](implementation-status.md).
 
 ---
 
@@ -82,11 +82,33 @@ flowchart LR
   permissions change).
 
 Current implementation note: the control plane calls LiteLLM `/key/generate`
-with the model aliases from the agent's active `llm_provider` grants, writes the
-returned raw key into the generated Kubernetes Secret, and stores only the
-Secret ref. If LiteLLM admin settings are absent, local development falls back
-to a generated opaque token. Automatic key updates/revocation when permissions
-change is still a required follow-up.
+with the model aliases from the agent's active `llm_provider` grants, writes
+the returned raw key into the generated Kubernetes Secret, and stores the
+Secret ref plus the returned key **token** (LiteLLM's hash of the key, never
+the raw key) on the agent identity as `gateway_key_token` /
+`gateway_key_status`. If LiteLLM admin settings are absent, local development
+falls back to a generated opaque token.
+
+### Key lifecycle enforcement (implemented)
+
+- **Permission change (`PUT /agents/{id}/permissions`)**: the gateway key is
+  synced **before** the permission commit. Models added → `/key/update` with
+  the new allow-list; last LLM grant removed → `/key/delete` (revoked).
+  A gateway failure aborts the permission change (502) so a revoked grant
+  never keeps a live key.
+- **Re-grant after revocation**: a fresh key is provisioned against the
+  existing identity and written to the agent's virtual-key Secret.
+- **Agent/squad deletion**: active keys are revoked at the gateway before the
+  rows are deleted, so no untracked key survives.
+- **Provider deprecation**: all agents granted the deprecated provider are
+  re-converged (update, or revoke if no active models remain).
+- **Drift reconciliation**: `POST /api/v1/admin/gateway/keys/reconcile`
+  (platform admin) re-converges every agent's key against current grants
+  and is idempotent; use it after partial failures. The identity-record
+  write after a commit failure is audited as
+  `*.gateway_key_record_stale` for exactly this repair path.
+- **Runtime behavior on revoked keys**: LiteLLM rejects calls with revoked
+  keys (auth error), which fails the task — fail-closed by design.
 
 ---
 
@@ -161,9 +183,10 @@ Control-plane management endpoints (for the API server, not agents):
 - `POST /key/info`, `POST /key/update`, `POST /key/delete`
 - `GET /global/spend`, `GET /spend` (metering queries)
 
-Skquad currently uses `/key/generate` during identity create/rotate. The
-remaining management endpoints are part of the revocation, grant-change update,
-and budget follow-up work.
+Skquad uses `/key/generate` at identity create/rotate and on re-grant,
+`/key/update` when a permission change alters the model allow-list, and
+`/key/delete` on revocation, agent deletion, squad deletion, and full
+provider deprecation. Budget enforcement remains follow-up work.
 
 ---
 

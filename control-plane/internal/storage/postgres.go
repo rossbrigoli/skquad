@@ -260,7 +260,7 @@ func getAgentTx(ctx context.Context, tx pgx.Tx, id string) (*domain.Agent, error
 
 func getAgentIdentityTx(ctx context.Context, tx pgx.Tx, agentID string) (*domain.AgentIdentity, error) {
 	row := tx.QueryRow(ctx, `
-		SELECT id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at
+		SELECT id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status
 		FROM agent_identities
 		WHERE agent_id = $1
 	`, agentID)
@@ -694,7 +694,7 @@ func (p *PostgresStore) CreateAgentIdentity(ctx context.Context, i *domain.Agent
 	row := tx.QueryRow(ctx, `
 		INSERT INTO agent_identities (agent_id, credential_ref, credential_hash, virtual_key_ref, created_by)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at
+		RETURNING id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status
 	`, i.AgentID, i.CredentialRef, i.CredentialHash, nullableText(i.VirtualKeyRef), i.CreatedBy)
 	created, err := scanAgentIdentity(row)
 	if err != nil {
@@ -725,7 +725,7 @@ func (p *PostgresStore) CreateAgentIdentity(ctx context.Context, i *domain.Agent
 
 func (p *PostgresStore) GetAgentIdentity(ctx context.Context, agentID string) (*domain.AgentIdentity, error) {
 	row := p.pool.QueryRow(ctx, `
-		SELECT id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at
+		SELECT id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status
 		FROM agent_identities
 		WHERE agent_id = $1
 	`, agentID)
@@ -744,9 +744,11 @@ func (p *PostgresStore) RotateAgentIdentity(ctx context.Context, agentID string,
 		SET credential_ref = $2,
 		    credential_hash = $3,
 		    virtual_key_ref = $4,
+		    gateway_key_token = '',
+		    gateway_key_status = 'none',
 		    rotated_at = now()
 		WHERE agent_id = $1
-		RETURNING id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at
+		RETURNING id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status
 	`, agentID, credentialRef, credentialHash, nullableText(virtualKeyRef))
 	identity, err := scanAgentIdentity(row)
 	if err != nil {
@@ -766,6 +768,40 @@ func (p *PostgresStore) RotateAgentIdentity(ctx context.Context, agentID string,
 		return nil, mapPgErr(err)
 	}
 	return identity, nil
+}
+
+func (p *PostgresStore) SetAgentIdentityGatewayKey(ctx context.Context, agentID string, token string, status domain.GatewayKeyStatus) (*domain.AgentIdentity, error) {
+	row := p.pool.QueryRow(ctx, `
+		UPDATE agent_identities
+		SET gateway_key_token = $2,
+		    gateway_key_status = $3
+		WHERE agent_id = $1
+		RETURNING id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status
+	`, agentID, token, string(status))
+	return scanAgentIdentity(row)
+}
+
+func (p *PostgresStore) ListAllAgents(ctx context.Context) ([]*domain.Agent, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
+		       coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
+		FROM agents
+		ORDER BY name
+	`)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+
+	var agents []*domain.Agent
+	for rows.Next() {
+		a, err := scanAgent(rows)
+		if err != nil {
+			return nil, err
+		}
+		agents = append(agents, a)
+	}
+	return agents, mapPgErr(rows.Err())
 }
 
 func (p *PostgresStore) CreateGrant(ctx context.Context, g *domain.AccessGrant) (*domain.AccessGrant, error) {
@@ -2064,6 +2100,8 @@ func scanAgentIdentity(row scanner) (*domain.AgentIdentity, error) {
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&rotatedAt,
+		&i.GatewayKeyToken,
+		&i.GatewayKeyStatus,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}

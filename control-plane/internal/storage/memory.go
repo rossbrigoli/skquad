@@ -475,9 +475,37 @@ func (m *MemoryStore) RotateAgentIdentity(_ context.Context, agentID string, cre
 	identity.CredentialRef = credentialRef
 	identity.CredentialHash = credentialHash
 	identity.VirtualKeyRef = virtualKeyRef
+	identity.GatewayKeyToken = ""
+	identity.GatewayKeyStatus = domain.GatewayKeyNone
 	identity.RotatedAt = time.Now().UTC()
 	m.enqueueAgentOutboxLocked(domain.KubernetesOpUpsertAgent, m.agents[agentID])
 	return cloneAgentIdentity(identity), nil
+}
+
+func (m *MemoryStore) SetAgentIdentityGatewayKey(_ context.Context, agentID string, token string, status domain.GatewayKeyStatus) (*domain.AgentIdentity, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	identityID, ok := m.identityAgent[agentID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	identity := m.identities[identityID]
+	identity.GatewayKeyToken = token
+	identity.GatewayKeyStatus = status
+	return cloneAgentIdentity(identity), nil
+}
+
+func (m *MemoryStore) ListAllAgents(_ context.Context) ([]*domain.Agent, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*domain.Agent, 0, len(m.agents))
+	for _, a := range m.agents {
+		out = append(out, cloneAgent(a))
+	}
+	slices.SortFunc(out, func(a, b *domain.Agent) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return out, nil
 }
 
 func (m *MemoryStore) CreateGrant(_ context.Context, g *domain.AccessGrant) (*domain.AccessGrant, error) {

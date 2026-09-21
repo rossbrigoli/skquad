@@ -74,6 +74,11 @@ type AgentStore interface {
 	CreateAgentIdentity(ctx context.Context, i *domain.AgentIdentity) (*domain.AgentIdentity, error)
 	GetAgentIdentity(ctx context.Context, agentID string) (*domain.AgentIdentity, error)
 	RotateAgentIdentity(ctx context.Context, agentID string, credentialRef string, credentialHash string, virtualKeyRef string) (*domain.AgentIdentity, error)
+	// SetAgentIdentityGatewayKey records the gateway virtual-key token and
+	// lifecycle state for an agent's identity.
+	SetAgentIdentityGatewayKey(ctx context.Context, agentID string, token string, status domain.GatewayKeyStatus) (*domain.AgentIdentity, error)
+	// ListAllAgents returns every agent across all squads (reconcile paths).
+	ListAllAgents(ctx context.Context) ([]*domain.Agent, error)
 }
 
 // BoardStore persists Kanban boards.

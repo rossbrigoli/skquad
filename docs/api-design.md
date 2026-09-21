@@ -76,8 +76,9 @@
 | `DELETE` | `/api/v1/agents/:id` | Delete an agent (owner). Enqueues deletion of the `Agent` CR. |
 | `POST` | `/api/v1/agents/:id/identity` | **Create the agent identity** (one-click; owner). |
 | `POST` | `/api/v1/agents/:id/identity/rotate` | Rotate the agent credential / virtual key (owner). |
+| `POST` | `/api/v1/admin/gateway/keys/reconcile` | Re-converge every agent's LLM gateway virtual key with current grants; idempotent (platform admin). |
 | `GET` | `/api/v1/agents/:id/permissions` | List the agent's resource permissions. |
-| `PUT` | `/api/v1/agents/:id/permissions` | Set the agent's resource permissions (owner). |
+| `PUT` | `/api/v1/agents/:id/permissions` | Set the agent's resource permissions (owner). The agent's LLM gateway virtual key is synced before the commit: model allow-list updated, or key revoked when no active LLM models remain; a gateway failure returns 502 and the permissions are unchanged. |
 
 Identity responses expose credential and virtual-key references only. Raw agent
 credential and gateway virtual-key material is written to the configured Secret

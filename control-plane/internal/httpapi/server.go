@@ -74,9 +74,15 @@ type CRWriter interface {
 	DeleteAgentCredential(ctx context.Context, credentialRef string) error
 }
 
-// LLMGatewayProvisioner issues agent-scoped LiteLLM virtual keys.
+// LLMGatewayProvisioner issues and maintains agent-scoped LiteLLM virtual keys.
 type LLMGatewayProvisioner interface {
-	ProvisionAgentKey(ctx context.Context, req GatewayKeyRequest) (string, error)
+	// ProvisionAgentKey creates a new virtual key and returns the key
+	// (handed to the agent) plus its token (kept for later update/revoke).
+	ProvisionAgentKey(ctx context.Context, req GatewayKeyRequest) (key string, token string, err error)
+	// UpdateAgentKey rewrites the model allow-list of an existing key.
+	UpdateAgentKey(ctx context.Context, token string, models []string) error
+	// RevokeAgentKey deletes a key so further model calls fail.
+	RevokeAgentKey(ctx context.Context, token string) error
 }
 
 // GatewayKeyRequest describes the access a new runtime virtual key should have.
@@ -198,6 +204,7 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 
 			r.Get("/metering/summary", s.getMeteringSummary)
 			r.Get("/audit", s.listAudit)
+			r.Post("/admin/gateway/keys/reconcile", s.reconcileGatewayKeys)
 		})
 	})
 
@@ -219,9 +226,16 @@ func (noopCRWriter) DeleteAgentCredential(context.Context, string) error { retur
 
 type noopLLMGateway struct{}
 
-func (noopLLMGateway) ProvisionAgentKey(context.Context, GatewayKeyRequest) (string, error) {
-	return generateCredential()
+func (noopLLMGateway) ProvisionAgentKey(context.Context, GatewayKeyRequest) (string, string, error) {
+	key, err := generateCredential()
+	if err != nil {
+		return "", "", err
+	}
+	return key, "noop-" + key, nil
 }
+
+func (noopLLMGateway) UpdateAgentKey(context.Context, string, []string) error { return nil }
+func (noopLLMGateway) RevokeAgentKey(context.Context, string) error         { return nil }
 
 type principalKey struct{}
 type agentPrincipalKey struct{}
@@ -531,12 +545,95 @@ func (s *Server) deprecateLLMProvider(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
 	}
-	if err := s.store.DeprecateLLMProvider(r.Context(), chi.URLParam(r, "providerID")); err != nil {
+	providerID := chi.URLParam(r, "providerID")
+	if err := s.store.DeprecateLLMProvider(r.Context(), providerID); err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	s.recordUserAudit(r, "registry.llm_provider.deprecate", string(domain.ResLLMProvider), chi.URLParam(r, "providerID"), "", nil)
+	// Best-effort: converge the virtual keys of every agent granted this
+	// provider so deprecation does not leave models reachable. The
+	// reconcile endpoint repairs anything this misses.
+	summary := s.syncAgentsWithLLMProvider(r.Context(), providerID)
+	metadata, _ := json.Marshal(map[string]any{"gateway_sync": summary})
+	s.recordUserAudit(r, "registry.llm_provider.deprecate", string(domain.ResLLMProvider), providerID, "", metadata)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// syncAgentsWithLLMProvider re-converges gateway keys for all agents holding a
+// permission on the given LLM provider. Returns an action summary.
+func (s *Server) syncAgentsWithLLMProvider(ctx context.Context, providerID string) map[string]any {
+	counts := map[string]int{"checked": 0, "errors": 0}
+	agents, err := s.store.ListAllAgents(ctx)
+	if err != nil {
+		counts["errors"]++
+		return toAnyMap(counts)
+	}
+	for _, agent := range agents {
+		perms, err := s.store.ListAgentPermissions(ctx, agent.ID)
+		if err != nil {
+			counts["errors"]++
+			continue
+		}
+		hasProvider := false
+		for _, perm := range perms {
+			if perm.ResourceType == domain.ResLLMProvider && perm.ResourceID == providerID {
+				hasProvider = true
+				break
+			}
+		}
+		if !hasProvider {
+			continue
+		}
+		counts["checked"]++
+		action, err := s.syncAgentGatewayKey(ctx, agent)
+		if err != nil {
+			counts["errors"]++
+			continue
+		}
+		if action != "none" {
+			counts[action]++
+		}
+	}
+	return toAnyMap(counts)
+}
+
+func toAnyMap(in map[string]int) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// reconcileGatewayKeys converges every agent's gateway virtual key with its
+// current grants. Idempotent; safe to re-run after partial failures.
+func (s *Server) reconcileGatewayKeys(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePlatformAdmin(w, r) {
+		return
+	}
+	agents, err := s.store.ListAllAgents(r.Context())
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	summary := map[string]int{"checked": len(agents), "provisioned": 0, "updated": 0, "revoked": 0, "none": 0}
+	var failures []map[string]string
+	for _, agent := range agents {
+		action, err := s.syncAgentGatewayKey(r.Context(), agent)
+		if err != nil {
+			failures = append(failures, map[string]string{"agent_id": agent.ID, "error": err.Error()})
+			continue
+		}
+		summary[action]++
+	}
+	summary["errors"] = len(failures)
+	out := toAnyMap(summary)
+	if len(failures) > 0 {
+		out["failures"] = failures
+	}
+	metadata, _ := json.Marshal(out)
+	s.recordUserAudit(r, "gateway.keys.reconcile", "gateway", "", "", metadata)
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) {
@@ -793,6 +890,16 @@ func (s *Server) deleteSquad(w http.ResponseWriter, r *http.Request) {
 		}
 		identities = append(identities, identity)
 	}
+	// Revoke live gateway keys before the squad rows disappear so no
+	// untracked key survives the delete.
+	for _, identity := range identities {
+		if identity.GatewayKeyStatus == domain.GatewayKeyActive && identity.GatewayKeyToken != "" {
+			if err := s.llmGateway.RevokeAgentKey(r.Context(), identity.GatewayKeyToken); err != nil {
+				writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to revoke LLM gateway virtual key")
+				return
+			}
+		}
+	}
 	if err := s.store.DeleteSquad(r.Context(), squad.ID); err != nil {
 		writeStorageError(w, err)
 		return
@@ -1032,6 +1139,14 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
+	// Revoke the live gateway key before the identity row disappears so no
+	// untracked key survives the delete.
+	if identity != nil && identity.GatewayKeyStatus == domain.GatewayKeyActive && identity.GatewayKeyToken != "" {
+		if err := s.llmGateway.RevokeAgentKey(r.Context(), identity.GatewayKeyToken); err != nil {
+			writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to revoke LLM gateway virtual key")
+			return
+		}
+	}
 	if err := s.store.DeleteAgent(r.Context(), agent.ID); err != nil {
 		writeStorageError(w, err)
 		return
@@ -1160,7 +1275,7 @@ func (s *Server) createAgentIdentity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to generate agent credential")
 		return
 	}
-	virtualKey, err := s.provisionAgentVirtualKey(r.Context(), agent)
+	virtualKey, keyToken, err := s.provisionAgentVirtualKey(r.Context(), agent)
 	if err != nil {
 		if errors.Is(err, errNoGatewayModels) {
 			writeError(w, http.StatusConflict, "no_llm_models_granted", "agent has no active granted LLM provider models")
@@ -1170,6 +1285,8 @@ func (s *Server) createAgentIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	identity.CredentialHash = hashCredential(credential)
+	identity.GatewayKeyToken = keyToken
+	identity.GatewayKeyStatus = domain.GatewayKeyActive
 	if err := s.crWriter.WriteAgentCredential(r.Context(), identity.CredentialRef, agent.ID, credential); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to write agent credential secret")
 		return
@@ -1210,7 +1327,7 @@ func (s *Server) rotateAgentIdentity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to generate agent credential")
 		return
 	}
-	virtualKey, err := s.provisionAgentVirtualKey(r.Context(), agent)
+	virtualKey, keyToken, err := s.provisionAgentVirtualKey(r.Context(), agent)
 	if err != nil {
 		if errors.Is(err, errNoGatewayModels) {
 			writeError(w, http.StatusConflict, "no_llm_models_granted", "agent has no active granted LLM provider models")
@@ -1237,19 +1354,28 @@ func (s *Server) rotateAgentIdentity(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
+	if updated, err := s.store.SetAgentIdentityGatewayKey(r.Context(), agent.ID, keyToken, domain.GatewayKeyActive); err != nil {
+		s.recordUserAudit(r, "agent_identity.gateway_key_record_stale", "agent_identity", identity.ID, agent.SquadID, nil)
+	} else {
+		identity = updated
+	}
 	_ = s.crWriter.DeleteAgentCredential(r.Context(), existing.CredentialRef)
 	_ = s.crWriter.DeleteAgentCredential(r.Context(), existing.VirtualKeyRef)
 	s.recordUserAudit(r, "agent_identity.rotate", "agent_identity", identity.ID, agent.SquadID, nil)
 	writeJSON(w, http.StatusOK, identity)
 }
 
-func (s *Server) provisionAgentVirtualKey(ctx context.Context, agent *domain.Agent) (string, error) {
+func (s *Server) gatewayConfigured() bool {
+	return s.cfg != nil && s.cfg.LiteLLMAdminURL != "" && s.cfg.LiteLLMMasterKey != ""
+}
+
+func (s *Server) provisionAgentVirtualKey(ctx context.Context, agent *domain.Agent) (string, string, error) {
 	models, err := s.allowedGatewayModels(ctx, agent)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	if s.cfg != nil && s.cfg.LiteLLMAdminURL != "" && s.cfg.LiteLLMMasterKey != "" && len(models) == 0 {
-		return "", fmt.Errorf("%w to agent %s", errNoGatewayModels, agent.ID)
+	if s.gatewayConfigured() && len(models) == 0 {
+		return "", "", fmt.Errorf("%w to agent %s", errNoGatewayModels, agent.ID)
 	}
 	return s.llmGateway.ProvisionAgentKey(ctx, GatewayKeyRequest{
 		AgentID: agent.ID,
@@ -1263,6 +1389,12 @@ func (s *Server) allowedGatewayModels(ctx context.Context, agent *domain.Agent) 
 	if err != nil {
 		return nil, err
 	}
+	return s.gatewayModelsFromPerms(ctx, perms)
+}
+
+// gatewayModelsFromPerms derives the model allow-list a permission set implies.
+// Inactive (deprecated) providers contribute no models.
+func (s *Server) gatewayModelsFromPerms(ctx context.Context, perms []*domain.AgentPermission) ([]string, error) {
 	seen := map[string]bool{}
 	var models []string
 	add := func(model string) {
@@ -1295,6 +1427,67 @@ func (s *Server) allowedGatewayModels(ctx context.Context, agent *domain.Agent) 
 		}
 	}
 	return models, nil
+}
+
+// syncAgentGatewayKey converges an agent's LiteLLM virtual key to its current
+// granted models: update when the allow-list changes, revoke when nothing is
+// granted, provision when a key is missing but models are granted. It is
+// idempotent and used by the admin reconcile endpoint and provider deprecation.
+// Returns the action taken: "none"|"updated"|"revoked"|"provisioned".
+func (s *Server) syncAgentGatewayKey(ctx context.Context, agent *domain.Agent) (string, error) {
+	models, err := s.allowedGatewayModels(ctx, agent)
+	if err != nil {
+		return "", err
+	}
+	identity, err := s.store.GetAgentIdentity(ctx, agent.ID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return "none", nil
+		}
+		return "", err
+	}
+	switch {
+	case identity.GatewayKeyStatus == domain.GatewayKeyActive && identity.GatewayKeyToken != "":
+		if len(models) == 0 {
+			if err := s.llmGateway.RevokeAgentKey(ctx, identity.GatewayKeyToken); err != nil {
+				return "", err
+			}
+			if _, err := s.store.SetAgentIdentityGatewayKey(ctx, agent.ID, identity.GatewayKeyToken, domain.GatewayKeyRevoked); err != nil {
+				return "", err
+			}
+			return "revoked", nil
+		}
+		if err := s.llmGateway.UpdateAgentKey(ctx, identity.GatewayKeyToken, models); err != nil {
+			return "", err
+		}
+		return "updated", nil
+	case len(models) > 0:
+		squad, err := s.store.GetSquad(ctx, agent.SquadID)
+		if err != nil {
+			return "", err
+		}
+		key, token, err := s.llmGateway.ProvisionAgentKey(ctx, GatewayKeyRequest{
+			AgentID: agent.ID,
+			SquadID: agent.SquadID,
+			Models:  models,
+		})
+		if err != nil {
+			return "", err
+		}
+		ref := generatedVirtualKeyRef(squad.Namespace, agent.ID)
+		if err := s.crWriter.WriteAgentCredential(ctx, ref, agent.ID, key); err != nil {
+			_ = s.llmGateway.RevokeAgentKey(ctx, token)
+			return "", err
+		}
+		if _, err := s.store.SetAgentIdentityGatewayKey(ctx, agent.ID, token, domain.GatewayKeyActive); err != nil {
+			_ = s.llmGateway.RevokeAgentKey(ctx, token)
+			_ = s.crWriter.DeleteAgentCredential(ctx, ref)
+			return "", err
+		}
+		return "provisioned", nil
+	default:
+		return "none", nil
+	}
 }
 
 func (s *Server) listAgentPermissions(w http.ResponseWriter, r *http.Request) {
@@ -1353,14 +1546,101 @@ func (s *Server) setAgentPermissions(w http.ResponseWriter, r *http.Request) {
 			GrantedBy:    u.ID,
 		})
 	}
-	metadata, _ := json.Marshal(map[string]int{"count": len(perms)})
+	// Sync the agent's LLM gateway virtual key before committing permissions:
+	// revocations take effect at the gateway first, so a gateway failure
+	// aborts the mutation with the previous state intact instead of leaving
+	// a live key behind a revoked grant.
+	prospectivePerms := make([]*domain.AgentPermission, 0, len(perms))
+	for i := range perms {
+		prospectivePerms = append(prospectivePerms, &perms[i])
+	}
+	prospective, err := s.gatewayModelsFromPerms(r.Context(), prospectivePerms)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	identity, err := s.store.GetAgentIdentity(r.Context(), agent.ID)
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		writeStorageError(w, err)
+		return
+	}
+
+	gatewayAction := "none"
+	var newKeyToken string
+	var newKeyRef string
+	if identity != nil && identity.GatewayKeyStatus == domain.GatewayKeyActive && identity.GatewayKeyToken != "" {
+		if len(prospective) == 0 {
+			if err := s.llmGateway.RevokeAgentKey(r.Context(), identity.GatewayKeyToken); err != nil {
+				writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to revoke LLM gateway virtual key")
+				return
+			}
+			gatewayAction = "revoked"
+		} else {
+			if err := s.llmGateway.UpdateAgentKey(r.Context(), identity.GatewayKeyToken, prospective); err != nil {
+				writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to update LLM gateway virtual key")
+				return
+			}
+			gatewayAction = "updated"
+		}
+	} else if identity != nil && len(prospective) > 0 {
+		squad, err := s.store.GetSquad(r.Context(), agent.SquadID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		key, token, err := s.llmGateway.ProvisionAgentKey(r.Context(), GatewayKeyRequest{
+			AgentID: agent.ID,
+			SquadID: agent.SquadID,
+			Models:  prospective,
+		})
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to provision LLM gateway virtual key")
+			return
+		}
+		ref := generatedVirtualKeyRef(squad.Namespace, agent.ID)
+		if err := s.crWriter.WriteAgentCredential(r.Context(), ref, agent.ID, key); err != nil {
+			_ = s.llmGateway.RevokeAgentKey(r.Context(), token)
+			writeError(w, http.StatusInternalServerError, "internal", "failed to write agent virtual-key secret")
+			return
+		}
+		newKeyToken = token
+		newKeyRef = ref
+		gatewayAction = "provisioned"
+	}
+
+	cleanupProvisionedKey := func() {
+		if gatewayAction != "provisioned" {
+			return
+		}
+		_ = s.llmGateway.RevokeAgentKey(r.Context(), newKeyToken)
+		if newKeyRef != "" {
+			_ = s.crWriter.DeleteAgentCredential(r.Context(), newKeyRef)
+		}
+	}
+
+	metadata, _ := json.Marshal(map[string]any{"count": len(perms), "gateway_action": gatewayAction})
 	if err := s.recordUserAuditRequired(r, "agent_permissions.set", "agent", agent.ID, agent.SquadID, metadata); err != nil {
+		cleanupProvisionedKey()
 		writeError(w, http.StatusInternalServerError, "internal", "failed to audit agent permission update")
 		return
 	}
 	if err := s.store.SetAgentPermissions(r.Context(), agent.ID, perms); err != nil {
+		cleanupProvisionedKey()
 		writeStorageError(w, err)
 		return
+	}
+	// Permissions are committed; record the key lifecycle transition. If the
+	// identity bookkeeping fails, the gateway is already correct and the
+	// reconcile endpoint will repair the record.
+	switch gatewayAction {
+	case "revoked":
+		if _, err := s.store.SetAgentIdentityGatewayKey(r.Context(), agent.ID, identity.GatewayKeyToken, domain.GatewayKeyRevoked); err != nil {
+			s.recordUserAudit(r, "agent_permissions.gateway_key_record_stale", "agent", agent.ID, agent.SquadID, metadata)
+		}
+	case "provisioned":
+		if _, err := s.store.SetAgentIdentityGatewayKey(r.Context(), agent.ID, newKeyToken, domain.GatewayKeyActive); err != nil {
+			s.recordUserAudit(r, "agent_permissions.gateway_key_record_stale", "agent", agent.ID, agent.SquadID, metadata)
+		}
 	}
 	current, err := s.store.ListAgentPermissions(r.Context(), agent.ID)
 	if err != nil {

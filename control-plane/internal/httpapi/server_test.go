@@ -694,7 +694,7 @@ func TestAgentIdentityProvisionsLiteLLMVirtualKey(t *testing.T) {
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		keyRequests = append(keyRequests, body)
-		_ = json.NewEncoder(w).Encode(map[string]string{"key": "sk-agent-virtual-key"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"key": "sk-agent-virtual-key", "token": "tok-agent-virtual-key"})
 	}))
 	defer gateway.Close()
 

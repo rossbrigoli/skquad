@@ -93,7 +93,25 @@ type AgentIdentity struct {
 	CreatedBy      string    `json:"created_by"`
 	CreatedAt      time.Time `json:"created_at"`
 	RotatedAt      time.Time `json:"rotated_at,omitempty"`
+	// GatewayKeyToken is the LiteLLM key token (sha256 hash of the virtual
+	// key, not the key itself) used to update/revoke the key at the gateway.
+	GatewayKeyToken string `json:"-"`
+	// GatewayKeyStatus tracks the virtual-key lifecycle so permission
+	// changes can revoke/rotate it instead of leaving stale keys behind.
+	GatewayKeyStatus GatewayKeyStatus `json:"gateway_key_status,omitempty"`
 }
+
+// GatewayKeyStatus is the lifecycle state of an agent's LLM gateway virtual key.
+type GatewayKeyStatus string
+
+const (
+	// GatewayKeyNone means no virtual key has been issued (or it was reset).
+	GatewayKeyNone GatewayKeyStatus = "none"
+	// GatewayKeyActive means the key is live at the gateway.
+	GatewayKeyActive GatewayKeyStatus = "active"
+	// GatewayKeyRevoked means the key was revoked at the gateway.
+	GatewayKeyRevoked GatewayKeyStatus = "revoked"
+)
 
 // KubernetesOutboxStatus is the delivery state for a durable Kubernetes write.
 type KubernetesOutboxStatus string

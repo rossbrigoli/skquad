@@ -121,8 +121,6 @@ Important gaps remain:
 - the web application has initial squad, agent, task, registry, grant, admin,
   identity, and chat workflows, but rich detail views, charts, live updates,
   drag and drop, and guided onboarding are not complete;
-- automatic LiteLLM key refresh or revocation after permission changes is not
-  implemented;
 - automatic memory embedding generation and durable artifact storage are planned;
 - automatic task materialization for `delegate`/`handoff` messages is planned;
   and
