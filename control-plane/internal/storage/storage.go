@@ -5,6 +5,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -126,6 +127,9 @@ type MessageStore interface {
 	ListAgentMessageHistory(ctx context.Context, agentID string) ([]*domain.Message, error)
 	AckMessage(ctx context.Context, agentID string, messageID string) (*domain.Message, error)
 	FailMessage(ctx context.Context, agentID string, messageID string, reason string) (*domain.Message, error)
+	// UpdateMessagePayload replaces a message's payload and status (used to
+	// link a materialized delegated task back to its trigger message).
+	UpdateMessagePayload(ctx context.Context, messageID string, payload json.RawMessage, status domain.MessageStatus) (*domain.Message, error)
 }
 
 // InboxStore persists owner-facing notifications (task completions, action

@@ -1517,6 +1517,21 @@ func (m *MemoryStore) AckMessage(_ context.Context, agentID string, messageID st
 	return cloneMessage(msg), nil
 }
 
+func (m *MemoryStore) UpdateMessagePayload(_ context.Context, messageID string, payload json.RawMessage, status domain.MessageStatus) (*domain.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	msg, ok := m.messages[messageID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	msg.Payload = payload
+	msg.Status = status
+	if status == domain.MessageDelivered && msg.DeliveredAt.IsZero() {
+		msg.DeliveredAt = time.Now().UTC()
+	}
+	return cloneMessage(msg), nil
+}
+
 func (m *MemoryStore) FailMessage(_ context.Context, agentID string, messageID string, reason string) (*domain.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

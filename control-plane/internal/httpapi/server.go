@@ -1162,6 +1162,53 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 
 const maxInboxMessageChars = 2000
 
+// notifyDelegationResult closes the loop for a task that was materialized from
+// a delegate/handoff message: the requesting agent receives a reply carrying
+// the completion summary, and the requesting squad's owner receives an inbox
+// notification. Best-effort: failures never roll back the completion itself.
+func (s *Server) notifyDelegationResult(ctx context.Context, task *domain.Task, completingAgent *domain.Agent, status, summary string) {
+	if task.OriginMessageID == "" || task.CreatedByType != "agent" || task.CreatedByID == "" {
+		return
+	}
+	source, err := s.store.GetAgent(ctx, task.CreatedByID)
+	if err != nil || source.ID == completingAgent.ID {
+		return
+	}
+	text := fmt.Sprintf("Delegated task %q finished with status %s. Summary: %s", task.Title, status, strings.TrimSpace(summary))
+	payload, err := json.Marshal(map[string]string{"message": text, "task_id": task.ID, "task_status": status})
+	if err != nil {
+		return
+	}
+	if _, err := s.store.CreateMessage(ctx, &domain.Message{
+		FromType:      "agent",
+		FromID:        completingAgent.ID,
+		ToAgentID:     source.ID,
+		SquadID:       source.SquadID,
+		Type:          domain.MessageReply,
+		Payload:       payload,
+		Status:        domain.MessagePending,
+		CorrelationID: task.OriginMessageID,
+	}); err == nil {
+		_ = s.syncAgentStatusFromPendingWork(ctx, source.ID)
+	}
+	s.notifySquadOwner(ctx, source.SquadID, domain.InboxTaskCompleted, completingAgent.ID, task.ID,
+		fmt.Sprintf("Task %q delegated from agent %s finished with status %s", task.Title, source.Name, status))
+}
+
+// notifyDelegationBlocked informs the requesting squad's owner when a
+// delegated task is blocked. Best-effort.
+func (s *Server) notifyDelegationBlocked(ctx context.Context, task *domain.Task, blockingAgent *domain.Agent) {
+	if task.OriginMessageID == "" || task.CreatedByType != "agent" || task.CreatedByID == "" {
+		return
+	}
+	source, err := s.store.GetAgent(ctx, task.CreatedByID)
+	if err != nil || source.ID == blockingAgent.ID {
+		return
+	}
+	s.notifySquadOwner(ctx, source.SquadID, domain.InboxActionRequired, blockingAgent.ID, task.ID,
+		fmt.Sprintf("Task %q delegated from agent %s was blocked by %s", task.Title, source.Name, blockingAgent.Name))
+}
+
 // notifySquadOwner files an owner-facing inbox notification. It is best-effort
 // by design: a notification failure must never fail the underlying task flow.
 func (s *Server) notifySquadOwner(ctx context.Context, squadID string, kind domain.InboxKind, fromAgentID string, taskID string, message string) {
@@ -2055,6 +2102,7 @@ type messageRequest struct {
 	Type          domain.MessageType `json:"type"`
 	Payload       json.RawMessage    `json:"payload"`
 	Message       string             `json:"message"`
+	Title         string             `json:"title"`
 	CorrelationID string             `json:"correlation_id"`
 	MaxAttempts   int                `json:"max_attempts"`
 	TTLSeconds    int                `json:"ttl_seconds"`
@@ -2104,6 +2152,50 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
+	// Delegate and handoff messages materialize into a real task on the
+	// target squad's board: the task is the durable unit of work, the
+	// message becomes its delivered audit record (the target runtime is
+	// woken by the task, never by the message itself).
+	if messageType == domain.MessageDelegate || messageType == domain.MessageHandoff {
+		created, err := s.store.CreateMessage(r.Context(), &domain.Message{
+			FromType:      "agent",
+			FromID:        principal.Agent.ID,
+			ToAgentID:     target.ID,
+			SquadID:       target.SquadID,
+			Type:          messageType,
+			Payload:       messagePayload(req),
+			Status:        domain.MessagePending,
+			CorrelationID: strings.TrimSpace(req.CorrelationID),
+			MaxAttempts:   req.MaxAttempts,
+			ExpiresAt:     messageExpiresAt(req),
+		})
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		task, err := s.materializeDelegatedTask(r.Context(), principal.Agent, target, created)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "failed to materialize delegated task")
+			return
+		}
+		created, err = s.store.UpdateMessagePayload(r.Context(), created.ID, withTaskID(created.Payload, task.ID), domain.MessageDelivered)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "failed to link delegated task to message")
+			return
+		}
+		delegateMeta, _ := json.Marshal(map[string]any{
+			"message_id": created.ID,
+			"task_id":    task.ID,
+			"type":       string(messageType),
+		})
+		s.recordAgentAudit(r, principal.Agent.ID, "message.delegate_materialized", "task", task.ID, target.SquadID, delegateMeta)
+		if err := s.syncAgentStatusFromPendingWork(r.Context(), target.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "failed to update target agent state")
+			return
+		}
+		writeJSON(w, http.StatusCreated, created)
+		return
+	}
 	created, err := s.store.CreateMessage(r.Context(), &domain.Message{
 		FromType:      "agent",
 		FromID:        principal.Agent.ID,
@@ -2126,6 +2218,76 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 	}
 	s.recordAgentAudit(r, principal.Agent.ID, "message.send", "message", created.ID, target.SquadID, nil)
 	writeJSON(w, http.StatusCreated, created)
+}
+
+// materializeDelegatedTask creates the task a delegate/handoff message stands
+// for: assigned to the target agent on the target squad's board, linked back
+// to the originating message via origin_message_id.
+func (s *Server) materializeDelegatedTask(ctx context.Context, source, target *domain.Agent, message *domain.Message) (*domain.Task, error) {
+	board, err := s.store.GetBoard(ctx, target.SquadID)
+	if err != nil {
+		return nil, err
+	}
+	title := delegatedTaskTitle(message.Payload, source)
+	description := delegatedTaskDescription(message.Payload, source, target, message.ID)
+	return s.store.CreateTask(ctx, &domain.Task{
+		BoardID:         board.ID,
+		SquadID:         target.SquadID,
+		Title:           title,
+		Description:     description,
+		Status:          domain.TaskTodo,
+		AssigneeAgentID: target.ID,
+		CreatedByType:   "agent",
+		CreatedByID:     source.ID,
+		OriginMessageID: message.ID,
+	})
+}
+
+func delegatedTaskTitle(payload json.RawMessage, source *domain.Agent) string {
+	var p struct {
+		Title   string `json:"title"`
+		Subject string `json:"subject"`
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(payload, &p)
+	title := strings.TrimSpace(p.Title)
+	if title == "" {
+		title = strings.TrimSpace(p.Subject)
+	}
+	if title == "" {
+		title = strings.TrimSpace(strings.SplitN(strings.TrimSpace(p.Message), "\n", 2)[0])
+	}
+	if title == "" {
+		title = fmt.Sprintf("Delegated task from %s", source.Name)
+	}
+	return trimRunes(title, 200)
+}
+
+func delegatedTaskDescription(payload json.RawMessage, source, target *domain.Agent, messageID string) string {
+	var p struct {
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(payload, &p)
+	body := strings.TrimSpace(p.Message)
+	if body == "" {
+		body = "(no description provided)"
+	}
+	origin := fmt.Sprintf("\n\n---\nDelegated by agent %s (%s) to %s via message %s",
+		source.Name, source.ID, target.Name, messageID)
+	return trimRunes(body+origin, maxAgentMemoryContentChars)
+}
+
+func withTaskID(payload json.RawMessage, taskID string) json.RawMessage {
+	var obj map[string]any
+	if err := json.Unmarshal(payload, &obj); err != nil || obj == nil {
+		obj = map[string]any{}
+	}
+	obj["task_id"] = taskID
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return json.RawMessage(fmt.Sprintf(`{"task_id":%q}`, taskID))
+	}
+	return out
 }
 
 func (s *Server) ackCurrentAgentMessage(w http.ResponseWriter, r *http.Request) {
@@ -2239,10 +2401,17 @@ func messagePayload(req messageRequest) json.RawMessage {
 	if len(req.Payload) > 0 {
 		return defaultRawJSON(req.Payload, "{}")
 	}
-	if strings.TrimSpace(req.Message) == "" {
+	fields := map[string]string{}
+	if strings.TrimSpace(req.Message) != "" {
+		fields["message"] = req.Message
+	}
+	if title := strings.TrimSpace(req.Title); title != "" {
+		fields["title"] = req.Title
+	}
+	if len(fields) == 0 {
 		return json.RawMessage(`{}`)
 	}
-	payload, err := json.Marshal(map[string]string{"message": req.Message})
+	payload, err := json.Marshal(fields)
 	if err != nil {
 		return json.RawMessage(`{}`)
 	}
@@ -2385,6 +2554,7 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 	s.recordAgentAudit(r, principal.Agent.ID, "task.complete", "task", updated.ID, updated.SquadID, nil)
 	s.notifySquadOwner(r.Context(), updated.SquadID, domain.InboxTaskCompleted, principal.Agent.ID, updated.ID,
 		fmt.Sprintf("Agent %s moved task %q to %s", principal.Agent.Name, updated.Title, req.Status))
+	s.notifyDelegationResult(r.Context(), updated, principal.Agent, string(req.Status), summary)
 	if req.PersistMemory && strings.TrimSpace(req.Summary) != "" {
 		metadata, err := json.Marshal(map[string]any{
 			"kind":         "task_completion",
@@ -2454,6 +2624,7 @@ func (s *Server) blockCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	}
 	s.notifySquadOwner(r.Context(), updated.SquadID, domain.InboxActionRequired, principal.Agent.ID, updated.ID,
 		fmt.Sprintf("Agent %s blocked task %q%s", principal.Agent.Name, updated.Title, blockNote))
+	s.notifyDelegationBlocked(r.Context(), updated, principal.Agent)
 	writeJSON(w, http.StatusOK, updated)
 }
 

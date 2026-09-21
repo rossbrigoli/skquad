@@ -1211,17 +1211,18 @@ func (p *PostgresStore) CreateTask(ctx context.Context, t *domain.Task) (*domain
 	row := p.pool.QueryRow(ctx, `
 		INSERT INTO tasks (
 			board_id, squad_id, title, description, status, assignee_agent_id,
-			created_by_type, created_by_id, position
+			created_by_type, created_by_id, position, origin_message_id
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, nullif($6, '')::uuid,
 			$7, $8,
-			coalesce((SELECT max(position) + 1 FROM tasks WHERE board_id = $1 AND status = $5), 1)
+			coalesce((SELECT max(position) + 1 FROM tasks WHERE board_id = $1 AND status = $5), 1),
+			$9
 		)
 		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		          position, created_at, updated_at
-	`, t.BoardID, t.SquadID, t.Title, t.Description, defaultTaskStatus(t.Status), t.AssigneeAgentID, t.CreatedByType, t.CreatedByID)
+		          position, created_at, updated_at, coalesce(origin_message_id, '')
+	`, t.BoardID, t.SquadID, t.Title, t.Description, defaultTaskStatus(t.Status), t.AssigneeAgentID, t.CreatedByType, t.CreatedByID, t.OriginMessageID)
 	return scanTask(row)
 }
 
@@ -1229,7 +1230,7 @@ func (p *PostgresStore) GetTask(ctx context.Context, id string) (*domain.Task, e
 	row := p.pool.QueryRow(ctx, `
 		SELECT id::text, board_id::text, squad_id::text, title, description, status,
 		       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		       position, created_at, updated_at
+		       position, created_at, updated_at, coalesce(origin_message_id, '')
 		FROM tasks
 		WHERE id = $1
 	`, id)
@@ -1263,7 +1264,7 @@ func (p *PostgresStore) UpdateTask(ctx context.Context, t *domain.Task) (*domain
 		WHERE id = $1
 		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		          position, created_at, updated_at
+		          position, created_at, updated_at, coalesce(origin_message_id, '')
 	`, t.ID, t.Title, t.Description, t.AssigneeAgentID, defaultTaskStatus(t.Status))
 	return scanTask(row)
 }
@@ -1286,7 +1287,7 @@ func (p *PostgresStore) ListTasks(ctx context.Context, boardID string, status do
 		rows, err = p.pool.Query(ctx, `
 			SELECT id::text, board_id::text, squad_id::text, title, description, status,
 			       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-			       position, created_at, updated_at
+			       position, created_at, updated_at, coalesce(origin_message_id, '')
 			FROM tasks
 			WHERE board_id = $1
 			ORDER BY status, position
@@ -1295,7 +1296,7 @@ func (p *PostgresStore) ListTasks(ctx context.Context, boardID string, status do
 		rows, err = p.pool.Query(ctx, `
 			SELECT id::text, board_id::text, squad_id::text, title, description, status,
 			       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-			       position, created_at, updated_at
+			       position, created_at, updated_at, coalesce(origin_message_id, '')
 			FROM tasks
 			WHERE board_id = $1 AND status = $2
 			ORDER BY position
@@ -1321,7 +1322,7 @@ func (p *PostgresStore) ListAgentTasks(ctx context.Context, agentID string) ([]*
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, board_id::text, squad_id::text, title, description, status,
 		       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		       position, created_at, updated_at
+		       position, created_at, updated_at, coalesce(origin_message_id, '')
 		FROM tasks
 		WHERE assignee_agent_id = $1
 		ORDER BY status, position
@@ -1400,7 +1401,7 @@ func (p *PostgresStore) claimReclaimableInProgress(ctx context.Context, tx pgx.T
 	row := tx.QueryRow(ctx, `
 		SELECT id::text, board_id::text, squad_id::text, title, description, status,
 		       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		       position, created_at, updated_at
+		       position, created_at, updated_at, coalesce(origin_message_id, '')
 		FROM tasks
 		WHERE assignee_agent_id = $1
 		  AND status = $2
@@ -1441,7 +1442,7 @@ func (p *PostgresStore) claimTodoTask(ctx context.Context, tx pgx.Tx, agentID st
 		WHERE id = (SELECT id FROM candidate)
 		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		          position, created_at, updated_at
+		          position, created_at, updated_at, coalesce(origin_message_id, '')
 	`, agentID, domain.TaskTodo, domain.TaskInProgress)
 	return scanTask(row)
 }
@@ -1632,7 +1633,7 @@ func (p *PostgresStore) CompleteTaskExecution(ctx context.Context, agentID strin
 		WHERE id = (SELECT id FROM existing)
 		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		          position, created_at, updated_at
+		          position, created_at, updated_at, coalesce(origin_message_id, '')
 	`, taskID, agentID, status)
 	task, err := scanTask(row)
 	if err != nil {
@@ -1870,6 +1871,20 @@ func (p *PostgresStore) AckMessage(ctx context.Context, agentID string, messageI
 		          type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
 		          next_retry_at, expires_at, terminal_reason, created_at, delivered_at
 	`, messageID, agentID, domain.MessagePending, domain.MessageDelivered)
+	return scanMessage(row)
+}
+
+func (p *PostgresStore) UpdateMessagePayload(ctx context.Context, messageID string, payload json.RawMessage, status domain.MessageStatus) (*domain.Message, error) {
+	row := p.pool.QueryRow(ctx, `
+		UPDATE messages
+		SET payload = $2,
+		    status = $3,
+		    delivered_at = CASE WHEN $3 = 'delivered' AND delivered_at IS NULL THEN now() ELSE delivered_at END
+		WHERE id = $1
+		RETURNING id::text, from_type, from_id::text, to_agent_id::text, squad_id::text,
+		          type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
+		          next_retry_at, expires_at, terminal_reason, created_at, delivered_at
+	`, messageID, payload, status)
 	return scanMessage(row)
 }
 
@@ -2241,6 +2256,7 @@ func scanTask(row scanner) (*domain.Task, error) {
 		&t.Position,
 		&t.CreatedAt,
 		&t.UpdatedAt,
+		&t.OriginMessageID,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}

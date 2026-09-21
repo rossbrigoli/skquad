@@ -1515,7 +1515,7 @@ func TestAgentMessageFailuresRetryThenDeadLetter(t *testing.T) {
 	var sent domain.Message
 	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, "/api/v1/agents/me/messages", map[string]any{
 		"to_agent_id":  recipient.ID,
-		"type":         "handoff",
+		"type":         "consult",
 		"message":      "unsupported for now",
 		"max_attempts": 2,
 	}, http.StatusCreated, &sent)

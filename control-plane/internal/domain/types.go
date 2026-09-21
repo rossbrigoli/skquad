@@ -192,6 +192,9 @@ type Task struct {
 	Position        int        `json:"position"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
+	// OriginMessageID links a task back to the delegate/handoff message
+	// that materialized it ("" for user-created tasks).
+	OriginMessageID string `json:"origin_message_id,omitempty"`
 	ExecutionID     string     `json:"execution_id,omitempty"`
 	WorkerID        string     `json:"worker_id,omitempty"`
 	FencingToken    string     `json:"fencing_token,omitempty"`
