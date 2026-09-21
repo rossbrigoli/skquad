@@ -959,6 +959,22 @@ func (m *MemoryStore) UpdateTask(_ context.Context, t *domain.Task) (*domain.Tas
 	return cloneTask(updated), nil
 }
 
+func (m *MemoryStore) SetTaskWorkspace(_ context.Context, taskID string, resourceID string, branch string, commitSHA string) (*domain.Task, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	existing, ok := m.tasks[taskID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	updated := cloneTask(existing)
+	updated.WorkspaceResourceID = resourceID
+	updated.WorkspaceBranch = branch
+	updated.WorkspaceCommitSHA = commitSHA
+	updated.UpdatedAt = time.Now().UTC()
+	m.tasks[taskID] = updated
+	return cloneTask(updated), nil
+}
+
 func (m *MemoryStore) DeleteTask(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

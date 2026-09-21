@@ -1269,6 +1269,21 @@ func (p *PostgresStore) UpdateTask(ctx context.Context, t *domain.Task) (*domain
 	return scanTask(row)
 }
 
+func (p *PostgresStore) SetTaskWorkspace(ctx context.Context, taskID string, resourceID string, branch string, commitSHA string) (*domain.Task, error) {
+	row := p.pool.QueryRow(ctx, `
+		UPDATE tasks
+		SET workspace_resource_id = $2,
+		    workspace_branch = $3,
+		    workspace_commit_sha = $4,
+		    updated_at = now()
+		WHERE id = $1
+		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
+		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
+		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, '')
+	`, taskID, resourceID, branch, commitSHA)
+	return scanTask(row)
+}
+
 func (p *PostgresStore) DeleteTask(ctx context.Context, id string) error {
 	tag, err := p.pool.Exec(ctx, `DELETE FROM tasks WHERE id = $1`, id)
 	if err != nil {
@@ -2257,6 +2272,9 @@ func scanTask(row scanner) (*domain.Task, error) {
 		&t.CreatedAt,
 		&t.UpdatedAt,
 		&t.OriginMessageID,
+		&t.WorkspaceResourceID,
+		&t.WorkspaceBranch,
+		&t.WorkspaceCommitSHA,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}

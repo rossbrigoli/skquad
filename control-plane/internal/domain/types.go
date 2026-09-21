@@ -195,6 +195,12 @@ type Task struct {
 	// OriginMessageID links a task back to the delegate/handoff message
 	// that materialized it ("" for user-created tasks).
 	OriginMessageID string `json:"origin_message_id,omitempty"`
+	// Workspace linkage: set when the task ran against a granted git
+	// workspace. WorkspaceResourceID points at the registry resource, and
+	// Branch/CommitSHA record what the runtime pushed (audit trail).
+	WorkspaceResourceID string `json:"workspace_resource_id,omitempty"`
+	WorkspaceBranch     string `json:"workspace_branch,omitempty"`
+	WorkspaceCommitSHA  string `json:"workspace_commit_sha,omitempty"`
 	ExecutionID     string     `json:"execution_id,omitempty"`
 	WorkerID        string     `json:"worker_id,omitempty"`
 	FencingToken    string     `json:"fencing_token,omitempty"`

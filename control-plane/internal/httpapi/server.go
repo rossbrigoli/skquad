@@ -148,6 +148,7 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Post("/tasks/{taskID}/start", s.startCurrentAgentTask)
 			r.Post("/tasks/{taskID}/complete", s.completeCurrentAgentTask)
 			r.Post("/tasks/{taskID}/block", s.blockCurrentAgentTask)
+			r.Post("/tasks/{taskID}/workspace", s.reportCurrentAgentTaskWorkspace)
 			r.Post("/heartbeat", s.currentAgentHeartbeat)
 		})
 
@@ -392,6 +393,36 @@ func resourceTypeFromString(value string) (domain.ResourceType, bool) {
 
 func validateName(w http.ResponseWriter, name string) bool {
 	return validateRequired(w, "name", name)
+}
+
+// validateGitWorkspace enforces the v1 contract for a git-backed project
+// workspace: it must declare kind=git, a repo URL in endpoint, a default
+// branch, and a credential ref (auth_ref) the operator mounts into agent
+// pods. The credential type (HTTPS token vs SSH key) is opaque here — the
+// operator resolves auth_ref to a Secret, so both work.
+func validateGitWorkspace(endpoint, authRef string, manifest json.RawMessage) (string, bool) {
+	var m struct {
+		Kind          string `json:"kind"`
+		DefaultBranch string `json:"default_branch"`
+	}
+	if len(manifest) > 0 {
+		if err := json.Unmarshal(manifest, &m); err != nil {
+			return "manifest must be valid JSON", false
+		}
+	}
+	if strings.TrimSpace(m.Kind) != "git" {
+		return "workspace manifest.kind must be \"git\"", false
+	}
+	if strings.TrimSpace(endpoint) == "" {
+		return "workspace endpoint (repo URL) is required", false
+	}
+	if strings.TrimSpace(m.DefaultBranch) == "" {
+		return "workspace manifest.default_branch is required", false
+	}
+	if strings.TrimSpace(authRef) == "" {
+		return "workspace auth_ref (git credential reference) is required", false
+	}
+	return "", true
 }
 
 func validateRequired(w http.ResponseWriter, field, value string) bool {
@@ -656,6 +687,12 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 	}
 	if !validateName(w, req.Name) {
 		return
+	}
+	if typ == domain.ResProjectWorkspace {
+		if msg, ok := validateGitWorkspace(req.Endpoint, req.AuthRef, req.Manifest); !ok {
+			writeError(w, http.StatusBadRequest, "bad_request", msg)
+			return
+		}
 	}
 	if len(req.Manifest) == 0 {
 		req.Manifest = json.RawMessage(`{}`)
@@ -2581,6 +2618,65 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 			s.recordAgentAudit(r, principal.Agent.ID, "task.memory_persist_failed", "task", updated.ID, updated.SquadID, auditMetadata)
 		}
 	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) reportCurrentAgentTaskWorkspace(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		WorkspaceResourceID string `json:"workspace_resource_id"`
+		Branch              string `json:"branch"`
+		CommitSHA           string `json:"commit_sha"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	principal := currentAgent(r.Context())
+	taskID := chi.URLParam(r, "taskID")
+	task, err := s.store.GetTask(r.Context(), taskID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if task.AssigneeAgentID != principal.Agent.ID {
+		writeError(w, http.StatusForbidden, "forbidden", "task is not assigned to this agent")
+		return
+	}
+	resID := strings.TrimSpace(req.WorkspaceResourceID)
+	branch := strings.TrimSpace(req.Branch)
+	commitSHA := strings.TrimSpace(req.CommitSHA)
+	if resID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "workspace_resource_id is required")
+		return
+	}
+	// The agent may only link a git workspace it is actually granted and that
+	// is active — prevents forging refs to workspaces the agent cannot access.
+	perms, err := s.store.ListAgentPermissions(r.Context(), principal.Agent.ID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	granted := false
+	for _, p := range perms {
+		if p.ResourceType == domain.ResProjectWorkspace && p.ResourceID == resID {
+			res, err := s.store.GetResource(r.Context(), domain.ResProjectWorkspace, resID)
+			if err == nil && res.Status == domain.ResourceActive {
+				granted = true
+			}
+			break
+		}
+	}
+	if !granted {
+		s.recordAgentAudit(r, principal.Agent.ID, "task.workspace_link_denied", "task", taskID, task.SquadID, nil)
+		writeError(w, http.StatusForbidden, "forbidden", "workspace is not granted to this agent")
+		return
+	}
+	updated, err := s.store.SetTaskWorkspace(r.Context(), taskID, resID, branch, commitSHA)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	meta, _ := json.Marshal(map[string]string{"workspace_resource_id": resID, "branch": branch, "commit_sha": commitSHA})
+	s.recordAgentAudit(r, principal.Agent.ID, "task.workspace_linked", "task", updated.ID, updated.SquadID, meta)
 	writeJSON(w, http.StatusOK, updated)
 }
 

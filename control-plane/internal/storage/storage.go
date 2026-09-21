@@ -92,6 +92,9 @@ type TaskStore interface {
 	CreateTask(ctx context.Context, t *domain.Task) (*domain.Task, error)
 	GetTask(ctx context.Context, id string) (*domain.Task, error)
 	UpdateTask(ctx context.Context, t *domain.Task) (*domain.Task, error)
+	// SetTaskWorkspace records the git workspace branch/commit a runtime
+	// pushed for this task (audit linkage).
+	SetTaskWorkspace(ctx context.Context, taskID string, resourceID string, branch string, commitSHA string) (*domain.Task, error)
 	DeleteTask(ctx context.Context, id string) error
 	ListTasks(ctx context.Context, boardID string, status domain.TaskStatus) ([]*domain.Task, error) // status "" = all
 	ListAgentTasks(ctx context.Context, agentID string) ([]*domain.Task, error)
