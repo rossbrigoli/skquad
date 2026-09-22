@@ -6,9 +6,10 @@ import { useAuth } from "./auth";
 
 // Minimal fetch-on-mount state hook for v2 pages. Polls only while the tab is
 // visible to keep background load off the shared control-plane API.
-export function useApi<T>(path: string, pollMs = 0): ApiState<T> {
+export function useApi<T>(path: string, pollMs = 0): ApiState<T> & { refresh: () => void } {
   const { token } = useAuth();
   const [state, setState] = useState<ApiState<T>>({ data: null, loading: true, error: "" });
+  const [tick, setTick] = useState(0);
 
   const load = useCallback(async () => {
     if (!token) {
@@ -32,7 +33,9 @@ export function useApi<T>(path: string, pollMs = 0): ApiState<T> {
       if (document.visibilityState === "visible") load();
     }, pollMs);
     return () => window.clearInterval(timer);
-  }, [load, pollMs]);
+  }, [load, pollMs, tick]);
 
-  return state;
+  const refresh = useCallback(() => setTick((t) => t + 1), []);
+
+  return { ...state, refresh };
 }

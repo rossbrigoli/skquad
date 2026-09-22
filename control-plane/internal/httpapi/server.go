@@ -186,6 +186,8 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/squads/{squadID}/audit", s.listSquadAudit)
 			r.Post("/squads/{squadID}/board/tasks", s.createTask)
 			r.Get("/tasks/{taskID}", s.getTask)
+			r.Get("/tasks/{taskID}/messages", s.listTaskMessages)
+			r.Post("/tasks/{taskID}/messages", s.createTaskMessage)
 			r.Patch("/tasks/{taskID}", s.updateTask)
 			r.Post("/tasks/{taskID}/move", s.moveTask)
 			r.Delete("/tasks/{taskID}", s.deleteTask)
@@ -2820,6 +2822,96 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
+}
+
+func taskIDFromPayload(payload json.RawMessage) string {
+	var obj map[string]any
+	if err := json.Unmarshal(payload, &obj); err != nil || obj == nil {
+		return ""
+	}
+	if id, ok := obj["task_id"].(string); ok {
+		return id
+	}
+	return ""
+}
+
+// listTaskMessages returns the task-scoped thread: every message on the
+// task's assignee whose payload carries this task's id. Reuses the agent
+// history store so no new persistence surface is needed.
+func (s *Server) listTaskMessages(w http.ResponseWriter, r *http.Request) {
+	task, ok := s.loadAccessibleTask(w, r)
+	if !ok {
+		return
+	}
+	filtered := []*domain.Message{}
+	if task.AssigneeAgentID == "" {
+		writeJSON(w, http.StatusOK, filtered)
+		return
+	}
+	messages, err := s.store.ListAgentMessageHistory(r.Context(), task.AssigneeAgentID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	for _, msg := range messages {
+		if taskIDFromPayload(msg.Payload) == task.ID {
+			filtered = append(filtered, msg)
+		}
+	}
+	writeJSON(w, http.StatusOK, filtered)
+}
+
+// createTaskMessage is the task-page composer: a user message routed to the
+// task's assignee with task_id forced into the payload so the thread stays
+// scoped even if the caller omits it.
+func (s *Server) createTaskMessage(w http.ResponseWriter, r *http.Request) {
+	task, ok := s.loadOwnedTask(w, r)
+	if !ok {
+		return
+	}
+	if task.AssigneeAgentID == "" {
+		writeError(w, http.StatusBadRequest, "no_assignee", "task has no assigned agent to receive this message")
+		return
+	}
+	var req messageRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Message) == "" {
+		writeError(w, http.StatusBadRequest, "empty_message", "message is required")
+		return
+	}
+	messageType := req.Type
+	if messageType == "" {
+		messageType = domain.MessageConsult
+	}
+	if !messageType.Valid() {
+		writeError(w, http.StatusBadRequest, "bad_request", "type is invalid")
+		return
+	}
+	u := currentUser(r.Context())
+	created, err := s.store.CreateMessage(r.Context(), &domain.Message{
+		FromType:      "user",
+		FromID:        u.ID,
+		ToAgentID:     task.AssigneeAgentID,
+		SquadID:       task.SquadID,
+		Type:          messageType,
+		Payload:       withTaskID(messagePayload(req), task.ID),
+		Status:        domain.MessagePending,
+		CorrelationID: strings.TrimSpace(req.CorrelationID),
+		MaxAttempts:   req.MaxAttempts,
+		ExpiresAt:     messageExpiresAt(req),
+	})
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if err := s.syncAgentStatusFromPendingWork(r.Context(), task.AssigneeAgentID); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to update target agent state")
+		return
+	}
+	s.recordUserAudit(r, "task.message", "task", task.ID, task.SquadID, nil)
+	writeJSON(w, http.StatusCreated, created)
 }
 
 func (s *Server) updateTask(w http.ResponseWriter, r *http.Request) {

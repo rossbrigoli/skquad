@@ -33,7 +33,6 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     cancelledRef.current = false;
     if (!token) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setItems([]);
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoading(false);
