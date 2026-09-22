@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -259,4 +260,153 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func squadWithEgress(t *testing.T, operatingModel string) *skquadv1.Squad {
+	t.Helper()
+	squad := &skquadv1.Squad{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "squad-egress-test",
+			Namespace: "skquad-system",
+		},
+		Spec: skquadv1.SquadSpec{
+			SquadID:   "33333333-3333-3333-3333-333333333333",
+			OwnerRef:  "owner-id",
+			Namespace: "squad-egress-test-ns",
+			Status:    "active",
+		},
+	}
+	if operatingModel != "" {
+		squad.Spec.OperatingModel = apiextensionsv1.JSON{Raw: []byte(operatingModel)}
+	}
+	return squad
+}
+
+func reconcileSquadTwice(t *testing.T, reconciler *SquadReconciler, squad *skquadv1.Squad) {
+	t.Helper()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: squad.Name, Namespace: squad.Namespace}}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+}
+
+func TestSquadReconcilerGrantedEgressPolicy(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := skquadv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	squad := squadWithEgress(t, `{"mission":"x","egress":{"allow":[`+
+		`{"cidr":"93.184.215.208/29","except":["93.184.215.216/31"],"ports":[443],"description":"git host"},`+
+		`{"cidr":"140.82.112.0/20"}]}}`)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(squad).Build()
+	reconciler := &SquadReconciler{Client: k8sClient, Scheme: scheme, APIServerServiceAccountName: "skquad-api-server"}
+	reconcileSquadTwice(t, reconciler, squad)
+
+	var policy networkingv1.NetworkPolicy
+	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: grantedEgressPolicyName, Namespace: squad.Spec.Namespace}, &policy); err != nil {
+		t.Fatalf("granted egress policy missing: %v", err)
+	}
+	if len(policy.Spec.Egress) != 2 {
+		t.Fatalf("granted egress rules = %d, want 2", len(policy.Spec.Egress))
+	}
+	first := policy.Spec.Egress[0]
+	firstPeer := first.To[0].IPBlock
+	if firstPeer == nil || firstPeer.CIDR != "93.184.215.208/29" {
+		t.Fatalf("first cidr = %#v, want 93.184.215.208/29", firstPeer)
+	}
+	if len(firstPeer.Except) != 1 || firstPeer.Except[0] != "93.184.215.216/31" {
+		t.Fatalf("first except = %#v", firstPeer.Except)
+	}
+	if len(first.Ports) != 1 || first.Ports[0].Port.IntVal != 443 || *first.Ports[0].Protocol != corev1.ProtocolTCP {
+		t.Fatalf("first ports = %#v, want TCP/443", first.Ports)
+	}
+	second := policy.Spec.Egress[1]
+	secondPeer := second.To[0].IPBlock
+	if secondPeer == nil || secondPeer.CIDR != "140.82.112.0/20" || len(second.Ports) != 0 {
+		t.Fatalf("second grant = %#v / peer %#v, want cidr 140.82.112.0/20 all ports", second, secondPeer)
+	}
+
+	var sa corev1.ServiceAccount
+	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: agentServiceAccountName, Namespace: squad.Spec.Namespace}, &sa); err != nil {
+		t.Fatal(err)
+	}
+	if sa.AutomountServiceAccountToken == nil || *sa.AutomountServiceAccountToken {
+		t.Fatalf("agent SA automount = %v, want false", sa.AutomountServiceAccountToken)
+	}
+}
+
+func TestSquadReconcilerRemovesStaleGrantedEgress(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := skquadv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	squad := squadWithEgress(t, `{"mission":"x"}`)
+	stale := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: grantedEgressPolicyName, Namespace: squad.Spec.Namespace},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+			Egress: []networkingv1.NetworkPolicyEgressRule{{
+				To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0"}}},
+			}},
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(squad, stale).Build()
+	reconciler := &SquadReconciler{Client: k8sClient, Scheme: scheme, APIServerServiceAccountName: "skquad-api-server"}
+	reconcileSquadTwice(t, reconciler, squad)
+
+	var policy networkingv1.NetworkPolicy
+	err := k8sClient.Get(context.Background(), client.ObjectKey{Name: grantedEgressPolicyName, Namespace: squad.Spec.Namespace}, &policy)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("stale granted egress policy still present (err=%v)", err)
+	}
+}
+
+func TestSquadReconcilerInvalidGrantedEgressFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := skquadv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		"bad cidr":       `{"egress":{"allow":[{"cidr":"not-a-cidr"}]}}`,
+		"bad except":     `{"egress":{"allow":[{"cidr":"10.0.0.0/8","except":["nope"]}]}}`,
+		"bad port":       `{"egress":{"allow":[{"cidr":"10.0.0.0/8","ports":[70000]}]}}`,
+		"malformed json": `{"egress":{`,
+	}
+	for name, model := range cases {
+		squad := squadWithEgress(t, model)
+		squad.Name = "squad-egress-bad-" + name
+		squad.Spec.Namespace = "squad-egress-bad-ns"
+		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(squad).Build()
+		reconciler := &SquadReconciler{Client: k8sClient, Scheme: scheme, APIServerServiceAccountName: "skquad-api-server"}
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Name: squad.Name, Namespace: squad.Namespace}}
+		if _, err := reconciler.Reconcile(context.Background(), req); err == nil {
+			// first reconcile only adds the finalizer; second must fail
+			if _, err := reconciler.Reconcile(context.Background(), req); err == nil {
+				t.Fatalf("%s: expected reconcile error, got nil", name)
+			}
+		}
+		var policy networkingv1.NetworkPolicy
+		if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: grantedEgressPolicyName, Namespace: squad.Spec.Namespace}, &policy); err == nil {
+			t.Fatalf("%s: granted egress policy was created despite invalid grant", name)
+		}
+	}
 }

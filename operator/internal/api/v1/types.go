@@ -31,6 +31,24 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	return nil
 }
 
+// SquadEgress is the parsed shape of SquadSpec.OperatingModel's "egress"
+// key. It declares the extra outbound destinations granted to pods in the
+// squad namespace beyond the platform defaults (DNS + api-server +
+// llm-gateway). Everything else stays denied by default-deny.
+type SquadEgress struct {
+	Allow []EgressGrant `json:"allow,omitempty"`
+}
+
+// EgressGrant is one allowed outbound destination. CIDR must be valid
+// CIDR notation; invalid grants fail reconciliation closed (no policy is
+// widened). Ports default to all TCP/UDP ports when empty.
+type EgressGrant struct {
+	CIDR        string   `json:"cidr"`
+	Except      []string `json:"except,omitempty"`
+	Ports       []int    `json:"ports,omitempty"`
+	Description string   `json:"description,omitempty"`
+}
+
 // SquadSpec declares the desired state for a squad namespace and base
 // resources.
 type SquadSpec struct {

@@ -106,10 +106,11 @@ When the operator sees a `Squad` CR:
    - **NetworkPolicy** — isolate the namespace (default-deny; allow only the
      paths agents need: LLM gateway, message queue/Postgres, permitted
      resources).
-     The starter reconciler creates default deny, DNS egress to `kube-system`,
+     The reconciler creates default deny, DNS egress to `kube-system`,
      and platform egress back to API server / LLM gateway pods in the
-     control-plane namespace by pod selector. Registry-derived egress rules
-     come later.
+     control-plane namespace by pod selector. Granted external resources
+     are rendered from `spec.operatingModel.egress.allow[]` into the
+     `allow-granted-egress` policy (see §9).
    - **ResourceQuota** — cap CPU/memory per squad (configurable).
    - **ServiceAccount** — for the squad's agents.
    - **Secret writer RBAC** — a namespace-local Role/RoleBinding allows the
@@ -270,20 +271,52 @@ over `*.lab`. Immutable image promotion remains a CI/CD follow-up.
 | **Prometheus** | Deployment (optional) | Scrapes metrics when observability is enabled. |
 
 - The **operator** needs a **ClusterRole** (it creates namespaces, deployments,
-  network policies, and per-squad RBAC across the cluster). The API server's
-  generated Secret write/delete authority is granted by namespace-local
-  RoleBindings that the operator creates in reconciled squad namespaces.
+  network policies, and per-squad RBAC across the cluster). The ClusterRole is
+  least-privilege scoped: it holds **no Secret access at all** (the operator never
+  reads or writes Secret contents — the API server writes agent credentials via
+  namespace-local Roles), and every fixed-name resource it manages
+  (`skquad-agent` SA, `skquad-api-agent-secret-writer` Role/RoleBinding,
+  `default-deny` / `allow-dns-egress` / `allow-skquad-platform-egress` /
+  `allow-granted-egress` NetworkPolicies, `skquad-squad-quota`, the
+  `skquad-operator.skquad.io` leader lease) is constrained with
+  `resourceNames`. Only `namespaces` and agent `deployments` remain
+  name-unbounded because their names are dynamic.
+  The API server's generated Secret write/delete authority is granted by
+  namespace-local RoleBindings that the operator creates in reconciled squad
+  namespaces.
 
 ---
 
 ## 9. Network Policies & Isolation
 
 - **Squad namespaces** are **default-deny**; egress allowed only to:
-  - The **API server** and **LLM gateway** pods in the control-plane namespace.
-  - **Permitted resource endpoints** (KBs, workspaces) — as granted.
-- The current starter policy allows DNS plus selector-scoped platform egress;
-  granted external resource endpoints will be rendered into additional policies
-  later.
+  - **DNS** (`kube-system`, UDP/TCP 53).
+  - The **API server** and **LLM gateway** pods in the control-plane namespace
+    (named port `http`).
+  - **Permitted resource endpoints** (git hosts, KBs) — as granted, via the
+    `allow-granted-egress` policy rendered from the squad's
+    `spec.operatingModel.egress.allow[]`:
+
+    ```json
+    {"egress": {"allow": [
+      {"cidr": "140.82.112.0/20", "ports": [443], "description": "github.com"}
+    ]}}
+    ```
+
+    Semantics: **fail-closed** — invalid CIDRs/ports or malformed JSON abort
+    reconciliation without widening any policy; an empty/absent allowlist
+    removes `allow-granted-egress` so only platform defaults remain.
+    Caveat: NetworkPolicy matches **CIDRs only**, not hostnames. Git providers
+    must be granted via their published address ranges; a brokered egress proxy
+    (gateway-mediated git access) is the upgrade path if CIDR churn becomes a
+    problem.
+- Agent pods run with `automountServiceAccountToken: false` (the runtime never
+  calls the Kubernetes API; credentials arrive as projected Secret volumes) and
+  a hardened container securityContext (`runAsNonRoot`, no privilege
+  escalation, all capabilities dropped, `RuntimeDefault` seccomp). The shared
+  `skquad-agent` ServiceAccount carries **no RBAC bindings**, so a compromised
+  agent pod cannot read any Secret — including its own or siblings' — through
+  the API; only the volume-projected files it was given are reachable.
 - **No direct pod-to-pod** between squads — cross-squad interaction goes through
   the **control plane / message queue** (which enforces access grants).
 - The **control plane** is reachable by squad agents (for API + gateway +

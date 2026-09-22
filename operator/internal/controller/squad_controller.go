@@ -3,7 +3,9 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -29,6 +31,7 @@ const (
 	defaultDenyPolicyName     = "default-deny"
 	dnsEgressPolicyName       = "allow-dns-egress"
 	platformEgressPolicyName  = "allow-skquad-platform-egress"
+	grantedEgressPolicyName   = "allow-granted-egress"
 	defaultSquadQuotaName     = "skquad-squad-quota"
 	defaultSquadPodQuota      = "20"
 	defaultSquadCPURequests   = "4"
@@ -96,6 +99,9 @@ func (r *SquadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.ensurePlatformEgressNetworkPolicy(ctx, &squad, namespaceName); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.ensureGrantedEgressNetworkPolicy(ctx, &squad, namespaceName); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.ensureResourceQuota(ctx, &squad, namespaceName); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -125,6 +131,7 @@ func (r *SquadReconciler) cleanupSquad(ctx context.Context, squad *skquadv1.Squa
 		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: defaultDenyPolicyName, Namespace: namespaceName}},
 		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: dnsEgressPolicyName, Namespace: namespaceName}},
 		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: platformEgressPolicyName, Namespace: namespaceName}},
+		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: grantedEgressPolicyName, Namespace: namespaceName}},
 		&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: apiSecretWriterBinding, Namespace: namespaceName}},
 		&rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: apiSecretWriterRoleName, Namespace: namespaceName}},
 		&corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: defaultSquadQuotaName, Namespace: namespaceName}},
@@ -143,6 +150,10 @@ func (r *SquadReconciler) ensureAgentServiceAccount(ctx context.Context, squad *
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, serviceAccount, func() error {
 		ensureSquadLabels(&serviceAccount.Labels, squad)
+		// Agent pods receive credentials via projected Secret volumes and never
+		// call the Kubernetes API; the shared agent SA carries no RBAC, so do
+		// not even place its token in the pod.
+		serviceAccount.AutomountServiceAccountToken = boolPtr(false)
 		return nil
 	})
 	return err
@@ -297,6 +308,80 @@ func (r *SquadReconciler) ensureResourceQuota(ctx context.Context, squad *skquad
 	return err
 }
 
+// ensureGrantedEgressNetworkPolicy renders the per-squad egress allowlist
+// declared in operatingModel.egress.allow[] into the allow-granted-egress
+// NetworkPolicy. It is fail-closed: an invalid grant aborts reconciliation
+// without widening any policy, and an empty allowlist removes the policy so
+// only the platform defaults remain.
+func (r *SquadReconciler) ensureGrantedEgressNetworkPolicy(ctx context.Context, squad *skquadv1.Squad, namespace string) error {
+	grants, err := parseGrantedEgress(squad)
+	if err != nil {
+		return fmt.Errorf("squad %s: %w", squad.Name, err)
+	}
+	policy := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: grantedEgressPolicyName, Namespace: namespace},
+	}
+	if len(grants) == 0 {
+		return deleteIfExists(ctx, r.Client, policy)
+	}
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, policy, func() error {
+		ensureSquadLabels(&policy.Labels, squad)
+		egress := make([]networkingv1.NetworkPolicyEgressRule, 0, len(grants))
+		for _, grant := range grants {
+			rule := networkingv1.NetworkPolicyEgressRule{
+				To: []networkingv1.NetworkPolicyPeer{{
+					IPBlock: &networkingv1.IPBlock{CIDR: grant.CIDR, Except: grant.Except},
+				}},
+			}
+			for _, port := range grant.Ports {
+				rule.Ports = append(rule.Ports, networkPolicyPort(corev1.ProtocolTCP, port))
+			}
+			egress = append(egress, rule)
+		}
+		policy.Spec = networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+			Egress:      egress,
+		}
+		return nil
+	})
+	return err
+}
+
+// parseGrantedEgress extracts and validates the egress allowlist from the
+// squad operating model. Absent or empty is not an error; malformed JSON,
+// bad CIDRs, or out-of-range ports are.
+func parseGrantedEgress(squad *skquadv1.Squad) ([]skquadv1.EgressGrant, error) {
+	if len(squad.Spec.OperatingModel.Raw) == 0 {
+		return nil, nil
+	}
+	var model struct {
+		Egress *skquadv1.SquadEgress `json:"egress,omitempty"`
+	}
+	if err := json.Unmarshal(squad.Spec.OperatingModel.Raw, &model); err != nil {
+		return nil, fmt.Errorf("invalid operatingModel JSON: %w", err)
+	}
+	if model.Egress == nil || len(model.Egress.Allow) == 0 {
+		return nil, nil
+	}
+	for i, grant := range model.Egress.Allow {
+		if _, _, err := net.ParseCIDR(grant.CIDR); err != nil {
+			return nil, fmt.Errorf("egress.allow[%d]: invalid cidr %q", i, grant.CIDR)
+		}
+		for _, except := range grant.Except {
+			if _, _, err := net.ParseCIDR(except); err != nil {
+				return nil, fmt.Errorf("egress.allow[%d]: invalid except cidr %q", i, except)
+			}
+		}
+		for _, port := range grant.Ports {
+			if port < 1 || port > 65535 {
+				return nil, fmt.Errorf("egress.allow[%d]: port %d out of range", i, port)
+			}
+		}
+	}
+	return model.Egress.Allow, nil
+}
+
 func networkPolicyPort(protocol corev1.Protocol, port int) networkingv1.NetworkPolicyPort {
 	return networkingv1.NetworkPolicyPort{
 		Protocol: &protocol,
@@ -324,6 +409,8 @@ func deleteIfExists(ctx context.Context, c client.Client, obj client.Object) err
 	}
 	return nil
 }
+
+func boolPtr(v bool) *bool { return &v }
 
 // SetupWithManager registers the Squad controller with a controller-runtime
 // manager.

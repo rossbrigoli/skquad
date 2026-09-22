@@ -78,6 +78,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
 		deployment.Spec.Template.ObjectMeta.Labels = labels
 		deployment.Spec.Template.Spec.ServiceAccountName = agentServiceAccountName
+		// The agent runtime never talks to the Kubernetes API; credentials
+		// arrive via projected Secret volumes. Keep the (permissionless) SA
+		// token out of the pod entirely and harden the container.
+		deployment.Spec.Template.Spec.AutomountServiceAccountToken = boolPtr(false)
 		container := corev1.Container{
 			Name:  agentContainerName,
 			Image: agentImage(&agent),
@@ -110,6 +114,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			},
 			LivenessProbe:  httpProbe("/healthz"),
 			ReadinessProbe: httpProbe("/readyz"),
+			SecurityContext: &corev1.SecurityContext{
+				RunAsNonRoot:             boolPtr(true),
+				AllowPrivilegeEscalation: boolPtr(false),
+				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+				SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+			},
 		}
 		volumes := agentSecretVolumes(&agent)
 		if len(volumes) > 0 {

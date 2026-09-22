@@ -372,3 +372,60 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	}
 	return scheme
 }
+
+func TestAgentReconcilerHardensPodSecurity(t *testing.T) {
+	t.Parallel()
+
+	scheme := testScheme(t)
+	squad := &skquadv1.Squad{
+		ObjectMeta: metav1.ObjectMeta{Name: "squad-sec", Namespace: "skquad-system"},
+		Spec: skquadv1.SquadSpec{
+			SquadID:   "88888888-8888-8888-8888-888888888888",
+			Namespace: "squad-sec-ns",
+		},
+	}
+	agent := &skquadv1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "agent-sec", Namespace: "skquad-system"},
+		Spec: skquadv1.AgentSpec{
+			AgentID:       "99999999-9999-9999-9999-999999999999",
+			SquadID:       squad.Spec.SquadID,
+			Image:         "example.com/skquad/agent:test",
+			IdleTimeout:   "300s",
+			DesiredActive: true,
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(squad, agent).Build()
+	reconciler := &AgentReconciler{Client: k8sClient, Scheme: scheme}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace}}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	var deployment appsv1.Deployment
+	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: agent.Name, Namespace: squad.Spec.Namespace}, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if deployment.Spec.Template.Spec.AutomountServiceAccountToken == nil || *deployment.Spec.Template.Spec.AutomountServiceAccountToken {
+		t.Fatalf("pod automountServiceAccountToken = %v, want false", deployment.Spec.Template.Spec.AutomountServiceAccountToken)
+	}
+	container := deployment.Spec.Template.Spec.Containers[0]
+	sc := container.SecurityContext
+	if sc == nil {
+		t.Fatal("agent container has no securityContext")
+	}
+	if sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+		t.Fatal("runAsNonRoot = false, want true")
+	}
+	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Fatal("allowPrivilegeEscalation = true, want false")
+	}
+	if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
+		t.Fatalf("capabilities = %#v, want drop ALL", sc.Capabilities)
+	}
+	if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Fatalf("seccompProfile = %#v, want RuntimeDefault", sc.SeccompProfile)
+	}
+}
