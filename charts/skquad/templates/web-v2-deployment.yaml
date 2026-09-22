@@ -1,0 +1,37 @@
+{{- if .Values.webV2.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "skquad.webV2Name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web-v2
+spec:
+  replicas: {{ .Values.replicas.webV2 }}
+  selector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web-v2
+  template:
+    metadata:
+      labels:
+        {{- include "skquad.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: web-v2
+    spec:
+      containers:
+        - name: web-v2
+          image: {{ include "skquad.webV2Image" . | quote }}
+          imagePullPolicy: {{ .Values.webV2.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.webV2.port }}
+              protocol: TCP
+          env:
+            - name: SKQUAD_API_BASE_URL
+              value: {{ printf "http://%s.%s.svc.cluster.local/api/v1" (include "skquad.apiServerName" .) .Release.Namespace | quote }}
+            - name: NEXT_PUBLIC_SKQUAD_API_BASE_URL
+              value: {{ .Values.webV2.apiBaseUrl | quote }}
+          resources:
+            {{- toYaml .Values.webV2.resources | nindent 12 }}
+{{- end }}

@@ -343,3 +343,29 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
         run: npm run build
+
+  web-v2:
+    name: Web v2
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web-v2
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web-v2/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Unit tests with coverage
+        run: npm run test:coverage
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-web-v2
+          path: web-v2/coverage/lcov.info
+      - name: Build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build

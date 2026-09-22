@@ -20,7 +20,7 @@ spec:
       match: {{ printf "Host(`%s`) && PathPrefix(`%s`)" $host .path | quote }}
       {{- end }}
       services:
-        - name: {{- if eq .service "apiServer" }} {{ include "skquad.apiServerName" $ }}{{- else if eq .service "llmGateway" }} {{ include "skquad.llmGatewayName" $ }}{{- else if eq .service "web" }} {{ include "skquad.webName" $ }}{{- else }}{{- fail (printf "unknown ingressRoute service %q" .service) }}{{- end }}
+        - name: {{- if eq .service "apiServer" }} {{ include "skquad.apiServerName" $ }}{{- else if eq .service "llmGateway" }} {{ include "skquad.llmGatewayName" $ }}{{- else if eq .service "web" }} {{ include "skquad.webName" $ }}{{- else if eq .service "webV2" }} {{ include "skquad.webV2Name" $ }}{{- else }}{{- fail (printf "unknown ingressRoute service %q" .service) }}{{- end }}
           port: http
     {{- end }}
     {{- end }}

@@ -16,12 +16,16 @@ image:
   web:
     repository: ghcr.io/rossbrigoli/skquad-web
     tag: "0.1.0"
+  webV2:
+    repository: ghcr.io/rossbrigoli/skquad-web-v2
+    tag: "0.1.0"
 
 replicas:
   apiServer: 2
   llmGateway: 2
   operator: 1
   web: 1
+  webV2: 1
 
 namespace:
   create: true
@@ -141,6 +145,16 @@ llmGateway:
   resources: {}
 
 web:
+  imagePullPolicy: IfNotPresent
+  port: 3000
+  apiBaseUrl: /api/v1
+  resources: {}
+
+# webV2 is the redesigned UI (docs/UI-V2-PLAN.md). Disabled by default so it
+# is a no-op for existing installs; enable alongside a skquad-v2.* ingress host
+# for A/B testing against the same control-plane API.
+webV2:
+  enabled: false
   imagePullPolicy: IfNotPresent
   port: 3000
   apiBaseUrl: /api/v1

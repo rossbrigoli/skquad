@@ -68,6 +68,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s:%s" .Values.image.web.repository .Values.image.web.tag -}}
 {{- end -}}
 
+{{- define "skquad.webV2Name" -}}
+{{- printf "%s-web-v2" (include "skquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "skquad.webV2Image" -}}
+{{- printf "%s:%s" .Values.image.webV2.repository .Values.image.webV2.tag -}}
+{{- end -}}
+
 {{- define "skquad.postgresName" -}}
 {{- printf "%s-postgres" (include "skquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
