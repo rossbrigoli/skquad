@@ -274,13 +274,18 @@ over `*.lab`. Immutable image promotion remains a CI/CD follow-up.
   network policies, and per-squad RBAC across the cluster). The ClusterRole is
   least-privilege scoped: it holds **no Secret access at all** (the operator never
   reads or writes Secret contents — the API server writes agent credentials via
-  namespace-local Roles), and every fixed-name resource it manages
-  (`skquad-agent` SA, `skquad-api-agent-secret-writer` Role/RoleBinding,
+  namespace-local Roles), and **no list/watch** on the fixed-name resources it
+  manages (`skquad-agent` SA, `skquad-api-agent-secret-writer` Role/RoleBinding,
   `default-deny` / `allow-dns-egress` / `allow-skquad-platform-egress` /
   `allow-granted-egress` NetworkPolicies, `skquad-squad-quota`, the
-  `skquad-operator.skquad.io` leader lease) is constrained with
-  `resourceNames`. Only `namespaces` and agent `deployments` remain
-  name-unbounded because their names are dynamic.
+  `skquad-operator.skquad.io` leader lease) — those reads go direct to the API
+  (cache bypass in `cmd/manager/main.go`) and their get/update/patch/delete are
+  `resourceNames`-constrained. `create` for those types remains type-scoped
+  because Kubernetes RBAC cannot scope `create` by `resourceNames`
+  ([reference](https://kubernetes.io/docs/reference/access-authn-authz/rbac/));
+  a ValidatingAdmissionPolicy enforcing the fixed names is the future hardening
+  step. `namespaces` and agent `deployments` remain name-unbounded because their
+  names are dynamic.
   The API server's generated Secret write/delete authority is granted by
   namespace-local RoleBindings that the operator creates in reconciled squad
   namespaces.

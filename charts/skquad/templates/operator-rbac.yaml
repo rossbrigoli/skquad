@@ -38,8 +38,11 @@ rules:
       - patch
       - update
       - delete
-  # Fixed-name resources: no list/watch (resourceNames does not apply to
-  # list/watch); the operator reads them uncached, see cmd/manager/main.go.
+  # Fixed-name resources: no list/watch (prevents enumeration) and no
+  # Secrets access at all. resourceNames cannot scope `create` for
+  # top-level resources (kubernetes.io/docs/reference/access-authn-authz/rbac/),
+  # so create stays type-scoped while get/update/patch/delete are
+  # name-scoped. The operator reads these types uncached (main.go).
   - apiGroups:
       - ""
     resources:
@@ -52,8 +55,13 @@ rules:
     resources:
       - serviceaccounts
     verbs:
-      - get
       - create
+  - apiGroups:
+      - ""
+    resources:
+      - serviceaccounts
+    verbs:
+      - get
       - patch
       - update
       - delete
@@ -65,8 +73,14 @@ rules:
       - roles
       - rolebindings
     verbs:
-      - get
       - create
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - roles
+      - rolebindings
+    verbs:
+      - get
       - patch
       - update
       - delete
@@ -89,8 +103,13 @@ rules:
     resources:
       - networkpolicies
     verbs:
-      - get
       - create
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
+    verbs:
+      - get
       - patch
       - update
       - delete
@@ -104,8 +123,13 @@ rules:
     resources:
       - resourcequotas
     verbs:
-      - get
       - create
+  - apiGroups:
+      - ""
+    resources:
+      - resourcequotas
+    verbs:
+      - get
       - patch
       - update
       - delete
@@ -116,8 +140,13 @@ rules:
     resources:
       - leases
     verbs:
-      - get
       - create
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
       - patch
       - update
       - delete
