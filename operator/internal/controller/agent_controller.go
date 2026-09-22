@@ -24,6 +24,7 @@ const (
 	agentFinalizer     = "skquad.io/agent-cleanup"
 	defaultAgentImage  = "skquad/agent-runtime:0.1.0"
 	credentialsMount   = "/var/run/skquad/credentials"
+	workspacesMount    = "/var/run/skquad/workspaces"
 	runtimeHTTPPort    = int32(8080)
 )
 
@@ -310,6 +311,17 @@ func agentSecretVolumes(agent *skquadv1.Agent) []corev1.Volume {
 			}},
 		})
 	}
+	for i, ws := range agent.Spec.WorkspaceSecrets {
+		if ws.SecretName == "" || ws.ResourceID == "" {
+			continue
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name: fmt.Sprintf("workspace-%d", i),
+			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+				SecretName: ws.SecretName,
+			}},
+		})
+	}
 	return volumes
 }
 
@@ -326,6 +338,16 @@ func agentSecretVolumeMounts(agent *skquadv1.Agent) []corev1.VolumeMount {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      "agent-virtual-key",
 			MountPath: credentialsMount + "/llm-gateway",
+			ReadOnly:  true,
+		})
+	}
+	for i, ws := range agent.Spec.WorkspaceSecrets {
+		if ws.SecretName == "" || ws.ResourceID == "" {
+			continue
+		}
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      fmt.Sprintf("workspace-%d", i),
+			MountPath: fmt.Sprintf("%s/%s", workspacesMount, ws.ResourceID),
 			ReadOnly:  true,
 		})
 	}

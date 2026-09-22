@@ -16,6 +16,13 @@ from time import monotonic, sleep as default_sleep
 from typing import Callable, Mapping, Protocol
 from urllib import error, request
 
+from .workspace import (
+    DEFAULT_WORKSPACES_DIR,
+    DEFAULT_WORKSPACE_BASE,
+    finalize_task_workspace,
+    prepare_task_workspace,
+)
+
 
 DEFAULT_CREDENTIALS_DIR = Path("/var/run/skquad/credentials")
 DEFAULT_AGENT_CREDENTIAL_PATH = DEFAULT_CREDENTIALS_DIR / "agent"
@@ -47,6 +54,9 @@ class BootstrapConfig:
     plugin_modules: tuple[str, ...]
     enabled_plugins: tuple[str, ...]
     system_prompt: str = ""
+    workspace_enabled: bool = True
+    workspaces_dir: str = DEFAULT_WORKSPACES_DIR
+    workspace_base: str = DEFAULT_WORKSPACE_BASE
 
     @property
     def missing_required(self) -> list[str]:
@@ -303,6 +313,9 @@ def load_bootstrap_config(environ: Mapping[str, str] | None = None) -> Bootstrap
         task_summary_max_chars=env_int(env, "SKQUAD_TASK_SUMMARY_MAX_CHARS", 4000),
         plugin_modules=parse_csv(env.get("SKQUAD_PLUGIN_MODULES", "")),
         enabled_plugins=parse_csv(env.get("SKQUAD_ENABLED_PLUGINS", "")),
+        workspace_enabled=env_bool(env, "SKQUAD_WORKSPACE_ENABLED", True),
+        workspaces_dir=env.get("SKQUAD_WORKSPACES_DIR", DEFAULT_WORKSPACES_DIR),
+        workspace_base=env.get("SKQUAD_WORKSPACE_BASE", DEFAULT_WORKSPACE_BASE),
     )
 
 
@@ -475,6 +488,25 @@ class ControlPlaneClient:
             "POST",
             f"/api/v1/agents/me/tasks/{task_id}/block",
             {"summary": summary, "execution_id": execution_id, "fencing_token": fencing_token},
+        )
+        return runtime_task(payload)
+
+    def report_task_workspace(
+        self,
+        task: RuntimeTask | str,
+        workspace_resource_id: str,
+        branch: str,
+        commit_sha: str,
+    ) -> RuntimeTask:
+        task_id, _, _ = task_fence(task)
+        payload = self._json(
+            "POST",
+            f"/api/v1/agents/me/tasks/{task_id}/workspace",
+            {
+                "workspace_resource_id": workspace_resource_id,
+                "branch": branch,
+                "commit_sha": commit_sha,
+            },
         )
         return runtime_task(payload)
 
@@ -1125,6 +1157,29 @@ def poll_once(config: BootstrapConfig, client: ControlPlaneClient | None = None)
     return task
 
 
+def _prepare_task_workspace(
+    config: BootstrapConfig, control_plane: ControlPlaneClient, task: RuntimeTask
+):
+    """Best-effort: fetch the task context and prepare a git workspace if granted."""
+    if not config.workspace_enabled:
+        return None
+    try:
+        context = control_plane.task_context(task.id)
+    except Exception as exc:  # noqa: BLE001 - workspace is best-effort
+        LOGGER.warning(
+            "task context fetch failed for workspace",
+            extra={"task_id": task.id, "error": str(exc)},
+        )
+        return None
+    return prepare_task_workspace(
+        context.resources,
+        config.agent_id,
+        task.id,
+        workspaces_dir=config.workspaces_dir,
+        base_dest=config.workspace_base,
+    )
+
+
 def run_task_once(
     config: BootstrapConfig,
     handler: TaskHandler,
@@ -1144,6 +1199,7 @@ def run_task_once(
     LOGGER.info("agent task claimed", extra={"task_id": task.id, "squad_id": task.squad_id})
     control_plane.heartbeat("busy", task)
     started = monotonic()
+    workspace = _prepare_task_workspace(config, control_plane, task)
     try:
         with TaskLeaseHeartbeat(control_plane, task, config.heartbeat_interval_seconds):
             result = handle_task_with_timeout(handler, task, config)
@@ -1178,6 +1234,18 @@ def run_task_once(
     if result.status == "blocked":
         final_task = control_plane.block_task(task, summary=summary)
     else:
+        if workspace is not None:
+            ws_result = finalize_task_workspace(workspace, f"skquad: {task.title}")
+            if ws_result is not None:
+                try:
+                    control_plane.report_task_workspace(
+                        task, workspace.resource_id, ws_result.branch, ws_result.commit_sha
+                    )
+                except Exception as exc:  # noqa: BLE001 - report is best-effort
+                    LOGGER.warning(
+                        "workspace report failed",
+                        extra={"task_id": task.id, "error": str(exc)},
+                    )
         final_task = control_plane.complete_task(
             task,
             result.status,

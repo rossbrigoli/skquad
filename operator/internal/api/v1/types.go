@@ -83,8 +83,18 @@ type AgentSpec struct {
 	ControlPlaneURL   string               `json:"controlPlaneUrl,omitempty"`
 	LLMGatewayURL     string               `json:"llmGatewayUrl,omitempty"`
 	Permissions       apiextensionsv1.JSON `json:"permissions,omitempty"`
+	WorkspaceSecrets  []WorkspaceSecret    `json:"workspaceSecrets,omitempty"`
 	IdleTimeout       string               `json:"idleTimeout,omitempty"`
 	DesiredActive     bool                 `json:"desiredActive"`
+}
+
+// WorkspaceSecret maps a granted git workspace (registry resource id) to the
+// name of a Secret in the agent namespace holding its HTTPS token under the
+// key "token". The operator mounts it at
+// /var/run/skquad/workspaces/<resourceId>/token.
+type WorkspaceSecret struct {
+	ResourceID string `json:"resourceId"`
+	SecretName string `json:"secretName"`
 }
 
 // AgentStatus reports reconciliation state for an Agent.
