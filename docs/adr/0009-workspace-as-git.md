@@ -94,6 +94,13 @@ Secret name in the same namespace also resolves).
    `POST /api/v1/agents/me/tasks/{id}/workspace`. The token is scrubbed
    from `.git/config` after every operation.
 
+**Attribution (resolved 2026-09-22):** the credential is **per-workspace,
+not per-agent** — all granted agents push with the same token. Git-history
+attribution is therefore done via per-agent commit authorship
+(`skquad/<agent-id[:8]>` / `<agent-id>@skquad.local`). Per-agent tokens
+or a short-lived token broker (GitHub App) remain the upgrade path if
+credential-level revocation granularity is ever required.
+
 ## Consequences
 
 - **(+)** Real, durable, human-reviewable artifacts; git is the source of truth.

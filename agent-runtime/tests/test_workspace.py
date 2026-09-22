@@ -96,6 +96,30 @@ class PrepareFinalizeTests(unittest.TestCase):
             refs = _git(["ls-remote", "--heads", str(bare)], parent)
             self.assertIn("skquad/agent1/task1", refs)
 
+    def test_commit_author_is_per_agent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            bare = _seed_bare_repo(parent)
+            wsdir = parent / "creds"
+            (wsdir / "ws-1").mkdir(parents=True)
+            (wsdir / "ws-1" / "token").write_text("tok", encoding="utf-8")
+            basedest = parent / "work"
+            agent_id = "11111111-2222-3333-4444-555555555555"
+            resources = [_resource(rid="ws-1", endpoint=str(bare), branch="main")]
+
+            with mock.patch.object(git_workspace, "authed_https_url", lambda url, token, username="": url):
+                handle = ws.prepare_task_workspace(resources, agent_id, "taskA", workspaces_dir=wsdir, base_dest=basedest)
+                self.assertIsNotNone(handle)
+                (handle.path / "work.txt").write_text("x\n", encoding="utf-8")
+                result = ws.finalize_task_workspace(handle, "skquad: taskA")
+            self.assertTrue(result.pushed)
+
+            author = _git(
+                ["log", "-1", "--format=%an <%ae>", f"refs/heads/{handle.branch}"],
+                bare,
+            )
+            self.assertEqual(author, f"skquad/{agent_id[:8]} <{agent_id}@skquad.local>")
+
     def test_no_token_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp)

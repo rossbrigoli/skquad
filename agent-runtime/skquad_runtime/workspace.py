@@ -91,9 +91,22 @@ def prepare_task_workspace(
     branch = git_workspace.work_branch_for(agent_id, task_id)
     base = Path(base_dest or os.environ.get("SKQUAD_WORKSPACE_BASE", DEFAULT_WORKSPACE_BASE))
     dest = base / f"{rid}-{task_id}"
+    # Per-agent commit authorship: the full agent id rides in the email so
+    # any commit maps back to the control-plane agent; the short name keeps
+    # git log readable. The shared workspace token cannot distinguish agents,
+    # so git-history attribution is done here (see ADR-0009).
+    author_name = f"skquad/{agent_id[:8]}"
+    author_email = f"{agent_id}@skquad.local"
     try:
         push_url = git_workspace.authed_https_url(endpoint, token)
-        git_workspace.prepare_workspace(push_url, default_branch, branch, dest)
+        git_workspace.prepare_workspace(
+            push_url,
+            default_branch,
+            branch,
+            dest,
+            author_name=author_name,
+            author_email=author_email,
+        )
     except GitError as exc:
         LOGGER.error(
             "failed to prepare git workspace",

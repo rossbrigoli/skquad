@@ -388,6 +388,11 @@ ADR-0009):
    `POST /api/v1/agents/me/tasks/{id}/workspace`.
 4. The token is injected into the clone/push URL only and is scrubbed
    from `.git/config` after every operation; it never lands in commits.
+5. **Commit authorship is per-agent**: the runtime sets
+   `user.name = skquad/<agent-id[:8]>` and
+   `user.email = <agent-id>@skquad.local`, so every commit maps back to
+   the control-plane agent even though the workspace token is shared
+   across granted agents (the token cannot provide attribution).
 
 Workspace sync is **best-effort by design**: a missing token, clone
 failure, or push rejection never blocks or fails the task — the runtime
