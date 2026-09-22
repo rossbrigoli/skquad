@@ -1092,6 +1092,10 @@ func (p *PostgresStore) SetAgentPermissions(ctx context.Context, agentID string,
 	}
 	defer tx.Rollback(ctx)
 
+	agent, err := getAgentTx(ctx, tx, agentID)
+	if err != nil {
+		return mapPgErr(err)
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM agent_permissions WHERE agent_id = $1`, agentID); err != nil {
 		return mapPgErr(err)
 	}
@@ -1103,6 +1107,11 @@ func (p *PostgresStore) SetAgentPermissions(ctx context.Context, agentID string,
 		`, agentID, perm.ResourceType, perm.ResourceID, perm.GrantedBy); err != nil {
 			return mapPgErr(err)
 		}
+	}
+	// Grant changes (especially project_workspace) must re-sync the Agent CR so
+	// workspaceSecrets reflect the live grant set (ADR-0009).
+	if err := p.enqueueAgentOutboxTx(ctx, tx, domain.KubernetesOpUpsertAgent, agent); err != nil {
+		return err
 	}
 	return mapPgErr(tx.Commit(ctx))
 }

@@ -67,11 +67,32 @@ agent cannot forge refs to a workspace it cannot access.
 
 ### Credential model
 
-`auth_ref` is an **opaque reference** the operator resolves to a Kubernetes
-Secret mounted into the agent pod. The control plane does not store the
-credential itself. Both an **HTTPS token** and an **SSH deploy key** fit
-this contract; the concrete Secret shape + runtime auth path is finalized
-with Ross (open decision — see below).
+`auth_ref` is an **opaque reference** resolved to a Kubernetes Secret
+mounted into the agent pod. The control plane does not store the
+credential itself. **Finalized: HTTPS token** (Ross, 2026-09-22). The
+Secret holds the git HTTPS token under the key `token` in the agent's
+namespace; `auth_ref` is `k8s://<namespace>/<secret-name>` (a bare
+Secret name in the same namespace also resolves).
+
+**Propagation chain (implemented):**
+
+1. Owner registers a `project_workspace` (kind `git`) with `auth_ref`
+   pointing at the token Secret, and grants it to agents via
+   `PUT /api/v1/agents/{id}/permissions`.
+2. `SetAgentPermissions` (memory + Postgres) enqueues an `upsert_agent`
+   Kubernetes outbox event so grant changes re-converge the CR.
+3. The outbox worker **derives** `spec.workspaceSecrets[]` at apply time
+   from the agent's live grants: only `active`, `kind=git` resources with
+   a resolvable `auth_ref` produce an entry; stale/inactive/non-git
+   grants are skipped so one bad grant cannot block the sync. The list is
+   **derived, not persisted** on the `agents` table — grants stay the
+   single source of truth.
+4. The operator mounts each Secret read-only at
+   `/var/run/skquad/workspaces/<resourceId>/token`.
+5. The runtime reads the token from that mount at task time, clones into
+   `skquad/<agent>/<task-id>`, commits, pushes, and reports refs via
+   `POST /api/v1/agents/me/tasks/{id}/workspace`. The token is scrubbed
+   from `.git/config` after every operation.
 
 ## Consequences
 
@@ -86,13 +107,12 @@ with Ross (open decision — see below).
 - **Mitigation:** branch naming is namespaced per agent+task; owner reviews
   and prunes merged branches.
 
-## Open decision (blocking runtime + operator implementation)
+## Resolved decision (2026-09-22)
 
-- **Git credential type:** HTTPS token (PAT/username-token) vs SSH deploy
-  key. Drives the Secret shape the operator mounts and how the runtime
-  authenticates. Default leaning: **HTTPS token** (simplest to mount as a
-  file and consistent with the existing egress model), but `auth_ref` stays
-  opaque so either works.
+- **Git credential type:** **HTTPS token** (Ross). Secret shape: key
+  `token` in the agent namespace; `auth_ref` = `k8s://<ns>/<secret>` or a
+  bare Secret name. SSH deploy keys remain possible later because
+  `auth_ref` stayed opaque.
 
 ## Alternatives Considered
 

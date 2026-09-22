@@ -3,8 +3,10 @@ package kube
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
@@ -51,7 +53,7 @@ func ProcessOutboxOnce(ctx context.Context, store storage.KubernetesOutboxStore,
 		return 0, err
 	}
 	for _, event := range events {
-		if err := applyOutboxEvent(ctx, writer, event); err != nil {
+		if err := applyOutboxEvent(ctx, store, writer, event); err != nil {
 			markErr := store.MarkKubernetesOutboxFailed(ctx, event.ID, err.Error(), retryDelay(event.Attempts))
 			if markErr != nil {
 				return len(events), fmt.Errorf("mark outbox event failed: %w", markErr)
@@ -65,7 +67,57 @@ func ProcessOutboxOnce(ctx context.Context, store storage.KubernetesOutboxStore,
 	return len(events), nil
 }
 
-func applyOutboxEvent(ctx context.Context, writer outboxWriter, event *domain.KubernetesOutboxEvent) error {
+// workspaceGrantReader provides the grant + registry lookups needed to derive
+// an agent's workspace secrets at CR-apply time (ADR-0009). Both the memory
+// and Postgres stores satisfy this.
+type workspaceGrantReader interface {
+	ListAgentPermissions(ctx context.Context, agentID string) ([]*domain.AgentPermission, error)
+	GetResource(ctx context.Context, typ domain.ResourceType, id string) (*domain.RegistryResource, error)
+}
+
+// deriveWorkspaceSecrets maps an agent's active git workspace grants to
+// Kubernetes Secret names. Stale grants (missing resource), non-git kinds,
+// inactive resources, and unusable auth refs are skipped so one bad grant
+// cannot block the whole CR sync.
+func deriveWorkspaceSecrets(ctx context.Context, reader workspaceGrantReader, agent *domain.Agent) ([]domain.WorkspaceSecret, error) {
+	perms, err := reader.ListAgentPermissions(ctx, agent.ID)
+	if err != nil {
+		return nil, fmt.Errorf("derive workspace secrets: list grants: %w", err)
+	}
+	secrets := []domain.WorkspaceSecret{}
+	for _, perm := range perms {
+		if perm.ResourceType != domain.ResProjectWorkspace {
+			continue
+		}
+		res, err := reader.GetResource(ctx, domain.ResProjectWorkspace, perm.ResourceID)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				slog.Warn("workspace grant points at missing resource; skipping", "agent", agent.ID, "resource", perm.ResourceID)
+				continue
+			}
+			return nil, fmt.Errorf("derive workspace secrets: resource %s: %w", perm.ResourceID, err)
+		}
+		if res.Status != domain.ResourceActive {
+			continue
+		}
+		var manifest struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(res.Manifest, &manifest); err != nil || manifest.Kind != "git" {
+			continue
+		}
+		secretName := secretNameFromRef(res.AuthRef)
+		if secretName == "" {
+			slog.Warn("workspace resource has no usable auth_ref secret; skipping", "resource", res.ID)
+			continue
+		}
+		secrets = append(secrets, domain.WorkspaceSecret{ResourceID: res.ID, SecretName: secretName})
+	}
+	sort.Slice(secrets, func(i, j int) bool { return secrets[i].ResourceID < secrets[j].ResourceID })
+	return secrets, nil
+}
+
+func applyOutboxEvent(ctx context.Context, store storage.KubernetesOutboxStore, writer outboxWriter, event *domain.KubernetesOutboxEvent) error {
 	var payload domain.KubernetesOutboxPayload
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		return fmt.Errorf("decode outbox payload: %w", err)
@@ -84,6 +136,13 @@ func applyOutboxEvent(ctx context.Context, writer outboxWriter, event *domain.Ku
 	case domain.KubernetesOpUpsertAgent:
 		if payload.Agent == nil {
 			return fmt.Errorf("outbox event %s missing agent payload", event.ID)
+		}
+		if reader, ok := store.(workspaceGrantReader); ok {
+			secrets, err := deriveWorkspaceSecrets(ctx, reader, payload.Agent)
+			if err != nil {
+				return err
+			}
+			payload.Agent.WorkspaceSecrets = secrets
 		}
 		return writer.UpsertAgent(ctx, payload.Agent, payload.Identity)
 	case domain.KubernetesOpDeleteAgent:

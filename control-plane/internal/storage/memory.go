@@ -798,6 +798,9 @@ func (m *MemoryStore) SetAgentPermissions(_ context.Context, agentID string, per
 		created.CreatedAt = now
 		m.permissions[permissionKey(agentID, created.ResourceType, created.ResourceID)] = created
 	}
+	// Grant changes (especially project_workspace) must re-sync the Agent CR so
+	// workspaceSecrets reflect the live grant set (ADR-0009).
+	m.enqueueAgentOutboxLocked(domain.KubernetesOpUpsertAgent, m.agents[agentID])
 	return nil
 }
 
@@ -1622,6 +1625,7 @@ func cloneAgent(a *domain.Agent) *domain.Agent {
 	}
 	v := *a
 	v.Permissions = slices.Clone(a.Permissions)
+	v.WorkspaceSecrets = slices.Clone(a.WorkspaceSecrets)
 	return &v
 }
 

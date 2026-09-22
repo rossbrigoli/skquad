@@ -107,6 +107,16 @@ func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identit
 			spec["virtualKeySecret"] = secretName
 		}
 	}
+	if len(agent.WorkspaceSecrets) > 0 {
+		ws := make([]map[string]any, 0, len(agent.WorkspaceSecrets))
+		for _, s := range agent.WorkspaceSecrets {
+			ws = append(ws, map[string]any{
+				"resourceId": s.ResourceID,
+				"secretName": s.SecretName,
+			})
+		}
+		spec["workspaceSecrets"] = ws
+	}
 	body := map[string]any{
 		"apiVersion": w.groupVersion,
 		"kind":       "Agent",

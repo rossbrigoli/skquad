@@ -80,6 +80,18 @@ type Agent struct {
 	Status          AgentStatus     `json:"status"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
+	// WorkspaceSecrets is derived from the agent's project_workspace grants at
+	// CR-write time (outbox worker); it is NOT persisted on the agents table.
+	// See ADR-0009 and the operator WorkspaceSecret spec.
+	WorkspaceSecrets []WorkspaceSecret `json:"workspace_secrets,omitempty"`
+}
+
+// WorkspaceSecret links a granted git workspace (registry resource id) to the
+// name of a Kubernetes Secret in the agent namespace holding its HTTPS git
+// token under the key "token".
+type WorkspaceSecret struct {
+	ResourceID string `json:"resourceId"`
+	SecretName string `json:"secretName"`
 }
 
 // AgentIdentity is the owner-created identity + credential reference for an

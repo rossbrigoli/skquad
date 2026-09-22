@@ -59,6 +59,18 @@ spec:
                   type: string
                 permissions:
                   x-kubernetes-preserve-unknown-fields: true
+                workspaceSecrets:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - resourceId
+                      - secretName
+                    properties:
+                      resourceId:
+                        type: string
+                      secretName:
+                        type: string
                 idleTimeout:
                   type: string
                 desiredActive:

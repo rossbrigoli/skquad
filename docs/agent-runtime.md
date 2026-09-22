@@ -370,7 +370,39 @@ and the pod can scale to zero). Durable state lives in Postgres.
 
 ---
 
-## 13. Open Points
+## 13. Git Workspace Sync (S-84 v1)
+
+When a task's agent holds an active `project_workspace` grant of kind
+`git`, the runtime treats the repo as the durable working area (see
+ADR-0009):
+
+1. The operator mounts the workspace HTTPS-token Secret read-only at
+   `/var/run/skquad/workspaces/<resourceId>/token` (from
+   `spec.workspaceSecrets` on the Agent CR, derived from grants by the
+   control-plane outbox worker).
+2. Before the handler runs, the runtime clones the workspace endpoint and
+   checks out `skquad/<agent>/<task-id>` (created from
+   `manifest.default_branch`).
+3. On handler success the runtime commits all changes, pushes the branch,
+   and reports `{workspaceResourceId, branch, commitSha}` via
+   `POST /api/v1/agents/me/tasks/{id}/workspace`.
+4. The token is injected into the clone/push URL only and is scrubbed
+   from `.git/config` after every operation; it never lands in commits.
+
+Workspace sync is **best-effort by design**: a missing token, clone
+failure, or push rejection never blocks or fails the task — the runtime
+logs and continues (task result stays authoritative; the owner sees the
+missing refs on the task card).
+
+| Env var | Purpose |
+|---------|---------|
+| `SKQUAD_WORKSPACE_ENABLED` | Master switch (default true; inert without mounted tokens). |
+| `SKQUAD_WORKSPACES_DIR` | Root for mounted workspace tokens. Default `/var/run/skquad/workspaces`. |
+| `SKQUAD_WORKSPACE_BASE` | Local checkout root for task work. |
+
+---
+
+## 14. Open Points
 
 - **Planning strategy** — single-shot plan vs. iterative re-planning; decide
   during implementation (start simple: one plan, iterate on observations).

@@ -101,6 +101,54 @@ func TestUpsertAgentMapsGeneratedSecretRefs(t *testing.T) {
 	}
 }
 
+func TestUpsertAgentEmitsWorkspaceSecrets(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	writer := &CRWriter{
+		baseURL:      server.URL,
+		namespace:    "skquad-system",
+		groupVersion: "skquad.io/v1",
+		agentImage:   "example.com/skquad/agent-runtime:test",
+		token:        "test-token",
+		client:       server.Client(),
+	}
+
+	agent := &domain.Agent{ID: "agent-ws", SquadID: "squad-1", Role: "coder", IdleTimeoutSec: 300}
+	if err := writer.UpsertAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	spec := gotBody["spec"].(map[string]any)
+	if _, ok := spec["workspaceSecrets"]; ok {
+		t.Fatalf("workspaceSecrets should be omitted when empty, got %v", spec["workspaceSecrets"])
+	}
+
+	agent.WorkspaceSecrets = []domain.WorkspaceSecret{
+		{ResourceID: "ws-1", SecretName: "ws-repo-app-token"},
+		{ResourceID: "ws-2", SecretName: "ws-repo-api-token"},
+	}
+	if err := writer.UpsertAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	spec = gotBody["spec"].(map[string]any)
+	raw, ok := spec["workspaceSecrets"].([]any)
+	if !ok || len(raw) != 2 {
+		t.Fatalf("workspaceSecrets = %v, want 2 entries", spec["workspaceSecrets"])
+	}
+	first := raw[0].(map[string]any)
+	if first["resourceId"] != "ws-1" || first["secretName"] != "ws-repo-app-token" {
+		t.Fatalf("first entry = %v", first)
+	}
+}
+
 func TestWriteAgentCredentialAppliesOpaqueSecret(t *testing.T) {
 	t.Parallel()
 
