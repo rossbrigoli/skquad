@@ -392,6 +392,9 @@ func (p *PostgresStore) CreateSquad(ctx context.Context, s *domain.Squad) (*doma
 	if err := p.enqueueSquadOutboxTx(ctx, tx, domain.KubernetesOpUpsertSquad, created); err != nil {
 		return nil, err
 	}
+	if err := p.writePendingAuditsTx(ctx, tx, created.ID); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, mapPgErr(err)
 	}
@@ -438,6 +441,9 @@ func (p *PostgresStore) UpdateSquad(ctx context.Context, s *domain.Squad) (*doma
 		return nil, err
 	}
 	if err := p.enqueueSquadOutboxTx(ctx, tx, domain.KubernetesOpUpsertSquad, updated); err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, updated.ID); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -499,6 +505,9 @@ func (p *PostgresStore) DeleteSquad(ctx context.Context, id string) error {
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
+	if err := p.writePendingAuditsTx(ctx, tx, id); err != nil {
+		return err
+	}
 	return mapPgErr(tx.Commit(ctx))
 }
 
@@ -555,6 +564,9 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 	if err := p.enqueueAgentOutboxTx(ctx, tx, domain.KubernetesOpUpsertAgent, created); err != nil {
 		return nil, err
 	}
+	if err := p.writePendingAuditsTx(ctx, tx, created.ID); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, mapPgErr(err)
 	}
@@ -600,6 +612,9 @@ func (p *PostgresStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*doma
 	if err := p.enqueueAgentOutboxTx(ctx, tx, domain.KubernetesOpUpsertAgent, updated); err != nil {
 		return nil, err
 	}
+	if err := p.writePendingAuditsTx(ctx, tx, updated.ID); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, mapPgErr(err)
 	}
@@ -632,6 +647,9 @@ func (p *PostgresStore) DeleteAgent(ctx context.Context, id string) error {
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, id); err != nil {
+		return err
 	}
 	return mapPgErr(tx.Commit(ctx))
 }
@@ -717,6 +735,9 @@ func (p *PostgresStore) CreateAgentIdentity(ctx context.Context, i *domain.Agent
 	}); err != nil {
 		return nil, err
 	}
+	if err := p.writePendingAuditsTx(ctx, tx, created.ID); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, mapPgErr(err)
 	}
@@ -762,6 +783,9 @@ func (p *PostgresStore) RotateAgentIdentity(ctx context.Context, agentID string,
 		Agent:    agent,
 		Identity: identity,
 	}); err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, identity.ID); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -901,12 +925,28 @@ func (p *PostgresStore) AgentMayMessageSquad(ctx context.Context, agentID, squad
 }
 
 func (p *PostgresStore) CreateLLMProvider(ctx context.Context, provider *domain.LLMProvider) (*domain.LLMProvider, error) {
-	row := p.pool.QueryRow(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	txRow := tx.QueryRow(ctx, `
 		INSERT INTO llm_providers (name, kind, base_url, api_key_ref, default_model, models, pricing, status, registered_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id::text, name, kind, base_url, api_key_ref, default_model, models, pricing, status, registered_by::text, created_at
 	`, provider.Name, provider.Kind, provider.BaseURL, provider.APIKeyRef, provider.DefaultModel, defaultJSON(provider.Models, "[]"), defaultJSON(provider.Pricing, "{}"), defaultResourceStatus(provider.Status), provider.RegisteredBy)
-	return scanLLMProvider(row)
+	created, err := scanLLMProvider(txRow)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, created.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return created, nil
 }
 
 func (p *PostgresStore) GetLLMProvider(ctx context.Context, id string) (*domain.LLMProvider, error) {
@@ -919,7 +959,13 @@ func (p *PostgresStore) GetLLMProvider(ctx context.Context, id string) (*domain.
 }
 
 func (p *PostgresStore) UpdateLLMProvider(ctx context.Context, provider *domain.LLMProvider) (*domain.LLMProvider, error) {
-	row := p.pool.QueryRow(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	txRow := tx.QueryRow(ctx, `
 		UPDATE llm_providers
 		SET name = $2,
 		    kind = $3,
@@ -932,11 +978,27 @@ func (p *PostgresStore) UpdateLLMProvider(ctx context.Context, provider *domain.
 		WHERE id = $1
 		RETURNING id::text, name, kind, base_url, api_key_ref, default_model, models, pricing, status, registered_by::text, created_at
 	`, provider.ID, provider.Name, provider.Kind, provider.BaseURL, provider.APIKeyRef, provider.DefaultModel, defaultJSON(provider.Models, "[]"), defaultJSON(provider.Pricing, "{}"), defaultResourceStatus(provider.Status))
-	return scanLLMProvider(row)
+	created, err := scanLLMProvider(txRow)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, created.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return created, nil
 }
 
 func (p *PostgresStore) DeprecateLLMProvider(ctx context.Context, id string) error {
-	tag, err := p.pool.Exec(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
 		UPDATE llm_providers
 		SET status = $2
 		WHERE id = $1
@@ -947,9 +1009,11 @@ func (p *PostgresStore) DeprecateLLMProvider(ctx context.Context, id string) err
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	return nil
+	if err := p.writePendingAuditsTx(ctx, tx, id); err != nil {
+		return err
+	}
+	return mapPgErr(tx.Commit(ctx))
 }
-
 func (p *PostgresStore) ListLLMProviders(ctx context.Context) ([]*domain.LLMProvider, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, name, kind, base_url, api_key_ref, default_model, models, pricing, status, registered_by::text, created_at
@@ -973,14 +1037,30 @@ func (p *PostgresStore) ListLLMProviders(ctx context.Context) ([]*domain.LLMProv
 }
 
 func (p *PostgresStore) CreateResource(ctx context.Context, resource *domain.RegistryResource) (*domain.RegistryResource, error) {
-	row := p.pool.QueryRow(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	txRow := tx.QueryRow(ctx, `
 		INSERT INTO registry_resources (
 			type, name, description, endpoint, auth_ref, manifest, status, registered_by
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id::text, type, name, description, endpoint, auth_ref, manifest, status, registered_by::text, created_at
 	`, resource.Type, resource.Name, resource.Description, resource.Endpoint, resource.AuthRef, defaultJSON(resource.Manifest, "{}"), defaultResourceStatus(resource.Status), resource.RegisteredBy)
-	return scanResource(row)
+	created, err := scanResource(txRow)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, created.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return created, nil
 }
 
 func (p *PostgresStore) GetResource(ctx context.Context, typ domain.ResourceType, id string) (*domain.RegistryResource, error) {
@@ -993,7 +1073,13 @@ func (p *PostgresStore) GetResource(ctx context.Context, typ domain.ResourceType
 }
 
 func (p *PostgresStore) UpdateResource(ctx context.Context, resource *domain.RegistryResource) (*domain.RegistryResource, error) {
-	row := p.pool.QueryRow(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	txRow := tx.QueryRow(ctx, `
 		UPDATE registry_resources
 		SET name = $3,
 		    description = $4,
@@ -1004,11 +1090,27 @@ func (p *PostgresStore) UpdateResource(ctx context.Context, resource *domain.Reg
 		WHERE type = $1 AND id = $2
 		RETURNING id::text, type, name, description, endpoint, auth_ref, manifest, status, registered_by::text, created_at
 	`, resource.Type, resource.ID, resource.Name, resource.Description, resource.Endpoint, resource.AuthRef, defaultJSON(resource.Manifest, "{}"), defaultResourceStatus(resource.Status))
-	return scanResource(row)
+	created, err := scanResource(txRow)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, created.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return created, nil
 }
 
 func (p *PostgresStore) DeprecateResource(ctx context.Context, typ domain.ResourceType, id string) error {
-	tag, err := p.pool.Exec(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
 		UPDATE registry_resources
 		SET status = $3
 		WHERE type = $1 AND id = $2
@@ -1019,9 +1121,11 @@ func (p *PostgresStore) DeprecateResource(ctx context.Context, typ domain.Resour
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	return nil
+	if err := p.writePendingAuditsTx(ctx, tx, id); err != nil {
+		return err
+	}
+	return mapPgErr(tx.Commit(ctx))
 }
-
 func (p *PostgresStore) ListResources(ctx context.Context, typ domain.ResourceType) ([]*domain.RegistryResource, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, type, name, description, endpoint, auth_ref, manifest, status, registered_by::text, created_at
@@ -1178,6 +1282,36 @@ func (p *PostgresStore) RecordAudit(ctx context.Context, entry *domain.AuditEntr
 	return mapPgErr(err)
 }
 
+// writePendingAuditsTx drains the context's pending audit entries and
+// writes them inside the caller's transaction (S-86). A failure here rolls
+// the whole mutation back, so a committed state change always has its
+// audit record.
+func (p *PostgresStore) writePendingAuditsTx(ctx context.Context, tx pgx.Tx, resourceID string) error {
+	for _, entry := range DrainPendingAudits(ctx) {
+		if entry.ResourceID == "" && resourceID != "" {
+			entry.ResourceID = resourceID
+		}
+		// A squad mutation audits the squad itself; the store knows the new
+		// squad id even when the handler could not.
+		if entry.ResourceType == "squad" && entry.SquadID == "" && resourceID != "" {
+			entry.SquadID = resourceID
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO audit_log (
+				actor_type, actor_id, action, resource_type, resource_id, squad_id,
+				metadata, timestamp
+			)
+			VALUES (
+				$1, $2, $3, $4, nullif($5, '')::uuid, nullif($6, '')::uuid,
+				$7, coalesce(nullif($8, ''), now()::text)::timestamptz
+			)
+		`, entry.ActorType, entry.ActorID, entry.Action, entry.ResourceType, entry.ResourceID, entry.SquadID, defaultJSON(entry.Metadata, "{}"), nullableTimeText(entry.Timestamp)); err != nil {
+			return mapPgErr(err)
+		}
+	}
+	return nil
+}
+
 func (p *PostgresStore) ListAudit(ctx context.Context, squadID string, limit int) ([]*domain.AuditEntry, error) {
 	if limit <= 0 {
 		limit = 100
@@ -1217,7 +1351,13 @@ func (p *PostgresStore) GetBoard(ctx context.Context, squadID string) (*domain.B
 }
 
 func (p *PostgresStore) CreateTask(ctx context.Context, t *domain.Task) (*domain.Task, error) {
-	row := p.pool.QueryRow(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		INSERT INTO tasks (
 			board_id, squad_id, title, description, status, assignee_agent_id,
 			created_by_type, created_by_id, position, origin_message_id
@@ -1232,7 +1372,17 @@ func (p *PostgresStore) CreateTask(ctx context.Context, t *domain.Task) (*domain
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
 		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, '')
 	`, t.BoardID, t.SquadID, t.Title, t.Description, defaultTaskStatus(t.Status), t.AssigneeAgentID, t.CreatedByType, t.CreatedByID, t.OriginMessageID)
-	return scanTask(row)
+	created, err := scanTask(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, created.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return created, nil
 }
 
 func (p *PostgresStore) GetTask(ctx context.Context, id string) (*domain.Task, error) {
@@ -1247,7 +1397,13 @@ func (p *PostgresStore) GetTask(ctx context.Context, id string) (*domain.Task, e
 }
 
 func (p *PostgresStore) UpdateTask(ctx context.Context, t *domain.Task) (*domain.Task, error) {
-	row := p.pool.QueryRow(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		WITH existing AS (
 			SELECT id, board_id, status
 			FROM tasks
@@ -1275,11 +1431,27 @@ func (p *PostgresStore) UpdateTask(ctx context.Context, t *domain.Task) (*domain
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
 		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, '')
 	`, t.ID, t.Title, t.Description, t.AssigneeAgentID, defaultTaskStatus(t.Status))
-	return scanTask(row)
+	updated, err := scanTask(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, updated.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return updated, nil
 }
 
 func (p *PostgresStore) SetTaskWorkspace(ctx context.Context, taskID string, resourceID string, branch string, commitSHA string) (*domain.Task, error) {
-	row := p.pool.QueryRow(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		UPDATE tasks
 		SET workspace_resource_id = $2,
 		    workspace_branch = $3,
@@ -1290,20 +1462,38 @@ func (p *PostgresStore) SetTaskWorkspace(ctx context.Context, taskID string, res
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
 		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, '')
 	`, taskID, resourceID, branch, commitSHA)
-	return scanTask(row)
+	updated, err := scanTask(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, taskID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return updated, nil
 }
 
 func (p *PostgresStore) DeleteTask(ctx context.Context, id string) error {
-	tag, err := p.pool.Exec(ctx, `DELETE FROM tasks WHERE id = $1`, id)
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `DELETE FROM tasks WHERE id = $1`, id)
 	if err != nil {
 		return mapPgErr(err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	return nil
+	if err := p.writePendingAuditsTx(ctx, tx, id); err != nil {
+		return err
+	}
+	return mapPgErr(tx.Commit(ctx))
 }
-
 func (p *PostgresStore) ListTasks(ctx context.Context, boardID string, status domain.TaskStatus) ([]*domain.Task, error) {
 	var rows pgx.Rows
 	var err error
@@ -1399,6 +1589,9 @@ func (p *PostgresStore) ClaimNextTask(ctx context.Context, agentID string, worke
 	}
 	exec, err := p.createTaskExecutionTx(ctx, tx, task.ID, agentID, workerID, leaseFor)
 	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, task.ID); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1663,6 +1856,9 @@ func (p *PostgresStore) CompleteTaskExecution(ctx context.Context, agentID strin
 	if err != nil {
 		return nil, err
 	}
+	if err := p.writePendingAuditsTx(ctx, tx, task.ID); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, mapPgErr(err)
 	}
@@ -1822,7 +2018,13 @@ func (p *PostgresStore) CreateMessage(ctx context.Context, m *domain.Message) (*
 	if expiresAt.IsZero() {
 		expiresAt = time.Now().UTC().Add(defaultMessageTTL)
 	}
-	row := p.pool.QueryRow(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		INSERT INTO messages (
 			from_type, from_id, to_agent_id, squad_id, type, payload, status, correlation_id, max_attempts, expires_at
 		)
@@ -1831,7 +2033,17 @@ func (p *PostgresStore) CreateMessage(ctx context.Context, m *domain.Message) (*
 		          type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
 		          next_retry_at, expires_at, terminal_reason, created_at, delivered_at
 	`, m.FromType, m.FromID, m.ToAgentID, m.SquadID, defaultMessageType(m.Type), defaultJSON(m.Payload, "{}"), defaultMessageStatus(m.Status), m.CorrelationID, maxAttempts, expiresAt)
-	return scanMessage(row)
+	created, err := scanMessage(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, created.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return created, nil
 }
 
 func (p *PostgresStore) ListPendingMessages(ctx context.Context, agentID string) ([]*domain.Message, error) {
@@ -1886,7 +2098,13 @@ func (p *PostgresStore) ListAgentMessageHistory(ctx context.Context, agentID str
 }
 
 func (p *PostgresStore) AckMessage(ctx context.Context, agentID string, messageID string) (*domain.Message, error) {
-	row := p.pool.QueryRow(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		UPDATE messages
 		SET status = CASE WHEN status = $3 THEN $4 ELSE status END,
 		    delivered_at = CASE WHEN status = $3 AND delivered_at IS NULL THEN now() ELSE delivered_at END
@@ -1895,11 +2113,27 @@ func (p *PostgresStore) AckMessage(ctx context.Context, agentID string, messageI
 		          type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
 		          next_retry_at, expires_at, terminal_reason, created_at, delivered_at
 	`, messageID, agentID, domain.MessagePending, domain.MessageDelivered)
-	return scanMessage(row)
+	updated, err := scanMessage(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, messageID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return updated, nil
 }
 
 func (p *PostgresStore) UpdateMessagePayload(ctx context.Context, messageID string, payload json.RawMessage, status domain.MessageStatus) (*domain.Message, error) {
-	row := p.pool.QueryRow(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		UPDATE messages
 		SET payload = $2,
 		    status = $3,
@@ -1909,11 +2143,27 @@ func (p *PostgresStore) UpdateMessagePayload(ctx context.Context, messageID stri
 		          type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
 		          next_retry_at, expires_at, terminal_reason, created_at, delivered_at
 	`, messageID, payload, status)
-	return scanMessage(row)
+	updated, err := scanMessage(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, messageID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return updated, nil
 }
 
 func (p *PostgresStore) FailMessage(ctx context.Context, agentID string, messageID string, reason string) (*domain.Message, error) {
-	row := p.pool.QueryRow(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		UPDATE messages
 		SET attempts = CASE WHEN status = $3 THEN attempts + 1 ELSE attempts END,
 		    status = CASE
@@ -1939,7 +2189,17 @@ func (p *PostgresStore) FailMessage(ctx context.Context, agentID string, message
 		          type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
 		          next_retry_at, expires_at, terminal_reason, created_at, delivered_at
 	`, messageID, agentID, domain.MessagePending, domain.MessageExpired, domain.MessageDead, defaultMessageRetryDelay, trimMessageReason(reason), maxMessageTerminalReason)
-	return scanMessage(row)
+	updated, err := scanMessage(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, messageID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return updated, nil
 }
 
 func (p *PostgresStore) CreateInboxMessage(ctx context.Context, msg *domain.InboxMessage) (*domain.InboxMessage, error) {
@@ -1947,13 +2207,29 @@ func (p *PostgresStore) CreateInboxMessage(ctx context.Context, msg *domain.Inbo
 	if kind == "" {
 		kind = domain.InboxActionRequired
 	}
-	row := p.pool.QueryRow(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		INSERT INTO inbox_messages (squad_id, user_id, from_agent_id, task_id, kind, message)
 		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6)
 		RETURNING id::text, squad_id::text, user_id::text, coalesce(from_agent_id::text, ''),
 		          coalesce(task_id::text, ''), kind, message, read_at, created_at
 	`, msg.SquadID, msg.UserID, msg.FromAgentID, msg.TaskID, kind, msg.Message)
-	return scanInboxMessage(row)
+	created, err := scanInboxMessage(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, created.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return created, nil
 }
 
 func (p *PostgresStore) ListInboxMessages(ctx context.Context, userID string, unreadOnly bool, limit int) ([]*domain.InboxMessage, error) {
@@ -1987,14 +2263,30 @@ func (p *PostgresStore) ListInboxMessages(ctx context.Context, userID string, un
 }
 
 func (p *PostgresStore) MarkInboxMessageRead(ctx context.Context, userID string, id string) (*domain.InboxMessage, error) {
-	row := p.pool.QueryRow(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		UPDATE inbox_messages
 		SET read_at = COALESCE(read_at, now())
 		WHERE id = $1 AND user_id = $2
 		RETURNING id::text, squad_id::text, user_id::text, coalesce(from_agent_id::text, ''),
 		          coalesce(task_id::text, ''), kind, message, read_at, created_at
 	`, id, userID)
-	return scanInboxMessage(row)
+	updated, err := scanInboxMessage(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, id); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return updated, nil
 }
 
 func (p *PostgresStore) WaitForAgentWork(ctx context.Context, agentID string, timeout time.Duration) (bool, error) {

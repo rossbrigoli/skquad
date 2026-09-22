@@ -238,7 +238,7 @@ func (noopLLMGateway) ProvisionAgentKey(context.Context, GatewayKeyRequest) (str
 }
 
 func (noopLLMGateway) UpdateAgentKey(context.Context, string, []string) error { return nil }
-func (noopLLMGateway) RevokeAgentKey(context.Context, string) error         { return nil }
+func (noopLLMGateway) RevokeAgentKey(context.Context, string) error           { return nil }
 
 type principalKey struct{}
 type agentPrincipalKey struct{}
@@ -487,12 +487,11 @@ func (s *Server) createLLMProvider(w http.ResponseWriter, r *http.Request) {
 		Status:       domain.ResourceActive,
 		RegisteredBy: u.ID,
 	}
-	created, err := s.store.CreateLLMProvider(r.Context(), provider)
+	created, err := s.store.CreateLLMProvider(s.pendingUserAuditCtx(r, "registry.llm_provider.create", string(domain.ResLLMProvider), "", "", nil), provider)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	s.recordUserAudit(r, "registry.llm_provider.create", string(domain.ResLLMProvider), created.ID, "", nil)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -565,12 +564,11 @@ func (s *Server) updateLLMProvider(w http.ResponseWriter, r *http.Request) {
 	if req.Pricing != nil {
 		provider.Pricing = *req.Pricing
 	}
-	updated, err := s.store.UpdateLLMProvider(r.Context(), provider)
+	updated, err := s.store.UpdateLLMProvider(s.pendingUserAuditCtx(r, "registry.llm_provider.update", string(domain.ResLLMProvider), provider.ID, "", nil), provider)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	s.recordUserAudit(r, "registry.llm_provider.update", string(domain.ResLLMProvider), updated.ID, "", nil)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -579,16 +577,14 @@ func (s *Server) deprecateLLMProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	providerID := chi.URLParam(r, "providerID")
-	if err := s.store.DeprecateLLMProvider(r.Context(), providerID); err != nil {
+	if err := s.store.DeprecateLLMProvider(s.pendingUserAuditCtx(r, "registry.llm_provider.deprecate", string(domain.ResLLMProvider), providerID, "", nil), providerID); err != nil {
 		writeStorageError(w, err)
 		return
 	}
 	// Best-effort: converge the virtual keys of every agent granted this
 	// provider so deprecation does not leave models reachable. The
 	// reconcile endpoint repairs anything this misses.
-	summary := s.syncAgentsWithLLMProvider(r.Context(), providerID)
-	metadata, _ := json.Marshal(map[string]any{"gateway_sync": summary})
-	s.recordUserAudit(r, "registry.llm_provider.deprecate", string(domain.ResLLMProvider), providerID, "", metadata)
+	s.syncAgentsWithLLMProvider(r.Context(), providerID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -710,12 +706,11 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 		Status:       domain.ResourceActive,
 		RegisteredBy: u.ID,
 	}
-	created, err := s.store.CreateResource(r.Context(), resource)
+	created, err := s.store.CreateResource(s.pendingUserAuditCtx(r, "registry.resource.create", string(typ), "", "", nil), resource)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	s.recordUserAudit(r, "registry.resource.create", string(typ), created.ID, "", nil)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -786,12 +781,11 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 	if req.Manifest != nil {
 		resource.Manifest = *req.Manifest
 	}
-	updated, err := s.store.UpdateResource(r.Context(), resource)
+	updated, err := s.store.UpdateResource(s.pendingUserAuditCtx(r, "registry.resource.update", string(typ), resource.ID, "", nil), resource)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	s.recordUserAudit(r, "registry.resource.update", string(typ), updated.ID, "", nil)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -803,11 +797,10 @@ func (s *Server) deprecateRegistryResource(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	if err := s.store.DeprecateResource(r.Context(), typ, chi.URLParam(r, "resourceID")); err != nil {
+	if err := s.store.DeprecateResource(s.pendingUserAuditCtx(r, "registry.resource.deprecate", string(typ), chi.URLParam(r, "resourceID"), "", nil), typ, chi.URLParam(r, "resourceID")); err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	s.recordUserAudit(r, "registry.resource.deprecate", string(typ), chi.URLParam(r, "resourceID"), "", nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -838,12 +831,11 @@ func (s *Server) createSquad(w http.ResponseWriter, r *http.Request) {
 		Namespace:      namespaceFor(req.Name),
 		Status:         domain.SquadActive,
 	}
-	created, err := s.store.CreateSquad(r.Context(), squad)
+	created, err := s.store.CreateSquad(s.pendingUserAuditCtx(r, "squad.create", "squad", "", "", nil), squad)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	s.recordUserAudit(r, "squad.create", "squad", created.ID, created.ID, nil)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -898,12 +890,11 @@ func (s *Server) updateSquad(w http.ResponseWriter, r *http.Request) {
 		squad.OperatingModel = *req.OperatingModel
 	}
 
-	updated, err := s.store.UpdateSquad(r.Context(), squad)
+	updated, err := s.store.UpdateSquad(s.pendingUserAuditCtx(r, "squad.update", "squad", squad.ID, squad.ID, nil), squad)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	s.recordUserAudit(r, "squad.update", "squad", updated.ID, updated.ID, nil)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -939,7 +930,7 @@ func (s *Server) deleteSquad(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err := s.store.DeleteSquad(r.Context(), squad.ID); err != nil {
+	if err := s.store.DeleteSquad(s.pendingUserAuditCtx(r, "squad.delete", "squad", squad.ID, squad.ID, nil), squad.ID); err != nil {
 		writeStorageError(w, err)
 		return
 	}
@@ -947,7 +938,6 @@ func (s *Server) deleteSquad(w http.ResponseWriter, r *http.Request) {
 		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.CredentialRef)
 		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.VirtualKeyRef)
 	}
-	s.recordUserAudit(r, "squad.delete", "squad", squad.ID, squad.ID, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1079,12 +1069,11 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		IdleTimeoutSec:  req.IdleTimeoutSec,
 		Status:          domain.AgentIdle,
 	}
-	created, err := s.store.CreateAgent(r.Context(), agent)
+	created, err := s.store.CreateAgent(s.pendingUserAuditCtx(r, "agent.create", "agent", "", squad.ID, nil), agent)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	s.recordUserAudit(r, "agent.create", "agent", created.ID, squad.ID, nil)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -1157,12 +1146,11 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		agent.IdleTimeoutSec = *req.IdleTimeoutSec
 	}
 
-	updated, err := s.store.UpdateAgent(r.Context(), agent)
+	updated, err := s.store.UpdateAgent(s.pendingUserAuditCtx(r, "agent.update", "agent", agent.ID, agent.SquadID, nil), agent)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	s.recordUserAudit(r, "agent.update", "agent", updated.ID, updated.SquadID, nil)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -1186,7 +1174,7 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.store.DeleteAgent(r.Context(), agent.ID); err != nil {
+	if err := s.store.DeleteAgent(s.pendingUserAuditCtx(r, "agent.delete", "agent", agent.ID, agent.SquadID, nil), agent.ID); err != nil {
 		writeStorageError(w, err)
 		return
 	}
@@ -1195,7 +1183,6 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.CredentialRef)
 		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.VirtualKeyRef)
 	}
-	s.recordUserAudit(r, "agent.delete", "agent", agent.ID, agent.SquadID, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1319,7 +1306,7 @@ func (s *Server) notifyOwnerFromAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "squad owner not found for notification")
 		return
 	}
-	created, err := s.store.CreateInboxMessage(r.Context(), &domain.InboxMessage{
+	created, err := s.store.CreateInboxMessage(s.pendingAgentAuditCtx(r, principal.Agent.ID, "inbox.notify_owner", "inbox_message", "", principal.Agent.SquadID, nil), &domain.InboxMessage{
 		SquadID:     principal.Agent.SquadID,
 		UserID:      squad.OwnerID,
 		FromAgentID: principal.Agent.ID,
@@ -1334,7 +1321,6 @@ func (s *Server) notifyOwnerFromAgent(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	s.recordAgentAudit(r, principal.Agent.ID, "inbox.notify_owner", "inbox_message", created.ID, principal.Agent.SquadID, nil)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -1382,14 +1368,13 @@ func (s *Server) createAgentIdentity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to write agent virtual-key secret")
 		return
 	}
-	created, err := s.store.CreateAgentIdentity(r.Context(), identity)
+	created, err := s.store.CreateAgentIdentity(s.pendingUserAuditCtx(r, "agent_identity.create", "agent_identity", "", agent.SquadID, nil), identity)
 	if err != nil {
 		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.CredentialRef)
 		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.VirtualKeyRef)
 		writeStorageError(w, err)
 		return
 	}
-	s.recordUserAudit(r, "agent_identity.create", "agent_identity", created.ID, agent.SquadID, nil)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -1433,7 +1418,7 @@ func (s *Server) rotateAgentIdentity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to write agent virtual-key secret")
 		return
 	}
-	identity, err := s.store.RotateAgentIdentity(r.Context(), agent.ID, credentialRef, hashCredential(credential), virtualKeyRef)
+	identity, err := s.store.RotateAgentIdentity(s.pendingUserAuditCtx(r, "agent_identity.rotate", "agent_identity", "", agent.SquadID, nil), agent.ID, credentialRef, hashCredential(credential), virtualKeyRef)
 	if err != nil {
 		_ = s.crWriter.DeleteAgentCredential(r.Context(), credentialRef)
 		_ = s.crWriter.DeleteAgentCredential(r.Context(), virtualKeyRef)
@@ -1447,7 +1432,6 @@ func (s *Server) rotateAgentIdentity(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.crWriter.DeleteAgentCredential(r.Context(), existing.CredentialRef)
 	_ = s.crWriter.DeleteAgentCredential(r.Context(), existing.VirtualKeyRef)
-	s.recordUserAudit(r, "agent_identity.rotate", "agent_identity", identity.ID, agent.SquadID, nil)
 	writeJSON(w, http.StatusOK, identity)
 }
 
@@ -2003,7 +1987,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		CreatedByType:   "user",
 		CreatedByID:     u.ID,
 	}
-	created, err := s.store.CreateTask(r.Context(), task)
+	created, err := s.store.CreateTask(s.pendingUserAuditCtx(r, "task.create", "task", "", squad.ID, nil), task)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -2014,7 +1998,6 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.recordUserAudit(r, "task.create", "task", created.ID, squad.ID, nil)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -2217,17 +2200,16 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusInternalServerError, "internal", "failed to materialize delegated task")
 			return
 		}
-		created, err = s.store.UpdateMessagePayload(r.Context(), created.ID, withTaskID(created.Payload, task.ID), domain.MessageDelivered)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", "failed to link delegated task to message")
-			return
-		}
 		delegateMeta, _ := json.Marshal(map[string]any{
 			"message_id": created.ID,
 			"task_id":    task.ID,
 			"type":       string(messageType),
 		})
-		s.recordAgentAudit(r, principal.Agent.ID, "message.delegate_materialized", "task", task.ID, target.SquadID, delegateMeta)
+		created, err = s.store.UpdateMessagePayload(s.pendingAgentAuditCtx(r, principal.Agent.ID, "message.delegate_materialized", "task", task.ID, target.SquadID, delegateMeta), created.ID, withTaskID(created.Payload, task.ID), domain.MessageDelivered)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "failed to link delegated task to message")
+			return
+		}
 		if err := s.syncAgentStatusFromPendingWork(r.Context(), target.ID); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", "failed to update target agent state")
 			return
@@ -2235,7 +2217,7 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusCreated, created)
 		return
 	}
-	created, err := s.store.CreateMessage(r.Context(), &domain.Message{
+	created, err := s.store.CreateMessage(s.pendingAgentAuditCtx(r, principal.Agent.ID, "message.send", "message", "", target.SquadID, nil), &domain.Message{
 		FromType:      "agent",
 		FromID:        principal.Agent.ID,
 		ToAgentID:     target.ID,
@@ -2255,7 +2237,6 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "internal", "failed to update target agent state")
 		return
 	}
-	s.recordAgentAudit(r, principal.Agent.ID, "message.send", "message", created.ID, target.SquadID, nil)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -2331,7 +2312,7 @@ func withTaskID(payload json.RawMessage, taskID string) json.RawMessage {
 
 func (s *Server) ackCurrentAgentMessage(w http.ResponseWriter, r *http.Request) {
 	principal := currentAgent(r.Context())
-	updated, err := s.store.AckMessage(r.Context(), principal.Agent.ID, chi.URLParam(r, "messageID"))
+	updated, err := s.store.AckMessage(s.pendingAgentAuditCtx(r, principal.Agent.ID, "message.ack", "message", "", principal.Agent.SquadID, nil), principal.Agent.ID, chi.URLParam(r, "messageID"))
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -2340,7 +2321,6 @@ func (s *Server) ackCurrentAgentMessage(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
 		return
 	}
-	s.recordAgentAudit(r, principal.Agent.ID, "message.ack", "message", updated.ID, updated.SquadID, nil)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -2353,7 +2333,7 @@ func (s *Server) failCurrentAgentMessage(w http.ResponseWriter, r *http.Request)
 	if strings.TrimSpace(req.Reason) == "" {
 		req.Reason = "runtime message handler failed"
 	}
-	updated, err := s.store.FailMessage(r.Context(), principal.Agent.ID, chi.URLParam(r, "messageID"), req.Reason)
+	updated, err := s.store.FailMessage(s.pendingAgentAuditCtx(r, principal.Agent.ID, "message.fail", "message", "", principal.Agent.SquadID, nil), principal.Agent.ID, chi.URLParam(r, "messageID"), req.Reason)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -2362,7 +2342,6 @@ func (s *Server) failCurrentAgentMessage(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
 		return
 	}
-	s.recordAgentAudit(r, principal.Agent.ID, "message.fail", "message", updated.ID, updated.SquadID, nil)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -2384,7 +2363,7 @@ func (s *Server) createAgentChatMessage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	u := currentUser(r.Context())
-	created, err := s.store.CreateMessage(r.Context(), &domain.Message{
+	created, err := s.store.CreateMessage(s.pendingUserAuditCtx(r, "message.create", "message", "", target.SquadID, nil), &domain.Message{
 		FromType:      "user",
 		FromID:        u.ID,
 		ToAgentID:     target.ID,
@@ -2404,7 +2383,6 @@ func (s *Server) createAgentChatMessage(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "internal", "failed to update target agent state")
 		return
 	}
-	s.recordUserAudit(r, "message.create", "message", created.ID, target.SquadID, nil)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -2529,7 +2507,7 @@ func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPer
 
 func (s *Server) claimCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	principal := currentAgent(r.Context())
-	task, err := s.store.ClaimNextTask(r.Context(), principal.Agent.ID, workerIDFromRequest(r, principal.Agent.ID), defaultTaskExecutionLease)
+	task, err := s.store.ClaimNextTask(s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.claim", "task", "", principal.Agent.SquadID, nil), principal.Agent.ID, workerIDFromRequest(r, principal.Agent.ID), defaultTaskExecutionLease)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			if err := s.syncAgentStatusFromPendingWork(r.Context(), principal.Agent.ID); err != nil {
@@ -2546,7 +2524,6 @@ func (s *Server) claimCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
 		return
 	}
-	s.recordAgentAudit(r, principal.Agent.ID, "task.claim", "task", task.ID, task.SquadID, nil)
 	writeJSON(w, http.StatusOK, task)
 }
 
@@ -2581,7 +2558,7 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 	principal := currentAgent(r.Context())
 	taskID := chi.URLParam(r, "taskID")
 	summary := trimRunes(strings.TrimSpace(req.Summary), maxAgentMemoryContentChars)
-	updated, err := s.store.CompleteTaskExecution(r.Context(), principal.Agent.ID, taskID, executionID, fencingToken, req.Status, summary)
+	updated, err := s.store.CompleteTaskExecution(s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.complete", "task", taskID, principal.Agent.SquadID, nil), principal.Agent.ID, taskID, executionID, fencingToken, req.Status, summary)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -2590,7 +2567,6 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
 		return
 	}
-	s.recordAgentAudit(r, principal.Agent.ID, "task.complete", "task", updated.ID, updated.SquadID, nil)
 	s.notifySquadOwner(r.Context(), updated.SquadID, domain.InboxTaskCompleted, principal.Agent.ID, updated.ID,
 		fmt.Sprintf("Agent %s moved task %q to %s", principal.Agent.Name, updated.Title, req.Status))
 	s.notifyDelegationResult(r.Context(), updated, principal.Agent, string(req.Status), summary)
@@ -2672,13 +2648,12 @@ func (s *Server) reportCurrentAgentTaskWorkspace(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusForbidden, "forbidden", "workspace is not granted to this agent")
 		return
 	}
-	updated, err := s.store.SetTaskWorkspace(r.Context(), taskID, resID, branch, commitSHA)
+	meta, _ := json.Marshal(map[string]string{"workspace_resource_id": resID, "branch": branch, "commit_sha": commitSHA})
+	updated, err := s.store.SetTaskWorkspace(s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.workspace_linked", "task", taskID, task.SquadID, meta), taskID, resID, branch, commitSHA)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	meta, _ := json.Marshal(map[string]string{"workspace_resource_id": resID, "branch": branch, "commit_sha": commitSHA})
-	s.recordAgentAudit(r, principal.Agent.ID, "task.workspace_linked", "task", updated.ID, updated.SquadID, meta)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -2699,7 +2674,7 @@ func (s *Server) blockCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	}
 	principal := currentAgent(r.Context())
 	updated, err := s.store.CompleteTaskExecution(
-		r.Context(),
+		s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.block", "task", chi.URLParam(r, "taskID"), principal.Agent.SquadID, nil),
 		principal.Agent.ID,
 		chi.URLParam(r, "taskID"),
 		executionID,
@@ -2715,7 +2690,6 @@ func (s *Server) blockCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
 		return
 	}
-	s.recordAgentAudit(r, principal.Agent.ID, "task.block", "task", updated.ID, updated.SquadID, nil)
 	blockNote := strings.TrimSpace(req.Summary)
 	if blockNote != "" {
 		blockNote = ": " + blockNote
@@ -2798,7 +2772,7 @@ func (s *Server) updateCurrentAgentTaskStatus(w http.ResponseWriter, r *http.Req
 		return nil, false
 	}
 	task.Status = taskStatus
-	updated, err := s.store.UpdateTask(r.Context(), task)
+	updated, err := s.store.UpdateTask(s.pendingAgentAuditCtx(r, principal.Agent.ID, action, "task", task.ID, task.SquadID, nil), task)
 	if err != nil {
 		writeStorageError(w, err)
 		return nil, false
@@ -2812,7 +2786,6 @@ func (s *Server) updateCurrentAgentTaskStatus(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
 		return nil, false
 	}
-	s.recordAgentAudit(r, principal.Agent.ID, action, "task", updated.ID, updated.SquadID, nil)
 	return updated, true
 }
 
@@ -2890,7 +2863,7 @@ func (s *Server) createTaskMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := currentUser(r.Context())
-	created, err := s.store.CreateMessage(r.Context(), &domain.Message{
+	created, err := s.store.CreateMessage(s.pendingUserAuditCtx(r, "task.message", "task", task.ID, task.SquadID, nil), &domain.Message{
 		FromType:      "user",
 		FromID:        u.ID,
 		ToAgentID:     task.AssigneeAgentID,
@@ -2910,7 +2883,6 @@ func (s *Server) createTaskMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to update target agent state")
 		return
 	}
-	s.recordUserAudit(r, "task.message", "task", task.ID, task.SquadID, nil)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -2954,7 +2926,7 @@ func (s *Server) updateTask(w http.ResponseWriter, r *http.Request) {
 		task.AssigneeAgentID = *req.AssigneeAgentID
 	}
 
-	updated, err := s.store.UpdateTask(r.Context(), task)
+	updated, err := s.store.UpdateTask(s.pendingUserAuditCtx(r, "task.update", "task", task.ID, task.SquadID, nil), task)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -2963,7 +2935,6 @@ func (s *Server) updateTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to update assigned agent state")
 		return
 	}
-	s.recordUserAudit(r, "task.update", "task", updated.ID, updated.SquadID, nil)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -2984,7 +2955,7 @@ func (s *Server) moveTask(w http.ResponseWriter, r *http.Request) {
 	}
 	previousAssignee := task.AssigneeAgentID
 	task.Status = req.Status
-	updated, err := s.store.UpdateTask(r.Context(), task)
+	updated, err := s.store.UpdateTask(s.pendingUserAuditCtx(r, "task.move", "task", task.ID, task.SquadID, nil), task)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -2993,7 +2964,6 @@ func (s *Server) moveTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to update assigned agent state")
 		return
 	}
-	s.recordUserAudit(r, "task.move", "task", updated.ID, updated.SquadID, nil)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -3002,7 +2972,7 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.store.DeleteTask(r.Context(), task.ID); err != nil {
+	if err := s.store.DeleteTask(s.pendingUserAuditCtx(r, "task.delete", "task", task.ID, task.SquadID, nil), task.ID); err != nil {
 		writeStorageError(w, err)
 		return
 	}
@@ -3012,7 +2982,6 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.recordUserAudit(r, "task.delete", "task", task.ID, task.SquadID, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -3180,6 +3149,46 @@ func (s *Server) ensureOwnedOrAdminSquad(w http.ResponseWriter, r *http.Request,
 
 func (s *Server) recordUserAudit(r *http.Request, action, resourceType, resourceID, squadID string, metadata json.RawMessage) {
 	_ = s.recordUserAuditRequired(r, action, resourceType, resourceID, squadID, metadata)
+}
+
+// pendingUserAuditCtx attaches a same-transaction audit entry to the
+// request context (S-86). The next significant store mutation drains and
+// writes it inside its transaction: a committed change always carries its
+// audit record, and an audit-write failure rolls the mutation back.
+func (s *Server) pendingUserAuditCtx(r *http.Request, action, resourceType, resourceID, squadID string, metadata json.RawMessage) context.Context {
+	if len(metadata) == 0 {
+		metadata = json.RawMessage(`{}`)
+	}
+	actorType, actorID := "system", ""
+	if u := currentUser(r.Context()); u != nil {
+		actorType, actorID = "user", u.ID
+	}
+	return storage.WithPendingAudit(r.Context(), &domain.AuditEntry{
+		ActorType:    actorType,
+		ActorID:      actorID,
+		Action:       action,
+		ResourceType: resourceType,
+		ResourceID:   resourceID,
+		SquadID:      squadID,
+		Metadata:     metadata,
+	})
+}
+
+// pendingAgentAuditCtx is the agent-actor counterpart of pendingUserAuditCtx
+// (S-86): the audit entry commits with the next store mutation that drains it.
+func (s *Server) pendingAgentAuditCtx(r *http.Request, agentID, action, resourceType, resourceID, squadID string, metadata json.RawMessage) context.Context {
+	if len(metadata) == 0 {
+		metadata = json.RawMessage(`{}`)
+	}
+	return storage.WithPendingAudit(r.Context(), &domain.AuditEntry{
+		ActorType:    "agent",
+		ActorID:      agentID,
+		Action:       action,
+		ResourceType: resourceType,
+		ResourceID:   resourceID,
+		SquadID:      squadID,
+		Metadata:     metadata,
+	})
 }
 
 func (s *Server) recordUserAuditRequired(r *http.Request, action, resourceType, resourceID, squadID string, metadata json.RawMessage) error {

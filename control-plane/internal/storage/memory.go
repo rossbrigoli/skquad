@@ -204,7 +204,7 @@ func (m *MemoryStore) ListUsers(_ context.Context) ([]*domain.User, error) {
 	return out, nil
 }
 
-func (m *MemoryStore) CreateSquad(_ context.Context, s *domain.Squad) (*domain.Squad, error) {
+func (m *MemoryStore) CreateSquad(ctx context.Context, s *domain.Squad) (*domain.Squad, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, existing := range m.squads {
@@ -227,6 +227,7 @@ func (m *MemoryStore) CreateSquad(_ context.Context, s *domain.Squad) (*domain.S
 	m.boards[board.ID] = board
 	m.boardsBySquad[created.ID] = board.ID
 	m.enqueueSquadOutboxLocked(domain.KubernetesOpUpsertSquad, created)
+	m.drainPendingAuditsLocked(ctx, created.ID)
 	return cloneSquad(created), nil
 }
 
@@ -251,7 +252,7 @@ func (m *MemoryStore) GetSquadByName(_ context.Context, ownerID, name string) (*
 	return nil, ErrNotFound
 }
 
-func (m *MemoryStore) UpdateSquad(_ context.Context, s *domain.Squad) (*domain.Squad, error) {
+func (m *MemoryStore) UpdateSquad(ctx context.Context, s *domain.Squad) (*domain.Squad, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	existing, ok := m.squads[s.ID]
@@ -270,10 +271,11 @@ func (m *MemoryStore) UpdateSquad(_ context.Context, s *domain.Squad) (*domain.S
 	updated.UpdatedAt = time.Now().UTC()
 	m.squads[s.ID] = updated
 	m.enqueueSquadOutboxLocked(domain.KubernetesOpUpsertSquad, updated)
+	m.drainPendingAuditsLocked(ctx, updated.ID)
 	return cloneSquad(updated), nil
 }
 
-func (m *MemoryStore) DeleteSquad(_ context.Context, id string) error {
+func (m *MemoryStore) DeleteSquad(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	squad, ok := m.squads[id]
@@ -310,6 +312,7 @@ func (m *MemoryStore) DeleteSquad(_ context.Context, id string) error {
 			delete(m.grants, grantID)
 		}
 	}
+	m.drainPendingAuditsLocked(ctx, id)
 	return nil
 }
 
@@ -328,7 +331,7 @@ func (m *MemoryStore) ListSquads(_ context.Context, ownerID string) ([]*domain.S
 	return out, nil
 }
 
-func (m *MemoryStore) CreateAgent(_ context.Context, a *domain.Agent) (*domain.Agent, error) {
+func (m *MemoryStore) CreateAgent(ctx context.Context, a *domain.Agent) (*domain.Agent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.squads[a.SquadID]; !ok {
@@ -349,6 +352,7 @@ func (m *MemoryStore) CreateAgent(_ context.Context, a *domain.Agent) (*domain.A
 	created.UpdatedAt = now
 	m.agents[created.ID] = created
 	m.enqueueAgentOutboxLocked(domain.KubernetesOpUpsertAgent, created)
+	m.drainPendingAuditsLocked(ctx, created.ID)
 	return cloneAgent(created), nil
 }
 
@@ -362,7 +366,7 @@ func (m *MemoryStore) GetAgent(_ context.Context, id string) (*domain.Agent, err
 	return cloneAgent(a), nil
 }
 
-func (m *MemoryStore) UpdateAgent(_ context.Context, a *domain.Agent) (*domain.Agent, error) {
+func (m *MemoryStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*domain.Agent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	existing, ok := m.agents[a.ID]
@@ -380,10 +384,11 @@ func (m *MemoryStore) UpdateAgent(_ context.Context, a *domain.Agent) (*domain.A
 	updated.UpdatedAt = time.Now().UTC()
 	m.agents[a.ID] = updated
 	m.enqueueAgentOutboxLocked(domain.KubernetesOpUpsertAgent, updated)
+	m.drainPendingAuditsLocked(ctx, updated.ID)
 	return cloneAgent(updated), nil
 }
 
-func (m *MemoryStore) DeleteAgent(_ context.Context, id string) error {
+func (m *MemoryStore) DeleteAgent(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	agent, ok := m.agents[id]
@@ -402,6 +407,7 @@ func (m *MemoryStore) DeleteAgent(_ context.Context, id string) error {
 			task.UpdatedAt = time.Now().UTC()
 		}
 	}
+	m.drainPendingAuditsLocked(ctx, id)
 	return nil
 }
 
@@ -433,7 +439,7 @@ func (m *MemoryStore) SetAgentStatus(_ context.Context, id string, status domain
 	return nil
 }
 
-func (m *MemoryStore) CreateAgentIdentity(_ context.Context, i *domain.AgentIdentity) (*domain.AgentIdentity, error) {
+func (m *MemoryStore) CreateAgentIdentity(ctx context.Context, i *domain.AgentIdentity) (*domain.AgentIdentity, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	agent, ok := m.agents[i.AgentID]
@@ -451,6 +457,7 @@ func (m *MemoryStore) CreateAgentIdentity(_ context.Context, i *domain.AgentIden
 	agent.IdentityID = created.ID
 	agent.UpdatedAt = created.CreatedAt
 	m.enqueueAgentOutboxLocked(domain.KubernetesOpUpsertAgent, agent)
+	m.drainPendingAuditsLocked(ctx, created.ID)
 	return cloneAgentIdentity(created), nil
 }
 
@@ -464,7 +471,7 @@ func (m *MemoryStore) GetAgentIdentity(_ context.Context, agentID string) (*doma
 	return cloneAgentIdentity(m.identities[identityID]), nil
 }
 
-func (m *MemoryStore) RotateAgentIdentity(_ context.Context, agentID string, credentialRef string, credentialHash string, virtualKeyRef string) (*domain.AgentIdentity, error) {
+func (m *MemoryStore) RotateAgentIdentity(ctx context.Context, agentID string, credentialRef string, credentialHash string, virtualKeyRef string) (*domain.AgentIdentity, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	identityID, ok := m.identityAgent[agentID]
@@ -479,6 +486,7 @@ func (m *MemoryStore) RotateAgentIdentity(_ context.Context, agentID string, cre
 	identity.GatewayKeyStatus = domain.GatewayKeyNone
 	identity.RotatedAt = time.Now().UTC()
 	m.enqueueAgentOutboxLocked(domain.KubernetesOpUpsertAgent, m.agents[agentID])
+	m.drainPendingAuditsLocked(ctx, identity.ID)
 	return cloneAgentIdentity(identity), nil
 }
 
@@ -586,7 +594,7 @@ func (m *MemoryStore) AgentMayMessageSquad(_ context.Context, agentID, squadID s
 	return false, nil
 }
 
-func (m *MemoryStore) CreateLLMProvider(_ context.Context, p *domain.LLMProvider) (*domain.LLMProvider, error) {
+func (m *MemoryStore) CreateLLMProvider(ctx context.Context, p *domain.LLMProvider) (*domain.LLMProvider, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, existing := range m.llmProviders {
@@ -601,6 +609,7 @@ func (m *MemoryStore) CreateLLMProvider(_ context.Context, p *domain.LLMProvider
 	}
 	created.CreatedAt = time.Now().UTC()
 	m.llmProviders[created.ID] = created
+	m.drainPendingAuditsLocked(ctx, created.ID)
 	return cloneLLMProvider(created), nil
 }
 
@@ -614,7 +623,7 @@ func (m *MemoryStore) GetLLMProvider(_ context.Context, id string) (*domain.LLMP
 	return cloneLLMProvider(provider), nil
 }
 
-func (m *MemoryStore) UpdateLLMProvider(_ context.Context, p *domain.LLMProvider) (*domain.LLMProvider, error) {
+func (m *MemoryStore) UpdateLLMProvider(ctx context.Context, p *domain.LLMProvider) (*domain.LLMProvider, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	existing, ok := m.llmProviders[p.ID]
@@ -630,10 +639,11 @@ func (m *MemoryStore) UpdateLLMProvider(_ context.Context, p *domain.LLMProvider
 	updated.RegisteredBy = existing.RegisteredBy
 	updated.CreatedAt = existing.CreatedAt
 	m.llmProviders[p.ID] = updated
+	m.drainPendingAuditsLocked(ctx, updated.ID)
 	return cloneLLMProvider(updated), nil
 }
 
-func (m *MemoryStore) DeprecateLLMProvider(_ context.Context, id string) error {
+func (m *MemoryStore) DeprecateLLMProvider(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	provider, ok := m.llmProviders[id]
@@ -641,6 +651,7 @@ func (m *MemoryStore) DeprecateLLMProvider(_ context.Context, id string) error {
 		return ErrNotFound
 	}
 	provider.Status = domain.ResourceDeprecated
+	m.drainPendingAuditsLocked(ctx, id)
 	return nil
 }
 
@@ -657,7 +668,7 @@ func (m *MemoryStore) ListLLMProviders(_ context.Context) ([]*domain.LLMProvider
 	return out, nil
 }
 
-func (m *MemoryStore) CreateResource(_ context.Context, r *domain.RegistryResource) (*domain.RegistryResource, error) {
+func (m *MemoryStore) CreateResource(ctx context.Context, r *domain.RegistryResource) (*domain.RegistryResource, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, existing := range m.resources {
@@ -672,6 +683,7 @@ func (m *MemoryStore) CreateResource(_ context.Context, r *domain.RegistryResour
 	}
 	created.CreatedAt = time.Now().UTC()
 	m.resources[created.ID] = created
+	m.drainPendingAuditsLocked(ctx, created.ID)
 	return cloneResource(created), nil
 }
 
@@ -685,7 +697,7 @@ func (m *MemoryStore) GetResource(_ context.Context, typ domain.ResourceType, id
 	return cloneResource(resource), nil
 }
 
-func (m *MemoryStore) UpdateResource(_ context.Context, r *domain.RegistryResource) (*domain.RegistryResource, error) {
+func (m *MemoryStore) UpdateResource(ctx context.Context, r *domain.RegistryResource) (*domain.RegistryResource, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	existing, ok := m.resources[r.ID]
@@ -702,10 +714,11 @@ func (m *MemoryStore) UpdateResource(_ context.Context, r *domain.RegistryResour
 	updated.RegisteredBy = existing.RegisteredBy
 	updated.CreatedAt = existing.CreatedAt
 	m.resources[r.ID] = updated
+	m.drainPendingAuditsLocked(ctx, updated.ID)
 	return cloneResource(updated), nil
 }
 
-func (m *MemoryStore) DeprecateResource(_ context.Context, typ domain.ResourceType, id string) error {
+func (m *MemoryStore) DeprecateResource(ctx context.Context, typ domain.ResourceType, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	resource, ok := m.resources[id]
@@ -713,6 +726,7 @@ func (m *MemoryStore) DeprecateResource(_ context.Context, typ domain.ResourceTy
 		return ErrNotFound
 	}
 	resource.Status = domain.ResourceDeprecated
+	m.drainPendingAuditsLocked(ctx, id)
 	return nil
 }
 
@@ -912,7 +926,7 @@ func (m *MemoryStore) GetBoard(_ context.Context, squadID string) (*domain.Board
 	return cloneBoard(m.boards[boardID]), nil
 }
 
-func (m *MemoryStore) CreateTask(_ context.Context, t *domain.Task) (*domain.Task, error) {
+func (m *MemoryStore) CreateTask(ctx context.Context, t *domain.Task) (*domain.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.boards[t.BoardID]; !ok {
@@ -928,6 +942,7 @@ func (m *MemoryStore) CreateTask(_ context.Context, t *domain.Task) (*domain.Tas
 	created.CreatedAt = now
 	created.UpdatedAt = now
 	m.tasks[created.ID] = created
+	m.drainPendingAuditsLocked(ctx, created.ID)
 	return cloneTask(created), nil
 }
 
@@ -941,7 +956,7 @@ func (m *MemoryStore) GetTask(_ context.Context, id string) (*domain.Task, error
 	return cloneTask(t), nil
 }
 
-func (m *MemoryStore) UpdateTask(_ context.Context, t *domain.Task) (*domain.Task, error) {
+func (m *MemoryStore) UpdateTask(ctx context.Context, t *domain.Task) (*domain.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	existing, ok := m.tasks[t.ID]
@@ -959,10 +974,11 @@ func (m *MemoryStore) UpdateTask(_ context.Context, t *domain.Task) (*domain.Tas
 	}
 	updated.UpdatedAt = time.Now().UTC()
 	m.tasks[t.ID] = updated
+	m.drainPendingAuditsLocked(ctx, updated.ID)
 	return cloneTask(updated), nil
 }
 
-func (m *MemoryStore) SetTaskWorkspace(_ context.Context, taskID string, resourceID string, branch string, commitSHA string) (*domain.Task, error) {
+func (m *MemoryStore) SetTaskWorkspace(ctx context.Context, taskID string, resourceID string, branch string, commitSHA string) (*domain.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	existing, ok := m.tasks[taskID]
@@ -975,16 +991,18 @@ func (m *MemoryStore) SetTaskWorkspace(_ context.Context, taskID string, resourc
 	updated.WorkspaceCommitSHA = commitSHA
 	updated.UpdatedAt = time.Now().UTC()
 	m.tasks[taskID] = updated
+	m.drainPendingAuditsLocked(ctx, taskID)
 	return cloneTask(updated), nil
 }
 
-func (m *MemoryStore) DeleteTask(_ context.Context, id string) error {
+func (m *MemoryStore) DeleteTask(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tasks[id]; !ok {
 		return ErrNotFound
 	}
 	delete(m.tasks, id)
+	m.drainPendingAuditsLocked(ctx, id)
 	return nil
 }
 
@@ -1027,7 +1045,7 @@ func (m *MemoryStore) ListAgentTasks(_ context.Context, agentID string) ([]*doma
 	return out, nil
 }
 
-func (m *MemoryStore) ClaimNextTask(_ context.Context, agentID string, workerID string, leaseFor time.Duration) (*domain.Task, error) {
+func (m *MemoryStore) ClaimNextTask(ctx context.Context, agentID string, workerID string, leaseFor time.Duration) (*domain.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.agents[agentID]; !ok {
@@ -1082,6 +1100,7 @@ func (m *MemoryStore) ClaimNextTask(_ context.Context, agentID string, workerID 
 		UpdatedAt:      now,
 	}
 	m.taskExecs[exec.ID] = exec
+	m.drainPendingAuditsLocked(ctx, candidate.ID)
 	return taskWithExecution(candidate, exec), nil
 }
 
@@ -1104,7 +1123,7 @@ func (m *MemoryStore) HeartbeatTaskExecution(_ context.Context, agentID string, 
 	return cloneTaskExecution(exec), nil
 }
 
-func (m *MemoryStore) CompleteTaskExecution(_ context.Context, agentID string, taskID string, executionID string, fencingToken string, status domain.TaskStatus, summary string) (*domain.Task, error) {
+func (m *MemoryStore) CompleteTaskExecution(ctx context.Context, agentID string, taskID string, executionID string, fencingToken string, status domain.TaskStatus, summary string) (*domain.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	exec, ok := m.taskExecs[executionID]
@@ -1134,6 +1153,7 @@ func (m *MemoryStore) CompleteTaskExecution(_ context.Context, agentID string, t
 	exec.ResultSummary = summary
 	exec.CompletedAt = now
 	exec.UpdatedAt = now
+	m.drainPendingAuditsLocked(ctx, taskID)
 	return taskWithExecution(task, exec), nil
 }
 
@@ -1391,7 +1411,7 @@ func (m *MemoryStore) ListKubernetesOutbox(_ context.Context, status domain.Kube
 	return out, nil
 }
 
-func (m *MemoryStore) CreateMessage(_ context.Context, msg *domain.Message) (*domain.Message, error) {
+func (m *MemoryStore) CreateMessage(ctx context.Context, msg *domain.Message) (*domain.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UTC()
@@ -1422,6 +1442,7 @@ func (m *MemoryStore) CreateMessage(_ context.Context, msg *domain.Message) (*do
 	}
 	created.CreatedAt = now
 	m.messages[created.ID] = created
+	m.drainPendingAuditsLocked(ctx, created.ID)
 	return cloneMessage(created), nil
 }
 
@@ -1522,7 +1543,7 @@ func (m *MemoryStore) ListAgentMessageHistory(_ context.Context, agentID string)
 	return out, nil
 }
 
-func (m *MemoryStore) AckMessage(_ context.Context, agentID string, messageID string) (*domain.Message, error) {
+func (m *MemoryStore) AckMessage(ctx context.Context, agentID string, messageID string) (*domain.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	msg, ok := m.messages[messageID]
@@ -1533,10 +1554,11 @@ func (m *MemoryStore) AckMessage(_ context.Context, agentID string, messageID st
 		msg.Status = domain.MessageDelivered
 		msg.DeliveredAt = time.Now().UTC()
 	}
+	m.drainPendingAuditsLocked(ctx, messageID)
 	return cloneMessage(msg), nil
 }
 
-func (m *MemoryStore) UpdateMessagePayload(_ context.Context, messageID string, payload json.RawMessage, status domain.MessageStatus) (*domain.Message, error) {
+func (m *MemoryStore) UpdateMessagePayload(ctx context.Context, messageID string, payload json.RawMessage, status domain.MessageStatus) (*domain.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	msg, ok := m.messages[messageID]
@@ -1548,10 +1570,11 @@ func (m *MemoryStore) UpdateMessagePayload(_ context.Context, messageID string, 
 	if status == domain.MessageDelivered && msg.DeliveredAt.IsZero() {
 		msg.DeliveredAt = time.Now().UTC()
 	}
+	m.drainPendingAuditsLocked(ctx, messageID)
 	return cloneMessage(msg), nil
 }
 
-func (m *MemoryStore) FailMessage(_ context.Context, agentID string, messageID string, reason string) (*domain.Message, error) {
+func (m *MemoryStore) FailMessage(ctx context.Context, agentID string, messageID string, reason string) (*domain.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	msg, ok := m.messages[messageID]
@@ -1560,6 +1583,7 @@ func (m *MemoryStore) FailMessage(_ context.Context, agentID string, messageID s
 	}
 	now := time.Now().UTC()
 	expireMessageIfDue(msg, now)
+	m.drainPendingAuditsLocked(ctx, messageID)
 	if msg.Status != domain.MessagePending {
 		return cloneMessage(msg), nil
 	}
@@ -1692,7 +1716,7 @@ func cloneAgentMemory(memory *domain.AgentMemory) *domain.AgentMemory {
 	return &v
 }
 
-func (m *MemoryStore) CreateInboxMessage(_ context.Context, msg *domain.InboxMessage) (*domain.InboxMessage, error) {
+func (m *MemoryStore) CreateInboxMessage(ctx context.Context, msg *domain.InboxMessage) (*domain.InboxMessage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.users[msg.UserID]; !ok {
@@ -1708,6 +1732,7 @@ func (m *MemoryStore) CreateInboxMessage(_ context.Context, msg *domain.InboxMes
 	}
 	created.CreatedAt = time.Now().UTC()
 	m.inbox[created.ID] = &created
+	m.drainPendingAuditsLocked(ctx, created.ID)
 	copyMsg := created
 	return &copyMsg, nil
 }
@@ -1738,7 +1763,7 @@ func (m *MemoryStore) ListInboxMessages(_ context.Context, userID string, unread
 	return out, nil
 }
 
-func (m *MemoryStore) MarkInboxMessageRead(_ context.Context, userID string, id string) (*domain.InboxMessage, error) {
+func (m *MemoryStore) MarkInboxMessageRead(ctx context.Context, userID string, id string) (*domain.InboxMessage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	msg, ok := m.inbox[id]
@@ -1748,6 +1773,7 @@ func (m *MemoryStore) MarkInboxMessageRead(_ context.Context, userID string, id 
 	if msg.ReadAt.IsZero() {
 		msg.ReadAt = time.Now().UTC()
 	}
+	m.drainPendingAuditsLocked(ctx, id)
 	copyMsg := *msg
 	return &copyMsg, nil
 }
@@ -1857,4 +1883,30 @@ func cloneAuditEntry(entry *domain.AuditEntry) *domain.AuditEntry {
 
 func permissionKey(agentID string, typ domain.ResourceType, resourceID string) string {
 	return agentID + ":" + string(typ) + ":" + resourceID
+}
+
+// drainPendingAuditsLocked records any pending audit entries attached to
+// ctx (S-86). Must be called while holding m.mu. Memory-store mutations
+// hold the lock for their whole body, so drain+append is atomic with the
+// mutation, mirroring the Postgres same-transaction guarantee.
+func (m *MemoryStore) drainPendingAuditsLocked(ctx context.Context, resourceID string) {
+	for _, entry := range DrainPendingAudits(ctx) {
+		if entry.ResourceID == "" && resourceID != "" {
+			entry.ResourceID = resourceID
+		}
+		// A squad mutation audits the squad itself; the store knows the new
+		// squad id even when the handler could not.
+		if entry.ResourceType == "squad" && entry.SquadID == "" && resourceID != "" {
+			entry.SquadID = resourceID
+		}
+		created := cloneAuditEntry(entry)
+		created.ID = uuid.NewString()
+		if len(created.Metadata) == 0 {
+			created.Metadata = []byte(`{}`)
+		}
+		if created.Timestamp.IsZero() {
+			created.Timestamp = time.Now().UTC()
+		}
+		m.auditLog[created.ID] = created
+	}
 }
