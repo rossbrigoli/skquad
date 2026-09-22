@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { useAuth } from "../lib/auth";
 import { useAttention } from "../lib/useAttention";
@@ -26,10 +27,26 @@ export function AppShell({
   const { user, logout } = useAuth();
   const { items } = useAttention();
   const inboxBadge = items.length;
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  // Navigating closes the drawer so you never land on a covered page.
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [pathname]);
 
   return (
-    <div className={secondary ? "shell with-secondary" : "shell"}>
-      <nav className="rail" aria-label="Primary navigation">
+    <div className={`${secondary ? "shell with-secondary" : "shell"}${menuOpen ? " drawer-open" : ""}`}>
+      <button
+        type="button"
+        className="menu-button"
+        aria-label={menuOpen ? "Close menu" : "Open menu"}
+        aria-expanded={menuOpen}
+        onClick={() => setMenuOpen((open) => !open)}
+      >
+        {menuOpen ? "✕" : "☰"}
+      </button>
+      <div className="drawer-backdrop" aria-hidden="true" onClick={() => setMenuOpen(false)} />
+      <nav className="rail rail-primary" aria-label="Primary navigation">
         <Link href="/squads" className="rail-brand">
           <span className="dot" />
           skquad<span style={{ color: "var(--accent)" }}>v2</span>
@@ -60,7 +77,7 @@ export function AppShell({
         </div>
       </nav>
       {secondary ? (
-        <aside className="rail" aria-label="Contextual navigation">
+        <aside className="rail rail-secondary" aria-label="Contextual navigation">
           {secondary}
         </aside>
       ) : null}

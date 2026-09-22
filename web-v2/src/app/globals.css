@@ -445,23 +445,97 @@ button {
 }
 
 /* ============================================================
-   Responsive — rails collapse (full drawer behaviour: UIv2-7)
+   Responsive — primary rail becomes an overlay drawer; the
+   contextual rail collapses to a sticky horizontal tab strip.
    ============================================================ */
+.menu-button,
+.drawer-backdrop {
+  display: none;
+}
+
 @media (max-width: 900px) {
   .shell,
   .shell.with-secondary {
     grid-template-columns: 1fr;
   }
-  .rail {
-    position: static;
-    height: auto;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
+
+  .menu-button {
+    display: block;
+    position: fixed;
+    top: var(--space-3);
+    left: var(--space-3);
+    z-index: 60;
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink);
+    font-size: 18px;
+    cursor: pointer;
   }
+
+  .drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 45;
+    background: rgba(0, 0, 0, 0.4);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--motion-base) var(--ease-out);
+  }
+
+  .shell.drawer-open .drawer-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .rail-primary {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(300px, 84vw);
+    height: 100dvh;
+    z-index: 50;
+    overflow-y: auto;
+    transform: translateX(-105%);
+    transition: transform var(--motion-base) var(--ease-out);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  }
+
+  .shell.drawer-open .rail-primary {
+    transform: translateX(0);
+  }
+
   .rail-footer,
   .rail-label {
-    display: none;
+    display: revert;
+  }
+
+  .rail-secondary {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+  }
+
+  /* Squad name in the contextual strip stays compact. */
+  .rail-secondary > div {
+    padding: 0 !important;
+    font-size: var(--text-base) !important;
+    white-space: nowrap;
+  }
+
+  .content {
+    padding-top: var(--space-7);
   }
 }
 
