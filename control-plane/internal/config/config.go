@@ -38,6 +38,7 @@ type Config struct {
 	K8sAPIBase      string // e.g. https://kubernetes.default.svc
 	K8sNamespace    string // namespace where Squad/Agent CRs live
 	K8sTokenFile    string // path to service-account token
+	K8sCAFile       string // PEM of trusted CAs for the API (default: in-cluster SA CA)
 	K8sGroupVersion string // e.g. skquad.io/v1
 	K8sInsecure     bool   // skip TLS verification (dev)
 	AgentImage      string // image written into Agent CR specs
@@ -73,6 +74,7 @@ func Load() (*Config, error) {
 		K8sAPIBase:              envOr("SKQUAD_K8S_API_BASE", "https://kubernetes.default.svc"),
 		K8sNamespace:            envOr("SKQUAD_K8S_NAMESPACE", "skquad-system"),
 		K8sTokenFile:            envOr("SKQUAD_K8S_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
+		K8sCAFile:               envOr("SKQUAD_K8S_CA_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"),
 		K8sGroupVersion:         envOr("SKQUAD_K8S_GROUP_VERSION", "skquad.io/v1"),
 		K8sInsecure:             envBool("SKQUAD_K8S_INSECURE", false),
 		AgentImage:              envOr("SKQUAD_AGENT_IMAGE", "skquad/agent-runtime:0.1.0"),

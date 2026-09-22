@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/rossbrigoli/skquad/control-plane/internal/config"
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
 
@@ -190,5 +194,86 @@ func TestWriteAgentCredentialAppliesOpaqueSecret(t *testing.T) {
 	data := gotBody["data"].(map[string]any)
 	if got := data["token"]; got != base64.StdEncoding.EncodeToString([]byte("runtime-token")) {
 		t.Fatalf("encoded token = %q", got)
+	}
+}
+
+func TestNewCRWriterTrustsProvidedCAFile(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenFile, []byte("tok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	caFile := filepath.Join(dir, "ca.crt")
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(caFile, caPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	writer, err := NewCRWriter(&config.Config{
+		K8sAPIBase:      server.URL,
+		K8sNamespace:    "skquad-system",
+		K8sTokenFile:    tokenFile,
+		K8sCAFile:       caFile,
+		K8sGroupVersion: "skquad.io/v1",
+	})
+	if err != nil {
+		t.Fatalf("NewCRWriter: %v", err)
+	}
+	// With the provided CA the TLS handshake must succeed against the
+	// httptest server (whose CA is absent from the system trust store).
+	if err := writer.UpsertSquad(context.Background(), &domain.Squad{ID: "squad-1", Namespace: "squad-test"}); err != nil {
+		t.Fatalf("UpsertSquad over provided CA: %v", err)
+	}
+}
+
+func TestNewCRWriterRejectsUnparsableCAFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenFile, []byte("tok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	caFile := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caFile, []byte("not a pem"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := NewCRWriter(&config.Config{
+		K8sAPIBase:      "https://kubernetes.default.svc",
+		K8sNamespace:    "skquad-system",
+		K8sTokenFile:    tokenFile,
+		K8sCAFile:       caFile,
+		K8sGroupVersion: "skquad.io/v1",
+	})
+	if err == nil {
+		t.Fatal("expected NewCRWriter to reject a CA file with no certificates")
+	}
+}
+
+func TestNewCRWriterMissingCAFileFallsBackToSystemPool(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenFile, []byte("tok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewCRWriter(&config.Config{
+		K8sAPIBase:      "https://kubernetes.default.svc",
+		K8sNamespace:    "skquad-system",
+		K8sTokenFile:    tokenFile,
+		K8sCAFile:       filepath.Join(dir, "absent-ca.crt"),
+		K8sGroupVersion: "skquad.io/v1",
+	}); err != nil {
+		t.Fatalf("missing CA file should not fail construction: %v", err)
 	}
 }
