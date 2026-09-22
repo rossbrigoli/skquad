@@ -38,14 +38,21 @@ rules:
       - patch
       - update
       - delete
+  # Fixed-name resources: no list/watch (resourceNames does not apply to
+  # list/watch); the operator reads them uncached, see cmd/manager/main.go.
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
   - apiGroups:
       - ""
     resources:
       - serviceaccounts
     verbs:
       - get
-      - list
-      - watch
       - create
       - patch
       - update
@@ -59,8 +66,6 @@ rules:
       - rolebindings
     verbs:
       - get
-      - list
-      - watch
       - create
       - patch
       - update
@@ -85,8 +90,6 @@ rules:
       - networkpolicies
     verbs:
       - get
-      - list
-      - watch
       - create
       - patch
       - update
@@ -102,8 +105,6 @@ rules:
       - resourcequotas
     verbs:
       - get
-      - list
-      - watch
       - create
       - patch
       - update
@@ -116,8 +117,6 @@ rules:
       - leases
     verbs:
       - get
-      - list
-      - watch
       - create
       - patch
       - update

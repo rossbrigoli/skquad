@@ -9,10 +9,14 @@ import (
 	"flag"
 	"os"
 
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -72,7 +76,21 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), managerOptions(*cfg))
+	managerOpts := managerOptions(*cfg)
+	// These resources are only ever touched by fixed, known names, which RBAC
+	// scopes via resourceNames. resourceNames does not apply to list/watch, so
+	// caching them would demand cluster-wide list permissions; the manager
+	// client reads them directly instead.
+	managerOpts.Client.Cache = &client.CacheOptions{
+		DisableFor: []client.Object{
+			&corev1.ServiceAccount{},
+			&rbacv1.Role{},
+			&rbacv1.RoleBinding{},
+			&networkingv1.NetworkPolicy{},
+			&corev1.ResourceQuota{},
+		},
+	}
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), managerOpts)
 	if err != nil {
 		ctrl.Log.Error(err, "unable to start manager")
 		os.Exit(1)
