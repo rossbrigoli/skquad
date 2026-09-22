@@ -32,6 +32,23 @@ spec:
               value: {{ printf "http://%s.%s.svc.cluster.local/api/v1" (include "skquad.apiServerName" .) .Release.Namespace | quote }}
             - name: NEXT_PUBLIC_SKQUAD_API_BASE_URL
               value: {{ .Values.webV2.apiBaseUrl | quote }}
+            {{- if .Values.webV2.oidc.enabled }}
+            # UIv2-13: generic OIDC (authorization code + PKCE). Any IdP with
+            # .well-known/openid-configuration works; cluster default is Dex.
+            - name: SKQUAD_OIDC_ISSUER
+              value: {{ .Values.webV2.oidc.issuer | quote }}
+            - name: SKQUAD_OIDC_CLIENT_ID
+              value: {{ .Values.webV2.oidc.clientId | quote }}
+            - name: SKQUAD_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.webV2.oidc.secretName | quote }}
+                  key: {{ .Values.webV2.oidc.clientSecretKey | quote }}
+            - name: SKQUAD_OIDC_REDIRECT_URL
+              value: {{ .Values.webV2.oidc.redirectUrl | quote }}
+            - name: SKQUAD_OIDC_SCOPES
+              value: {{ .Values.webV2.oidc.scopes | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.webV2.resources | nindent 12 }}
 {{- end }}

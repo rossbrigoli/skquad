@@ -177,8 +177,15 @@ export type ApiState<T> = {
 };
 
 export function apiBaseUrl(): string {
+  if (apiBaseOverride) return apiBaseOverride.replace(/\/$/, "");
   const configured = process.env.NEXT_PUBLIC_SKQUAD_API_BASE_URL || "/api/v1";
   return configured.replace(/\/$/, "");
+}
+
+// OIDC mode routes all API calls through the server-side /proxy (UIv2-13).
+let apiBaseOverride: string | null = null;
+export function setApiBaseOverride(base: string | null): void {
+  apiBaseOverride = base;
 }
 
 export class ApiError extends Error {

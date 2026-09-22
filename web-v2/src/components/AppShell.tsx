@@ -28,11 +28,15 @@ export function AppShell({
   const { items } = useAttention();
   const inboxBadge = items.length;
   const [menuOpen, setMenuOpen] = useState(false);
+  const [lastPath, setLastPath] = useState(pathname);
 
   // Navigating closes the drawer so you never land on a covered page.
-  useEffect(() => {
-    setMenuOpen(false);
-  }, [pathname]);
+  // Render-time adjustment (React's recommended pattern) avoids a cascading
+  // setState inside an effect.
+  if (lastPath !== pathname) {
+    setLastPath(pathname);
+    if (menuOpen) setMenuOpen(false);
+  }
 
   return (
     <div className={`${secondary ? "shell with-secondary" : "shell"}${menuOpen ? " drawer-open" : ""}`}>

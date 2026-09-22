@@ -2,16 +2,18 @@
 
 import Link from "next/link";
 import { useCallback, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { ActivityFeed } from "../../../../../components/ActivityFeed";
 import { AuthGate } from "../../../../../components/AuthGate";
+import { ConfirmDialog } from "../../../../../components/ConfirmDialog";
+import { Modal, ModalForm } from "../../../../../components/Modal";
 import { AppShell } from "../../../../../components/AppShell";
 import { EmptyState } from "../../../../../components/EmptyState";
 import { SquadRail } from "../../../../../components/SquadRail";
 import { StatusChip } from "../../../../../components/StatusChip";
 import { useApi } from "../../../../../lib/useApi";
 import { useAuth } from "../../../../../lib/auth";
-import { apiPatch, apiPost, type Agent, type AuditEntry, type Message, type Squad, type Task } from "../../../../../lib/api";
+import { apiDelete, apiPatch, apiPost, type Agent, type AuditEntry, type Message, type Squad, type Task } from "../../../../../lib/api";
 import { formatRelativeTime, leaseState, messageText } from "../../../../../lib/format";
 import { taskStatus } from "../../../../../lib/status";
 
@@ -27,6 +29,7 @@ export default function TaskDetailPage() {
   const params = useParams<{ id: string; tid: string }>();
   const squadId = String(params?.id || "");
   const taskId = String(params?.tid || "");
+  const router = useRouter();
   const { token } = useAuth();
 
   const task = useApi<Task>(`/tasks/${taskId}`, 15000);
@@ -39,6 +42,8 @@ export default function TaskDetailPage() {
   const [sending, setSending] = useState(false);
   const [actionError, setActionError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const current = task.data;
   const assignee = (agents.data || []).find((a) => a.id === current?.assignee_agent_id);
@@ -118,7 +123,15 @@ export default function TaskDetailPage() {
       <AppShell secondary={<SquadRail squadId={squadId} squadName={squad?.name || "…"} />}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "var(--space-3)" }}>
           <h1 className="page-title">{current.title}</h1>
-          <StatusChip status={taskStatus(current)} />
+          <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
+            <StatusChip status={taskStatus(current)} />
+            <button type="button" className="btn btn-sm" onClick={() => setEditing(true)}>
+              Edit
+            </button>
+            <button type="button" className="btn btn-sm btn-danger" onClick={() => setDeleting(true)}>
+              Delete
+            </button>
+          </div>
         </div>
         <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)" }}>
           {assignee ? (
@@ -229,7 +242,80 @@ export default function TaskDetailPage() {
             ← Back to board
           </Link>
         </p>
+
+        {editing ? (
+          <Modal title="Edit task" onClose={() => setEditing(false)}>
+            <TaskEditForm
+              task={current}
+              token={token}
+              onCancel={() => setEditing(false)}
+              onSaved={() => {
+                setEditing(false);
+                task.refresh();
+              }}
+            />
+          </Modal>
+        ) : null}
+
+        {deleting ? (
+          <ConfirmDialog
+            title="Delete this task?"
+            body={`“${current.title}” and its full message history will be removed. This cannot be undone.`}
+            onConfirm={async () => {
+              await apiDelete(`/tasks/${taskId}`, token);
+              router.push(`/squads/${squadId}/board`);
+            }}
+            onClose={() => setDeleting(false)}
+          />
+        ) : null}
       </AppShell>
     </AuthGate>
+  );
+}
+
+function TaskEditForm({
+  task,
+  token,
+  onCancel,
+  onSaved,
+}: {
+  task: Task;
+  token: string;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const [title, setTitle] = useState(task.title || "");
+  const [description, setDescription] = useState(task.description || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  return (
+    <ModalForm
+      busy={busy}
+      error={error}
+      submitLabel="Save task"
+      submitDisabled={title.trim() === ""}
+      onCancel={onCancel}
+      onSubmit={async () => {
+        setBusy(true);
+        setError("");
+        try {
+          await apiPatch<Task>(`/tasks/${task.id}`, token, { title: title.trim(), description });
+          onSaved();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "update failed");
+          setBusy(false);
+        }
+      }}
+    >
+      <label className="field">
+        <span>Title</span>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
+      </label>
+      <label className="field">
+        <span>Description</span>
+        <textarea value={description} onChange={(e) => setDescription(e.target.value)} />
+      </label>
+    </ModalForm>
   );
 }

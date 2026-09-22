@@ -3,13 +3,16 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { useAuth } from "../lib/auth";
 
-// Gate every page on a token. v1 uses the same bearer-token model; the token
-// comes from the Skquad API (user provisioned).
+// Gate every page on an authenticated principal.
+// OIDC mode: the provider redirects to /auth/login automatically; this just
+// shows the waiting state. Token mode (dev): paste-a-token gate.
 export function AuthGate({ children }: { children: ReactNode }) {
-  const { token, loading, error, setToken } = useAuth();
+  const { token, user, loading, error, mode, setToken } = useAuth();
   const [draft, setDraft] = useState("");
 
-  if (loading && token) {
+  const authed = mode === "oidc" ? !!user : !!token && !error;
+
+  if (loading) {
     return (
       <div className="auth-gate">
         <div className="notice">Checking session…</div>
@@ -17,8 +20,16 @@ export function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
-  if (token && !error) {
+  if (authed) {
     return <>{children}</>;
+  }
+
+  if (mode === "oidc") {
+    return (
+      <div className="auth-gate">
+        <div className="notice">Redirecting to sign-in…</div>
+      </div>
+    );
   }
 
   return (
@@ -39,17 +50,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
             type="password"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder="API token"
-            style={{
-              flex: 1,
-              padding: "var(--space-2) var(--space-3)",
-              borderRadius: "var(--radius-md)",
-              border: "1px solid var(--line-strong)",
-              background: "var(--surface)",
-              color: "var(--ink)",
-            }}
+            placeholder="skquad API token"
+            style={{ flex: 1 }}
+            autoFocus
           />
-          <button type="submit" className="btn btn-primary" disabled={!draft.trim()}>
+          <button type="submit" className="btn btn-primary">
             Sign in
           </button>
         </form>

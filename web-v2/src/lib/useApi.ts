@@ -7,22 +7,23 @@ import { useAuth } from "./auth";
 // Minimal fetch-on-mount state hook for v2 pages. Polls only while the tab is
 // visible to keep background load off the shared control-plane API.
 export function useApi<T>(path: string, pollMs = 0): ApiState<T> & { refresh: () => void } {
-  const { token } = useAuth();
+  const { token, mode, user } = useAuth();
   const [state, setState] = useState<ApiState<T>>({ data: null, loading: true, error: "" });
   const [tick, setTick] = useState(0);
 
   const load = useCallback(async () => {
-    if (!token) {
+    const authed = mode === "oidc" ? !!user : !!token;
+    if (!authed) {
       setState({ data: null, loading: false, error: "not authenticated" });
       return;
     }
     try {
-      const data = await apiGet<T>(path, token);
+      const data = await apiGet<T>(path, mode === "oidc" ? "" : token);
       setState({ data, loading: false, error: "" });
     } catch (err) {
       setState({ data: null, loading: false, error: err instanceof Error ? err.message : "request failed" });
     }
-  }, [path, token]);
+  }, [path, token, mode, user]);
 
   useEffect(() => {
     // Initial fetch is an effect by design; setState lands async.

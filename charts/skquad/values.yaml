@@ -159,6 +159,17 @@ webV2:
   port: 3000
   apiBaseUrl: /api/v1
   resources: {}
+  # UIv2-13: generic OIDC login (authorization code + PKCE). Works with any
+  # IdP exposing .well-known/openid-configuration (Dex, Keycloak, Entra…).
+  # When disabled the UI keeps the paste-a-token dev gate.
+  oidc:
+    enabled: false
+    issuer: ""
+    clientId: "skquad-v2"
+    redirectUrl: ""
+    secretName: "skquad-web-v2-oidc"
+    clientSecretKey: "client-secret"
+    scopes: "openid profile email offline_access"
 
 ingress:
   enabled: false

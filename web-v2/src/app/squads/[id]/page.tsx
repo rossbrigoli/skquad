@@ -1,8 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
+import { useState } from "react";
 import { ActivityFeed } from "../../../components/ActivityFeed";
+import { ConfirmDialog } from "../../../components/ConfirmDialog";
+import { Modal, ModalForm } from "../../../components/Modal";
 import { AuthGate } from "../../../components/AuthGate";
 import { AppShell } from "../../../components/AppShell";
 import { EmptyState } from "../../../components/EmptyState";
@@ -10,6 +13,8 @@ import { MetricTile } from "../../../components/MetricTile";
 import { SquadRail } from "../../../components/SquadRail";
 import { StatusChip } from "../../../components/StatusChip";
 import { useApi } from "../../../lib/useApi";
+import { useAuth } from "../../../lib/auth";
+import { apiDelete, apiPatch } from "../../../lib/api";
 import { formatCost, formatRelativeTime, leaseState } from "../../../lib/format";
 import { agentStatus, taskStatus } from "../../../lib/status";
 import type { Agent, BoardPayload, MeteringSummary, Squad, AuditEntry } from "../../../lib/api";
@@ -17,7 +22,11 @@ import type { Agent, BoardPayload, MeteringSummary, Squad, AuditEntry } from "..
 export default function SquadCockpitPage() {
   const params = useParams<{ id: string }>();
   const squadId = String(params?.id || "");
+  const router = useRouter();
+  const { token } = useAuth();
   const squads = useApi<Squad[]>("/squads");
+  const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const agents = useApi<Agent[]>(`/squads/${squadId}/agents`, 15000);
   const board = useApi<BoardPayload>(`/squads/${squadId}/board`, 15000);
   const metering = useApi<MeteringSummary>(`/squads/${squadId}/metering`, 30000);
@@ -51,7 +60,19 @@ export default function SquadCockpitPage() {
   return (
     <AuthGate>
       <AppShell secondary={<SquadRail squadId={squadId} squadName={squad?.name || "…"} />}>
-        <h1 className="page-title">{squad?.name || "Squad"}</h1>
+        <div className="section-head">
+          <h1 className="page-title" style={{ margin: 0 }}>
+            {squad?.name || "Squad"}
+          </h1>
+          <div style={{ display: "flex", gap: "var(--space-2)" }}>
+            <button type="button" className="btn btn-sm" onClick={() => setEditing(true)} disabled={!squad}>
+              Edit
+            </button>
+            <button type="button" className="btn btn-sm btn-danger" onClick={() => setDeleting(true)} disabled={!squad}>
+              Delete
+            </button>
+          </div>
+        </div>
         {squad?.mission ? (
           <p style={{ color: "var(--ink-muted)", marginTop: "calc(-1 * var(--space-3))", marginBottom: "var(--space-5)" }}>
             {squad.mission}
@@ -138,10 +159,15 @@ export default function SquadCockpitPage() {
         </section>
 
         <section style={{ marginTop: "var(--space-5)" }}>
-          <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>Agents</h2>
+          <div className="section-head">
+            <h2>Agents</h2>
+            <Link href={`/squads/${squadId}/agents`} className="btn btn-sm">
+              Manage agents
+            </Link>
+          </div>
           <div className="entity-list">
             {agentItems.map((agent) => (
-              <Link key={agent.id} href={`/squads/${squadId}/agents`} className="entity-row">
+              <Link key={agent.id} href={`/squads/${squadId}/agents/${agent.id}`} className="entity-row">
                 <div className="entity-main">
                   <span className="entity-title">{agent.name}</span>
                   <span className="entity-meta">{agent.role || "no role set"}</span>
@@ -153,7 +179,81 @@ export default function SquadCockpitPage() {
             ))}
           </div>
         </section>
+
+        {editing && squad ? (
+          <SquadEditModal
+            squad={squad}
+            onClose={() => setEditing(false)}
+            onSaved={() => {
+              setEditing(false);
+              squads.refresh();
+            }}
+            token={token}
+          />
+        ) : null}
+
+        {deleting && squad ? (
+          <ConfirmDialog
+            title={`Delete squad “${squad.name}”?`}
+            body="This removes the squad, its agents, board, tasks, grants and Kubernetes namespace. This cannot be undone."
+            confirmText={squad.name}
+            onConfirm={async () => {
+              await apiDelete(`/squads/${squadId}`, token);
+              router.push("/squads");
+            }}
+            onClose={() => setDeleting(false)}
+          />
+        ) : null}
       </AppShell>
     </AuthGate>
+  );
+}
+
+function SquadEditModal({
+  squad,
+  onClose,
+  onSaved,
+  token,
+}: {
+  squad: Squad;
+  onClose: () => void;
+  onSaved: () => void;
+  token: string;
+}) {
+  const [name, setName] = useState(squad.name || "");
+  const [mission, setMission] = useState(squad.mission || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  return (
+    <Modal title="Edit squad" onClose={onClose}>
+      <ModalForm
+        busy={busy}
+        error={error}
+        onCancel={onClose}
+        submitLabel="Save changes"
+        submitDisabled={name.trim() === ""}
+        onSubmit={async () => {
+          setBusy(true);
+          setError("");
+          try {
+            await apiPatch<Squad>(`/squads/${squad.id}`, token, { name: name.trim(), mission: mission.trim() });
+            onSaved();
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "update failed");
+            setBusy(false);
+          }
+        }}
+      >
+        <label className="field">
+          <span>Name</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+        </label>
+        <label className="field">
+          <span>Mission</span>
+          <textarea value={mission} onChange={(e) => setMission(e.target.value)} />
+        </label>
+      </ModalForm>
+    </Modal>
   );
 }
