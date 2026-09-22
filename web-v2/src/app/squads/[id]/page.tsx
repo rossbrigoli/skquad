@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { ActivityFeed } from "../../../components/ActivityFeed";
 import { AuthGate } from "../../../components/AuthGate";
 import { AppShell } from "../../../components/AppShell";
 import { EmptyState } from "../../../components/EmptyState";
@@ -11,7 +12,7 @@ import { StatusChip } from "../../../components/StatusChip";
 import { useApi } from "../../../lib/useApi";
 import { formatCost, formatRelativeTime, leaseState } from "../../../lib/format";
 import { agentStatus, taskStatus } from "../../../lib/status";
-import type { Agent, BoardPayload, MeteringSummary, Squad } from "../../../lib/api";
+import type { Agent, BoardPayload, MeteringSummary, Squad, AuditEntry } from "../../../lib/api";
 
 export default function SquadCockpitPage() {
   const params = useParams<{ id: string }>();
@@ -20,6 +21,7 @@ export default function SquadCockpitPage() {
   const agents = useApi<Agent[]>(`/squads/${squadId}/agents`, 15000);
   const board = useApi<BoardPayload>(`/squads/${squadId}/board`, 15000);
   const metering = useApi<MeteringSummary>(`/squads/${squadId}/metering`, 30000);
+  const audit = useApi<AuditEntry[]>(`/squads/${squadId}/audit?limit=15`, 30000);
 
   const squad = (squads.data || []).find((item) => item.id === squadId);
   const agentItems = agents.data || [];
@@ -36,6 +38,15 @@ export default function SquadCockpitPage() {
 
   const agentName = (id?: string) =>
     agentItems.find((agent) => agent.id === id)?.name || (id ? id.slice(0, 8) : "unassigned");
+
+  const auditName = (entry: AuditEntry) => {
+    if (entry.actor_type === "agent") {
+      return agentName(entry.actor_id);
+    }
+    return undefined;
+  };
+
+  const taskHref = (taskId: string) => `/squads/${squadId}/tasks/${taskId}`;
 
   return (
     <AuthGate>
@@ -78,7 +89,7 @@ export default function SquadCockpitPage() {
           ) : (
             <div className="entity-list">
               {running.map((task) => (
-                <div key={task.id} className="entity-row">
+                <Link key={task.id} href={taskHref(task.id)} className="entity-row">
                   <div className="entity-main">
                     <span className="entity-title">{task.title}</span>
                     <span className="entity-meta">
@@ -88,7 +99,7 @@ export default function SquadCockpitPage() {
                   <div className="entity-side">
                     <StatusChip status={taskStatus(task)} />
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
           )}
@@ -99,7 +110,7 @@ export default function SquadCockpitPage() {
             <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>Stalled</h2>
             <div className="entity-list">
               {stalled.map((task) => (
-                <div key={task.id} className="entity-row">
+                <Link key={task.id} href={taskHref(task.id)} className="entity-row">
                   <div className="entity-main">
                     <span className="entity-title">{task.title}</span>
                     <span className="entity-meta">
@@ -109,11 +120,22 @@ export default function SquadCockpitPage() {
                   <div className="entity-side">
                     <StatusChip status="stalled" />
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
           </section>
         ) : null}
+
+        <section style={{ marginTop: "var(--space-5)" }}>
+          <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>Recent activity</h2>
+          <ActivityFeed
+            squadId={squadId}
+            entries={audit.data || []}
+            emptyTitle="No recorded activity yet"
+            emptyHint="Actions on tasks, agents and grants show up here as they happen."
+            nameFor={auditName}
+          />
+        </section>
 
         <section style={{ marginTop: "var(--space-5)" }}>
           <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>Agents</h2>
