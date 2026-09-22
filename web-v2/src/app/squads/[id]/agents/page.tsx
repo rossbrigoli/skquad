@@ -29,7 +29,7 @@ export default function SquadAgentsPage() {
             {items.map((agent) => (
               <EntityRow
                 key={agent.id}
-                href={`/squads/${squadId}/agents`}
+                href={`/squads/${squadId}/agents/${agent.id}`}
                 title={agent.name}
                 meta={`${agent.role || "no role"} · ${agent.default_model || "no default model"}`}
                 side={<StatusChip status={agentStatus(agent)} />}
@@ -37,9 +37,6 @@ export default function SquadAgentsPage() {
             ))}
           </div>
         )}
-        <p style={{ color: "var(--ink-faint)", fontSize: "var(--text-sm)", marginTop: "var(--space-4)" }}>
-          Full agent profiles (leases, runs, spend, grants) land in UIv2-6.
-        </p>
       </AppShell>
     </AuthGate>
   );
