@@ -9,6 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -114,6 +115,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			},
 			LivenessProbe:  httpProbe("/healthz"),
 			ReadinessProbe: httpProbe("/readyz"),
+			Resources:      agentResourceRequirements(),
 			SecurityContext: &corev1.SecurityContext{
 				RunAsNonRoot:             boolPtr(true),
 				AllowPrivilegeEscalation: boolPtr(false),
@@ -171,6 +173,30 @@ func envOrDefault(name string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// agentResourceRequirements gives the agent container explicit cpu/memory
+// requests+limits. Tenant namespaces carry a ResourceQuota that requires
+// every container to declare them (S-85); without this the ReplicaSet is
+// rejected at admission and the agent can never wake. Overridable per
+// operator via env; invalid values fall back to the defaults.
+func agentResourceRequirements() corev1.ResourceRequirements {
+	parse := func(value, fallback string) resource.Quantity {
+		if q, err := resource.ParseQuantity(value); err == nil {
+			return q
+		}
+		return resource.MustParse(fallback)
+	}
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    parse(envOrDefault("SKQUAD_AGENT_CPU_REQUEST", "100m"), "100m"),
+			corev1.ResourceMemory: parse(envOrDefault("SKQUAD_AGENT_MEMORY_REQUEST", "128Mi"), "128Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    parse(envOrDefault("SKQUAD_AGENT_CPU_LIMIT", "500m"), "500m"),
+			corev1.ResourceMemory: parse(envOrDefault("SKQUAD_AGENT_MEMORY_LIMIT", "512Mi"), "512Mi"),
+		},
+	}
 }
 
 // SetupWithManager registers the Agent controller with a controller-runtime
