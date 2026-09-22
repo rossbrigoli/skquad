@@ -1221,7 +1221,7 @@ func (p *PostgresStore) CreateTask(ctx context.Context, t *domain.Task) (*domain
 		)
 		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		          position, created_at, updated_at, coalesce(origin_message_id, '')
+		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, '')
 	`, t.BoardID, t.SquadID, t.Title, t.Description, defaultTaskStatus(t.Status), t.AssigneeAgentID, t.CreatedByType, t.CreatedByID, t.OriginMessageID)
 	return scanTask(row)
 }
@@ -1230,7 +1230,7 @@ func (p *PostgresStore) GetTask(ctx context.Context, id string) (*domain.Task, e
 	row := p.pool.QueryRow(ctx, `
 		SELECT id::text, board_id::text, squad_id::text, title, description, status,
 		       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		       position, created_at, updated_at, coalesce(origin_message_id, '')
+		       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, '')
 		FROM tasks
 		WHERE id = $1
 	`, id)
@@ -1264,7 +1264,7 @@ func (p *PostgresStore) UpdateTask(ctx context.Context, t *domain.Task) (*domain
 		WHERE id = $1
 		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		          position, created_at, updated_at, coalesce(origin_message_id, '')
+		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, '')
 	`, t.ID, t.Title, t.Description, t.AssigneeAgentID, defaultTaskStatus(t.Status))
 	return scanTask(row)
 }
@@ -1302,7 +1302,7 @@ func (p *PostgresStore) ListTasks(ctx context.Context, boardID string, status do
 		rows, err = p.pool.Query(ctx, `
 			SELECT id::text, board_id::text, squad_id::text, title, description, status,
 			       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-			       position, created_at, updated_at, coalesce(origin_message_id, '')
+			       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, '')
 			FROM tasks
 			WHERE board_id = $1
 			ORDER BY status, position
@@ -1311,7 +1311,7 @@ func (p *PostgresStore) ListTasks(ctx context.Context, boardID string, status do
 		rows, err = p.pool.Query(ctx, `
 			SELECT id::text, board_id::text, squad_id::text, title, description, status,
 			       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-			       position, created_at, updated_at, coalesce(origin_message_id, '')
+			       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, '')
 			FROM tasks
 			WHERE board_id = $1 AND status = $2
 			ORDER BY position
@@ -1337,7 +1337,7 @@ func (p *PostgresStore) ListAgentTasks(ctx context.Context, agentID string) ([]*
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, board_id::text, squad_id::text, title, description, status,
 		       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		       position, created_at, updated_at, coalesce(origin_message_id, '')
+		       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, '')
 		FROM tasks
 		WHERE assignee_agent_id = $1
 		ORDER BY status, position
@@ -1416,7 +1416,7 @@ func (p *PostgresStore) claimReclaimableInProgress(ctx context.Context, tx pgx.T
 	row := tx.QueryRow(ctx, `
 		SELECT id::text, board_id::text, squad_id::text, title, description, status,
 		       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		       position, created_at, updated_at, coalesce(origin_message_id, '')
+		       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, '')
 		FROM tasks
 		WHERE assignee_agent_id = $1
 		  AND status = $2
@@ -1457,7 +1457,7 @@ func (p *PostgresStore) claimTodoTask(ctx context.Context, tx pgx.Tx, agentID st
 		WHERE id = (SELECT id FROM candidate)
 		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		          position, created_at, updated_at, coalesce(origin_message_id, '')
+		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, '')
 	`, agentID, domain.TaskTodo, domain.TaskInProgress)
 	return scanTask(row)
 }
@@ -1648,7 +1648,7 @@ func (p *PostgresStore) CompleteTaskExecution(ctx context.Context, agentID strin
 		WHERE id = (SELECT id FROM existing)
 		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		          position, created_at, updated_at, coalesce(origin_message_id, '')
+		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, '')
 	`, taskID, agentID, status)
 	task, err := scanTask(row)
 	if err != nil {
