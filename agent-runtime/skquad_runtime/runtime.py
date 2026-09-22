@@ -397,15 +397,15 @@ class ControlPlaneClient:
 
     def list_tasks(self) -> list[RuntimeTask]:
         payload = self._json("GET", "/api/v1/agents/me/tasks", None)
-        return [runtime_task(item) for item in payload]
+        return [runtime_task(item) for item in (payload or [])]
 
     def list_resources(self) -> list[RuntimeResource]:
         payload = self._json("GET", "/api/v1/agents/me/resources", None)
-        return [runtime_resource(item) for item in payload]
+        return [runtime_resource(item) for item in (payload or [])]
 
     def list_messages(self) -> list[RuntimeMessage]:
         payload = self._json("GET", "/api/v1/agents/me/messages", None)
-        return [runtime_message(item) for item in payload]
+        return [runtime_message(item) for item in (payload or [])]
 
     def ack_message(self, message_id: str) -> RuntimeMessage:
         payload = self._json("POST", f"/api/v1/agents/me/messages/{message_id}/ack", None)
@@ -421,7 +421,7 @@ class ControlPlaneClient:
 
     def list_message_history(self) -> list[RuntimeMessage]:
         payload = self._json("GET", "/api/v1/agents/me/messages/history", None)
-        return [runtime_message(item) for item in payload]
+        return [runtime_message(item) for item in (payload or [])]
 
     def send_chat_reply(
         self,

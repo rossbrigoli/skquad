@@ -260,6 +260,19 @@ class RuntimeBootstrapTest(unittest.TestCase):
         self.assertIsNotNone(parsed.tzinfo)
         self.assertLessEqual(abs((datetime.now(timezone.utc) - parsed).total_seconds()), 300)
 
+    def test_list_endpoints_tolerate_null_payload(self):
+        # Control-plane returns JSON null when there are no rows; the client
+        # must yield [] rather than crashing the task loop (inbox runs before
+        # task-claim, so a crash here blocks all claims).
+        for method in ("list_messages", "list_message_history", "list_tasks", "list_resources"):
+            client = ControlPlaneClient(
+                "http://control-plane",
+                "agent-1",
+                "credential",
+                opener=lambda _req: FakeResponse(200, b"null"),
+            )
+            self.assertEqual(getattr(client, method)(), [], method)
+
     def test_control_plane_client_sends_task_execution_fence(self):
         calls = []
 
