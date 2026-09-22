@@ -1,0 +1,480 @@
+/* ============================================================
+   Skquad UI v2 — TOKEN LAYER
+   The single source of visual values. Components must not hardcode
+   colors, spacing, radius, or type sizes — reference these tokens.
+   Basis: docs/UI-REDESIGN-PROPOSAL.md §3.3
+   ============================================================ */
+
+:root {
+  /* --- surfaces & ink --- */
+  --bg: #f6f6f4;
+  --surface: #ffffff;
+  --surface-sunken: #efefec;
+  --ink: #1b1b19;
+  --ink-muted: #6c6c66;
+  --ink-faint: #9c9c95;
+  --line: #e3e3dd;
+  --line-strong: #d2d2ca;
+
+  /* --- brand (Skquad orange, used sparingly: primary actions + active nav) --- */
+  --accent: #e8590c;
+  --accent-hover: #d94f0a;
+  --accent-ink: #ffffff;
+  --accent-soft: #fdeee4;
+
+  /* --- status vocabulary: one hue per state, everywhere --- */
+  --status-running: #1971c2;
+  --status-running-bg: #e7f1fa;
+  --status-stalled: #e8590c;
+  --status-stalled-bg: #fdeee4;
+  --status-blocked: #c92a2a;
+  --status-blocked-bg: #fbe9e9;
+  --status-in-review: #b08114;
+  --status-in-review-bg: #faf3e0;
+  --status-idle: #6c6c66;
+  --status-idle-bg: #efefec;
+  --status-error: #c92a2a;
+  --status-error-bg: #fbe9e9;
+  --status-over-budget: #862e9c;
+  --status-over-budget-bg: #f6ebfa;
+  --status-paused: #b08114;
+  --status-paused-bg: #faf3e0;
+  --status-todo: #495057;
+  --status-todo-bg: #e9ecef;
+  --status-done: #2b8a3e;
+  --status-done-bg: #e6f4ea;
+
+  /* --- spacing scale --- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* --- radius --- */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  /* --- type --- */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 26px;
+
+  /* --- layout --- */
+  --rail-primary: 208px;
+  --rail-secondary: 232px;
+
+  /* --- motion --- */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17171a;
+    --surface: #1f1f23;
+    --surface-sunken: #141417;
+    --ink: #ececea;
+    --ink-muted: #a3a39d;
+    --ink-faint: #77776f;
+    --line: #2c2c31;
+    --line-strong: #3a3a41;
+    --accent: #ff7a26;
+    --accent-hover: #ff8c44;
+    --accent-soft: #332015;
+    --status-running: #6db1e8;
+    --status-running-bg: #17273a;
+    --status-stalled: #ff8a45;
+    --status-stalled-bg: #332015;
+    --status-blocked: #ff7b7b;
+    --status-blocked-bg: #351a1a;
+    --status-in-review: #e0b64f;
+    --status-in-review-bg: #302713;
+    --status-idle: #a3a39d;
+    --status-idle-bg: #26262a;
+    --status-error: #ff7b7b;
+    --status-error-bg: #351a1a;
+    --status-over-budget: #c98ade;
+    --status-over-budget-bg: #2b1b33;
+    --status-paused: #e0b64f;
+    --status-paused-bg: #302713;
+    --status-todo: #b6bcc2;
+    --status-todo-bg: #26282b;
+    --status-done: #79c489;
+    --status-done-bg: #16281b;
+  }
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* Machine values: IDs, costs, token counts, timestamps, lease ages. */
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   App shell — primary rail + content + contextual secondary rail
+   ============================================================ */
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-primary) minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.shell.with-secondary {
+  grid-template-columns: var(--rail-primary) var(--rail-secondary) minmax(0, 1fr);
+}
+
+.rail {
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.rail-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 700;
+  font-size: var(--text-lg);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.rail-brand .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+
+.rail-label {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+  padding: var(--space-3) var(--space-3) var(--space-1);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--ink-muted);
+  font-size: var(--text-md);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+
+.nav-item:hover {
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+
+.nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.nav-badge {
+  background: var(--status-error);
+  color: #fff;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+  padding: 1px 7px;
+  font-weight: 700;
+}
+
+.rail-footer {
+  margin-top: auto;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+  color: var(--ink-faint);
+  font-size: var(--text-sm);
+}
+
+.content {
+  padding: var(--space-5);
+  min-width: 0;
+}
+
+.page-title {
+  font-size: var(--text-xl);
+  font-weight: 700;
+  margin: 0 0 var(--space-4);
+}
+
+/* ============================================================
+   Primitives
+   ============================================================ */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border-radius: var(--radius-pill);
+  padding: 2px 10px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+}
+
+.chip-running { color: var(--status-running); background: var(--status-running-bg); }
+.chip-stalled { color: var(--status-stalled); background: var(--status-stalled-bg); }
+.chip-blocked { color: var(--status-blocked); background: var(--status-blocked-bg); }
+.chip-in-review { color: var(--status-in-review); background: var(--status-in-review-bg); }
+.chip-idle { color: var(--status-idle); background: var(--status-idle-bg); }
+.chip-error { color: var(--status-error); background: var(--status-error-bg); }
+.chip-over-budget { color: var(--status-over-budget); background: var(--status-over-budget-bg); }
+.chip-paused { color: var(--status-paused); background: var(--status-paused-bg); }
+.chip-todo { color: var(--status-todo); background: var(--status-todo-bg); }
+.chip-done { color: var(--status-done); background: var(--status-done-bg); }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.metric-label {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+}
+
+.metric-value {
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-sub {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+.metric.attention .metric-value {
+  color: var(--status-stalled);
+}
+
+.entity-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.entity-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  transition: background var(--motion-fast) var(--ease-out);
+}
+
+.entity-row:last-child {
+  border-bottom: none;
+}
+
+.entity-row:hover {
+  background: var(--surface-sunken);
+}
+
+.entity-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.entity-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.entity-meta {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.entity-side {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-7) var(--space-4);
+  text-align: center;
+  color: var(--ink-muted);
+}
+
+.empty-state .empty-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-md);
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  transition: background var(--motion-fast) var(--ease-out);
+}
+
+.btn:hover {
+  background: var(--surface-sunken);
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.notice {
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  background: var(--surface-sunken);
+  color: var(--ink-muted);
+}
+
+.notice.error {
+  background: var(--status-error-bg);
+  color: var(--status-error);
+}
+
+/* ============================================================
+   Responsive — rails collapse (full drawer behaviour: UIv2-7)
+   ============================================================ */
+@media (max-width: 900px) {
+  .shell,
+  .shell.with-secondary {
+    grid-template-columns: 1fr;
+  }
+  .rail {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .rail-footer,
+  .rail-label {
+    display: none;
+  }
+}
+
+/* Auth gate */
+.auth-gate {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+}
