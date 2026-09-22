@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { TokenProvider } from "../lib/auth";
+import { AttentionProvider } from "../lib/useAttention";
 
 export const metadata: Metadata = {
   title: "Skquad v2",
@@ -11,7 +12,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <TokenProvider>{children}</TokenProvider>
+        <TokenProvider>
+          <AttentionProvider>{children}</AttentionProvider>
+        </TokenProvider>
       </body>
     </html>
   );

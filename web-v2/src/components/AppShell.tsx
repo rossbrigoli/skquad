@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { useAuth } from "../lib/auth";
+import { useAttention } from "../lib/useAttention";
 
 const primaryNav = [
   { href: "/inbox", label: "Inbox" },
@@ -17,14 +18,14 @@ const primaryNav = [
 export function AppShell({
   children,
   secondary,
-  inboxBadge = 0,
 }: {
   children: ReactNode;
   secondary?: ReactNode;
-  inboxBadge?: number;
 }) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
+  const { items } = useAttention();
+  const inboxBadge = items.length;
 
   return (
     <div className={secondary ? "shell with-secondary" : "shell"}>
