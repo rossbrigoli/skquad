@@ -38,11 +38,6 @@ rules:
       - patch
       - update
       - delete
-  # Fixed-name resources: no list/watch (prevents enumeration) and no
-  # Secrets access at all. resourceNames cannot scope `create` for
-  # top-level resources (kubernetes.io/docs/reference/access-authn-authz/rbac/),
-  # so create stays type-scoped while get/update/patch/delete are
-  # name-scoped. The operator reads these types uncached (main.go).
   - apiGroups:
       - ""
     resources:
@@ -50,6 +45,21 @@ rules:
     verbs:
       - create
       - patch
+  # The operator must hold the secrets verbs it grants to the API server's
+  # secret-writer Role: RBAC escalation prevention forbids granting
+  # permissions the grantor does not hold. list/watch are withheld — the
+  # operator can never enumerate cluster secrets, only touch specific
+  # names it is told about (and it never reads contents; see ADR-0009).
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - create
+      - patch
+      - update
+      - delete
   - apiGroups:
       - ""
     resources:

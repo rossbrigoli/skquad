@@ -272,9 +272,12 @@ over `*.lab`. Immutable image promotion remains a CI/CD follow-up.
 
 - The **operator** needs a **ClusterRole** (it creates namespaces, deployments,
   network policies, and per-squad RBAC across the cluster). The ClusterRole is
-  least-privilege scoped: it holds **no Secret access at all** (the operator never
-  reads or writes Secret contents — the API server writes agent credentials via
-  namespace-local Roles), and **no list/watch** on the fixed-name resources it
+  least-privilege scoped: it holds **no list/watch on Secrets** (bulk secret
+  enumeration is impossible; it holds only the targeted get/create/patch/update/
+  delete verbs it must itself possess to create the API server's secret-writer
+  Roles — RBAC escalation prevention forbids granting permissions the grantor
+  does not hold — and it never reads Secret contents; see ADR-0009). The
+  operator also has **no list/watch** on the fixed-name resources it
   manages (`skquad-agent` SA, `skquad-api-agent-secret-writer` Role/RoleBinding,
   `default-deny` / `allow-dns-egress` / `allow-skquad-platform-egress` /
   `allow-granted-egress` NetworkPolicies, `skquad-squad-quota`, the
