@@ -11,6 +11,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic, sleep as default_sleep
 from typing import Callable, Mapping, Protocol
@@ -28,6 +29,12 @@ DEFAULT_CREDENTIALS_DIR = Path("/var/run/skquad/credentials")
 DEFAULT_AGENT_CREDENTIAL_PATH = DEFAULT_CREDENTIALS_DIR / "agent"
 DEFAULT_VIRTUAL_KEY_PATH = DEFAULT_CREDENTIALS_DIR / "llm-gateway"
 LOGGER = logging.getLogger(__name__)
+
+# Captured at module import, which happens immediately after the container's
+# entrypoint execs the interpreter. Used as the container-start timestamp for
+# wake-path latency attribution (S-87): the control plane dedupes per
+# (agent, started_at) so each container start records at most one wake.
+PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
 
 
 @dataclass(frozen=True)
@@ -363,11 +370,13 @@ class ControlPlaneClient:
         credential: str,
         opener: Callable[[request.Request], object] | None = None,
         worker_id: str = "",
+        started_at: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.agent_id = agent_id
         self.credential = credential
         self.worker_id = worker_id or f"{agent_id}:{uuid.uuid4()}"
+        self.started_at = started_at or PROCESS_STARTED_AT
         self._opener = opener or request.urlopen
 
     @classmethod
@@ -441,7 +450,10 @@ class ControlPlaneClient:
         return runtime_task_context(payload)
 
     def claim_task(self) -> RuntimeTask | None:
-        payload = self._json("POST", "/api/v1/agents/me/tasks/claim", None, allow_empty=True)
+        # started_at lets the control plane attribute the wake path
+        # (assign -> CR -> container start -> claim) for the S-87 SLO.
+        body = {"started_at": self.started_at}
+        payload = self._json("POST", "/api/v1/agents/me/tasks/claim", body, allow_empty=True)
         if payload is None:
             return None
         return runtime_task(payload)

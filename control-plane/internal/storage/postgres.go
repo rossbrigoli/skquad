@@ -1990,6 +1990,76 @@ func (p *PostgresStore) MarkKubernetesOutboxFailed(ctx context.Context, id strin
 	return nil
 }
 
+func (p *PostgresStore) LatestAppliedAgentUpsert(ctx context.Context, agentID string) (*domain.KubernetesOutboxEvent, error) {
+	row := p.pool.QueryRow(ctx, `
+		SELECT id::text, aggregate_type, aggregate_id::text, operation, payload, status,
+		       attempts, last_error, next_attempt_at, locked_until, created_at, updated_at
+		FROM kubernetes_outbox
+		WHERE aggregate_type = 'agent' AND aggregate_id::text = $1
+		  AND operation = 'upsert_agent' AND status = 'applied'
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`, agentID)
+	event, err := scanKubernetesOutbox(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return event, err
+}
+
+func (p *PostgresStore) RecordWakeLatency(ctx context.Context, e *domain.WakeLatencyEvent) (bool, error) {
+	var id string
+	err := p.pool.QueryRow(ctx, `
+		INSERT INTO wake_latency (
+			agent_id, squad_id, task_id, wake_requested_at, cr_applied_at,
+			container_started_at, claimed_at, queue_ms, scaleup_ms, claim_delay_ms,
+			e2e_ms, cold_start
+		)
+		VALUES ($1::uuid, $2::uuid, nullif($3, '')::uuid, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT (agent_id, container_started_at) DO NOTHING
+		RETURNING id::text
+	`, e.AgentID, e.SquadID, e.TaskID, e.WakeRequestedAt, e.CRAppliedAt,
+		e.ContainerStartedAt, e.ClaimedAt, e.QueueMs, e.ScaleupMs, e.ClaimDelayMs,
+		e.E2EMs, e.ColdStart).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil // duplicate wake for this container start
+	}
+	if err != nil {
+		return false, mapPgErr(err)
+	}
+	return true, nil
+}
+
+func (p *PostgresStore) ListWakeLatency(ctx context.Context, squadID string, since time.Time, limit int) ([]*domain.WakeLatencyEvent, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT id::text, agent_id::text, squad_id::text, coalesce(task_id::text, ''),
+		       wake_requested_at, cr_applied_at, container_started_at, claimed_at,
+		       queue_ms, scaleup_ms, claim_delay_ms, e2e_ms, cold_start
+		FROM wake_latency
+		WHERE ($1 = '' OR squad_id::text = $1) AND claimed_at > $2
+		ORDER BY claimed_at DESC
+		LIMIT $3
+	`, squadID, since, limit)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+	out := []*domain.WakeLatencyEvent{}
+	for rows.Next() {
+		e := &domain.WakeLatencyEvent{}
+		if err := rows.Scan(&e.ID, &e.AgentID, &e.SquadID, &e.TaskID, &e.WakeRequestedAt,
+			&e.CRAppliedAt, &e.ContainerStartedAt, &e.ClaimedAt, &e.QueueMs, &e.ScaleupMs,
+			&e.ClaimDelayMs, &e.E2EMs, &e.ColdStart); err != nil {
+			return nil, mapPgErr(err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 func (p *PostgresStore) ListKubernetesOutbox(ctx context.Context, status domain.KubernetesOutboxStatus, limit int) ([]*domain.KubernetesOutboxEvent, error) {
 	if limit <= 0 {
 		limit = 100

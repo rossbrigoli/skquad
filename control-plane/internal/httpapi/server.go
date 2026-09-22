@@ -10,7 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +44,8 @@ type Store interface {
 	storage.RegistryStore
 	storage.PermissionStore
 	storage.MeteringStore
+	storage.WakeLatencyStore
+	storage.KubernetesOutboxStore
 	storage.AuditStore
 	storage.TaskStore
 	storage.AgentMemoryStore
@@ -167,6 +172,7 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Delete("/squads/{squadID}", s.deleteSquad)
 			r.Post("/squads/{squadID}/access-grants", s.createGrant)
 			r.Get("/squads/{squadID}/access-grants", s.listGrants)
+			r.Get("/squads/{squadID}/wake-latency", s.listSquadWakeLatency)
 			r.Delete("/access-grants/{grantID}", s.deleteGrant)
 
 			r.Post("/squads/{squadID}/agents", s.createAgent)
@@ -1007,6 +1013,114 @@ func (s *Server) listGrants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, grants)
+}
+
+// listSquadWakeLatency returns wake-path latency events (S-87) for a squad,
+// newest-first, with a nearest-rank percentile summary over e2e_ms — the
+// SLO surface (target p95 < 20s). Query: since=RFC3339 (default 7 days),
+// limit (default 500, max 2000).
+func (s *Server) listSquadWakeLatency(w http.ResponseWriter, r *http.Request) {
+	squad, ok := s.loadOwnedSquad(w, r)
+	if !ok {
+		return
+	}
+	since := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	if raw := strings.TrimSpace(r.URL.Query().Get("since")); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "since must be RFC3339")
+			return
+		}
+		since = parsed.UTC()
+	}
+	limit := 500
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "bad_request", "limit must be a positive integer")
+			return
+		}
+		if parsed > 2000 {
+			parsed = 2000
+		}
+		limit = parsed
+	}
+	events, err := s.store.ListWakeLatency(r.Context(), squad.ID, since, limit)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"since":   since,
+		"events":  events,
+		"summary": summarizeWakeLatency(events),
+	})
+}
+
+// wakeLatencySummary is the aggregated SLO view over a set of wake events.
+type wakeLatencySummary struct {
+	Count           int     `json:"count"`
+	ColdStarts      int     `json:"cold_starts"`
+	P50E2EMs        float64 `json:"p50_e2e_ms"`
+	P95E2EMs        float64 `json:"p95_e2e_ms"`
+	P99E2EMs        float64 `json:"p99_e2e_ms"`
+	MaxE2EMs        float64 `json:"max_e2e_ms"`
+	P95QueueMs      float64 `json:"p95_queue_ms"`
+	P95ScaleupMs    float64 `json:"p95_scaleup_ms"`
+	P95ClaimDelayMs float64 `json:"p95_claim_delay_ms"`
+	SloTargetMs     float64 `json:"slo_target_ms"`
+	SloMet          bool    `json:"slo_met"`
+}
+
+const wakeLatencySLOTargetMs = 20_000 // S-87: p95 e2e < 20s (validate/adjust after first data)
+
+func summarizeWakeLatency(events []*domain.WakeLatencyEvent) wakeLatencySummary {
+	sum := wakeLatencySummary{SloTargetMs: wakeLatencySLOTargetMs}
+	if len(events) == 0 {
+		return sum
+	}
+	e2e := make([]float64, 0, len(events))
+	queue := make([]float64, 0, len(events))
+	scaleup := make([]float64, 0, len(events))
+	claimDelay := make([]float64, 0, len(events))
+	for _, e := range events {
+		e2e = append(e2e, e.E2EMs)
+		queue = append(queue, e.QueueMs)
+		scaleup = append(scaleup, e.ScaleupMs)
+		claimDelay = append(claimDelay, e.ClaimDelayMs)
+		if e.ColdStart {
+			sum.ColdStarts++
+		}
+	}
+	sum.Count = len(events)
+	sum.P50E2EMs = nearestRankPercentile(e2e, 0.50)
+	sum.P95E2EMs = nearestRankPercentile(e2e, 0.95)
+	sum.P99E2EMs = nearestRankPercentile(e2e, 0.99)
+	sum.MaxE2EMs = nearestRankPercentile(e2e, 1.0)
+	sum.P95QueueMs = nearestRankPercentile(queue, 0.95)
+	sum.P95ScaleupMs = nearestRankPercentile(scaleup, 0.95)
+	sum.P95ClaimDelayMs = nearestRankPercentile(claimDelay, 0.95)
+	sum.SloMet = sum.P95E2EMs < wakeLatencySLOTargetMs
+	return sum
+}
+
+// nearestRankPercentile returns the nearest-rank percentile of values
+// (ceil(p*n)-th smallest, 1-based). Empty input returns 0.
+func nearestRankPercentile(values []float64, p float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := make([]float64, len(values))
+	copy(sorted, values)
+	sort.Float64s(sorted)
+	rank := int(math.Ceil(p * float64(len(sorted))))
+	if rank < 1 {
+		rank = 1
+	}
+	if rank > len(sorted) {
+		rank = len(sorted)
+	}
+	return sorted[rank-1]
 }
 
 func (s *Server) deleteGrant(w http.ResponseWriter, r *http.Request) {
@@ -2507,6 +2621,24 @@ func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPer
 
 func (s *Server) claimCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	principal := currentAgent(r.Context())
+	var req struct {
+		StartedAt time.Time `json:"started_at"`
+	}
+	// Lenient decode: the claim body was historically ignored, so unknown
+	// fields and even malformed bodies must not break claiming — they simply
+	// mean "no started_at" (no wake-latency sample).
+	if r.Body != nil && r.ContentLength != 0 {
+		var probe struct {
+			StartedAt string `json:"started_at"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&probe); err == nil && probe.StartedAt != "" {
+			if parsed, err := time.Parse(time.RFC3339, probe.StartedAt); err == nil {
+				req.StartedAt = parsed
+			} else if parsed, err := time.Parse(time.RFC3339Nano, probe.StartedAt); err == nil {
+				req.StartedAt = parsed
+			}
+		}
+	}
 	task, err := s.store.ClaimNextTask(s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.claim", "task", "", principal.Agent.SquadID, nil), principal.Agent.ID, workerIDFromRequest(r, principal.Agent.ID), defaultTaskExecutionLease)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
@@ -2524,7 +2656,61 @@ func (s *Server) claimCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
 		return
 	}
+	s.recordWakeLatency(r.Context(), principal.Agent, task.ID, req.StartedAt)
 	writeJSON(w, http.StatusOK, task)
+}
+
+// recordWakeLatency attributes a completed wake path (S-87): the most recent
+// applied upsert_agent outbox event gives wake-requested (created) and
+// CR-applied (updated) timestamps; the runtime reports its container start;
+// now is the claim that delivered the task. Best-effort observability — a
+// recording failure never fails the claim. Deduped per (agent, container
+// start) in the store, so only the first task-delivering claim of a
+// container start records.
+func (s *Server) recordWakeLatency(ctx context.Context, agent *domain.Agent, taskID string, containerStarted time.Time) {
+	if agent == nil || taskID == "" || containerStarted.IsZero() {
+		return
+	}
+	upsert, err := s.store.LatestAppliedAgentUpsert(ctx, agent.ID)
+	if err != nil {
+		return // no attributable wake (no applied upsert yet)
+	}
+	claimed := time.Now().UTC()
+	wakeRequested := upsert.CreatedAt.UTC()
+	crApplied := upsert.UpdatedAt.UTC()
+	containerStarted = containerStarted.UTC()
+	if claimed.Before(wakeRequested) {
+		return // clock skew beyond the wake window; not a trustworthy sample
+	}
+	scaleup := containerStarted.Sub(crApplied)
+	if scaleup < 0 {
+		scaleup = 0 // warm container: existed before the CR write
+	}
+	claimAnchor := crApplied
+	if containerStarted.After(claimAnchor) {
+		claimAnchor = containerStarted
+	}
+	claimDelay := claimed.Sub(claimAnchor)
+	if claimDelay < 0 {
+		claimDelay = 0
+	}
+	event := &domain.WakeLatencyEvent{
+		AgentID:            agent.ID,
+		SquadID:            agent.SquadID,
+		TaskID:             taskID,
+		WakeRequestedAt:    wakeRequested,
+		CRAppliedAt:        crApplied,
+		ContainerStartedAt: containerStarted,
+		ClaimedAt:          claimed,
+		QueueMs:            float64(crApplied.Sub(wakeRequested).Milliseconds()),
+		ScaleupMs:          float64(scaleup.Milliseconds()),
+		ClaimDelayMs:       float64(claimDelay.Milliseconds()),
+		E2EMs:              float64(claimed.Sub(wakeRequested).Milliseconds()),
+		ColdStart:          !containerStarted.Before(wakeRequested),
+	}
+	if _, err := s.store.RecordWakeLatency(ctx, event); err != nil {
+		slog.Warn("wake latency recording failed", "agent_id", agent.ID, "task_id", taskID, "error", err)
+	}
 }
 
 func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {

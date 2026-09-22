@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from skquad_runtime.runtime import (
@@ -223,6 +224,41 @@ class RuntimeBootstrapTest(unittest.TestCase):
         )
 
         self.assertIsNone(client.claim_task())
+
+    def test_control_plane_client_claim_sends_started_at(self):
+        calls = []
+
+        def opener(req):
+            calls.append(req)
+            return FakeResponse(204, b"")
+
+        client = ControlPlaneClient(
+            "http://control-plane",
+            "agent-1",
+            "credential",
+            opener=opener,
+            started_at="2026-09-22T10:00:00+00:00",
+        )
+        client.claim_task()
+
+        body = json.loads(calls[0].data.decode("utf-8"))
+        self.assertEqual(body["started_at"], "2026-09-22T10:00:00+00:00")
+
+    def test_control_plane_client_claim_defaults_to_process_start(self):
+        calls = []
+
+        def opener(req):
+            calls.append(req)
+            return FakeResponse(204, b"")
+
+        client = ControlPlaneClient("http://control-plane", "agent-1", "credential", opener=opener)
+        client.claim_task()
+
+        body = json.loads(calls[0].data.decode("utf-8"))
+        # Default is the module-import (container-start) timestamp, ISO-8601.
+        parsed = datetime.fromisoformat(body["started_at"])
+        self.assertIsNotNone(parsed.tzinfo)
+        self.assertLessEqual(abs((datetime.now(timezone.utc) - parsed).total_seconds()), 300)
 
     def test_control_plane_client_sends_task_execution_fence(self):
         calls = []

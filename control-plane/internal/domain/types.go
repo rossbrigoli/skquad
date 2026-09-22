@@ -445,6 +445,27 @@ type MeteringEvent struct {
 	Timestamp    time.Time `json:"timestamp"`
 }
 
+// WakeLatencyEvent records one task-delivery wake path (S-87): from the
+// assignment that triggered the wake (upsert_agent outbox event creation)
+// through the CR write, the runtime's container start, and the claim that
+// delivered the task. Segments are computed at claim time; E2EMs is the
+// SLO number (target p95 < 20s).
+type WakeLatencyEvent struct {
+	ID                 string    `json:"id"`
+	AgentID            string    `json:"agent_id"`
+	SquadID            string    `json:"squad_id"`
+	TaskID             string    `json:"task_id,omitempty"`
+	WakeRequestedAt    time.Time `json:"wake_requested_at"`
+	CRAppliedAt        time.Time `json:"cr_applied_at"`
+	ContainerStartedAt time.Time `json:"container_started_at"`
+	ClaimedAt          time.Time `json:"claimed_at"`
+	QueueMs            float64   `json:"queue_ms"`
+	ScaleupMs          float64   `json:"scaleup_ms"`
+	ClaimDelayMs       float64   `json:"claim_delay_ms"`
+	E2EMs              float64   `json:"e2e_ms"`
+	ColdStart          bool      `json:"cold_start"`
+}
+
 // AuditEntry is an append-only record of a significant action.
 type AuditEntry struct {
 	ID           string          `json:"id"`

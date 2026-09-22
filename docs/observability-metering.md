@@ -173,7 +173,68 @@ basis, matching current mutation-audit semantics.
 
 ---
 
-## 6. Open Points
+## 6. Wake-path latency SLO (S-87)
+
+**SLO: task-assignment → task-delivered p95 < 20s** (cold or warm wake).
+The number is validated/adjusted after the first week of real data.
+
+### Instrumented hops
+
+```
+assign (control-plane)                operator                    runtime
+    |                                    |                         |
+    |-- wake_requested_at ----------> CR outbox created             |
+    |                              applied -> Squad/Agent CR written |
+    |                                    |-- container_started_at ->|
+    |                                    |                         |-- claimed_at
+```
+
+One `wake_latency` row per (agent, container start), recorded on the first
+task-delivering claim of that container:
+
+| Field | Meaning |
+|---|---|
+| `wake_requested_at` | `created_at` of the latest **applied** `upsert_agent` outbox event (the assignment that triggered the wake) |
+| `cr_applied_at` | `updated_at` of that outbox event (CR write completed) |
+| `container_started_at` | runtime-reported container start (sent as `started_at` in the claim body; captured at process start) |
+| `claimed_at` | server time of the delivering claim |
+| `queue_ms` | `cr_applied_at - wake_requested_at` (outbox + operator apply) |
+| `scaleup_ms` | `container_started_at - cr_applied_at`, clamped ≥ 0 (schedule + image pull + container up) |
+| `claim_delay_ms` | `claimed_at - max(container_started_at, cr_applied_at)` (runtime boot-to-claim / warm poll delay) |
+| `e2e_ms` | `claimed_at - wake_requested_at` — **the SLO number** |
+| `cold_start` | container started at/after the wake (wake caused the start) |
+
+### Semantics & edge cases
+
+- **Warm delivery** (container predates the wake): `cold_start=false`,
+  `scaleup_ms=0`, claim delay measured from the CR write.
+- **No `started_at`** (old runtime) or **no applied upsert**: no sample —
+  never fails the claim.
+- **Dedup**: `UNIQUE (agent_id, container_started_at)`; later tasks on the
+  same container don't re-record.
+- **Clock skew** beyond the wake window (claim before wake-request) drops the
+  sample.
+- Recording is **best-effort observability** (not audit): a failure logs a
+  warning and leaves the claim untouched.
+
+### Query surface
+
+`GET /api/v1/squads/{squadID}/wake-latency?since=<RFC3339>&limit=<n>`
+(default: last 7 days, 500 rows) returns the raw events plus a nearest-rank
+summary: `count`, `cold_starts`, `p50/p95/p99/max_e2e_ms`,
+`p95_queue_ms`, `p95_scaleup_ms`, `p95_claim_delay_ms`, `slo_target_ms`,
+`slo_met`.
+
+### Fixing the worst hop
+
+`p95_scaleup_ms` dominates on cold starts (image pull). Levers, in order of
+expected impact: pre-pull/sidecar image cache (pin digest), RuntimeClass or
+warm pool for frequent squads, then runtime import/startup trimming. `queue_ms`
+tuning = outbox worker cadence; `claim_delay_ms` = runtime poll/wait interval.
+
+---
+
+## 7. Open Points
 
 - **Budgets** — hard spend caps per agent/squad with automatic cutoff (later;
   the gateway supports it).

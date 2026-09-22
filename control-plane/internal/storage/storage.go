@@ -32,6 +32,7 @@ type Store interface {
 	PermissionStore
 	GrantStore
 	MeteringStore
+	WakeLatencyStore
 	AuditStore
 	WorkNotificationStore
 }
@@ -42,6 +43,11 @@ type KubernetesOutboxStore interface {
 	MarkKubernetesOutboxApplied(ctx context.Context, id string) error
 	MarkKubernetesOutboxFailed(ctx context.Context, id string, lastError string, retryAfter time.Duration) error
 	ListKubernetesOutbox(ctx context.Context, status domain.KubernetesOutboxStatus, limit int) ([]*domain.KubernetesOutboxEvent, error)
+	// LatestAppliedAgentUpsert returns the most recently applied
+	// upsert_agent outbox event for an agent — the timestamp pair
+	// (created = wake requested, updated = CR written) used for wake
+	// latency attribution. ErrNotFound when none exists.
+	LatestAppliedAgentUpsert(ctx context.Context, agentID string) (*domain.KubernetesOutboxEvent, error)
 }
 
 // UserStore persists human users.
@@ -189,6 +195,15 @@ type GrantStore interface {
 type MeteringStore interface {
 	RecordMetering(ctx context.Context, m *domain.MeteringEvent) error
 	SumMetering(ctx context.Context, squadID, agentID string) (*domain.MeteringEvent, error) // aggregated
+}
+
+// WakeLatencyStore persists wake-path latency events (S-87). Record is
+// idempotent per (agent, container start): a duplicate returns false
+// without error. List returns events newest-first for one squad (empty
+// squadID = all squads) since the given time.
+type WakeLatencyStore interface {
+	RecordWakeLatency(ctx context.Context, e *domain.WakeLatencyEvent) (bool, error)
+	ListWakeLatency(ctx context.Context, squadID string, since time.Time, limit int) ([]*domain.WakeLatencyEvent, error)
 }
 
 // AuditStore persists the append-only audit log.

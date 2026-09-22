@@ -41,6 +41,8 @@ type MemoryStore struct {
 	resources     map[string]*domain.RegistryResource
 	permissions   map[string]*domain.AgentPermission
 	metering      map[string]*domain.MeteringEvent
+	wakeLatency   map[string]*domain.WakeLatencyEvent
+	wakeLatencyKey map[string]string // agent|containerStart -> wake event id
 	auditLog      map[string]*domain.AuditEntry
 	tasks         map[string]*domain.Task
 	taskExecs     map[string]*domain.TaskExecution
@@ -67,6 +69,8 @@ func NewMemoryStore() *MemoryStore {
 		resources:     map[string]*domain.RegistryResource{},
 		permissions:   map[string]*domain.AgentPermission{},
 		metering:      map[string]*domain.MeteringEvent{},
+		wakeLatency:  map[string]*domain.WakeLatencyEvent{},
+		wakeLatencyKey: map[string]string{},
 		auditLog:      map[string]*domain.AuditEntry{},
 		tasks:         map[string]*domain.Task{},
 		taskExecs:     map[string]*domain.TaskExecution{},
@@ -1659,6 +1663,64 @@ func cloneAgentIdentity(i *domain.AgentIdentity) *domain.AgentIdentity {
 	}
 	v := *i
 	return &v
+}
+
+func (m *MemoryStore) LatestAppliedAgentUpsert(_ context.Context, agentID string) (*domain.KubernetesOutboxEvent, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var latest *domain.KubernetesOutboxEvent
+	for _, event := range m.k8sOutbox {
+		if event.AggregateType != domain.KubernetesAggregateAgent || event.AggregateID != agentID {
+			continue
+		}
+		if event.Operation != domain.KubernetesOpUpsertAgent || event.Status != domain.KubernetesOutboxApplied {
+			continue
+		}
+		if latest == nil || event.UpdatedAt.After(latest.UpdatedAt) {
+			latest = event
+		}
+	}
+	if latest == nil {
+		return nil, ErrNotFound
+	}
+	return cloneKubernetesOutboxEvent(latest), nil
+}
+
+func (m *MemoryStore) RecordWakeLatency(_ context.Context, e *domain.WakeLatencyEvent) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := e.AgentID + "|" + e.ContainerStartedAt.UTC().Format(time.RFC3339Nano)
+	if _, exists := m.wakeLatencyKey[key]; exists {
+		return false, nil
+	}
+	stored := *e
+	stored.ID = uuid.NewString()
+	m.wakeLatency[stored.ID] = &stored
+	m.wakeLatencyKey[key] = stored.ID
+	return true, nil
+}
+
+func (m *MemoryStore) ListWakeLatency(_ context.Context, squadID string, since time.Time, limit int) ([]*domain.WakeLatencyEvent, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := []*domain.WakeLatencyEvent{}
+	for _, event := range m.wakeLatency {
+		if squadID != "" && event.SquadID != squadID {
+			continue
+		}
+		if !event.ClaimedAt.After(since) {
+			continue
+		}
+		cp := *event
+		out = append(out, &cp)
+	}
+	slices.SortFunc(out, func(a, b *domain.WakeLatencyEvent) int {
+		return b.ClaimedAt.Compare(a.ClaimedAt)
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func cloneKubernetesOutboxEvent(event *domain.KubernetesOutboxEvent) *domain.KubernetesOutboxEvent {
