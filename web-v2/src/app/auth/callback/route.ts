@@ -41,19 +41,32 @@ export async function GET(request: NextRequest) {
     if (!tokens.access_token) {
       throw new Error("token response contained no access token");
     }
-    let name: string | undefined;
-    let email: string | undefined;
-    if (tokens.id_token) {
-      const claims = await verifyIdToken(tokens.id_token, nonce);
-      name = typeof claims.name === "string" ? claims.name : typeof claims.preferred_username === "string" ? claims.preferred_username : undefined;
-      email = typeof claims.email === "string" ? claims.email : undefined;
+    // Fail closed: the control-plane authenticates human requests by verifying the
+    // Dex ID-token JWT (opaque access tokens cannot be verified there), so a login
+    // that produced no id_token can never authorize an API call.
+    if (!tokens.id_token) {
+      throw new Error("token response contained no id_token — cannot establish an authenticated session");
     }
-    const expiry = Math.floor(Date.now() / 1000) + (tokens.expires_in || 300);
+    const claims = await verifyIdToken(tokens.id_token, nonce);
+    const name: string | undefined =
+      typeof claims.name === "string"
+        ? claims.name
+        : typeof claims.preferred_username === "string"
+          ? claims.preferred_username
+          : undefined;
+    const email: string | undefined = typeof claims.email === "string" ? claims.email : undefined;
+    // The session must end no later than the credential we actually present
+    // upstream, so take the tighter of the OAuth `expires_in` and the ID token's
+    // own `exp`. Otherwise we could keep sending a JWT the control-plane rejects.
+    const oauthExpiry = Math.floor(Date.now() / 1000) + (tokens.expires_in || 300);
+    const idTokenExpiry = typeof claims.exp === "number" ? claims.exp : oauthExpiry;
+    const expiry = Math.min(oauthExpiry, idTokenExpiry);
     const res = NextResponse.redirect(new URL("/", request.url));
     res.cookies.set(
       SESSION_COOKIE,
       encodeSession({
         access_token: tokens.access_token,
+        id_token: tokens.id_token,
         refresh_token: tokens.refresh_token,
         expiry,
         name,

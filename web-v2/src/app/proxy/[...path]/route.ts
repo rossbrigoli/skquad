@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   SESSION_COOKIE,
+  apiBearer,
   decodeSession,
   encodeSession,
   oidcEnabled,
@@ -24,16 +25,18 @@ async function liveSession(request: NextRequest): Promise<Session | null> {
   if (session.refresh_token && oidcEnabled()) {
     try {
       const tokens = await refreshTokens(session.refresh_token);
+      if (!tokens.access_token) throw new Error("refresh response had no access token");
       const next: Session = {
         access_token: tokens.access_token,
+        // Carry the freshly-minted ID token when present; otherwise keep the old
+        // one only if it is still the credential we have.
+        id_token: typeof tokens.id_token === "string" ? tokens.id_token : session.id_token,
         refresh_token: tokens.refresh_token || session.refresh_token,
         expiry: Math.floor(Date.now() / 1000) + (tokens.expires_in || 300),
         name: session.name,
         email: session.email,
       };
-      return next;
-      // Persist the refreshed session on the response via a header trick is not
-      // possible here; callers set the cookie on their NextResponse instead.
+      // The refreshed session is persisted by the caller on the response cookie.
       return next;
     } catch {
       return null;
@@ -58,7 +61,8 @@ async function forward(request: NextRequest, method: string, path: string[]): Pr
   const target = `${UPSTREAM}/${path.map(encodeURIComponent).join("/")}${search}`;
   const headers: Record<string, string> = {
     Accept: "application/json",
-    Authorization: `Bearer ${session.access_token}`,
+    // ID token, not the opaque Dex access token — see oidcServer.ts#apiBearer.
+    Authorization: `Bearer ${apiBearer(session)}`,
   };
   const body =
     method === "GET" || method === "HEAD" ? undefined : await request.text();

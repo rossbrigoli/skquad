@@ -156,13 +156,27 @@ export async function refreshTokens(refreshToken: string): Promise<TokenSet> {
 }
 
 // --- Session cookie model -----------------------------------------------------
+// Which token do we present to the control-plane?
+// Dex issues OPAQUE access tokens (no JWT structure, no introspection endpoint),
+// while the control-plane authenticates humans with a go-oidc *ID-token* verifier
+// keyed on audience == client_id. Dex ID tokens are signed JWTs with
+// aud = <client_id>, iss = <dex issuer> — exactly what that verifier accepts.
+// So the upstream bearer is the ID token, not the access token (UIv2-13 fix).
+// Ref: https://dexidp.io/docs/configuration/tokens/  (ID tokens are JWTs; "aud" = the client id)
+//      https://dexidp.io/docs/openid-connect/         (access tokens are opaque references)
 export type Session = {
   access_token: string;
+  id_token?: string;
   refresh_token?: string;
   expiry: number; // epoch seconds
   name?: string;
   email?: string;
 };
+
+// apiBearer is the credential the control-plane will actually verify.
+export function apiBearer(s: Session): string {
+  return s.id_token || s.access_token;
+}
 
 export const SESSION_COOKIE = "skquad_v2_session";
 export const STATE_COOKIE = "skquad_oidc_state";
@@ -187,7 +201,8 @@ export function decodeSession(raw: string | undefined): Session | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
-    if (typeof parsed?.access_token === "string" && typeof parsed?.expiry === "number") {
+    const bearer = typeof parsed?.id_token === "string" ? parsed.id_token : parsed?.access_token;
+    if (typeof bearer === "string" && bearer !== "" && typeof parsed?.expiry === "number") {
       return parsed as Session;
     }
     return null;
