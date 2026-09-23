@@ -103,8 +103,9 @@ The repository currently implements:
 
 - squad, agent, board, task, access-grant, resource-registry, permission,
   messaging, audit, and metering-read APIs;
-- development authentication, OIDC token validation, and separate
-  agent-service credentials;
+- development authentication, OIDC token validation with IdP group →
+  `platform_admin` binding (`apiServer.oidc.adminGroups`), a LAN/Tailscale-only
+  break-glass admin login, and separate agent-service credentials;
 - PostgreSQL persistence with a process-local in-memory option for API
   development and tests;
 - durable outbox delivery of Squad and Agent custom-resource changes;

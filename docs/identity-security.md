@@ -42,6 +42,37 @@ Browser → IdP (OIDC login) → callback → API Server issues JWT
 Browser → API Server (Bearer JWT) → authN (validate JWT) → authZ (RBAC)
 ```
 
+### 2.1 Break-glass admin login (OIDC-independent)
+
+A separate admin path that works when OIDC cannot be relied on (IdP down,
+group bindings misconfigured, all admins accidentally demoted).
+
+- **Endpoints:** `POST /api/v1/auth/breakglass/login` (username + password);
+  `GET /api/v1/auth/breakglass/status` reports whether the path is live.
+  Registered **outside** the human-auth middleware — it is the thing that has
+  to work when that middleware cannot be satisfied.
+- **Credential:** argon2id verifier hash (`SKQUAD_BREAKGLASS_PASSWORD_HASH`,
+  PHC format), verified constant-time on both fields. Generated with
+  `go run ./control-plane/cmd/breakglass-hash`.
+- **Token:** locally signed HS256 JWT (`iss=skquad-breakglass`, `amr=breakglass`),
+  default TTL 60m (`SKQUAD_BREAKGLASS_TOKEN_TTL`), keyed by
+  `SKQUAD_BREAKGLASS_JWT_KEY`.
+- **Identity:** a dedicated user row with `oidc_issuer='local'` and
+  `oidc_subject='breakglass'` — reuses the existing unique index, no extra
+  migration. The principal is `platform_admin`.
+- **Network reachability: LAN/Tailscale only.** Any request carrying
+  Cloudflare's `CF-Ray`/`CF-Connecting-IP` signals is refused (403) — a client
+  can neither strip nor forge those headers — so the path is never reachable
+  through the public hostname. The source IP must also fall inside
+  `SKQUAD_BREAKGLASS_ALLOWED_CIDRS` (defaults: RFC1918 LAN + Tailscale CGNAT).
+- **Rate limiting:** `SKQUAD_BREAKGLASS_MAX_ATTEMPTS` (default 5) per IP per
+  `SKQUAD_BREAKGLASS_WINDOW` (default 15m) → 429.
+- **Fail-closed:** disabled (default) → endpoints return 404. Enabled but
+  missing the password hash or JWT key → the API server **panics at startup**
+  rather than run with a half-configured admin door.
+- **Guard order:** disabled → 404 · via Cloudflare → 403 · non-allowlisted
+  source → 403 · rate-limited → 429 · bad credentials → 401.
+
 ---
 
 ## 3. User RBAC (Layer 1 — platform admin managed)
@@ -57,6 +88,23 @@ Roles for **human users**, managed by the **platform administrator**:
 - A `user` can only act on **squads they own** (or have been granted access to).
 - Authorization checks are enforced **centrally in the API server** on every
   request.
+
+### 3.1 Group → platform_admin binding (OIDC)
+
+- The IdP `groups` claim is parsed into the authenticated profile (trimmed,
+  empty entries dropped, nil-safe).
+- `SKQUAD_OIDC_ADMIN_GROUPS` (comma-separated) lists the IdP groups that map
+  to **platform_admin**. Matching is case-insensitive on both sides. Helm
+  value: `apiServer.oidc.adminGroups`. With Dex + GitHub, group names are
+  org/team slugs such as `ross-private-cloud:platform`.
+- Promotion happens at authentication: a login carrying a bound group is
+  granted `platform_admin` even when the stored row says `user`.
+- **Promotion is one-way.** Losing the group later does **not** auto-demote the
+  stored role. A demote-on-every-request rule would let a mis-set or emptied
+  `SKQUAD_OIDC_ADMIN_GROUPS` strip every administrator out with no way back
+  in; demotion stays an explicit `SetUserRole` operator action.
+- Empty `SKQUAD_OIDC_ADMIN_GROUPS` means nobody is group-promoted (safe
+  default; it never demotes existing admins).
 
 ---
 
@@ -171,6 +219,8 @@ audit_log(
 | Agent → KB / workspace | Resource connectors | Agent permission set |
 | User → agent (chat) | API server | Access grant |
 | Agent → agent (cross-squad) | Control plane / message queue | Access grant |
+| Break-glass login | API server | argon2id + Cloudflare/CIDR guard + rate limit |
+| Break-glass bearer | API server | Local HS256 verify (`amr=breakglass`) |
 | All significant actions | Control plane | Audit log |
 
 Current implementation note: when Kubernetes CR writing is enabled, the control

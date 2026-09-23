@@ -18,6 +18,8 @@ venv/
 # Go
 bin/
 *.test
+# built break-glass hash CLI (go build ./cmd/breakglass-hash lands this here)
+control-plane/breakglass-hash
 
 # IDE
 .vscode/

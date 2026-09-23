@@ -85,6 +85,10 @@ apiServer:
   oidc:
     issuer: https://issuer.example.com
     audience: skquad
+    # IdP groups mapped to platform_admin (SKQUAD_OIDC_ADMIN_GROUPS).
+    # Promotion is one-way: gaining the group promotes, losing it does not demote.
+    adminGroups:
+      - my-org:platform
 
 llmGateway:
   masterKeySecret:
@@ -104,6 +108,57 @@ llmGateway:
 Configure model aliases in `llmGateway.config` and grant providers/resources
 through the Skquad API or web admin workflows. Do not put raw provider API keys
 in ConfigMaps.
+
+## Break-glass Admin Access
+
+An OIDC-independent `platform_admin` login for recovery when the IdP or group
+bindings cannot be trusted (see
+[identity-security.md §2.1](identity-security.md)). Disabled by default.
+
+```yaml
+breakGlass:
+  enabled: true            # ConfigMap toggle — flip without re-sealing anything
+  username: breakglass
+  tokenTTL: 60m
+  maxAttempts: 5
+  window: 15m
+  allowedCIDRs:
+    - 192.168.68.0/24    # LAN
+    - 100.64.0.0/10      # Tailscale CGNAT
+  secretName: skquad-breakglass   # SealedSecret: password-hash + jwt-key
+```
+
+Operating rules:
+
+- **Never use the public hostname.** Requests carrying Cloudflare signals
+  (`CF-Ray`/`CF-Connecting-IP`) are refused with 403 regardless of source IP.
+  Use the internal address (`http://skquad-v2.lab`) or the Tailscale IP.
+- Generate the credential material locally:
+
+  ```bash
+  go run ./control-plane/cmd/breakglass-hash   # emits argon2id PHC hash + JWT key
+  ```
+
+  Put the hash and key in the SealedSecret (`password-hash`, `jwt-key`); never
+  in git. The SealedSecret is `optional: true` so a disabled deploy never
+  blocks on it.
+- **Changing the SealedSecret does not roll the pod** (the chart renders no
+  template fragment for it under GitOps, so the checksum annotation is
+  constant). After re-sealing, restart explicitly:
+
+  ```bash
+  kubectl --namespace skquad-system rollout restart deployment/skquad-api-server
+  ```
+- Enabled-but-misconfigured fails fast: the API server panics at startup with
+  `break-glass is enabled but misconfigured: ...` until the Secret unseals.
+  This is intended — no half-configured admin door.
+- Login endpoints: `POST /api/v1/auth/breakglass/login`, status via
+  `GET /api/v1/auth/breakglass/status`. Guard order: disabled → 404 ·
+  via Cloudflare → 403 · non-allowlisted source → 403 · rate-limited → 429 ·
+  bad credentials → 401.
+- The break-glass user is a normal `platform_admin` row
+  (`oidc_issuer='local'`, `oidc_subject='breakglass'`). Disable the feature
+  via the ConfigMap when the crisis is over.
 
 ## Upgrade
 
@@ -221,7 +276,7 @@ When enabled, the chart routes `/api` to the API server and `/` to the web app.
 Use `ingressRoute.enabled=true` for Traefik-native clusters. Do not expose a
 development-auth deployment publicly. For the lab environment, create a
 Traefik IngressRoute or chart ingress for the internal `*.lab` host, then map
-the public `*.cloud.rossbrigoli.com` host through Cloudflare Tunnel.
+the public `<service>.rossbrigoli.com` host through Cloudflare Tunnel.
 
 ## Troubleshooting
 
@@ -231,15 +286,29 @@ Symptoms:
 
 - every request is treated as the dev admin;
 - OIDC requests return 401;
-- user cannot access a squad they expect to see.
+- user cannot access a squad they expect to see;
+- register/edit/delete controls are disabled for a user who should be admin
+  (the web UI hides/disables them unless `/auth/me` reports
+  `role=platform_admin`).
 
 Checks:
 
 ```bash
 kubectl --namespace skquad-system get deploy skquad-api-server \
   -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="SKQUAD_AUTH_MODE")].value}{"\n"}'
+kubectl --namespace skquad-system get deploy skquad-api-server \
+  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="SKQUAD_OIDC_ADMIN_GROUPS")].value}{"\n"}'
 kubectl --namespace skquad-system logs deployment/skquad-api-server --tail=100
 ```
+
+For the "buttons disabled" case: check the user's role via `/auth/me`, then
+confirm the IdP token actually carries a group listed in
+`SKQUAD_OIDC_ADMIN_GROUPS` (matching is case-insensitive). Promotion applies
+on the next authenticated request — no re-login needed if the session token
+already carries the bound group. Remember promotion is one-way: removing the
+group config does not demote anyone; demotion is an explicit `SetUserRole`
+action. If the OIDC path itself is unusable, use the
+[break-glass login](#break-glass-admin-access).
 
 Current boundary: OIDC account identity still needs hardening to use
 `issuer + subject` as the stable key. Do not treat mutable email alone as a
