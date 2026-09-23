@@ -83,6 +83,8 @@ spec:
               value: {{ .Values.apiServer.oidc.issuer | quote }}
             - name: SKQUAD_OIDC_AUDIENCE
               value: {{ .Values.apiServer.oidc.audience | quote }}
+            - name: SKQUAD_OIDC_ADMIN_GROUPS
+              value: {{ .Values.apiServer.oidc.adminGroups | join "," | quote }}
             {{- end }}
           livenessProbe:
             httpGet:

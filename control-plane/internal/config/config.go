@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -27,8 +28,11 @@ type Config struct {
 	AuthMode  AuthMode
 	IssuerURL string // OIDC issuer (AuthMode=oidc)
 	Audience  string // expected JWT audience
-	DevEmail  string // fixed principal email (AuthMode=dev)
-	DevName   string // fixed principal name (AuthMode=dev)
+	// OIDCAdminGroups binds IdP group claims to platform_admin. Without it every
+	// OIDC principal lands as RoleUser and the admin UI is unreachable.
+	OIDCAdminGroups []string
+	DevEmail        string // fixed principal email (AuthMode=dev)
+	DevName         string // fixed principal name (AuthMode=dev)
 
 	// Storage
 	DatabaseURL string // Postgres DSN
@@ -67,6 +71,7 @@ func Load() (*Config, error) {
 		AuthMode:                AuthMode(envOr("SKQUAD_AUTH_MODE", string(AuthDev))),
 		IssuerURL:               os.Getenv("SKQUAD_OIDC_ISSUER"),
 		Audience:                os.Getenv("SKQUAD_OIDC_AUDIENCE"),
+		OIDCAdminGroups:         envList("SKQUAD_OIDC_ADMIN_GROUPS"),
 		DevEmail:                envOr("SKQUAD_DEV_EMAIL", "dev@skquad.local"),
 		DevName:                 envOr("SKQUAD_DEV_NAME", "Dev Admin"),
 		DatabaseURL:             os.Getenv("SKQUAD_DATABASE_URL"),
@@ -120,6 +125,43 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envList parses a comma-separated env var into a trimmed, non-empty slice.
+func envList(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// AdminGroupMatched reports whether any of the caller's IdP groups is bound to
+// platform_admin through SKQUAD_OIDC_ADMIN_GROUPS. Matching is case-insensitive
+// on both sides.
+func (c *Config) AdminGroupMatched(groups []string) bool {
+	if len(c.OIDCAdminGroups) == 0 || len(groups) == 0 {
+		return false
+	}
+	wanted := make(map[string]struct{}, len(c.OIDCAdminGroups))
+	for _, g := range c.OIDCAdminGroups {
+		if k := strings.ToLower(strings.TrimSpace(g)); k != "" {
+			wanted[k] = struct{}{}
+		}
+	}
+	for _, g := range groups {
+		if _, ok := wanted[strings.ToLower(strings.TrimSpace(g))]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func envBool(key string, def bool) bool {

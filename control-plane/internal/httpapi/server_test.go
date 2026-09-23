@@ -1939,3 +1939,129 @@ func (f *fakeCRWriter) DeleteAgentCredential(_ context.Context, credentialRef st
 	}
 	return nil
 }
+
+func TestOIDCGroupRoleBindingGrantsAdmin(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.AuthMode = config.AuthOIDC
+	cfg.OIDCAdminGroups = []string{"ross-private-cloud:platform"}
+
+	handler := NewWithOIDCAuthenticator(cfg, storage.NewMemoryStore(), fakeOIDC{
+		profile: &auth.Profile{
+			Issuer:        "https://issuer.example.com",
+			Subject:       "subject-rb-1",
+			Email:         "rb@example.com",
+			EmailVerified: true,
+			Name:          "RB User",
+			Groups:        []string{"ross-private-cloud:limited", "ross-private-cloud:platform"},
+		},
+	})
+
+	var user domain.User
+	doJSON(t, handler, http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &user)
+	require.Equal(t, domain.RolePlatformAdmin, user.Role)
+}
+
+func TestOIDCGroupRoleBindingKeepsPlainUsersPlain(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.AuthMode = config.AuthOIDC
+	cfg.OIDCAdminGroups = []string{"ross-private-cloud:platform"}
+
+	handler := NewWithOIDCAuthenticator(cfg, storage.NewMemoryStore(), fakeOIDC{
+		profile: &auth.Profile{
+			Issuer:        "https://issuer.example.com",
+			Subject:       "subject-rb-2",
+			Email:         "plain@example.com",
+			EmailVerified: true,
+			Name:          "Plain User",
+			Groups:        []string{"ross-private-cloud:limited"},
+		},
+	})
+
+	var user domain.User
+	doJSON(t, handler, http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &user)
+	require.Equal(t, domain.RoleUser, user.Role)
+}
+
+// UpsertUser only assigns role on INSERT, so the middleware must promote an
+// existing row when the principal gains a bound admin group. Losing the group
+// deliberately does NOT demote: a misconfigured SKQUAD_OIDC_ADMIN_GROUPS must
+// not be able to lock every admin out. Demotion is an explicit operator action.
+func TestOIDCGroupRoleBindingPromotesExistingRowButDoesNotAutoDemote(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.AuthMode = config.AuthOIDC
+	cfg.OIDCAdminGroups = []string{"skquad-admins"}
+	store := storage.NewMemoryStore()
+
+	profile := func(groups []string) *auth.Profile {
+		return &auth.Profile{
+			Issuer:        "https://issuer.example.com",
+			Subject:       "subject-rb-3",
+			Email:         "changing@example.com",
+			EmailVerified: true,
+			Name:          "Changing User",
+			Groups:        groups,
+		}
+	}
+
+	// Plain first login.
+	var first domain.User
+	doJSON(t,
+		NewWithOIDCAuthenticator(cfg, store, fakeOIDC{profile: profile([]string{"everyone"})}),
+		http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &first)
+	require.Equal(t, domain.RoleUser, first.Role)
+
+	// Gains the bound group => promoted on the very next request, same row.
+	var second domain.User
+	doJSON(t,
+		NewWithOIDCAuthenticator(cfg, store, fakeOIDC{profile: profile([]string{"skquad-admins"})}),
+		http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &second)
+	require.Equal(t, first.ID, second.ID, "same principal must be reused, not duplicated")
+	require.Equal(t, domain.RolePlatformAdmin, second.Role)
+
+	// Loses the group => stays admin (no auto-demotion, by design).
+	var third domain.User
+	doJSON(t,
+		NewWithOIDCAuthenticator(cfg, store, fakeOIDC{profile: profile([]string{"everyone"})}),
+		http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &third)
+	require.Equal(t, domain.RolePlatformAdmin, third.Role, "role must not be auto-demoted by group loss")
+}
+
+// With no admin groups configured, nobody is promoted via groups — and an
+// operator-promoted admin is never silently stripped.
+func TestOIDCNoAdminGroupsNeverPromotesOrStrips(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.AuthMode = config.AuthOIDC
+	cfg.OIDCAdminGroups = nil
+	store := storage.NewMemoryStore()
+
+	profile := &auth.Profile{
+		Issuer:        "https://issuer.example.com",
+		Subject:       "subject-rb-4",
+		Email:         "nobody@example.com",
+		EmailVerified: true,
+		Name:          "Nobody",
+		Groups:        []string{"ross-private-cloud:platform"},
+	}
+
+	var first domain.User
+	doJSON(t,
+		NewWithOIDCAuthenticator(cfg, store, fakeOIDC{profile: profile}),
+		http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &first)
+	require.Equal(t, domain.RoleUser, first.Role)
+
+	require.NoError(t, store.SetUserRole(context.Background(), first.ID, domain.RolePlatformAdmin))
+
+	var second domain.User
+	doJSON(t,
+		NewWithOIDCAuthenticator(cfg, store, fakeOIDC{profile: profile}),
+		http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &second)
+	require.Equal(t, domain.RolePlatformAdmin, second.Role, "operator promotion must survive")
+}

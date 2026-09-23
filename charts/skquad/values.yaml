@@ -91,6 +91,9 @@ apiServer:
   oidc:
     issuer: ""
     audience: ""
+    # IdP groups bound to platform_admin (rendered as SKQUAD_OIDC_ADMIN_GROUPS).
+    # With Dex + GitHub these are org/team slugs, e.g. ross-private-cloud:platform.
+    adminGroups: []
   resources: {}
   podSecurityContext:
     runAsNonRoot: true

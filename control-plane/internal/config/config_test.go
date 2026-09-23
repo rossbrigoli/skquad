@@ -243,3 +243,43 @@ func TestEnvDurationAndSeconds(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminGroupMatched(t *testing.T) {
+	c := &Config{OIDCAdminGroups: []string{"ross-private-cloud:platform", " Other Admins "}}
+
+	if !c.AdminGroupMatched([]string{"ross-private-cloud:limited", "ross-private-cloud:platform"}) {
+		t.Fatal("expected a matching bound group to grant admin")
+	}
+	// Case-insensitive on both sides.
+	if !c.AdminGroupMatched([]string{"ROSS-PRIVATE-CLOUD:PLATFORM"}) {
+		t.Fatal("expected case-insensitive match")
+	}
+	if c.AdminGroupMatched([]string{"ross-private-cloud:limited"}) {
+		t.Fatal("unbound group must not grant admin")
+	}
+	if c.AdminGroupMatched(nil) {
+		t.Fatal("no groups must not grant admin")
+	}
+	// No bindings configured => nobody is admin via groups.
+	none := &Config{}
+	if none.AdminGroupMatched([]string{"ross-private-cloud:platform"}) {
+		t.Fatal("empty admin-group config must not grant admin")
+	}
+}
+
+func TestEnvListParsesCommaSeparatedGroups(t *testing.T) {
+	t.Setenv("SKQUAD_OIDC_ADMIN_GROUPS", " a:admin , b:admin ,, ")
+	got := envList("SKQUAD_OIDC_ADMIN_GROUPS")
+	want := []string{"a:admin", "b:admin"}
+	if len(got) != len(want) {
+		t.Fatalf("envList = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("envList[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if envList("SKQUAD_OIDC_ADMIN_GROUPS_UNSET_XYZ") != nil {
+		t.Fatal("unset envList should be nil")
+	}
+}

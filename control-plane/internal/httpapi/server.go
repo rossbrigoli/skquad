@@ -284,17 +284,38 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 				writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
 				return
 			}
+			// Role binding: platform_admin only via a configured IdP group.
+			// Everyone else lands as RoleUser.
+			desiredRole := domain.RoleUser
+			if s.cfg.AdminGroupMatched(profile.Groups) {
+				desiredRole = domain.RolePlatformAdmin
+			}
 			user, err := s.store.UpsertUser(r.Context(), &domain.User{
 				OIDCIssuer:    profile.Issuer,
 				OIDCSubject:   profile.Subject,
 				Email:         profile.Email,
 				EmailVerified: profile.EmailVerified,
 				Name:          profile.Name,
-				Role:          domain.RoleUser,
+				Role:          desiredRole,
 			})
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "internal", "failed to load authenticated principal")
 				return
+			}
+			// Group binding is PROMOTION-ONLY by deliberate design.
+			// UpsertUser assigns role on INSERT but never overwrites it, so an
+			// existing row needs this to pick up a newly bound admin group.
+			// Auto-demotion is intentionally NOT performed here: if
+			// SKQUAD_OIDC_ADMIN_GROUPS were ever misconfigured or emptied, a
+			// demote-on-every-request rule would lock every administrator out of
+			// the system with no way back in. Demotion stays an explicit operator
+			// action (store.SetUserRole).
+			if desiredRole == domain.RolePlatformAdmin && user.Role != desiredRole {
+				if err := s.store.SetUserRole(r.Context(), user.ID, desiredRole); err != nil {
+					writeError(w, http.StatusInternalServerError, "internal", "failed to reconcile principal role")
+					return
+				}
+				user.Role = desiredRole
 			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, user)))
 		default:

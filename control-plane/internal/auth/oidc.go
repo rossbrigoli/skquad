@@ -20,6 +20,9 @@ type Profile struct {
 	Email         string
 	EmailVerified bool
 	Name          string
+	// Groups carries the IdP `groups` claim. Dex populates this from GitHub
+	// teams/orgs (teamNameField: slug), e.g. ross-private-cloud:platform.
+	Groups []string
 }
 
 // OIDCAuthenticator validates OIDC bearer tokens.
@@ -51,10 +54,11 @@ func (a *OIDCAuthenticator) Authenticate(ctx context.Context, authorization stri
 	}
 
 	var claims struct {
-		Email             string `json:"email"`
-		EmailVerified     *bool  `json:"email_verified"`
-		Name              string `json:"name"`
-		PreferredUsername string `json:"preferred_username"`
+		Email             string   `json:"email"`
+		EmailVerified     *bool    `json:"email_verified"`
+		Name              string   `json:"name"`
+		PreferredUsername string   `json:"preferred_username"`
+		Groups            []string `json:"groups"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, ErrUnauthorized
@@ -86,7 +90,22 @@ func (a *OIDCAuthenticator) Authenticate(ctx context.Context, authorization stri
 		Email:         claims.Email,
 		EmailVerified: emailVerified,
 		Name:          name,
+		Groups:        normalizeGroups(claims.Groups),
 	}, nil
+}
+
+// normalizeGroups trims and drops empty group entries, preserving order.
+func normalizeGroups(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, g := range in {
+		if v := strings.TrimSpace(g); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func bearerToken(authorization string) (string, bool) {

@@ -374,3 +374,39 @@ func TestNewOIDCAuthenticatorDiscoveryFailure(t *testing.T) {
 		t.Fatal("NewOIDCAuthenticator against unreachable issuer returned no error")
 	}
 }
+
+func TestOIDCGroupsClaim(t *testing.T) {
+	f := newFakeIssuer(t, "skquad-api")
+	authn := f.authenticator(t)
+	ctx := context.Background()
+
+	withGroups := f.token(t, "user-groups", tokenOverrides{claims: map[string]any{
+		"email":  "ross@example.test",
+		"groups": []any{"ross-private-cloud:limited", " ross-private-cloud:platform ", ""},
+	}})
+	profile, err := authn.Authenticate(ctx, "Bearer "+withGroups)
+	if err != nil {
+		t.Fatalf("Authenticate(groups): %v", err)
+	}
+	want := []string{"ross-private-cloud:limited", "ross-private-cloud:platform"}
+	if len(profile.Groups) != len(want) {
+		t.Fatalf("Groups = %v, want %v (empties dropped, trimmed)", profile.Groups, want)
+	}
+	for i := range want {
+		if profile.Groups[i] != want[i] {
+			t.Fatalf("Groups[%d] = %q, want %q", i, profile.Groups[i], want[i])
+		}
+	}
+
+	// IdPs that omit the claim entirely must yield nil, not a panic.
+	noGroups := f.token(t, "user-nogroups", tokenOverrides{claims: map[string]any{
+		"email": "plain@example.test",
+	}})
+	profile, err = authn.Authenticate(ctx, "Bearer "+noGroups)
+	if err != nil {
+		t.Fatalf("Authenticate(no groups): %v", err)
+	}
+	if len(profile.Groups) != 0 {
+		t.Fatalf("Groups = %v, want empty", profile.Groups)
+	}
+}
