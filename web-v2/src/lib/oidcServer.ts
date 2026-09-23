@@ -9,6 +9,7 @@
 //   SKQUAD_OIDC_REDIRECT_URL  e.g. https://skquad-v2.rossbrigoli.com/auth/callback
 //   SKQUAD_OIDC_SCOPES        default "openid profile email offline_access"
 
+import { NextResponse } from "next/server";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { createHash, randomBytes } from "node:crypto";
 
@@ -213,4 +214,56 @@ export function decodeSession(raw: string | undefined): Session | null {
 
 export function sessionValid(s: Session | null): boolean {
   return !!s && s.expiry > Math.floor(Date.now() / 1000) + 5;
+}
+
+// --- Public origin for user-facing redirects ---------------------------------
+// NEVER build a redirect from `request.url`. Behind our proxy chain (Cloudflare
+// Tunnel -> Traefik -> pod) Next.js 16 resolves the request's absolute URL from
+// its own bind address, so `new URL("/", request.url)` becomes
+// `http://localhost:3000/` for every caller — verified live: the Location header
+// leaked localhost:3000 regardless of the incoming Host header.
+//
+// Resolution order:
+//   1. SKQUAD_PUBLIC_BASE_URL (explicit, what the chart sets)
+//   2. x-forwarded-proto + x-forwarded-host (proxy-provided)
+//   3. Host header (unless it is the internal localhost bind)
+//   4. the OIDC redirect URL's own origin
+//   5. give up -> relative Location (browser resolves it against the current URL)
+export function publicOrigin(req?: Request): string {
+  const env = (process.env.SKQUAD_PUBLIC_BASE_URL || "").replace(/\/$/, "");
+  if (env) return env;
+
+  if (req) {
+    const fwdHost = req.headers.get("x-forwarded-host");
+    const proto = (req.headers.get("x-forwarded-proto") || "https").split(",")[0].trim();
+    if (fwdHost) {
+      const host = fwdHost.split(",")[0].trim();
+      if (host && !host.startsWith("localhost") && !host.startsWith("127.0.0.1")) {
+        return `${proto}://${host}`;
+      }
+    }
+    const host = req.headers.get("host");
+    if (host && !host.startsWith("localhost") && !host.startsWith("127.0.0.1")) {
+      return `https://${host}`;
+    }
+  }
+
+  if (oidcEnabled()) {
+    try {
+      return new URL(oidcConfig().redirectUrl).origin;
+    } catch {
+      /* fall through */
+    }
+  }
+  return "";
+}
+
+// Redirect the browser to an app path without ever leaking the internal origin.
+// Falls back to a relative Location when no public origin is known.
+export function appRedirect(req: Request | undefined, path = "/"): NextResponse {
+  const origin = publicOrigin(req);
+  if (origin) {
+    return NextResponse.redirect(new URL(path, origin));
+  }
+  return new NextResponse(null, { status: 302, headers: { Location: path } });
 }

@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { SESSION_COOKIE, discover, oidcConfig, oidcEnabled, sessionCookieOpts } from "../../../lib/oidcServer";
+import {
+  SESSION_COOKIE,
+  appRedirect,
+  discover,
+  oidcConfig,
+  oidcEnabled,
+  sessionCookieOpts,
+} from "../../../lib/oidcServer";
 
 // GET /auth/logout — clear the session and (when the IdP supports it) end the
 // SSO session at the provider too, then return to the app root.
 export async function GET(_request: NextRequest) {
-  const res = NextResponse.redirect(new URL("/", _request.url));
+  const res = appRedirect(_request, "/");
   res.cookies.set(SESSION_COOKIE, "", { ...sessionCookieOpts(), maxAge: 0 });
   if (oidcEnabled()) {
     try {

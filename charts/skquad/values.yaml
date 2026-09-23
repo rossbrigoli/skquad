@@ -158,6 +158,10 @@ webV2:
   imagePullPolicy: IfNotPresent
   port: 3000
   apiBaseUrl: /api/v1
+  # Externally visible origin used for all app redirects, e.g.
+  # https://skquad-v2.rossbrigoli.com. Empty = derive from x-forwarded-*
+  # headers, then the OIDC redirect URL's origin.
+  publicBaseUrl: ""
   resources: {}
   # UIv2-13: generic OIDC login (authorization code + PKCE). Works with any
   # IdP exposing .well-known/openid-configuration (Dex, Keycloak, Entra…).

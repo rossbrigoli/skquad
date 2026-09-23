@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   SESSION_COOKIE,
+  appRedirect,
   decodeSession,
   encodeSession,
   exchangeCode,
@@ -61,7 +62,7 @@ export async function GET(request: NextRequest) {
     const oauthExpiry = Math.floor(Date.now() / 1000) + (tokens.expires_in || 300);
     const idTokenExpiry = typeof claims.exp === "number" ? claims.exp : oauthExpiry;
     const expiry = Math.min(oauthExpiry, idTokenExpiry);
-    const res = NextResponse.redirect(new URL("/", request.url));
+    const res = appRedirect(request, "/");
     res.cookies.set(
       SESSION_COOKIE,
       encodeSession({

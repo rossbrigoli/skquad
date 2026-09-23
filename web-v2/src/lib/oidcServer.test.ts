@@ -1,11 +1,30 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import {
   apiBearer,
   decodeSession,
   encodeSession,
+  publicOrigin,
   sessionValid,
   type Session,
 } from "./oidcServer";
+
+const OIDC_ENV = {
+  SKQUAD_OIDC_ISSUER: "https://idp.example.com/auth",
+  SKQUAD_OIDC_CLIENT_ID: "skquad-v2",
+  SKQUAD_OIDC_CLIENT_SECRET: "***",
+  SKQUAD_OIDC_REDIRECT_URL: "https://skquad-v2.rossbrigoli.com/auth/callback",
+};
+
+function clearEnv() {
+  for (const k of [
+    "SKQUAD_PUBLIC_BASE_URL",
+    ...Object.keys(OIDC_ENV),
+  ]) {
+    delete process.env[k];
+  }
+}
+
+afterEach(clearEnv);
 
 // UIv2-13 fix: the control-plane verifies Dex *ID-token* JWTs (Dex access tokens
 // are opaque), so the session must be able to carry and prefer the id_token.
@@ -77,8 +96,7 @@ describe("session cookie encode/decode", () => {
   });
 });
 
-describe("sessionValid", () => {
-  const now = () => Math.floor(Date.now() / 1000);
+describe("sessionValid", () => {  const now = () => Math.floor(Date.now() / 1000);
 
   it("is true comfortably inside the lifetime", () => {
     expect(sessionValid({ access_token: "a", expiry: now() + 60 })).toBe(true);
@@ -94,5 +112,59 @@ describe("sessionValid", () => {
 
   it("is false for a null session", () => {
     expect(sessionValid(null)).toBe(false);
+  });
+});
+
+describe("publicOrigin (redirect-origin leak fix)", () => {
+  const req = (headers: Record<string, string>) =>
+    new Request("http://127.0.0.1:3000/auth/callback", { headers });
+
+  it("explicit SKQUAD_PUBLIC_BASE_URL wins over everything", () => {
+    process.env.SKQUAD_PUBLIC_BASE_URL = "https://skquad-v2.rossbrigoli.com/";
+    const o = publicOrigin(req({ "x-forwarded-host": "elsewhere.example.com" }));
+    expect(o).toBe("https://skquad-v2.rossbrigoli.com");
+  });
+
+  it("uses x-forwarded-host + x-forwarded-proto when no env is set", () => {
+    const o = publicOrigin(
+      req({ "x-forwarded-host": "skquad-v2.rossbrigoli.com", "x-forwarded-proto": "https" }),
+    );
+    expect(o).toBe("https://skquad-v2.rossbrigoli.com");
+  });
+
+  it("takes the first value of a comma-separated forwarded host chain", () => {
+    const o = publicOrigin(
+      req({ "x-forwarded-host": "skquad-v2.rossbrigoli.com, internal.corp", "x-forwarded-proto": "https,http" }),
+    );
+    expect(o).toBe("https://skquad-v2.rossbrigoli.com");
+  });
+
+  it("falls back to the Host header when there is no forwarded header", () => {
+    const o = publicOrigin(req({ host: "skquad-v2.rossbrigoli.com" }));
+    expect(o).toBe("https://skquad-v2.rossbrigoli.com");
+  });
+
+  it("refuses to echo a localhost Host (the exact bug we hit)", () => {
+    process.env.SKQUAD_OIDC_REDIRECT_URL = "https://skquad-v2.rossbrigoli.com/auth/callback";
+    process.env.SKQUAD_OIDC_ISSUER = "https://idp.example.com/auth";
+    process.env.SKQUAD_OIDC_CLIENT_ID = "c";
+    process.env.SKQUAD_OIDC_CLIENT_SECRET = "s";
+    const o = publicOrigin(req({ host: "localhost:3000" }));
+    expect(o).not.toContain("localhost");
+    expect(o).toBe("https://skquad-v2.rossbrigoli.com");
+  });
+
+  it("refuses a 127.0.0.1 forwarded host too", () => {
+    process.env.SKQUAD_OIDC_REDIRECT_URL = "https://skquad-v2.rossbrigoli.com/auth/callback";
+    process.env.SKQUAD_OIDC_ISSUER = "https://idp.example.com/auth";
+    process.env.SKQUAD_OIDC_CLIENT_ID = "c";
+    process.env.SKQUAD_OIDC_CLIENT_SECRET = "s";
+    const o = publicOrigin(req({ "x-forwarded-host": "127.0.0.1:3000" }));
+    expect(o).toBe("https://skquad-v2.rossbrigoli.com");
+  });
+
+  it("returns empty string when nothing usable is configured", () => {
+    expect(publicOrigin(req({ host: "localhost:3000" }))).toBe("");
+    expect(publicOrigin(undefined)).toBe("");
   });
 });
