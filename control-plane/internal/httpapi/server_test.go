@@ -725,25 +725,31 @@ func TestAgentIdentityProvisionsLiteLLMVirtualKey(t *testing.T) {
 		"models":        []string{"openai/local-default", "openai/local-fast"},
 	}, http.StatusCreated, &provider)
 
-	// The llm_provider grant type is closed at the API (ADR-0010 / S-107);
-	// seed the legacy grant directly so identity provisioning still has
-	// models to compile into the virtual key until WP3 moves to bindings.
-	require.NoError(t, store.GrantAgentPermission(context.Background(), &domain.AgentPermission{
-		AgentID:      agent.ID,
-		ResourceType: domain.ResLLMProvider,
-		ResourceID:   provider.ID,
-		GrantedBy:    "test",
-	}))
+	// WP3: the virtual key is compiled from the agent's model binding
+	// (ADR-0010 D5), not from llm_provider grants. Register AI models,
+	// grant them to the squad owner, and bind primary+fallback.
+	modelDefault := createTestAIModel(t, handler, provider.ID, "openai/local-default")
+	modelFast := createTestAIModel(t, handler, provider.ID, "openai/local-fast")
+	doJSON(t, handler, http.MethodPut, "/api/v1/users/"+squad.OwnerID+"/models",
+		map[string]any{"model_ids": []string{modelDefault.ID, modelFast.ID}}, http.StatusOK, &[]domain.AIModel{})
+	doJSON(t, handler, http.MethodPatch, "/api/v1/agents/"+agent.ID, map[string]any{
+		"ai_model_id":          modelDefault.ID,
+		"fallback_ai_model_id": modelFast.ID,
+	}, http.StatusOK, &agent)
 
 	var identity domain.AgentIdentity
 	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+agent.ID+"/identity", nil, http.StatusCreated, &identity)
 	require.NotEmpty(t, identity.ID)
 	require.Equal(t, "sk-agent-virtual-key", crWriter.credentialTokens[identity.VirtualKeyRef])
 	require.Len(t, keyRequests, 1)
+	// The invariant: primary AND fallback are both on the key so the
+	// fallback is authorised during a primary outage.
 	require.ElementsMatch(t, []any{"openai/local-default", "openai/local-fast"}, keyRequests[0]["models"])
+	require.Contains(t, keyRequests[0], "router_settings", "D7 fallback policy must travel with the key")
 	metadata := keyRequests[0]["metadata"].(map[string]any)
 	require.Equal(t, agent.ID, metadata["skquad_agent_id"])
 	require.Equal(t, squad.ID, metadata["skquad_squad_id"])
+	require.Equal(t, "openai/local-fast", metadata["skquad_fallback_model"])
 }
 
 func TestAgentPermissionsSetAndList(t *testing.T) {

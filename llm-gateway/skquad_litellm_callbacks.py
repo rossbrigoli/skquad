@@ -20,10 +20,28 @@ class SkquadMeteringCallback(CustomLogger):
         await send_metering_event("success", kwargs, response_obj, "")
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
-        await send_metering_event("failure", kwargs, response_obj, safe_error(response_obj))
+        # ADR-0010 D7: an upstream 401/403 must fall back AND alert, so a
+        # dead provider credential never runs silently on fallback.
+        alert = "upstream_auth_failure" if is_upstream_auth_failure(kwargs, response_obj) else ""
+        if alert:
+            metadata = callback_metadata(kwargs)
+            LOGGER.error(
+                "ALERT skquad: upstream provider auth failure (401/403) agent=%s squad=%s model=%s - "
+                "traffic is failing over; rotate the provider credential (ADR-0010 D7)",
+                metadata.get("skquad_agent_id", ""),
+                metadata.get("skquad_squad_id", ""),
+                kwargs.get("model", ""),
+            )
+        await send_metering_event("failure", kwargs, response_obj, safe_error(response_obj), alert)
 
 
-async def send_metering_event(status: str, kwargs: Mapping[str, Any], response_obj: Any, error_message: str) -> None:
+async def send_metering_event(
+    status: str,
+    kwargs: Mapping[str, Any],
+    response_obj: Any,
+    error_message: str,
+    alert: str = "",
+) -> None:
     endpoint = os.environ.get("SKQUAD_CONTROL_PLANE_URL", "").rstrip("/")
     token = os.environ.get("SKQUAD_GATEWAY_CALLBACK_TOKEN", "").strip()
     if not endpoint or not token:
@@ -50,8 +68,32 @@ async def send_metering_event(status: str, kwargs: Mapping[str, Any], response_o
         "cost": float_value(kwargs.get("response_cost")),
         "currency": str(metadata.get("currency") or "USD"),
         "error": error_message[:512],
+        "alert": alert,
     }
     await asyncio.to_thread(post_json, endpoint + "/api/v1/gateway/metering", token, payload)
+
+
+def upstream_status_code(kwargs: Mapping[str, Any], response_obj: Any) -> int | None:
+    """Best-effort HTTP status of a failed upstream call.
+
+    LiteLLM surfaces the raised exception either as the response_obj of the
+    failure callback or under kwargs["exception"]; its exception objects
+    carry a status_code attribute.
+    """
+    for item in (value(kwargs, "exception"), response_obj):
+        code = value(item, "status_code")
+        try:
+            code = int(code)
+        except (TypeError, ValueError):
+            continue
+        if code:
+            return code
+    return None
+
+
+def is_upstream_auth_failure(kwargs: Mapping[str, Any], response_obj: Any) -> bool:
+    """True for upstream 401/403 — the D7 class that falls back loudly."""
+    return upstream_status_code(kwargs, response_obj) in (401, 403)
 
 
 def callback_metadata(kwargs: Mapping[str, Any]) -> Mapping[str, Any]:

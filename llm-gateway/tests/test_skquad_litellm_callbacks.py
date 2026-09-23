@@ -281,6 +281,7 @@ class SendMeteringEventTests(EnvMixin):
                 "cost": 0.125,
                 "currency": "AUD",
                 "error": "",
+                "alert": "",
             },
         )
 
@@ -409,6 +410,38 @@ class CallbackEventTests(EnvMixin):
         run(callback.async_log_failure_event({"model": "m"}, None, None, None))
         self.assertEqual(self.send.call_args.args[3], "")
 
+    def test_upstream_auth_failure_sets_alert(self) -> None:
+        # ADR-0010 D7: upstream 401/403 must fall back AND alert.
+        for status in (401, 403):
+            with self.subTest(status=status):
+                exc = types.SimpleNamespace(status_code=status, message="dead key")
+                callback = callbacks.SkquadMeteringCallback()
+                run(callback.async_log_failure_event({"model": "m"}, exc, None, None))
+                args = self.send.call_args.args
+                self.assertEqual(args[0], "failure")
+                self.assertEqual(args[4], "upstream_auth_failure")
+
+    def test_non_auth_failure_has_no_alert(self) -> None:
+        for status in (400, 429, 500, 503):
+            with self.subTest(status=status):
+                exc = types.SimpleNamespace(status_code=status, message="transient")
+                callback = callbacks.SkquadMeteringCallback()
+                run(callback.async_log_failure_event({"model": "m"}, exc, None, None))
+                args = self.send.call_args.args
+                self.assertEqual(args[0], "failure")
+                self.assertEqual(args[4], "")
+
+    def test_auth_failure_detected_from_kwargs_exception(self) -> None:
+        exc = types.SimpleNamespace(status_code=403, message="forbidden")
+        callback = callbacks.SkquadMeteringCallback()
+        run(callback.async_log_failure_event({"model": "m", "exception": exc}, None, None, None))
+        self.assertEqual(self.send.call_args.args[4], "upstream_auth_failure")
+
+    def test_exception_without_status_code_is_not_auth_failure(self) -> None:
+        callback = callbacks.SkquadMeteringCallback()
+        run(callback.async_log_failure_event({"model": "m"}, ValueError("no status"), None, None))
+        self.assertEqual(self.send.call_args.args[4], "")
+
     def test_proxy_handler_instance_is_exported(self) -> None:
         # config.yaml wires this exact attribute name.
         self.assertIsInstance(callbacks.proxy_handler_instance, callbacks.SkquadMeteringCallback)
@@ -459,6 +492,7 @@ class CallbackWiringTests(unittest.TestCase):
             "cost",
             "currency",
             "error",
+            "alert",
         }
         missing = payload_keys - contract_keys
         self.assertFalse(missing, f"payload keys absent from gatewayMeteringRequest: {sorted(missing)}")

@@ -16,3 +16,17 @@ litellm_settings:
   overwrite_user_with_key_hash: true
   callbacks: skquad_litellm_callbacks.proxy_handler_instance
   success_callback: []
+router_settings:
+  # ADR-0010 D7 failure-class policy defaults. The authoritative copy is
+  # compiled onto every agent's virtual key by the control plane
+  # (router_settings on /key/generate and /key/update; key > team > global
+  # precedence). These gateway-wide defaults keep non-key-managed traffic
+  # on the same policy: never retry 400-class or upstream-auth errors,
+  # retry transient classes before falling back.
+  retry_policy:
+    BadRequestErrorRetries: 0
+    AuthenticationErrorRetries: 0
+    RateLimitErrorRetries: 2
+    TimeoutErrorRetries: 2
+    InternalServerErrorRetries: 2
+    ServiceUnavailableErrorRetries: 2

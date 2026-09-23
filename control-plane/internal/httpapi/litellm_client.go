@@ -37,13 +37,22 @@ func newLiteLLMGatewayClient(baseURL, masterKey string) (*liteLLMGatewayClient, 
 }
 
 func (c *liteLLMGatewayClient) ProvisionAgentKey(ctx context.Context, req GatewayKeyRequest) (string, string, error) {
+	metadata := map[string]string{
+		"skquad_agent_id": req.AgentID,
+		"skquad_squad_id": req.SquadID,
+	}
+	if req.FallbackModel != "" {
+		// Observability: which model this key is supposed to fail over to
+		// (ADR-0010 D6). The router config below is what enforces it.
+		metadata["skquad_fallback_model"] = req.FallbackModel
+	}
 	body := map[string]any{
-		"models": req.Models,
-		"metadata": map[string]string{
-			"skquad_agent_id": req.AgentID,
-			"skquad_squad_id": req.SquadID,
-		},
+		"models":    req.Models,
+		"metadata":  metadata,
 		"key_alias": fmt.Sprintf("skquad-agent-%s", req.AgentID),
+	}
+	if rs := d7RouterSettings(req.PrimaryModel, req.FallbackModel); rs != nil {
+		body["router_settings"] = rs
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -84,20 +93,70 @@ func (c *liteLLMGatewayClient) ProvisionAgentKey(ctx context.Context, req Gatewa
 	return out.Key, out.Token, nil
 }
 
-// UpdateAgentKey rotates the model allow-list of an existing virtual key,
-// identified by its token (the sha256 hash LiteLLM returned at generation).
-func (c *liteLLMGatewayClient) UpdateAgentKey(ctx context.Context, token string, models []string) error {
+// UpdateAgentKey rotates the model allow-list and fallback/router
+// configuration of an existing virtual key, identified by its token (the
+// sha256 hash LiteLLM returned at generation).
+func (c *liteLLMGatewayClient) UpdateAgentKey(ctx context.Context, token string, req GatewayKeyRequest) error {
 	if strings.TrimSpace(token) == "" {
 		return fmt.Errorf("litellm: update key requires a token")
 	}
-	if models == nil {
-		models = []string{}
+	if req.Models == nil {
+		req.Models = []string{}
 	}
 	body := map[string]any{
 		"key":    token,
-		"models": models,
+		"models": req.Models,
 	}
+	// Always send router_settings so a removed fallback clears the old
+	// fallbacks mapping instead of leaving it live on the key.
+	body["router_settings"] = d7RouterSettings(req.PrimaryModel, req.FallbackModel)
 	return c.postKeyAdmin(ctx, "/key/update", body, "update key")
+}
+
+// d7RouterSettings compiles the ADR-0010 D7 failure-class policy into the
+// per-key router_settings LiteLLM accepts on /key/generate and
+// /key/update. Verified against litellm.types.router.UpdateRouterConfig
+// (fallbacks, retry_policy) and the proxy's key→router settings
+// precedence (key > team > global).
+//
+// Expressible:
+//   - transport errors / 5xx / timeouts / 429-after-retries → generic
+//     `fallbacks` fire after the retry_policy budget for that class is
+//     exhausted, which is exactly "429 after retries + backoff".
+//   - upstream 401/403 → AuthenticationErrorRetries=0 means no pointless
+//     retry with the same dead credential; the generic fallback still fires
+//     so the agent keeps working on the fallback model. The loud alert is
+//     emitted by the gateway's metering callback (llm.upstream_auth_alert).
+//
+// NOT expressible in LiteLLM's API (accepted gap, see WP3 report):
+//   - 400-class exclusion: generic `fallbacks` fire on every exception
+//     class; there is no way to exclude BadRequestError/context-length
+//     errors from the fallback attempt itself. The closest faithful
+//     equivalent is BadRequestErrorRetries=0 — the bad request is not
+//     retried, but the fallback deployment is still tried once. A smaller-
+//     context fallback on a context-length error therefore still happens.
+func d7RouterSettings(primary, fallback string) map[string]any {
+	fallbacks := []map[string][]string{}
+	if primary != "" && fallback != "" {
+		fallbacks = append(fallbacks, map[string][]string{primary: {fallback}})
+	}
+	return map[string]any{
+		// Always present so a removed fallback clears the old mapping
+		// instead of leaving it live on the key.
+		"fallbacks": fallbacks,
+		"retry_policy": map[string]any{
+			// D7: 400-class errors are not retryable — a different attempt
+			// cannot fix a malformed/oversized prompt.
+			"BadRequestErrorRetries": 0,
+			// Upstream auth failure: retrying the same dead key is pointless.
+			"AuthenticationErrorRetries": 0,
+			// Transient classes: retry with backoff, then fall back.
+			"RateLimitErrorRetries":          2,
+			"TimeoutErrorRetries":            2,
+			"InternalServerErrorRetries":     2,
+			"ServiceUnavailableErrorRetries": 2,
+		},
+	}
 }
 
 // RevokeAgentKey deletes the virtual key identified by its token.
