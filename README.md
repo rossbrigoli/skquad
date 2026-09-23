@@ -175,8 +175,9 @@ external secrets, image overrides, and production considerations.
 
 ## Local development
 
-The toolchains currently used by CI are Go 1.26 (the control plane itself
-declares Go 1.25), Python 3.11, Node.js 20, and Helm 3.
+The toolchains currently used by CI are Go 1.26.8 (both Go modules declare
+`go 1.26.8`; the earlier stdlib CVEs in the go1.26.0 toolchain are fixed as
+of go1.26.6), Python 3.11, Node.js 20, and Helm 3.
 
 Run the API without Kubernetes or PostgreSQL:
 
