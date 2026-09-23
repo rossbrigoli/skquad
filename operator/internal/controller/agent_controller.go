@@ -16,6 +16,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	skquadv1 "github.com/rossbrigoli/skquad/operator/internal/api/v1"
 )
@@ -27,6 +29,10 @@ const (
 	credentialsMount   = "/var/run/skquad/credentials" // #nosec G101 -- mount path, not a credential
 	workspacesMount    = "/var/run/skquad/workspaces"
 	runtimeHTTPPort    = int32(8080)
+	// readinessRequeue keeps the operator re-checking an agent whose pod is
+	// not ready yet (S-104). Without it a DesiredActive agent that never
+	// becomes ready is never revisited.
+	readinessRequeue = 10 * time.Second
 )
 
 // AgentReconciler reconciles Agent resources into per-agent Deployments.
@@ -137,25 +143,107 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
+	// S-104: Ready must derive from observed cluster state (secrets present,
+	// mounts applied, pod actually ready) — never from "CR write succeeded".
+	ready, reason, message := r.evaluateAgentReadiness(ctx, &agent, deployment, namespace, replicas)
+
 	agent.Status.ReadyDeployment = deployment.Name
 	agent.Status.Replicas = replicas
-	agent.Status.Ready = true
-	agent.Status.Phase = "Ready"
-	agent.Status.Reason = agentReadyReason(&agent, replicas)
+	agent.Status.Ready = ready
+	if ready {
+		agent.Status.Phase = "Ready"
+	} else {
+		agent.Status.Phase = "Progressing"
+	}
+	agent.Status.Reason = reason
 	updateIdleSince(&agent, time.Now)
 	agent.Status.UpdatedAt = metav1.Now()
+	conditionStatus := metav1.ConditionFalse
+	if ready {
+		conditionStatus = metav1.ConditionTrue
+	}
 	setCondition(&agent.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
-		Status:             metav1.ConditionTrue,
-		Reason:             agent.Status.Reason,
-		Message:            fmt.Sprintf("Deployment %s/%s is ready", namespace, deployment.Name),
+		Status:             conditionStatus,
+		Reason:             reason,
+		Message:            message,
 		ObservedGeneration: agent.Generation,
 	})
-	if err := r.Status().Update(ctx, &agent); err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
+	if err := r.Status().Update(ctx, &agent); err != nil {
+		if apierrors.IsConflict(err) {
+			// Lost a status race; re-check shortly instead of stalling.
+			return ctrl.Result{RequeueAfter: readinessRequeue}, nil
+		}
+		if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
 	}
 
+	if !ready {
+		// Keep polling so credential-mount/secret drift and never-ready pods
+		// are retried instead of being silently accepted (S-104).
+		return ctrl.Result{RequeueAfter: readinessRequeue}, nil
+	}
 	return idleRequeue(&agent, replicas, time.Now), nil
+}
+
+// evaluateAgentReadiness derives the agent's Ready condition from real cluster
+// state (S-104): the referenced credential/virtual-key Secrets must exist, the
+// Deployment template must actually mount them, and the Deployment must report
+// ready replicas. A scaled-to-zero agent is Ready by definition (nothing should
+// run); anything else is only Ready when observed ready.
+func (r *AgentReconciler) evaluateAgentReadiness(ctx context.Context, agent *skquadv1.Agent, deployment *appsv1.Deployment, namespace string, replicas int32) (bool, string, string) {
+	if replicas == 0 {
+		return true, "ScaledToZero", fmt.Sprintf("Deployment %s/%s is scaled to zero", namespace, deployment.Name)
+	}
+	if agent.Spec.CredentialSecret != "" {
+		var secret corev1.Secret
+		if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: agent.Spec.CredentialSecret}, &secret); err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, "CredentialSecretMissing", fmt.Sprintf("credential secret %s/%s has not been created yet", namespace, agent.Spec.CredentialSecret)
+			}
+			return false, "ReadinessCheckFailed", err.Error()
+		}
+		if !deploymentHasVolume(deployment, "agent-credential") || !containerHasVolumeMount(deployment, "agent-credential") {
+			return false, "CredentialMountMissing", fmt.Sprintf("deployment %s/%s does not mount credential secret %s", namespace, deployment.Name, agent.Spec.CredentialSecret)
+		}
+	}
+	if agent.Spec.VirtualKeySecret != "" {
+		var secret corev1.Secret
+		if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: agent.Spec.VirtualKeySecret}, &secret); err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, "VirtualKeySecretMissing", fmt.Sprintf("virtual-key secret %s/%s has not been created yet", namespace, agent.Spec.VirtualKeySecret)
+			}
+			return false, "ReadinessCheckFailed", err.Error()
+		}
+		if !deploymentHasVolume(deployment, "agent-virtual-key") || !containerHasVolumeMount(deployment, "agent-virtual-key") {
+			return false, "VirtualKeyMountMissing", fmt.Sprintf("deployment %s/%s does not mount virtual-key secret %s", namespace, deployment.Name, agent.Spec.VirtualKeySecret)
+		}
+	}
+	if deployment.Status.ReadyReplicas < replicas {
+		return false, "PodNotReady", fmt.Sprintf("deployment %s/%s: %d/%d replicas ready, %d unavailable", namespace, deployment.Name, deployment.Status.ReadyReplicas, replicas, deployment.Status.UnavailableReplicas)
+	}
+	return true, "DeploymentReady", fmt.Sprintf("Deployment %s/%s is ready", namespace, deployment.Name)
+}
+
+func deploymentHasVolume(deployment *appsv1.Deployment, name string) bool {
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func containerHasVolumeMount(deployment *appsv1.Deployment, name string) bool {
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		for _, mount := range container.VolumeMounts {
+			if mount.Name == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *AgentReconciler) cleanupAgent(ctx context.Context, agent *skquadv1.Agent) error {
@@ -202,9 +290,33 @@ func agentResourceRequirements() corev1.ResourceRequirements {
 // SetupWithManager registers the Agent controller with a controller-runtime
 // manager.
 func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// The agent Deployment lives in the squad namespace while the Agent CR
+	// lives in the operator namespace, so an ownerRef-based Owns() is not
+	// valid cross-namespace. Watch Deployments and map them back to their
+	// Agent via the skquad.io/agent-id label — this is the self-healing
+	// path for agents whose pods regress or never become ready (S-104).
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&skquadv1.Agent{}).
+		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapDeploymentToAgent)).
 		Complete(r)
+}
+
+// mapDeploymentToAgent maps a Deployment status/spec change to the owning
+// Agent CR by the skquad.io/agent-id label the control plane sets on both.
+func (r *AgentReconciler) mapDeploymentToAgent(ctx context.Context, obj client.Object) []reconcile.Request {
+	agentID := obj.GetLabels()["skquad.io/agent-id"]
+	if agentID == "" {
+		return nil
+	}
+	var agents skquadv1.AgentList
+	if err := r.List(ctx, &agents, client.MatchingLabels{"skquad.io/agent-id": agentID}); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(agents.Items))
+	for i := range agents.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&agents.Items[i])})
+	}
+	return requests
 }
 
 func (r *AgentReconciler) squadNamespaceForAgent(ctx context.Context, agent *skquadv1.Agent) (string, error) {
@@ -306,16 +418,6 @@ func idleTimeout(agent *skquadv1.Agent) time.Duration {
 		return 0
 	}
 	return timeout
-}
-
-func agentReadyReason(agent *skquadv1.Agent, replicas int32) string {
-	if agent.Spec.DesiredActive {
-		return "DeploymentReady"
-	}
-	if replicas > 0 {
-		return "IdleTimeoutWaiting"
-	}
-	return "ScaledToZero"
 }
 
 func httpProbe(path string) *corev1.Probe {
