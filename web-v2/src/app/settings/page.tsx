@@ -8,6 +8,7 @@ import { Modal, ModalForm } from "../../components/Modal";
 import { StatusChip } from "../../components/StatusChip";
 import { useAuth } from "../../lib/auth";
 import { useApi } from "../../lib/useApi";
+import { useTheme } from "../../lib/ThemeProvider";
 import {
   apiPatch,
   apiPost,
@@ -15,7 +16,7 @@ import {
   type RegistryResource,
 } from "../../lib/api";
 
-type Tab = "providers" | "resources" | "session";
+type Tab = "providers" | "resources" | "appearance" | "session";
 
 const RESOURCE_TABS: { key: string; label: string }[] = [
   { key: "skills", label: "Skills" },
@@ -41,6 +42,9 @@ export default function SettingsPage() {
           <button type="button" className={tab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>
             Resources
           </button>
+          <button type="button" className={tab === "appearance" ? "active" : ""} onClick={() => setTab("appearance")}>
+            Appearance
+          </button>
           <button type="button" className={tab === "session" ? "active" : ""} onClick={() => setTab("session")}>
             Session
           </button>
@@ -55,6 +59,7 @@ export default function SettingsPage() {
 
         {tab === "providers" ? <ProvidersTab isAdmin={isAdmin} /> : null}
         {tab === "resources" ? <ResourcesTab isAdmin={isAdmin} /> : null}
+        {tab === "appearance" ? <AppearanceTab /> : null}
         {tab === "session" ? (
           <div className="card" style={{ maxWidth: 480 }}>
             <div className="field">
@@ -217,6 +222,40 @@ function ResourcesTab({ isAdmin }: { isAdmin: boolean }) {
         />
       )}
     </section>
+  );
+}
+
+function AppearanceTab() {
+  const { mode, resolved, setMode } = useTheme();
+  const options: { value: "system" | "light" | "dark"; label: string; hint: string }[] = [
+    { value: "system", label: "System", hint: "Follow your OS preference (default)" },
+    { value: "light", label: "Light", hint: "Always use the light theme" },
+    { value: "dark", label: "Dark", hint: "Always use the dark theme" },
+  ];
+  return (
+    <div className="card" style={{ maxWidth: 520 }}>
+      <div className="field">
+        <span>Theme</span>
+        <div className="segmented" role="radiogroup" aria-label="Theme">
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              role="radio"
+              aria-checked={mode === opt.value}
+              className={`segmented-btn${mode === opt.value ? " active" : ""}`}
+              onClick={() => setMode(opt.value)}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <span className="field-hint">
+          {options.find((o) => o.value === mode)?.hint}
+          {mode === "system" ? ` — currently ${resolved}.` : ""}
+        </span>
+      </div>
+    </div>
   );
 }
 

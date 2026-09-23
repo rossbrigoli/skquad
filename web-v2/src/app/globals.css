@@ -79,8 +79,49 @@
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* ============================================================
+   Dark theme (S-101)
+   Two selectors, intentionally identical palettes — keep in sync:
+   1. [data-theme="dark"]: explicit choice OR system choice resolved
+      by the pre-paint script / ThemeProvider.
+   2. no-JS fallback: follow the OS when no script ever set data-theme.
+   ============================================================ */
+:root[data-theme="dark"] {
+    --bg: #17171a;
+    --surface: #1f1f23;
+    --surface-sunken: #141417;
+    --ink: #ececea;
+    --ink-muted: #a3a39d;
+    --ink-faint: #77776f;
+    --line: #2c2c31;
+    --line-strong: #3a3a41;
+    --accent: #ff7a26;
+    --accent-hover: #ff8c44;
+    --accent-soft: #332015;
+    --status-running: #6db1e8;
+    --status-running-bg: #17273a;
+    --status-stalled: #ff8a45;
+    --status-stalled-bg: #332015;
+    --status-blocked: #ff7b7b;
+    --status-blocked-bg: #351a1a;
+    --status-in-review: #e0b64f;
+    --status-in-review-bg: #302713;
+    --status-idle: #a3a39d;
+    --status-idle-bg: #26262a;
+    --status-error: #ff7b7b;
+    --status-error-bg: #351a1a;
+    --status-over-budget: #c98ade;
+    --status-over-budget-bg: #2b1b33;
+    --status-paused: #e0b64f;
+    --status-paused-bg: #302713;
+    --status-todo: #b6bcc2;
+    --status-todo-bg: #26282b;
+    --status-done: #79c489;
+    --status-done-bg: #16281b;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     --bg: #17171a;
     --surface: #1f1f23;
     --surface-sunken: #141417;
@@ -920,4 +961,42 @@ button {
   padding: 2px var(--space-2);
   font-size: var(--text-xs);
   color: var(--ink-muted);
+}
+
+/* --- Segmented control (theme picker, S-101) --- */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  width: fit-content;
+}
+
+.segmented-btn {
+  border: none;
+  background: var(--surface);
+  color: var(--ink-muted);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out);
+}
+
+.segmented-btn + .segmented-btn {
+  border-left: 1px solid var(--line);
+}
+
+.segmented-btn:hover {
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+
+.segmented-btn.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.segmented-btn.active:hover {
+  background: var(--accent-hover);
 }
