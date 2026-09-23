@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 
-import { SESSION_COOKIE, encodeSession, sessionCookieOpts, type Session } from "../../../lib/oidcServer";
+import {
+  SESSION_COOKIE,
+  encodeSession,
+  requestIsHttps,
+  sessionCookieOpts,
+  type Session,
+} from "../../../lib/oidcServer";
 
 const UPSTREAM = (process.env.SKQUAD_API_BASE_URL || "http://localhost:8090/api/v1").replace(/\/$/, "");
 
@@ -95,8 +101,7 @@ export async function POST(request: Request) {
   // Follow the protocol the request actually arrived on instead. This weakens
   // cookie confidentiality on the LAN only, and only for the break-glass
   // session — which is already restricted to LAN/Tailscale by the control-plane.
-  const forwardedProto = (request.headers.get("x-forwarded-proto") || "").split(",")[0].trim();
-  const secure = (forwardedProto || new URL(request.url).protocol.replace(":", "")) === "https";
+  const secure = requestIsHttps(request);
   res.cookies.set(
     SESSION_COOKIE,
     encodeSession(session),

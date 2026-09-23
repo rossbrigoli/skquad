@@ -184,6 +184,25 @@ export const STATE_COOKIE = "skquad_oidc_state";
 export const VERIFIER_COOKIE = "skquad_oidc_verifier";
 export const NONCE_COOKIE = "skquad_oidc_nonce";
 
+/**
+ * requestIsHttps reports the protocol the request actually arrived on.
+ *
+ * sessionCookieOpts() derives `secure` from the configured OIDC redirect URL,
+ * which is the public https hostname. Break-glass (and any internal access via
+ * http://skquad-v2.lab or Tailscale) arrives over plain HTTP, where a Secure
+ * cookie is silently dropped by the browser — which shows up as the session
+ * dying after the first proxied call, because the proxy re-writes the cookie.
+ */
+export function requestIsHttps(req?: Request): boolean {
+  const forwarded = (req?.headers?.get("x-forwarded-proto") || "").split(",")[0].trim();
+  if (forwarded) return forwarded === "https";
+  try {
+    return new URL(req?.url || "").protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function sessionCookieOpts() {
   const secure = oidcEnabled() && oidcConfig().redirectUrl.startsWith("https://");
   return {

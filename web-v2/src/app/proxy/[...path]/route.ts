@@ -6,6 +6,7 @@ import {
   encodeSession,
   oidcEnabled,
   refreshTokens,
+  requestIsHttps,
   sessionCookieOpts,
   sessionValid,
   type Session,
@@ -78,7 +79,12 @@ async function forward(request: NextRequest, method: string, path: string[]): Pr
       headers: { "Content-Type": upstream.headers.get("Content-Type") || "application/json" },
     });
     // If we refreshed, roll the new session into the response cookie.
-    res.cookies.set(SESSION_COOKIE, encodeSession(session), { ...sessionCookieOpts(), maxAge: 8 * 3600 });
+    // Match the cookie to the protocol the request arrived on; see requestIsHttps.
+  res.cookies.set(SESSION_COOKIE, encodeSession(session), {
+    ...sessionCookieOpts(),
+    secure: requestIsHttps(request),
+    maxAge: 8 * 3600,
+  });
     return res;
   } catch (err) {
     return NextResponse.json(
