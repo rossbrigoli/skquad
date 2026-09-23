@@ -41,7 +41,9 @@ func NewCRWriter(cfg *config.Config) (*CRWriter, error) {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if cfg.K8sInsecure {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit dev mode
+		// #nosec G402 -- explicit opt-in dev mode via SKQUAD_K8S_INSECURE;
+		// production paths use the projected CA branch below.
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	} else if cfg.K8sCAFile != "" {
 		// Trust the cluster CA (projected service-account CA by default). The
 		// system trust store never contains the cluster's signing CA, so

@@ -131,7 +131,11 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 	}
 	llmGateway := LLMGatewayProvisioner(noopLLMGateway{})
 	if cfg != nil && cfg.LiteLLMAdminURL != "" && cfg.LiteLLMMasterKey != "" {
-		llmGateway = newLiteLLMGatewayClient(cfg.LiteLLMAdminURL, cfg.LiteLLMMasterKey)
+		gw, err := newLiteLLMGatewayClient(cfg.LiteLLMAdminURL, cfg.LiteLLMMasterKey)
+		if err != nil {
+			panic(fmt.Sprintf("litellm gateway client: %v", err))
+		}
+		llmGateway = gw
 	}
 	s := &Server{cfg: cfg, store: store, oidcAuth: oidcAuth, crWriter: crWriter, llmGateway: llmGateway}
 

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 )
 
 type liteLLMGatewayClient struct {
@@ -16,12 +18,22 @@ type liteLLMGatewayClient struct {
 	client    *http.Client
 }
 
-func newLiteLLMGatewayClient(baseURL, masterKey string) *liteLLMGatewayClient {
+// newLiteLLMGatewayClient builds the admin client for the LiteLLM gateway.
+// The base URL is server configuration (SKQUAD_LLM_GATEWAY_URL /
+// SKQUAD_LITELLM_ADMIN_URL) supplied by the platform admin — never
+// per-request user input — and it is validated here so a typo or a
+// scheme-injection in config fails at startup instead of turning the
+// control plane into an open proxy.
+func newLiteLLMGatewayClient(baseURL, masterKey string) (*liteLLMGatewayClient, error) {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, fmt.Errorf("litellm: gateway admin URL %q must be an absolute http/https URL", baseURL)
+	}
 	return &liteLLMGatewayClient{
 		baseURL:   strings.TrimRight(baseURL, "/"),
 		masterKey: strings.TrimSpace(masterKey),
-		client:    http.DefaultClient,
-	}
+		client:    &http.Client{Timeout: 30 * time.Second},
+	}, nil
 }
 
 func (c *liteLLMGatewayClient) ProvisionAgentKey(ctx context.Context, req GatewayKeyRequest) (string, string, error) {
@@ -37,6 +49,7 @@ func (c *liteLLMGatewayClient) ProvisionAgentKey(ctx context.Context, req Gatewa
 	if err != nil {
 		return "", "", fmt.Errorf("litellm: marshal key request: %w", err)
 	}
+	// #nosec G704 -- c.baseURL is validated admin-supplied config, not user input
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/key/generate", bytes.NewReader(payload))
 	if err != nil {
 		return "", "", fmt.Errorf("litellm: build key request: %w", err)
@@ -44,6 +57,8 @@ func (c *liteLLMGatewayClient) ProvisionAgentKey(ctx context.Context, req Gatewa
 	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
+	// path; no user-controlled component reaches this request.
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
 		return "", "", fmt.Errorf("litellm: generate key: %w", err)
@@ -98,6 +113,7 @@ func (c *liteLLMGatewayClient) postKeyAdmin(ctx context.Context, path string, bo
 	if err != nil {
 		return fmt.Errorf("litellm: marshal %s request: %w", op, err)
 	}
+	// #nosec G704 -- c.baseURL is validated admin-supplied config, not user input
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("litellm: build %s request: %w", op, err)
@@ -105,6 +121,8 @@ func (c *liteLLMGatewayClient) postKeyAdmin(ctx context.Context, path string, bo
 	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
+	// path; no user-controlled component reaches this request.
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("litellm: %s: %w", op, err)

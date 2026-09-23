@@ -391,10 +391,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          version: "17"
+      # No setup-java needed: the sonar-scanner-cli linux-x64 archive bundles
+      # its own JRE.
       - name: Cache SonarScanner CLI
         id: sonar-cli
         uses: actions/cache@v4

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -353,6 +354,14 @@ func verifyArgon2id(phc, password string) (bool, error) {
 			return false, fmt.Errorf("breakglass: bad hash encoding")
 		}
 	}
+	if p == 0 || p > 255 {
+		return false, fmt.Errorf("breakglass: invalid parallelism parameter %d", p)
+	}
+	if len(want) > math.MaxUint32 {
+		return false, fmt.Errorf("breakglass: hash length %d out of range", len(want))
+	}
+	// #nosec G115 -- p and len(want) are range-checked immediately above;
+	// the conversions cannot wrap.
 	got := argon2.IDKey([]byte(password), salt, t, m, uint8(p), uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }
