@@ -401,3 +401,34 @@ func TestLLMProviderNoLongerGrantableToAgents(t *testing.T) {
 	}, http.StatusOK, &permsOut)
 	require.Len(t, permsOut, 1)
 }
+
+// WP6 gap-fill: the Settings → Access tab needs a platform_admin
+// directory read. GET /users must be admin-only and must not leak OIDC
+// identifiers (lean projection by design).
+func TestListUsersAdminDirectory(t *testing.T) {
+	t.Parallel()
+	handler, _ := newAIModelHarness(t)
+
+	var denied map[string]map[string]string
+	doJSONAuth(t, handler, "Bearer alice", http.MethodGet, "/api/v1/users", nil, http.StatusForbidden, &denied)
+	require.Equal(t, "forbidden", denied["error"]["code"])
+
+	// First authenticated call provisions each OIDC user.
+	var mine []domain.AIModel
+	doJSONAuth(t, handler, "Bearer alice", http.MethodGet, "/api/v1/models/me", nil, http.StatusOK, &mine)
+	doJSONAuth(t, handler, "Bearer bob", http.MethodGet, "/api/v1/models/me", nil, http.StatusOK, &mine)
+
+	var users []map[string]any
+	doJSONAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/users", nil, http.StatusOK, &users)
+	require.Len(t, users, 3)
+
+	rolesByEmail := map[string]string{}
+	for _, u := range users {
+		require.NotContains(t, u, "oidc_issuer", "directory projection must not leak OIDC identifiers")
+		require.NotContains(t, u, "oidc_subject", "directory projection must not leak OIDC identifiers")
+		rolesByEmail[u["email"].(string)] = u["role"].(string)
+	}
+	require.Equal(t, "platform_admin", rolesByEmail["admin@example.com"])
+	require.Equal(t, "user", rolesByEmail["alice@example.com"])
+	require.Equal(t, "user", rolesByEmail["bob@example.com"])
+}

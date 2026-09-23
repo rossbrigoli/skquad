@@ -452,6 +452,33 @@ func (s *Server) grantedAIModels(ctx context.Context, userID string) ([]*domain.
 	return out, nil
 }
 
+// listUsers handles GET /api/v1/users — the platform_admin directory
+// read for the Settings → Access tab (WP6). Returns a lean projection
+// (id, email, name, role, created_at) rather than the full domain.User:
+// the grant editor never needs OIDC issuer/subject, so they stay behind
+// the store boundary.
+func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePlatformAdmin(w, r) {
+		return
+	}
+	users, err := s.store.ListUsers(r.Context())
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(users))
+	for _, u := range users {
+		out = append(out, map[string]any{
+			"id":         u.ID,
+			"email":      u.Email,
+			"name":       u.Name,
+			"role":       u.Role,
+			"created_at": u.CreatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *Server) listUserModels(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return

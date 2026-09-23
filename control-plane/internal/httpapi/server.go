@@ -290,6 +290,7 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Post("/ai-models/{modelID}/deprecate", s.deprecateAIModel)
 			r.Delete("/ai-models/{modelID}", s.deleteAIModel)
 
+			r.Get("/users", s.listUsers)
 			r.Get("/users/{userID}/models", s.listUserModels)
 			r.Put("/users/{userID}/models", s.setUserModels)
 			r.Delete("/users/{userID}/models/{modelID}", s.revokeUserModel)
