@@ -84,9 +84,11 @@ function ProvidersTab({ isAdmin }: { isAdmin: boolean }) {
     <section>
       <div className="section-head">
         <h2>LLM providers</h2>
-        <button type="button" className="btn btn-primary" disabled={!isAdmin} onClick={() => setCreating(true)}>
-          + Register provider
-        </button>
+        {isAdmin ? (
+          <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+            + Register provider
+          </button>
+        ) : null}
       </div>
       {providers.error ? <div className="notice error">{providers.error}</div> : null}
       {items.length === 0 && !providers.loading ? (
@@ -103,14 +105,15 @@ function ProvidersTab({ isAdmin }: { isAdmin: boolean }) {
               </div>
               <div className="entity-side">
                 <StatusChip status={p.status === "active" ? "idle" : p.status === "deprecated" ? "paused" : "error"} />
-                <button type="button" className="btn btn-sm" disabled={!isAdmin} onClick={() => setEditing(p)}>
-                  Edit
-                </button>
-                {p.status === "active" ? (
+                {isAdmin ? (
+                  <button type="button" className="btn btn-sm" onClick={() => setEditing(p)}>
+                    Edit
+                  </button>
+                ) : null}
+                {isAdmin && p.status === "active" ? (
                   <button
                     type="button"
                     className="btn btn-sm btn-danger"
-                    disabled={!isAdmin}
                     onClick={async () => {
                       await apiPost(`/registry/llm-providers/${p.id}/deprecate`, token, {});
                       await providers.refresh();
@@ -169,9 +172,11 @@ function ResourcesTab({ isAdmin }: { isAdmin: boolean }) {
       </div>
       <div className="section-head">
         <h2>{active.label}</h2>
-        <button type="button" className="btn btn-primary" disabled={!isAdmin} onClick={() => setCreating(true)}>
-          + Register {active.label.replace(/s$/, "").toLowerCase()}
-        </button>
+        {isAdmin ? (
+          <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+            + Register {active.label.replace(/s$/, "").toLowerCase()}
+          </button>
+        ) : null}
       </div>
       {resources.error ? <div className="notice error">{resources.error}</div> : null}
       {items.length === 0 && !resources.loading ? (
@@ -186,9 +191,11 @@ function ResourcesTab({ isAdmin }: { isAdmin: boolean }) {
               </div>
               <div className="entity-side">
                 <StatusChip status={r.status === "active" ? "idle" : r.status === "deprecated" ? "paused" : "error"} />
-                <button type="button" className="btn btn-sm" disabled={!isAdmin} onClick={() => setEditing(r)}>
-                  Edit
-                </button>
+                {isAdmin ? (
+                  <button type="button" className="btn btn-sm" onClick={() => setEditing(r)}>
+                    Edit
+                  </button>
+                ) : null}
               </div>
             </div>
           ))}

@@ -431,6 +431,32 @@ button {
   border-color: var(--accent-hover);
 }
 
+/* Disabled controls must LOOK disabled. Previously only .btn-danger:disabled was
+   styled, so a disabled primary button rendered fully clickable and silently did
+   nothing — reported by Ross as "the CRUD buttons are not working". The explicit
+   :hover overrides stop the hover recolour from masking the disabled state. */
+.btn:disabled,
+.btn-primary:disabled,
+.btn-danger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: saturate(0.55);
+}
+
+.btn:disabled:hover {
+  background: var(--surface);
+}
+
+.btn-primary:disabled:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.btn-danger:disabled:hover {
+  background: var(--status-blocked);
+  border-color: var(--status-blocked);
+}
+
 .notice {
   border-radius: var(--radius-md);
   padding: var(--space-3);
