@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"slices"
 	"strings"
@@ -27,57 +28,63 @@ const (
 type MemoryStore struct {
 	mu sync.RWMutex
 
-	users         map[string]*domain.User
-	usersByEmail  map[string]string
-	usersByOIDC   map[string]string
-	squads        map[string]*domain.Squad
-	agents        map[string]*domain.Agent
-	identities    map[string]*domain.AgentIdentity
-	identityAgent map[string]string
-	boards        map[string]*domain.Board
-	boardsBySquad map[string]string
-	grants        map[string]*domain.AccessGrant
-	llmProviders  map[string]*domain.LLMProvider
-	resources     map[string]*domain.RegistryResource
-	permissions   map[string]*domain.AgentPermission
-	metering      map[string]*domain.MeteringEvent
-	wakeLatency   map[string]*domain.WakeLatencyEvent
-	wakeLatencyKey map[string]string // agent|containerStart -> wake event id
-	auditLog      map[string]*domain.AuditEntry
-	tasks         map[string]*domain.Task
-	taskExecs     map[string]*domain.TaskExecution
-	agentMemory   map[string]*domain.AgentMemory
-	messages      map[string]*domain.Message
-	inbox         map[string]*domain.InboxMessage
-	k8sOutbox     map[string]*domain.KubernetesOutboxEvent
+	users           map[string]*domain.User
+	usersByEmail    map[string]string
+	usersByOIDC     map[string]string
+	squads          map[string]*domain.Squad
+	agents          map[string]*domain.Agent
+	identities      map[string]*domain.AgentIdentity
+	identityAgent   map[string]string
+	boards          map[string]*domain.Board
+	boardsBySquad   map[string]string
+	grants          map[string]*domain.AccessGrant
+	llmProviders    map[string]*domain.LLMProvider
+	aiModels        map[string]*domain.AIModel
+	userModelGrants map[string]*domain.UserModelGrant
+	grantPair       map[string]string // userID|modelID -> grant id
+	resources       map[string]*domain.RegistryResource
+	permissions     map[string]*domain.AgentPermission
+	metering        map[string]*domain.MeteringEvent
+	wakeLatency     map[string]*domain.WakeLatencyEvent
+	wakeLatencyKey  map[string]string // agent|containerStart -> wake event id
+	auditLog        map[string]*domain.AuditEntry
+	tasks           map[string]*domain.Task
+	taskExecs       map[string]*domain.TaskExecution
+	agentMemory     map[string]*domain.AgentMemory
+	messages        map[string]*domain.Message
+	inbox           map[string]*domain.InboxMessage
+	k8sOutbox       map[string]*domain.KubernetesOutboxEvent
 }
 
 // NewMemoryStore creates an empty development store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		users:         map[string]*domain.User{},
-		usersByEmail:  map[string]string{},
-		usersByOIDC:   map[string]string{},
-		squads:        map[string]*domain.Squad{},
-		agents:        map[string]*domain.Agent{},
-		identities:    map[string]*domain.AgentIdentity{},
-		identityAgent: map[string]string{},
-		boards:        map[string]*domain.Board{},
-		boardsBySquad: map[string]string{},
-		grants:        map[string]*domain.AccessGrant{},
-		llmProviders:  map[string]*domain.LLMProvider{},
-		resources:     map[string]*domain.RegistryResource{},
-		permissions:   map[string]*domain.AgentPermission{},
-		metering:      map[string]*domain.MeteringEvent{},
-		wakeLatency:  map[string]*domain.WakeLatencyEvent{},
-		wakeLatencyKey: map[string]string{},
-		auditLog:      map[string]*domain.AuditEntry{},
-		tasks:         map[string]*domain.Task{},
-		taskExecs:     map[string]*domain.TaskExecution{},
-		agentMemory:   map[string]*domain.AgentMemory{},
-		messages:      map[string]*domain.Message{},
-		inbox:         map[string]*domain.InboxMessage{},
-		k8sOutbox:     map[string]*domain.KubernetesOutboxEvent{},
+		users:           map[string]*domain.User{},
+		usersByEmail:    map[string]string{},
+		usersByOIDC:     map[string]string{},
+		squads:          map[string]*domain.Squad{},
+		agents:          map[string]*domain.Agent{},
+		identities:      map[string]*domain.AgentIdentity{},
+		identityAgent:   map[string]string{},
+		boards:          map[string]*domain.Board{},
+		boardsBySquad:   map[string]string{},
+		grants:          map[string]*domain.AccessGrant{},
+		llmProviders:    map[string]*domain.LLMProvider{},
+		aiModels:        map[string]*domain.AIModel{},
+		userModelGrants: map[string]*domain.UserModelGrant{},
+		grantPair:       map[string]string{},
+		resources:       map[string]*domain.RegistryResource{},
+		permissions:     map[string]*domain.AgentPermission{},
+		metering:        map[string]*domain.MeteringEvent{},
+		wakeLatency:     map[string]*domain.WakeLatencyEvent{},
+		wakeLatencyKey:  map[string]string{},
+		auditLog:        map[string]*domain.AuditEntry{},
+		tasks:           map[string]*domain.Task{},
+		taskExecs:       map[string]*domain.TaskExecution{},
+		agentMemory:     map[string]*domain.AgentMemory{},
+		messages:        map[string]*domain.Message{},
+		inbox:           map[string]*domain.InboxMessage{},
+		k8sOutbox:       map[string]*domain.KubernetesOutboxEvent{},
 	}
 }
 
@@ -346,6 +353,9 @@ func (m *MemoryStore) CreateAgent(ctx context.Context, a *domain.Agent) (*domain
 			return nil, ErrConflict
 		}
 	}
+	if err := validateAgentModelBinding(a); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	created := cloneAgent(a)
 	created.ID = uuid.NewString()
@@ -381,6 +391,9 @@ func (m *MemoryStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*domain
 		if other.ID != a.ID && other.SquadID == existing.SquadID && strings.EqualFold(other.Name, a.Name) {
 			return nil, ErrConflict
 		}
+	}
+	if err := validateAgentModelBinding(a); err != nil {
+		return nil, err
 	}
 	updated := cloneAgent(a)
 	updated.SquadID = existing.SquadID
@@ -660,11 +673,18 @@ func (m *MemoryStore) DeprecateLLMProvider(ctx context.Context, id string) error
 }
 
 // DeleteLLMProvider hard-deletes the provider and revokes dangling grants (S-103).
+// It is RESTRICTed while any ai_models still reference the provider's
+// credential (ADR-0010 D2), mirroring the Postgres FK ON DELETE RESTRICT.
 func (m *MemoryStore) DeleteLLMProvider(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.llmProviders[id]; !ok {
 		return ErrNotFound
+	}
+	for _, model := range m.aiModels {
+		if model.ProviderID == id {
+			return fmt.Errorf("%w: provider still has registered AI model %q", ErrConflict, model.DisplayName)
+		}
 	}
 	delete(m.llmProviders, id)
 	for key, perm := range m.permissions {
@@ -686,6 +706,183 @@ func (m *MemoryStore) ListLLMProviders(_ context.Context) ([]*domain.LLMProvider
 	slices.SortFunc(out, func(a, b *domain.LLMProvider) int {
 		return strings.Compare(a.Name, b.Name)
 	})
+	return out, nil
+}
+
+// CreateAIModel registers a model under an existing provider credential.
+// The (provider_id, model_name) pair is unique, mirroring the Postgres
+// UNIQUE constraint.
+func (m *MemoryStore) CreateAIModel(ctx context.Context, model *domain.AIModel) (*domain.AIModel, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.llmProviders[model.ProviderID]; !ok {
+		return nil, ErrNotFound
+	}
+	for _, existing := range m.aiModels {
+		if existing.ProviderID == model.ProviderID && existing.ModelName == model.ModelName {
+			return nil, ErrConflict
+		}
+	}
+	created := cloneAIModel(model)
+	created.ID = uuid.NewString()
+	if created.Status == "" {
+		created.Status = domain.ResourceActive
+	}
+	if len(created.Pricing) == 0 {
+		created.Pricing = json.RawMessage(`{}`)
+	}
+	created.CreatedAt = time.Now().UTC()
+	m.aiModels[created.ID] = created
+	m.drainPendingAuditsLocked(ctx, created.ID)
+	return cloneAIModel(created), nil
+}
+
+func (m *MemoryStore) GetAIModel(_ context.Context, id string) (*domain.AIModel, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	model, ok := m.aiModels[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return cloneAIModel(model), nil
+}
+
+func (m *MemoryStore) ListAIModels(_ context.Context, status domain.ResourceStatus) ([]*domain.AIModel, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*domain.AIModel, 0, len(m.aiModels))
+	for _, model := range m.aiModels {
+		if status == "" || model.Status == status {
+			out = append(out, cloneAIModel(model))
+		}
+	}
+	slices.SortFunc(out, func(a, b *domain.AIModel) int {
+		return strings.Compare(a.DisplayName, b.DisplayName)
+	})
+	return out, nil
+}
+
+func (m *MemoryStore) UpdateAIModel(ctx context.Context, model *domain.AIModel) (*domain.AIModel, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	existing, ok := m.aiModels[model.ID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if _, ok := m.llmProviders[model.ProviderID]; !ok {
+		return nil, ErrNotFound
+	}
+	for _, other := range m.aiModels {
+		if other.ID != model.ID && other.ProviderID == model.ProviderID && other.ModelName == model.ModelName {
+			return nil, ErrConflict
+		}
+	}
+	updated := cloneAIModel(model)
+	updated.RegisteredBy = existing.RegisteredBy
+	updated.CreatedAt = existing.CreatedAt
+	updated.UpdatedAt = time.Now().UTC()
+	m.aiModels[model.ID] = updated
+	m.drainPendingAuditsLocked(ctx, updated.ID)
+	return cloneAIModel(updated), nil
+}
+
+func (m *MemoryStore) DeprecateAIModel(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	model, ok := m.aiModels[id]
+	if !ok {
+		return ErrNotFound
+	}
+	model.Status = domain.ResourceDeprecated
+	model.UpdatedAt = time.Now().UTC()
+	m.drainPendingAuditsLocked(ctx, id)
+	return nil
+}
+
+// DeleteAIModel hard-deletes the model and cascades its user grants. It is
+// RESTRICTed while any agent is bound to it (primary or fallback),
+// mirroring the Postgres FK default (NO ACTION).
+func (m *MemoryStore) DeleteAIModel(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.aiModels[id]; !ok {
+		return ErrNotFound
+	}
+	for _, agent := range m.agents {
+		if agent.AIModelID == id || agent.FallbackAIModelID == id {
+			return fmt.Errorf("%w: agent %q is bound to this AI model", ErrConflict, agent.Name)
+		}
+	}
+	delete(m.aiModels, id)
+	for grantID, grant := range m.userModelGrants {
+		if grant.AIModelID == id {
+			delete(m.userModelGrants, grantID)
+			delete(m.grantPair, grantPairKey(grant.GranteeUserID, grant.AIModelID))
+		}
+	}
+	m.drainPendingAuditsLocked(ctx, id)
+	return nil
+}
+
+func (m *MemoryStore) GrantModelToUser(ctx context.Context, g *domain.UserModelGrant) (*domain.UserModelGrant, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.users[g.GranteeUserID]; !ok {
+		return nil, ErrNotFound
+	}
+	if _, ok := m.aiModels[g.AIModelID]; !ok {
+		return nil, ErrNotFound
+	}
+	key := grantPairKey(g.GranteeUserID, g.AIModelID)
+	if _, ok := m.userModelGrants[m.grantPair[key]]; ok {
+		return nil, ErrConflict
+	}
+	created := cloneUserModelGrant(g)
+	created.ID = uuid.NewString()
+	created.CreatedAt = time.Now().UTC()
+	m.userModelGrants[created.ID] = created
+	m.grantPair[key] = created.ID
+	m.drainPendingAuditsLocked(ctx, created.ID)
+	return cloneUserModelGrant(created), nil
+}
+
+func (m *MemoryStore) RevokeModelFromUser(ctx context.Context, userID string, aiModelID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := grantPairKey(userID, aiModelID)
+	grantID, ok := m.grantPair[key]
+	if !ok {
+		return ErrNotFound
+	}
+	delete(m.userModelGrants, grantID)
+	delete(m.grantPair, key)
+	m.drainPendingAuditsLocked(ctx, grantID)
+	return nil
+}
+
+func (m *MemoryStore) ListUserModelGrants(_ context.Context, userID string) ([]*domain.UserModelGrant, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*domain.UserModelGrant, 0)
+	for _, grant := range m.userModelGrants {
+		if grant.GranteeUserID == userID {
+			out = append(out, cloneUserModelGrant(grant))
+		}
+	}
+	sortUserModelGrants(out)
+	return out, nil
+}
+
+func (m *MemoryStore) ListUsersGrantedModel(_ context.Context, aiModelID string) ([]*domain.UserModelGrant, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*domain.UserModelGrant, 0)
+	for _, grant := range m.userModelGrants {
+		if grant.AIModelID == aiModelID {
+			out = append(out, cloneUserModelGrant(grant))
+		}
+	}
+	sortUserModelGrants(out)
 	return out, nil
 }
 
@@ -1958,6 +2155,46 @@ func cloneLLMProvider(p *domain.LLMProvider) *domain.LLMProvider {
 	v.Models = slices.Clone(p.Models)
 	v.Pricing = slices.Clone(p.Pricing)
 	return &v
+}
+
+func cloneAIModel(m *domain.AIModel) *domain.AIModel {
+	if m == nil {
+		return nil
+	}
+	v := *m
+	v.Pricing = slices.Clone(m.Pricing)
+	return &v
+}
+
+func cloneUserModelGrant(g *domain.UserModelGrant) *domain.UserModelGrant {
+	if g == nil {
+		return nil
+	}
+	v := *g
+	return &v
+}
+
+func grantPairKey(userID, aiModelID string) string {
+	return userID + "|" + aiModelID
+}
+
+func sortUserModelGrants(grants []*domain.UserModelGrant) {
+	slices.SortFunc(grants, func(a, b *domain.UserModelGrant) int {
+		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+}
+
+// validateAgentModelBinding enforces the agents_fallback_nequals_primary
+// CHECK at the store layer so both backends reject an identical
+// primary/fallback pair with the same error (ADR-0010 D4).
+func validateAgentModelBinding(a *domain.Agent) error {
+	if a.AIModelID != "" && a.AIModelID == a.FallbackAIModelID {
+		return fmt.Errorf("%w: fallback AI model must differ from the primary", ErrConflict)
+	}
+	return nil
 }
 
 func cloneResource(r *domain.RegistryResource) *domain.RegistryResource {

@@ -29,6 +29,7 @@ type Store interface {
 	AgentMemoryStore
 	MessageStore
 	RegistryStore
+	AIModelStore
 	PermissionStore
 	GrantStore
 	MeteringStore
@@ -173,6 +174,30 @@ type RegistryStore interface {
 	// operator before forcing deletion.
 	DeleteResource(ctx context.Context, typ domain.ResourceType, id string) error
 	ListResources(ctx context.Context, typ domain.ResourceType) ([]*domain.RegistryResource, error)
+}
+
+// AIModelStore persists AI models (the grantable unit, ADR-0010 D1) and the
+// user → model grants that gate which models a user may bind to agents (D3).
+type AIModelStore interface {
+	CreateAIModel(ctx context.Context, m *domain.AIModel) (*domain.AIModel, error)
+	GetAIModel(ctx context.Context, id string) (*domain.AIModel, error)
+	// ListAIModels returns models filtered by status; status "" = all.
+	ListAIModels(ctx context.Context, status domain.ResourceStatus) ([]*domain.AIModel, error)
+	UpdateAIModel(ctx context.Context, m *domain.AIModel) (*domain.AIModel, error)
+	DeprecateAIModel(ctx context.Context, id string) error
+	// DeleteAIModel hard-deletes a model and its user grants. It is
+	// RESTRICTed while any agent is bound to the model (primary or fallback).
+	DeleteAIModel(ctx context.Context, id string) error
+
+	// GrantModelToUser grants the user the right to bind the model. The
+	// (user, model) pair is unique; granting twice returns ErrConflict.
+	GrantModelToUser(ctx context.Context, g *domain.UserModelGrant) (*domain.UserModelGrant, error)
+	// RevokeModelFromUser removes one (user, model) grant. ErrNotFound when absent.
+	RevokeModelFromUser(ctx context.Context, userID string, aiModelID string) error
+	// ListUserModelGrants returns every model grant held by one user.
+	ListUserModelGrants(ctx context.Context, userID string) ([]*domain.UserModelGrant, error)
+	// ListUsersGrantedModel returns every grant of one model (who holds it).
+	ListUsersGrantedModel(ctx context.Context, aiModelID string) ([]*domain.UserModelGrant, error)
 }
 
 // PermissionStore persists agent → resource grants (Layer-2 RBAC).

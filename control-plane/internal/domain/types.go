@@ -67,19 +67,25 @@ const (
 // Agent is a member of a squad. It runs in its own pod and has its own
 // identity, credentials, and permission set.
 type Agent struct {
-	ID              string          `json:"id"`
-	SquadID         string          `json:"squad_id"`
-	Name            string          `json:"name"`
-	Role            string          `json:"role"`
-	SystemPrompt    string          `json:"system_prompt,omitempty"`
-	IdentityID      string          `json:"identity_id,omitempty"`
-	DefaultProvider string          `json:"default_provider_id,omitempty"`
-	DefaultModel    string          `json:"default_model,omitempty"`
-	Permissions     json.RawMessage `json:"permissions"`
-	IdleTimeoutSec  int             `json:"idle_timeout_sec"`
-	Status          AgentStatus     `json:"status"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	ID              string `json:"id"`
+	SquadID         string `json:"squad_id"`
+	Name            string `json:"name"`
+	Role            string `json:"role"`
+	SystemPrompt    string `json:"system_prompt,omitempty"`
+	IdentityID      string `json:"identity_id,omitempty"`
+	DefaultProvider string `json:"default_provider_id,omitempty"`
+	DefaultModel    string `json:"default_model,omitempty"`
+	// AIModelID is the bound primary model (ADR-0010 D4). Nullable until the
+	// WP8 backfill makes it required; must be granted to the agent's owner.
+	AIModelID string `json:"ai_model_id,omitempty"`
+	// FallbackAIModelID is the optional failover model (ADR-0010 D4/D6).
+	// Must differ from AIModelID and be granted to the agent's owner.
+	FallbackAIModelID string          `json:"fallback_ai_model_id,omitempty"`
+	Permissions       json.RawMessage `json:"permissions"`
+	IdleTimeoutSec    int             `json:"idle_timeout_sec"`
+	Status            AgentStatus     `json:"status"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
 	// WorkspaceSecrets is derived from the agent's project_workspace grants at
 	// CR-write time (outbox worker); it is NOT persisted on the agents table.
 	// See ADR-0009 and the operator WorkspaceSecret spec.
@@ -210,13 +216,13 @@ type Task struct {
 	// Workspace linkage: set when the task ran against a granted git
 	// workspace. WorkspaceResourceID points at the registry resource, and
 	// Branch/CommitSHA record what the runtime pushed (audit trail).
-	WorkspaceResourceID string `json:"workspace_resource_id,omitempty"`
-	WorkspaceBranch     string `json:"workspace_branch,omitempty"`
-	WorkspaceCommitSHA  string `json:"workspace_commit_sha,omitempty"`
-	ExecutionID     string     `json:"execution_id,omitempty"`
-	WorkerID        string     `json:"worker_id,omitempty"`
-	FencingToken    string     `json:"fencing_token,omitempty"`
-	LeaseExpiresAt  time.Time  `json:"lease_expires_at,omitempty"`
+	WorkspaceResourceID string    `json:"workspace_resource_id,omitempty"`
+	WorkspaceBranch     string    `json:"workspace_branch,omitempty"`
+	WorkspaceCommitSHA  string    `json:"workspace_commit_sha,omitempty"`
+	ExecutionID         string    `json:"execution_id,omitempty"`
+	WorkerID            string    `json:"worker_id,omitempty"`
+	FencingToken        string    `json:"fencing_token,omitempty"`
+	LeaseExpiresAt      time.Time `json:"lease_expires_at,omitempty"`
 }
 
 // TaskExecutionStatus is the lifecycle of one runtime attempt for a task.
@@ -383,6 +389,42 @@ type LLMProvider struct {
 	Status       ResourceStatus  `json:"status"`
 	RegisteredBy string          `json:"registered_by"`
 	CreatedAt    time.Time       `json:"created_at"`
+}
+
+// AIModel is an admin-registered, grantable model (ADR-0010 D1). It
+// references an internal provider credential holder so N models from one
+// account share one base_url + api_key_ref (D2). This — not the provider —
+// is the unit shown in the UI and granted to users.
+type AIModel struct {
+	ID          string `json:"id"`
+	ProviderID  string `json:"provider_id"`
+	DisplayName string `json:"display_name"`
+	ModelName   string `json:"model_name"`
+	// ContextWindow is the model's maximum context in tokens (0 = unknown).
+	ContextWindow int `json:"context_window"`
+	// SupportsTools records tool-calling capability; fallbacks without it
+	// break the agent tool loop (ADR-0010 Risk 2).
+	SupportsTools bool `json:"supports_tools"`
+	// Pricing holds the four per-1M rates (input_per_1m, cached_input_per_1m,
+	// cache_write_per_1m, output_per_1m) per ADR-0010 D8. Cost is
+	// snapshotted at metering time and never re-derived from live pricing.
+	Pricing json.RawMessage `json:"pricing"`
+	// LongContextThresholdTokens splits short vs long context pricing tiers.
+	LongContextThresholdTokens int            `json:"long_context_threshold_tokens"`
+	Status                     ResourceStatus `json:"status"`
+	RegisteredBy               string         `json:"registered_by"`
+	CreatedAt                  time.Time      `json:"created_at"`
+	UpdatedAt                  time.Time      `json:"updated_at,omitempty"`
+}
+
+// UserModelGrant records that a user may bind an AI Model to their agents
+// (ADR-0010 D3: grants follow people, the authenticated OIDC principal).
+type UserModelGrant struct {
+	ID            string    `json:"id"`
+	GranteeUserID string    `json:"grantee_user_id"`
+	AIModelID     string    `json:"ai_model_id"`
+	GrantedBy     string    `json:"granted_by"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // RegistryResource is a generic registry entry (skill, tool, api, kb, ws).

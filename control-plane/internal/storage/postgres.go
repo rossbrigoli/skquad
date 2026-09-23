@@ -251,7 +251,7 @@ func (p *PostgresStore) enqueueAgentOutboxTx(ctx context.Context, tx pgx.Tx, ope
 func getAgentTx(ctx context.Context, tx pgx.Tx, id string) (*domain.Agent, error) {
 	row := tx.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
+		       coalesce(default_provider::text, ''), default_model, coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -470,7 +470,7 @@ func (p *PostgresStore) DeleteSquad(ctx context.Context, id string) error {
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
+		       coalesce(default_provider::text, ''), default_model, coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
 		FROM agents
 		WHERE squad_id = $1
 		ORDER BY name
@@ -545,6 +545,9 @@ func (p *PostgresStore) ListSquads(ctx context.Context, ownerID string) ([]*doma
 }
 
 func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*domain.Agent, error) {
+	if err := validateAgentModelBinding(a); err != nil {
+		return nil, err
+	}
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return nil, mapPgErr(err)
@@ -552,11 +555,11 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 	defer tx.Rollback(ctx)
 
 	row := tx.QueryRow(ctx, `
-		INSERT INTO agents (squad_id, name, role, system_prompt, default_provider, default_model, permissions, idle_timeout_sec, status)
-		VALUES ($1, $2, $3, $4, nullif($5, '')::uuid, $6, $7, $8, $9)
+		INSERT INTO agents (squad_id, name, role, system_prompt, default_provider, default_model, ai_model_id, fallback_ai_model_id, permissions, idle_timeout_sec, status)
+		VALUES ($1, $2, $3, $4, nullif($5, '')::uuid, $6, nullif($7, '')::uuid, nullif($8, '')::uuid, $9, $10, $11)
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
-	`, a.SquadID, a.Name, a.Role, a.SystemPrompt, a.DefaultProvider, a.DefaultModel, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status))
+		          coalesce(default_provider::text, ''), default_model, coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
+	`, a.SquadID, a.Name, a.Role, a.SystemPrompt, a.DefaultProvider, a.DefaultModel, a.AIModelID, a.FallbackAIModelID, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status))
 	created, err := scanAgent(row)
 	if err != nil {
 		return nil, err
@@ -576,7 +579,7 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 func (p *PostgresStore) GetAgent(ctx context.Context, id string) (*domain.Agent, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
+		       coalesce(default_provider::text, ''), default_model, coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -584,6 +587,9 @@ func (p *PostgresStore) GetAgent(ctx context.Context, id string) (*domain.Agent,
 }
 
 func (p *PostgresStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*domain.Agent, error) {
+	if err := validateAgentModelBinding(a); err != nil {
+		return nil, err
+	}
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return nil, mapPgErr(err)
@@ -597,14 +603,16 @@ func (p *PostgresStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*doma
 		    system_prompt = $4,
 		    default_provider = nullif($5, '')::uuid,
 		    default_model = $6,
+		    ai_model_id = nullif($10, '')::uuid,
+		    fallback_ai_model_id = nullif($11, '')::uuid,
 		    permissions = $7,
 		    idle_timeout_sec = $8,
 		    status = $9,
 		    updated_at = now()
 		WHERE id = $1
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
-	`, a.ID, a.Name, a.Role, a.SystemPrompt, a.DefaultProvider, a.DefaultModel, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status))
+		          coalesce(default_provider::text, ''), default_model, coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
+	`, a.ID, a.Name, a.Role, a.SystemPrompt, a.DefaultProvider, a.DefaultModel, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status), a.AIModelID, a.FallbackAIModelID)
 	updated, err := scanAgent(row)
 	if err != nil {
 		return nil, err
@@ -630,7 +638,7 @@ func (p *PostgresStore) DeleteAgent(ctx context.Context, id string) error {
 
 	row := tx.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
+		       coalesce(default_provider::text, ''), default_model, coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -657,7 +665,7 @@ func (p *PostgresStore) DeleteAgent(ctx context.Context, id string) error {
 func (p *PostgresStore) ListAgents(ctx context.Context, squadID string) ([]*domain.Agent, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
+		       coalesce(default_provider::text, ''), default_model, coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
 		FROM agents
 		WHERE squad_id = $1
 		ORDER BY name
@@ -690,7 +698,7 @@ func (p *PostgresStore) SetAgentStatus(ctx context.Context, id string, status do
 		SET status = $2, updated_at = now()
 		WHERE id = $1
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
+		          coalesce(default_provider::text, ''), default_model, coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
 	`, id, status)
 	agent, err := scanAgent(row)
 	if err != nil {
@@ -808,7 +816,7 @@ func (p *PostgresStore) SetAgentIdentityGatewayKey(ctx context.Context, agentID 
 func (p *PostgresStore) ListAllAgents(ctx context.Context) ([]*domain.Agent, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(default_provider::text, ''), default_model, permissions, idle_timeout_sec, status, created_at, updated_at
+		       coalesce(default_provider::text, ''), default_model, coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
 		FROM agents
 		ORDER BY name
 	`)
@@ -932,10 +940,10 @@ func (p *PostgresStore) CreateLLMProvider(ctx context.Context, provider *domain.
 	defer tx.Rollback(ctx)
 
 	txRow := tx.QueryRow(ctx, `
-		INSERT INTO llm_providers (name, kind, base_url, api_key_ref, default_model, models, pricing, status, registered_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id::text, name, kind, base_url, api_key_ref, default_model, models, pricing, status, registered_by::text, created_at
-	`, provider.Name, provider.Kind, provider.BaseURL, provider.APIKeyRef, provider.DefaultModel, defaultJSON(provider.Models, "[]"), defaultJSON(provider.Pricing, "{}"), defaultResourceStatus(provider.Status), provider.RegisteredBy)
+		INSERT INTO providers (name, kind, base_url, api_key_ref, status, registered_by)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at
+	`, provider.Name, provider.Kind, provider.BaseURL, provider.APIKeyRef, defaultResourceStatus(provider.Status), provider.RegisteredBy)
 	created, err := scanLLMProvider(txRow)
 	if err != nil {
 		return nil, err
@@ -951,8 +959,8 @@ func (p *PostgresStore) CreateLLMProvider(ctx context.Context, provider *domain.
 
 func (p *PostgresStore) GetLLMProvider(ctx context.Context, id string) (*domain.LLMProvider, error) {
 	row := p.pool.QueryRow(ctx, `
-		SELECT id::text, name, kind, base_url, api_key_ref, default_model, models, pricing, status, registered_by::text, created_at
-		FROM llm_providers
+		SELECT id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at
+		FROM providers
 		WHERE id = $1
 	`, id)
 	return scanLLMProvider(row)
@@ -966,18 +974,15 @@ func (p *PostgresStore) UpdateLLMProvider(ctx context.Context, provider *domain.
 	defer tx.Rollback(ctx)
 
 	txRow := tx.QueryRow(ctx, `
-		UPDATE llm_providers
+		UPDATE providers
 		SET name = $2,
 		    kind = $3,
 		    base_url = $4,
 		    api_key_ref = $5,
-		    default_model = $6,
-		    models = $7,
-		    pricing = $8,
-		    status = $9
+		    status = $6
 		WHERE id = $1
-		RETURNING id::text, name, kind, base_url, api_key_ref, default_model, models, pricing, status, registered_by::text, created_at
-	`, provider.ID, provider.Name, provider.Kind, provider.BaseURL, provider.APIKeyRef, provider.DefaultModel, defaultJSON(provider.Models, "[]"), defaultJSON(provider.Pricing, "{}"), defaultResourceStatus(provider.Status))
+		RETURNING id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at
+	`, provider.ID, provider.Name, provider.Kind, provider.BaseURL, provider.APIKeyRef, defaultResourceStatus(provider.Status))
 	created, err := scanLLMProvider(txRow)
 	if err != nil {
 		return nil, err
@@ -999,7 +1004,7 @@ func (p *PostgresStore) DeprecateLLMProvider(ctx context.Context, id string) err
 	defer tx.Rollback(ctx)
 
 	tag, err := tx.Exec(ctx, `
-		UPDATE llm_providers
+		UPDATE providers
 		SET status = $2
 		WHERE id = $1
 	`, id, domain.ResourceDeprecated)
@@ -1016,7 +1021,8 @@ func (p *PostgresStore) DeprecateLLMProvider(ctx context.Context, id string) err
 }
 
 // DeleteLLMProvider hard-deletes the provider and revokes every grant that
-// references it in the same transaction (S-103).
+// references it in the same transaction (S-103). It is RESTRICTed while
+// any ai_models still reference the provider's credential (ADR-0010 D2).
 func (p *PostgresStore) DeleteLLMProvider(ctx context.Context, id string) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -1024,13 +1030,20 @@ func (p *PostgresStore) DeleteLLMProvider(ctx context.Context, id string) error 
 	}
 	defer tx.Rollback(ctx)
 
+	var refCount int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM ai_models WHERE provider_id = $1`, id).Scan(&refCount); err != nil {
+		return mapPgErr(err)
+	}
+	if refCount > 0 {
+		return fmt.Errorf("%w: provider still has %d registered AI model(s)", ErrConflict, refCount)
+	}
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM agent_permissions WHERE resource_type = $1 AND resource_id = $2`,
 		domain.ResLLMProvider, id,
 	); err != nil {
 		return mapPgErr(err)
 	}
-	tag, err := tx.Exec(ctx, `DELETE FROM llm_providers WHERE id = $1`, id)
+	tag, err := tx.Exec(ctx, `DELETE FROM providers WHERE id = $1`, id)
 	if err != nil {
 		return mapPgErr(err)
 	}
@@ -1045,8 +1058,8 @@ func (p *PostgresStore) DeleteLLMProvider(ctx context.Context, id string) error 
 
 func (p *PostgresStore) ListLLMProviders(ctx context.Context) ([]*domain.LLMProvider, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT id::text, name, kind, base_url, api_key_ref, default_model, models, pricing, status, registered_by::text, created_at
-		FROM llm_providers
+		SELECT id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at
+		FROM providers
 		ORDER BY name
 	`)
 	if err != nil {
@@ -1063,6 +1076,263 @@ func (p *PostgresStore) ListLLMProviders(ctx context.Context) ([]*domain.LLMProv
 		providers = append(providers, provider)
 	}
 	return providers, mapPgErr(rows.Err())
+}
+
+// aiModelColumns is the shared SELECT list for ai_models rows.
+const aiModelColumns = `
+	id::text, provider_id::text, display_name, model_name, context_window, supports_tools,
+	pricing, long_context_threshold_tokens, status, registered_by, created_at, updated_at`
+
+// CreateAIModel registers a model under an existing provider credential.
+// The (provider_id, model_name) pair is unique (UNIQUE violation →
+// ErrConflict); an unknown provider → ErrNotFound.
+func (p *PostgresStore) CreateAIModel(ctx context.Context, model *domain.AIModel) (*domain.AIModel, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	var one int
+	if err := tx.QueryRow(ctx, `SELECT 1 FROM providers WHERE id = $1`, model.ProviderID).Scan(&one); err != nil {
+		return nil, mapPgErr(err)
+	}
+	txRow := tx.QueryRow(ctx, `
+		INSERT INTO ai_models (provider_id, display_name, model_name, context_window, supports_tools,
+		                     pricing, long_context_threshold_tokens, status, registered_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING `+aiModelColumns,
+		model.ProviderID, model.DisplayName, model.ModelName, model.ContextWindow, model.SupportsTools,
+		defaultJSON(model.Pricing, "{}"), model.LongContextThresholdTokens, defaultResourceStatus(model.Status), model.RegisteredBy)
+	created, err := scanAIModel(txRow)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, created.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return created, nil
+}
+
+func (p *PostgresStore) GetAIModel(ctx context.Context, id string) (*domain.AIModel, error) {
+	row := p.pool.QueryRow(ctx, `
+		SELECT `+aiModelColumns+`
+		FROM ai_models
+		WHERE id = $1
+	`, id)
+	return scanAIModel(row)
+}
+
+// ListAIModels returns models filtered by status; status "" = all.
+func (p *PostgresStore) ListAIModels(ctx context.Context, status domain.ResourceStatus) ([]*domain.AIModel, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT `+aiModelColumns+`
+		FROM ai_models
+		WHERE $1 = '' OR status = $1
+		ORDER BY display_name
+	`, string(status))
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+
+	var models []*domain.AIModel
+	for rows.Next() {
+		model, err := scanAIModel(rows)
+		if err != nil {
+			return nil, err
+		}
+		models = append(models, model)
+	}
+	return models, mapPgErr(rows.Err())
+}
+
+func (p *PostgresStore) UpdateAIModel(ctx context.Context, model *domain.AIModel) (*domain.AIModel, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	var one int
+	if err := tx.QueryRow(ctx, `SELECT 1 FROM providers WHERE id = $1`, model.ProviderID).Scan(&one); err != nil {
+		return nil, mapPgErr(err)
+	}
+	txRow := tx.QueryRow(ctx, `
+		UPDATE ai_models
+		SET provider_id = $2,
+		    display_name = $3,
+		    model_name = $4,
+		    context_window = $5,
+		    supports_tools = $6,
+		    pricing = $7,
+		    long_context_threshold_tokens = $8,
+		    status = $9,
+		    updated_at = now()
+		WHERE id = $1
+		RETURNING `+aiModelColumns,
+		model.ID, model.ProviderID, model.DisplayName, model.ModelName, model.ContextWindow, model.SupportsTools,
+		defaultJSON(model.Pricing, "{}"), model.LongContextThresholdTokens, defaultResourceStatus(model.Status))
+	updated, err := scanAIModel(txRow)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, updated.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return updated, nil
+}
+
+func (p *PostgresStore) DeprecateAIModel(ctx context.Context, id string) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE ai_models
+		SET status = $2, updated_at = now()
+		WHERE id = $1
+	`, id, domain.ResourceDeprecated)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, id); err != nil {
+		return err
+	}
+	return mapPgErr(tx.Commit(ctx))
+}
+
+// DeleteAIModel hard-deletes the model and cascades its user grants. It is
+// RESTRICTed while any agent is bound to the model (primary or fallback),
+// mirroring the FK default (NO ACTION) with a detectable ErrConflict.
+func (p *PostgresStore) DeleteAIModel(ctx context.Context, id string) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	var bound int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM agents WHERE ai_model_id = $1 OR fallback_ai_model_id = $1
+	`, id).Scan(&bound); err != nil {
+		return mapPgErr(err)
+	}
+	if bound > 0 {
+		return fmt.Errorf("%w: %d agent(s) still bound to this AI model", ErrConflict, bound)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM user_model_grants WHERE ai_model_id = $1`, id); err != nil {
+		return mapPgErr(err)
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM ai_models WHERE id = $1`, id)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, id); err != nil {
+		return err
+	}
+	return mapPgErr(tx.Commit(ctx))
+}
+
+// GrantModelToUser grants a user the right to bind a model. Missing user or
+// model → ErrNotFound; duplicate (user, model) pair → ErrConflict.
+func (p *PostgresStore) GrantModelToUser(ctx context.Context, g *domain.UserModelGrant) (*domain.UserModelGrant, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	var one int
+	if err := tx.QueryRow(ctx, `SELECT 1 FROM users WHERE id = $1`, g.GranteeUserID).Scan(&one); err != nil {
+		return nil, mapPgErr(err)
+	}
+	if err := tx.QueryRow(ctx, `SELECT 1 FROM ai_models WHERE id = $1`, g.AIModelID).Scan(&one); err != nil {
+		return nil, mapPgErr(err)
+	}
+	txRow := tx.QueryRow(ctx, `
+		INSERT INTO user_model_grants (grantee_user_id, ai_model_id, granted_by)
+		VALUES ($1, $2, $3)
+		RETURNING id::text, grantee_user_id::text, ai_model_id::text, granted_by::text, created_at
+	`, g.GranteeUserID, g.AIModelID, g.GrantedBy)
+	created, err := scanUserModelGrant(txRow)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, created.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return created, nil
+}
+
+func (p *PostgresStore) RevokeModelFromUser(ctx context.Context, userID string, aiModelID string) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM user_model_grants WHERE grantee_user_id = $1 AND ai_model_id = $2
+	`, userID, aiModelID)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, aiModelID); err != nil {
+		return err
+	}
+	return mapPgErr(tx.Commit(ctx))
+}
+
+func (p *PostgresStore) ListUserModelGrants(ctx context.Context, userID string) ([]*domain.UserModelGrant, error) {
+	return p.queryUserModelGrants(ctx, `grantee_user_id = $1`, userID)
+}
+
+func (p *PostgresStore) ListUsersGrantedModel(ctx context.Context, aiModelID string) ([]*domain.UserModelGrant, error) {
+	return p.queryUserModelGrants(ctx, `ai_model_id = $1`, aiModelID)
+}
+
+func (p *PostgresStore) queryUserModelGrants(ctx context.Context, where string, arg string) ([]*domain.UserModelGrant, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id::text, grantee_user_id::text, ai_model_id::text, granted_by::text, created_at
+		FROM user_model_grants
+		WHERE `+where+`
+		ORDER BY created_at, id
+	`, arg)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+
+	var grants []*domain.UserModelGrant
+	for rows.Next() {
+		grant, err := scanUserModelGrant(rows)
+		if err != nil {
+			return nil, err
+		}
+		grants = append(grants, grant)
+	}
+	return grants, mapPgErr(rows.Err())
 }
 
 func (p *PostgresStore) CreateResource(ctx context.Context, resource *domain.RegistryResource) (*domain.RegistryResource, error) {
@@ -2561,6 +2831,8 @@ func scanAgent(row scanner) (*domain.Agent, error) {
 		&a.IdentityID,
 		&a.DefaultProvider,
 		&a.DefaultModel,
+		&a.AIModelID,
+		&a.FallbackAIModelID,
 		&a.Permissions,
 		&a.IdleTimeoutSec,
 		&a.Status,
@@ -2664,9 +2936,6 @@ func scanLLMProvider(row scanner) (*domain.LLMProvider, error) {
 		&p.Kind,
 		&p.BaseURL,
 		&p.APIKeyRef,
-		&p.DefaultModel,
-		&p.Models,
-		&p.Pricing,
 		&p.Status,
 		&p.RegisteredBy,
 		&p.CreatedAt,
@@ -2674,6 +2943,45 @@ func scanLLMProvider(row scanner) (*domain.LLMProvider, error) {
 		return nil, mapPgErr(err)
 	}
 	return &p, nil
+}
+
+func scanAIModel(row scanner) (*domain.AIModel, error) {
+	var m domain.AIModel
+	var updatedAt sql.NullTime
+	if err := row.Scan(
+		&m.ID,
+		&m.ProviderID,
+		&m.DisplayName,
+		&m.ModelName,
+		&m.ContextWindow,
+		&m.SupportsTools,
+		&m.Pricing,
+		&m.LongContextThresholdTokens,
+		&m.Status,
+		&m.RegisteredBy,
+		&m.CreatedAt,
+		&updatedAt,
+	); err != nil {
+		return nil, mapPgErr(err)
+	}
+	if updatedAt.Valid {
+		m.UpdatedAt = updatedAt.Time
+	}
+	return &m, nil
+}
+
+func scanUserModelGrant(row scanner) (*domain.UserModelGrant, error) {
+	var g domain.UserModelGrant
+	if err := row.Scan(
+		&g.ID,
+		&g.GranteeUserID,
+		&g.AIModelID,
+		&g.GrantedBy,
+		&g.CreatedAt,
+	); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return &g, nil
 }
 
 func scanResource(row scanner) (*domain.RegistryResource, error) {
@@ -2885,6 +3193,11 @@ func mapPgErr(err error) error {
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return ErrConflict
+	}
+	// Foreign key violation: RESTRICTed deletes (e.g. a provider still
+	// referenced by ai_models) surface as a detectable conflict.
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
 		return ErrConflict
 	}
 	return err
