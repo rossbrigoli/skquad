@@ -14,10 +14,32 @@ import {
   apiDelete,
   apiPatch,
   apiPost,
+  apiPut,
   ApiError,
   type LLMProvider,
   type RegistryResource,
 } from "../../lib/api";
+import {
+  buildAIModelPayload,
+  emptyAIModelForm,
+  formFromAIModel,
+  formatCascadeReport,
+  formatInUseMessage,
+  grantedModelIds,
+  grantDiff,
+  inUseConflict,
+  isDuplicateModel,
+  isPlatformAdmin,
+  modelRowFields,
+  PRICING_RATE_KEYS,
+  PRICING_RATE_LABELS,
+  withForce,
+  type AIModel,
+  type AIModelFormValues,
+  type AdminUser,
+  type CascadeReport,
+  type ModelUsageEntry,
+} from "../../lib/aimodels";
 
 type DeleteUsage = { agent_id: string; agent_name: string; squad_id: string };
 
@@ -93,7 +115,7 @@ function DeleteResourceButton({
   );
 }
 
-type Tab = "providers" | "resources" | "appearance" | "session";
+type Tab = "providers" | "resources" | "ai-models" | "access" | "appearance" | "session";
 
 const RESOURCE_TABS: { key: string; label: string }[] = [
   { key: "skills", label: "Skills" },
@@ -106,23 +128,37 @@ const RESOURCE_TABS: { key: string; label: string }[] = [
 export default function SettingsPage() {
   const { user, logout } = useAuth();
   const [tab, setTab] = useState<Tab>("providers");
-  const isAdmin = (user?.role || "") === "platform_admin";
+  const isAdmin = isPlatformAdmin(user?.role);
+  // WP6 (S-111): AI Models + Access are admin-only surfaces. The tab
+  // buttons are not rendered for non-admins at all (not just disabled),
+  // and the content render is gated again as defence in depth.
+  const activeTab: Tab = !isAdmin && (tab === "ai-models" || tab === "access") ? "providers" : tab;
 
   return (
     <AuthGate>
       <AppShell>
         <h1 className="page-title">Settings</h1>
         <div className="tabs">
-          <button type="button" className={tab === "providers" ? "active" : ""} onClick={() => setTab("providers")}>
+          <button type="button" className={activeTab === "providers" ? "active" : ""} onClick={() => setTab("providers")}>
             LLM providers
           </button>
-          <button type="button" className={tab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>
+          <button type="button" className={activeTab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>
             Resources
           </button>
-          <button type="button" className={tab === "appearance" ? "active" : ""} onClick={() => setTab("appearance")}>
+          {isAdmin ? (
+            <button type="button" className={activeTab === "ai-models" ? "active" : ""} onClick={() => setTab("ai-models")}>
+              AI Models
+            </button>
+          ) : null}
+          {isAdmin ? (
+            <button type="button" className={activeTab === "access" ? "active" : ""} onClick={() => setTab("access")}>
+              Access
+            </button>
+          ) : null}
+          <button type="button" className={activeTab === "appearance" ? "active" : ""} onClick={() => setTab("appearance")}>
             Appearance
           </button>
-          <button type="button" className={tab === "session" ? "active" : ""} onClick={() => setTab("session")}>
+          <button type="button" className={activeTab === "session" ? "active" : ""} onClick={() => setTab("session")}>
             Session
           </button>
         </div>
@@ -134,10 +170,12 @@ export default function SettingsPage() {
           </div>
         ) : null}
 
-        {tab === "providers" ? <ProvidersTab isAdmin={isAdmin} /> : null}
-        {tab === "resources" ? <ResourcesTab isAdmin={isAdmin} /> : null}
-        {tab === "appearance" ? <AppearanceTab /> : null}
-        {tab === "session" ? (
+        {activeTab === "providers" ? <ProvidersTab isAdmin={isAdmin} /> : null}
+        {activeTab === "resources" ? <ResourcesTab isAdmin={isAdmin} /> : null}
+        {isAdmin && activeTab === "ai-models" ? <AIModelsTab isAdmin={isAdmin} /> : null}
+        {isAdmin && activeTab === "access" ? <AccessTab /> : null}
+        {activeTab === "appearance" ? <AppearanceTab /> : null}
+        {activeTab === "session" ? (
           <div className="card" style={{ maxWidth: 480 }}>
             <div className="field">
               <span>Signed in as</span>
@@ -313,6 +351,454 @@ function ResourcesTab({ isAdmin }: { isAdmin: boolean }) {
         />
       )}
     </section>
+  );
+}
+
+// WP6 (S-111) — AI Models tab: admin registry of grantable models
+// (ADR-0010 D1/D2). List shows every contract field including the four
+// per-1M pricing rates; deprecate reports its blast radius; delete reuses
+// the S-103 in-use ConfirmDialog pattern with slot-aware usage.
+function AIModelsTab({ isAdmin }: { isAdmin: boolean }) {
+  const { token } = useAuth();
+  const models = useApi<AIModel[]>("/ai-models", 60000);
+  const providers = useApi<LLMProvider[]>("/registry/llm-providers", 60000);
+  const [editing, setEditing] = useState<AIModel | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [report, setReport] = useState("");
+  const items = models.data || [];
+  const providerNames = new Map((providers.data || []).map((p) => [p.id, p.name]));
+
+  async function deprecate(model: AIModel) {
+    try {
+      const rep = await apiPost<CascadeReport>(`/ai-models/${model.id}/deprecate`, token, {});
+      setReport(formatCascadeReport(rep));
+      await models.refresh();
+    } catch (err) {
+      setReport(`Deprecate failed: ${err instanceof Error ? err.message : "unknown error"}`);
+    }
+  }
+
+  return (
+    <section>
+      <div className="section-head">
+        <h2>AI Models</h2>
+        {isAdmin ? (
+          <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+            + Register model
+          </button>
+        ) : null}
+      </div>
+      {report ? (
+        <div className="notice" role="status" style={{ marginBottom: "var(--space-4)" }}>
+          {report}
+          <button type="button" className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => setReport("")}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+      {models.error ? <div className="notice error">{models.error}</div> : null}
+      {items.length === 0 && !models.loading ? (
+        <EmptyState title="No AI models registered" hint="Register models here, then grant them to users under Access." />
+      ) : (
+        <div className="entity-list">
+          {items.map((m) => {
+            const row = modelRowFields(m, providerNames.get(m.provider_id));
+            return (
+              <div key={m.id} className="entity-row">
+                <div className="entity-main">
+                  <span className="entity-title">{row.title}</span>
+                  <span className="entity-meta">
+                    {row.subtitle} · {row.contextWindow} · {row.tools} · {row.longContextThreshold}
+                  </span>
+                  <span className="entity-meta">
+                    {row.rates.map((r) => `${r.label}: ${r.value}`).join(" · ")}
+                  </span>
+                </div>
+                <div className="entity-side">
+                  <StatusChip status={m.status === "active" ? "idle" : m.status === "deprecated" ? "paused" : "error"} />
+                  {isAdmin ? (
+                    <button type="button" className="btn btn-sm" onClick={() => setEditing(m)}>
+                      Edit
+                    </button>
+                  ) : null}
+                  {isAdmin && m.status === "active" ? (
+                    <button type="button" className="btn btn-sm btn-danger" onClick={() => void deprecate(m)}>
+                      Deprecate
+                    </button>
+                  ) : null}
+                  {isAdmin ? (
+                    <DeleteAIModelButton model={m} onDeleted={() => void models.refresh()} />
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {(creating || editing) && (
+        <AIModelModal
+          model={editing}
+          providers={providers.data || []}
+          onClose={() => {
+            setCreating(false);
+            setEditing(null);
+          }}
+          onSaved={() => {
+            setCreating(false);
+            setEditing(null);
+            models.refresh();
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+// DeleteAIModelButton mirrors DeleteResourceButton (S-103): plain delete
+// first; on 409 in_use the shared ConfirmDialog lists affected users and
+// agents (with slot) and the explicit second click retries with force.
+function DeleteAIModelButton({ model, onDeleted }: { model: AIModel; onDeleted: () => void }) {
+  const { token } = useAuth();
+  const [usage, setUsage] = useState<ModelUsageEntry[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function attempt(force: boolean) {
+    setBusy(true);
+    setError("");
+    try {
+      await apiDelete(withForce(`/ai-models/${model.id}`, force), token);
+      setUsage(null);
+      onDeleted();
+    } catch (err) {
+      const conflict = inUseConflict(err);
+      if (conflict) {
+        setUsage(conflict);
+      } else {
+        setError(err instanceof Error ? err.message : "delete failed");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => void attempt(false)}>
+        Delete
+      </button>
+      {error ? (
+        <span className="notice error" role="alert" style={{ marginLeft: 8 }}>
+          {error}
+        </span>
+      ) : null}
+      {usage !== null ? (
+        <ConfirmDialog
+          title={`Delete “${model.display_name || model.model_name}”?`}
+          body={formatInUseMessage(usage)}
+          confirmLabel="Delete and revoke"
+          onConfirm={async () => {
+            await attempt(true);
+          }}
+          onClose={() => setUsage(null)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function AIModelModal({
+  model,
+  providers,
+  onClose,
+  onSaved,
+}: {
+  model: AIModel | null;
+  providers: LLMProvider[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { token } = useAuth();
+  const [values, setValues] = useState<AIModelFormValues>(() => (model ? formFromAIModel(model) : emptyAIModelForm()));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  function setField<K extends keyof AIModelFormValues>(key: K, value: AIModelFormValues[K]) {
+    setValues((v) => ({ ...v, [key]: value }));
+  }
+
+  function setRate(key: (typeof PRICING_RATE_KEYS)[number], raw: string) {
+    setValues((v) => ({ ...v, pricing: { ...v.pricing, [key]: raw } }));
+  }
+
+  return (
+    <Modal title={model ? `Edit “${model.display_name || model.model_name}”` : "Register AI model"} onClose={onClose}>
+      <ModalForm
+        busy={busy}
+        error={error}
+        submitLabel={model ? "Save changes" : "Register"}
+        submitDisabled={values.provider_id === "" || values.model_name.trim() === ""}
+        onCancel={onClose}
+        onSubmit={async () => {
+          setBusy(true);
+          setError("");
+          try {
+            const body = buildAIModelPayload(values);
+            if (model) {
+              await apiPatch(`/ai-models/${model.id}`, token, body);
+            } else {
+              await apiPost("/ai-models", token, body);
+            }
+            onSaved();
+          } catch (err) {
+            // Field-named validation errors from the API (and the local
+            // payload builder) surface verbatim — e.g.
+            // "cached_input_per_1m in pricing must be numeric".
+            const dup = isDuplicateModel(err);
+            setError(dup ? `Duplicate model: ${err instanceof Error ? err.message : ""}` : err instanceof Error ? err.message : "save failed");
+            setBusy(false);
+          }
+        }}
+      >
+        <div className="field-row">
+          <label className="field">
+            <span>Provider (credential holder)</span>
+            <select value={values.provider_id} onChange={(e) => setField("provider_id", e.target.value)}>
+              <option value="" disabled>
+                Select provider…
+              </option>
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Model name</span>
+            <input
+              value={values.model_name}
+              onChange={(e) => setField("model_name", e.target.value)}
+              placeholder="gpt-6-sol"
+              autoFocus
+            />
+          </label>
+        </div>
+        <div className="field-row">
+          <label className="field">
+            <span>Display name (optional — defaults to model name)</span>
+            <input
+              value={values.display_name}
+              onChange={(e) => setField("display_name", e.target.value)}
+              placeholder="GPT-6 Sol"
+            />
+          </label>
+          <label className="field">
+            <span>Context window (tokens)</span>
+            <input
+              type="number"
+              min={0}
+              value={values.context_window}
+              onChange={(e) => setField("context_window", e.target.value)}
+              placeholder="200000"
+            />
+          </label>
+        </div>
+        <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={values.supports_tools}
+            onChange={(e) => setField("supports_tools", e.target.checked)}
+          />
+          <span>Supports tool calling</span>
+        </label>
+        <div className="field-row">
+          {PRICING_RATE_KEYS.map((key) => (
+            <label key={key} className="field">
+              <span>{PRICING_RATE_LABELS[key]} ($ per 1M tokens)</span>
+              <input
+                type="number"
+                min={0}
+                step="any"
+                value={values.pricing[key]}
+                onChange={(e) => setRate(key, e.target.value)}
+                placeholder="0.00"
+              />
+            </label>
+          ))}
+        </div>
+        <label className="field">
+          <span>Long-context threshold (tokens, optional)</span>
+          <input
+            type="number"
+            min={0}
+            value={values.long_context_threshold_tokens}
+            onChange={(e) => setField("long_context_threshold_tokens", e.target.value)}
+            placeholder="272000"
+          />
+          <span className="field-hint">
+            Top-level field: splits short vs long context pricing tiers (ADR-0010 D8). All four rates are required.
+          </span>
+        </label>
+      </ModalForm>
+    </Modal>
+  );
+}
+
+// WP6 (S-111) — Access tab: per-user AI model grants (ADR-0010 D3).
+// Removals from the grant set are guarded server-side (409 in_use); the
+// force retry is always an explicit second click so running agents are
+// never silently orphaned (D9).
+function AccessTab() {
+  const users = useApi<AdminUser[]>("/users", 60000);
+  const [selected, setSelected] = useState<AdminUser | null>(null);
+  const items = users.data || [];
+
+  return (
+    <section>
+      <div className="section-head">
+        <h2>Model access</h2>
+      </div>
+      {users.error ? (
+        <div className="notice error">
+          Could not load users: {users.error}. (The control-plane needs the admin <code>GET /users</code> endpoint — see
+          WP6 report.)
+        </div>
+      ) : null}
+      {items.length === 0 && !users.loading ? (
+        <EmptyState title="No users found" hint="Users appear here after their first OIDC sign-in." />
+      ) : (
+        <div className="entity-list">
+          {items.map((u) => (
+            <div key={u.id} className="entity-row">
+              <div className="entity-main">
+                <span className="entity-title">{u.name || u.email}</span>
+                <span className="entity-meta">
+                  {u.email} · role {u.role}
+                </span>
+              </div>
+              <div className="entity-side">
+                <button
+                  type="button"
+                  className={`btn btn-sm${selected?.id === u.id ? " btn-primary" : ""}`}
+                  onClick={() => setSelected(selected?.id === u.id ? null : u)}
+                >
+                  {selected?.id === u.id ? "Hide models" : "Manage models"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {selected ? <GrantEditor key={selected.id} user={selected} /> : null}
+    </section>
+  );
+}
+
+function GrantEditor({ user }: { user: AdminUser }) {
+  const { token } = useAuth();
+  const allModels = useApi<AIModel[]>("/ai-models?status=active", 60000);
+  const granted = useApi<AIModel[]>(`/users/${user.id}/models`, 0);
+  const [desired, setDesired] = useState<string[] | null>(null);
+  const [usage, setUsage] = useState<ModelUsageEntry[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [savedNote, setSavedNote] = useState("");
+
+  const currentIds = granted.data ? grantedModelIds(granted.data) : [];
+  const effective = desired ?? currentIds;
+  const dirty = desired !== null && grantDiff(currentIds, desired).added.length + grantDiff(currentIds, desired).removed.length > 0;
+
+  function toggle(modelId: string) {
+    setDesired((d) => {
+      const base = d ?? currentIds;
+      return base.includes(modelId) ? base.filter((id) => id !== modelId) : [...base, modelId];
+    });
+    setSavedNote("");
+  }
+
+  async function save(force: boolean) {
+    setBusy(true);
+    setError("");
+    try {
+      await apiPut(withForce(`/users/${user.id}/models`, force), token, { model_ids: effective });
+      setUsage(null);
+      setDesired(null);
+      setSavedNote("Grants saved and virtual keys converged.");
+      await granted.refresh();
+    } catch (err) {
+      const conflict = inUseConflict(err);
+      if (conflict && !force) {
+        setUsage(conflict);
+      } else {
+        setError(err instanceof Error ? err.message : "save failed");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const models = allModels.data || [];
+  const diff = desired === null ? { added: [], removed: [] } : grantDiff(currentIds, desired);
+
+  return (
+    <div className="card" style={{ marginTop: "var(--space-4)" }}>
+      <div className="section-head">
+        <h2>Models granted to {user.name || user.email}</h2>
+      </div>
+      {granted.error ? <div className="notice error">{granted.error}</div> : null}
+      {allModels.error ? <div className="notice error">{allModels.error}</div> : null}
+      {savedNote ? <div className="notice" role="status">{savedNote}</div> : null}
+      {error ? <div className="notice error" role="alert">{error}</div> : null}
+      {models.length === 0 && !allModels.loading ? (
+        <EmptyState title="No active AI models" hint="Register models under AI Models first." />
+      ) : (
+        <div className="entity-list">
+          {models.map((m) => (
+            <div key={m.id} className="entity-row">
+              <label className="entity-main" style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={effective.includes(m.id)}
+                  onChange={() => toggle(m.id)}
+                  disabled={busy}
+                />
+                <span className="entity-title">{m.display_name || m.model_name}</span>
+                <span className="entity-meta">
+                  {m.model_name} · {m.supports_tools ? "tools ✓" : "no tools"}
+                </span>
+              </label>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ marginTop: "var(--space-4)", display: "flex", gap: 8, alignItems: "center" }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!dirty || busy || granted.loading}
+          onClick={() => void save(false)}
+        >
+          Save grants
+        </button>
+        {dirty ? (
+          <span className="entity-meta">
+            {diff.added.length} adding · {diff.removed.length} removing
+          </span>
+        ) : null}
+      </div>
+      {usage !== null ? (
+        <ConfirmDialog
+          title={`Remove grants for ${user.name || user.email}?`}
+          body={formatInUseMessage(usage)}
+          confirmLabel="Revoke and converge keys"
+          onConfirm={async () => {
+            await save(true);
+          }}
+          onClose={() => setUsage(null)}
+        />
+      ) : null}
+    </div>
   );
 }
 
