@@ -529,6 +529,132 @@ func TestGatewayFailureCallbackRecordsAuditOnly(t *testing.T) {
 	require.Contains(t, auditActions(audit), "llm.failure")
 }
 
+// WP5 (ADR-0010 D8 + Risk 3): the metering ingest must store the served
+// model, snapshot the bound AI Model's rates at event time, and compute
+// cost FROM THE SNAPSHOT — never trusting the reporter's figure when a
+// snapshot resolves, and never re-deriving from live pricing later.
+func TestGatewayMeteringSnapshotsRatesAndComputesCost(t *testing.T) {
+	t.Parallel()
+
+	store := storage.NewMemoryStore()
+	cfg := testConfig()
+	cfg.GatewayCallbackToken = "callback-token"
+	handler := New(cfg, store)
+
+	var squad domain.Squad
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+		"name": "Snapshot Squad",
+	}, http.StatusCreated, &squad)
+
+	var agent domain.Agent
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
+		"name": "Snapshot Agent",
+	}, http.StatusCreated, &agent)
+
+	provider, err := store.CreateLLMProvider(context.Background(), &domain.LLMProvider{
+		Name:         "snapshot-provider",
+		Kind:         "openai",
+		BaseURL:      "https://api.example.test",
+		APIKeyRef:    "k8s:secret/snapshot-provider",
+		RegisteredBy: squad.OwnerID,
+	})
+	require.NoError(t, err)
+	primary, err := store.CreateAIModel(context.Background(), &domain.AIModel{
+		ProviderID:   provider.ID,
+		DisplayName:  "Primary Model",
+		ModelName:    "primary-model",
+		Pricing:      json.RawMessage(`{"input_per_1m":1,"cached_input_per_1m":0.1,"cache_write_per_1m":1.25,"output_per_1m":2}`),
+		RegisteredBy: squad.OwnerID,
+	})
+	require.NoError(t, err)
+	fallback, err := store.CreateAIModel(context.Background(), &domain.AIModel{
+		ProviderID:   provider.ID,
+		DisplayName:  "Fallback Model",
+		ModelName:    "fallback-model",
+		Pricing:      json.RawMessage(`{"input_per_1m":3,"cached_input_per_1m":0.3,"cache_write_per_1m":3.75,"output_per_1m":7}`),
+		RegisteredBy: squad.OwnerID,
+	})
+	require.NoError(t, err)
+
+	// Bind the agent directly on the store (the binding PATCH path is
+	// covered by S-108 tests; here we only need the binding present at
+	// metering time).
+	storedAgent, err := store.GetAgent(context.Background(), agent.ID)
+	require.NoError(t, err)
+	storedAgent.AIModelID = primary.ID
+	storedAgent.FallbackAIModelID = fallback.ID
+	_, err = store.UpdateAgent(context.Background(), storedAgent)
+	require.NoError(t, err)
+
+	// A fallback-served turn: the reporter asks for primary but says the
+	// fallback served it, and sends a bogus cost that must be ignored in
+	// favour of the snapshot computation.
+	doGatewayCallback(t, handler, "callback-token", map[string]any{
+		"agent_id":      agent.ID,
+		"squad_id":      squad.ID,
+		"model":         "primary-model",
+		"model_used":    "fallback-model",
+		"input_tokens":  1000000,
+		"output_tokens": 500000,
+		"cost":          999.0,
+		"currency":      "USD",
+	}, http.StatusAccepted)
+
+	// fallback pricing: 1M*3/1M + 0.5M*7/1M = 3 + 3.5 = 6.5
+	var usage domain.MeteringEvent
+	doJSON(t, handler, http.MethodGet, "/api/v1/agents/"+agent.ID+"/metering", nil, http.StatusOK, &usage)
+	require.InDelta(t, 6.5, usage.Cost, 0.0001)
+
+	// The snapshot must be frozen: changing live pricing afterwards must
+	// not rewrite the historical cost.
+	fallback.Pricing = json.RawMessage(`{"input_per_1m":100,"cached_input_per_1m":10,"cache_write_per_1m":125,"output_per_1m":200}`)
+	_, err = store.UpdateAIModel(context.Background(), fallback)
+	require.NoError(t, err)
+
+	doJSON(t, handler, http.MethodGet, "/api/v1/agents/"+agent.ID+"/metering", nil, http.StatusOK, &usage)
+	require.InDelta(t, 6.5, usage.Cost, 0.0001)
+
+	// The stored event's rate columns + served model are asserted at the
+	// storage layer (metering_snapshot_test.go); the API-level checks
+	// above prove the snapshot was computed at ingest and frozen.
+}
+
+// When no AI Model matches the served model, the ingest must keep the
+// reporter-supplied cost and record NO snapshot rather than fabricating
+// rates.
+func TestGatewayMeteringWithoutResolvableModelKeepsReportedCost(t *testing.T) {
+	t.Parallel()
+
+	store := storage.NewMemoryStore()
+	cfg := testConfig()
+	cfg.GatewayCallbackToken = "callback-token"
+	handler := New(cfg, store)
+
+	var squad domain.Squad
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+		"name": "Unpriced Squad",
+	}, http.StatusCreated, &squad)
+
+	var agent domain.Agent
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
+		"name": "Unpriced Agent",
+	}, http.StatusCreated, &agent)
+
+	doGatewayCallback(t, handler, "callback-token", map[string]any{
+		"agent_id":      agent.ID,
+		"squad_id":      squad.ID,
+		"model":         "unknown-model",
+		"input_tokens":  10,
+		"output_tokens": 5,
+		"cost":          0.12,
+		"currency":      "USD",
+	}, http.StatusAccepted)
+
+	var usage domain.MeteringEvent
+	doJSON(t, handler, http.MethodGet, "/api/v1/agents/"+agent.ID+"/metering", nil, http.StatusOK, &usage)
+	require.InDelta(t, 0.12, usage.Cost, 0.0001)
+}
+
 func TestSquadAndAgentMutationsWriteCustomResources(t *testing.T) {
 	t.Parallel()
 

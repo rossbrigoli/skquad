@@ -47,6 +47,10 @@ spec:
                   type: string
                 defaultModel:
                   type: string
+                aiModelId:
+                  type: string
+                fallbackAiModelId:
+                  type: string
                 image:
                   type: string
                 credentialSecret:

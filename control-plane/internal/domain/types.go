@@ -90,6 +90,14 @@ type Agent struct {
 	// CR-write time (outbox worker); it is NOT persisted on the agents table.
 	// See ADR-0009 and the operator WorkspaceSecret spec.
 	WorkspaceSecrets []WorkspaceSecret `json:"workspace_secrets,omitempty"`
+	// AIModelName / FallbackAIModelName are derived from the bound AI Model
+	// rows at CR-apply time (outbox worker), like WorkspaceSecrets — they are
+	// NOT persisted on the agents table. They carry the gateway-routable
+	// model_name so the Agent CR's defaultModel (and the runtime's
+	// SKQUAD_DEFAULT_MODEL) reflects the bound AI Model rather than the
+	// legacy free-text column (WP5, ADR-0010 D4).
+	AIModelName         string `json:"ai_model_name,omitempty"`
+	FallbackAIModelName string `json:"fallback_ai_model_name,omitempty"`
 }
 
 // WorkspaceSecret links a granted git workspace (registry resource id) to the
@@ -473,6 +481,13 @@ type AccessGrant struct {
 }
 
 // MeteringEvent records token usage for an agent (and squad) LLM call.
+//
+// WP5 (ADR-0010 D8 + Risk 3): ModelUsed names the model that ACTUALLY
+// served the call (which may differ from the requested Model when the
+// gateway fell back), and the Rate* fields snapshot the per-1M pricing
+// used at event time together with the cost computed from that snapshot.
+// Historical cost must never be re-derived by joining to live pricing —
+// vendors change prices and the history would silently rewrite itself.
 type MeteringEvent struct {
 	ID           string    `json:"id"`
 	AgentID      string    `json:"agent_id"`
@@ -485,6 +500,19 @@ type MeteringEvent struct {
 	Cost         float64   `json:"cost"`
 	Currency     string    `json:"currency"`
 	Timestamp    time.Time `json:"timestamp"`
+	// ModelUsed is the model that actually served the turn. Empty means the
+	// reporter could not tell us; consumers fall back to Model.
+	ModelUsed string `json:"model_used,omitempty"`
+	// Rate snapshot (per 1M tokens), captured from the serving AI Model's
+	// pricing at event time. Nil rates mean no snapshot was resolvable and
+	// Cost is the reporter-supplied value.
+	RateInputPer1M       *float64 `json:"rate_input_per_1m,omitempty"`
+	RateCachedInputPer1M *float64 `json:"rate_cached_input_per_1m,omitempty"`
+	RateCacheWritePer1M  *float64 `json:"rate_cache_write_per_1m,omitempty"`
+	RateOutputPer1M      *float64 `json:"rate_output_per_1m,omitempty"`
+	// RateSnapshot is true when the rates above were resolved from the AI
+	// Model registry and Cost was computed from them.
+	RateSnapshot bool `json:"rate_snapshot,omitempty"`
 }
 
 // WakeLatencyEvent records one task-delivery wake path (S-87): from the

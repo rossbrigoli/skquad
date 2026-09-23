@@ -1589,11 +1589,23 @@ func (p *PostgresStore) RecordMetering(ctx context.Context, event *domain.Meteri
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO metering (
 			agent_id, squad_id, task_id, provider_id, model, input_tokens, output_tokens,
-			cost, currency, timestamp
+			cost, currency, timestamp, model_used,
+			rate_input_per_1m, rate_cached_input_per_1m, rate_cache_write_per_1m,
+			rate_output_per_1m, rate_snapshot
 		)
-		VALUES ($1, $2, nullif($3, '')::uuid, nullif($4, '')::uuid, $5, $6, $7, $8, $9, coalesce(nullif($10, ''), now()::text)::timestamptz)
-	`, event.AgentID, event.SquadID, event.TaskID, event.ProviderID, event.Model, event.InputTokens, event.OutputTokens, event.Cost, defaultCurrency(event.Currency), nullableTimeText(event.Timestamp))
+		VALUES ($1, $2, nullif($3, '')::uuid, nullif($4, '')::uuid, $5, $6, $7, $8, $9, coalesce(nullif($10, ''), now()::text)::timestamptz, $11, $12, $13, $14, $15, $16)
+	`, event.AgentID, event.SquadID, event.TaskID, event.ProviderID, event.Model, event.InputTokens, event.OutputTokens, event.Cost, defaultCurrency(event.Currency), nullableTimeText(event.Timestamp), event.ModelUsed,
+		rateValue(event.RateInputPer1M), rateValue(event.RateCachedInputPer1M), rateValue(event.RateCacheWritePer1M), rateValue(event.RateOutputPer1M), event.RateSnapshot)
 	return mapPgErr(err)
+}
+
+// rateValue maps a nil rate pointer to a SQL NULL (no snapshot) without
+// importing database/sql into the call sites.
+func rateValue(v *float64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
 }
 
 func (p *PostgresStore) SumMetering(ctx context.Context, squadID, agentID string) (*domain.MeteringEvent, error) {

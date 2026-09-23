@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
@@ -117,6 +118,42 @@ func deriveWorkspaceSecrets(ctx context.Context, reader workspaceGrantReader, ag
 	return secrets, nil
 }
 
+// aiModelResolver resolves bound AI Model ids to their registry rows.
+// Both the memory and Postgres stores satisfy this; the outbox worker uses
+// it to derive the gateway-routable model names for the Agent CR (WP5).
+type aiModelResolver interface {
+	GetAIModel(ctx context.Context, id string) (*domain.AIModel, error)
+}
+
+// deriveBindingModelNames resolves the agent's primary/fallback AI Model
+// ids into model names on the CR payload. Unresolvable ids are logged and
+// left empty so the CR writer falls back to the legacy default_model —
+// one stale binding must not block the whole CR sync (same posture as
+// deriveWorkspaceSecrets).
+func deriveBindingModelNames(ctx context.Context, resolver aiModelResolver, agent *domain.Agent) {
+	if resolver == nil {
+		return
+	}
+	if id := strings.TrimSpace(agent.AIModelID); id != "" {
+		model, err := resolver.GetAIModel(ctx, id)
+		if err != nil {
+			slog.Warn("cannot resolve bound primary AI model; CR defaultModel falls back to legacy value",
+				"agent", agent.ID, "ai_model_id", id, "error", err)
+		} else {
+			agent.AIModelName = model.ModelName
+		}
+	}
+	if id := strings.TrimSpace(agent.FallbackAIModelID); id != "" {
+		model, err := resolver.GetAIModel(ctx, id)
+		if err != nil {
+			slog.Warn("cannot resolve bound fallback AI model; fallbackAiModelId carries no name",
+				"agent", agent.ID, "fallback_ai_model_id", id, "error", err)
+		} else {
+			agent.FallbackAIModelName = model.ModelName
+		}
+	}
+}
+
 func applyOutboxEvent(ctx context.Context, store storage.KubernetesOutboxStore, writer outboxWriter, event *domain.KubernetesOutboxEvent) error {
 	var payload domain.KubernetesOutboxPayload
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
@@ -143,6 +180,9 @@ func applyOutboxEvent(ctx context.Context, store storage.KubernetesOutboxStore, 
 				return err
 			}
 			payload.Agent.WorkspaceSecrets = secrets
+		}
+		if resolver, ok := store.(aiModelResolver); ok {
+			deriveBindingModelNames(ctx, resolver, payload.Agent)
 		}
 		return writer.UpsertAgent(ctx, payload.Agent, payload.Identity)
 	case domain.KubernetesOpDeleteAgent:

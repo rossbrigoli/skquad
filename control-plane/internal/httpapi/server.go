@@ -2230,6 +2230,11 @@ type gatewayMeteringRequest struct {
 	Currency     string    `json:"currency"`
 	Error        string    `json:"error"`
 	Timestamp    time.Time `json:"timestamp"`
+	// ModelUsed names the model that actually served the call when the
+	// reporter knows it (WP5 / ADR-0010 Risk 3). The gateway callback
+	// currently reports only the requested model, so this is optional and
+	// falls back to Model at ingest.
+	ModelUsed string `json:"model_used"`
 	// Alert carries a gateway-raised alert signal, e.g.
 	// "upstream_auth_failure" for upstream 401/403 (ADR-0010 D7: fall
 	// back AND alert so a dead key never runs silently on fallback).
@@ -2268,6 +2273,7 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 
 	metadata, _ := json.Marshal(map[string]any{
 		"model":         req.Model,
+		"model_used":    orString(strings.TrimSpace(req.ModelUsed), req.Model),
 		"provider_id":   req.ProviderID,
 		"task_id":       req.TaskID,
 		"input_tokens":  req.InputTokens,
@@ -2297,23 +2303,95 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "cost must not be negative")
 		return
 	}
+
+	// WP5 / ADR-0010 D8 + Risk 3: resolve the model that served the call
+	// and snapshot its pricing at event time. When a snapshot resolves, the
+	// stored cost is computed FROM THE SNAPSHOT (never the reporter's
+	// figure, and never re-derived from live pricing later). When no
+	// snapshot resolves we keep the reporter-supplied cost and record no
+	// rates, so the gap is visible rather than fabricated.
+	modelUsed := strings.TrimSpace(req.ModelUsed)
+	if modelUsed == "" {
+		modelUsed = strings.TrimSpace(req.Model)
+	}
+	cost := req.Cost
+	var (
+		rateIn, rateCached, rateWrite, rateOut *float64
+		snapshot                            bool
+	)
+	if modelUsed != "" {
+		if model, ok := s.resolveMeteringModel(r.Context(), agent, modelUsed); ok {
+			if pricing, err := domain.ParseModelPricing(model.Pricing); err == nil && pricing != nil {
+				cost = pricing.CostFor(req.InputTokens, req.OutputTokens)
+				rateIn = &pricing.InputPer1M
+				rateCached = &pricing.CachedInputPer1M
+				rateWrite = &pricing.CacheWritePer1M
+				rateOut = &pricing.OutputPer1M
+				snapshot = true
+			}
+		}
+	}
+
 	if err := s.store.RecordMetering(r.Context(), &domain.MeteringEvent{
 		AgentID:      req.AgentID,
 		SquadID:      req.SquadID,
 		TaskID:       req.TaskID,
 		ProviderID:   req.ProviderID,
 		Model:        req.Model,
+		ModelUsed:    modelUsed,
 		InputTokens:  req.InputTokens,
 		OutputTokens: req.OutputTokens,
-		Cost:         req.Cost,
+		Cost:         cost,
 		Currency:     req.Currency,
 		Timestamp:    req.Timestamp,
+		RateInputPer1M:       rateIn,
+		RateCachedInputPer1M: rateCached,
+		RateCacheWritePer1M:  rateWrite,
+		RateOutputPer1M:      rateOut,
+		RateSnapshot:         snapshot,
 	}); err != nil {
 		writeStorageError(w, err)
 		return
 	}
 	_ = s.recordSystemAudit(r.Context(), "llm.metering.ingest", "agent", req.AgentID, req.SquadID, metadata)
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// resolveMeteringModel finds the AI Model row whose model_name matches the
+// served model, preferring the agent's own binding (primary, then
+// fallback) because the binding is the authoritative context the key was
+// provisioned with. Returns ok=false when nothing matches so the caller
+// records no rate snapshot instead of guessing.
+func (s *Server) resolveMeteringModel(ctx context.Context, agent *domain.Agent, modelUsed string) (*domain.AIModel, bool) {
+	if id := strings.TrimSpace(agent.AIModelID); id != "" {
+		if model, err := s.store.GetAIModel(ctx, id); err == nil && model.ModelName == modelUsed {
+			return model, true
+		}
+	}
+	if id := strings.TrimSpace(agent.FallbackAIModelID); id != "" {
+		if model, err := s.store.GetAIModel(ctx, id); err == nil && model.ModelName == modelUsed {
+			return model, true
+		}
+	}
+	models, err := s.store.ListAIModels(ctx, "")
+	if err != nil {
+		return nil, false
+	}
+	var fallbackMatch *domain.AIModel
+	for _, model := range models {
+		if model.ModelName != modelUsed {
+			continue
+		}
+		if model.Status == domain.ResourceActive {
+			return model, true
+		}
+		if fallbackMatch == nil {
+			fallbackMatch = model
+		}
+	}
+	// Prefer an active match; a deprecated model still prices honestly for
+	// historical turns over recording nothing.
+	return fallbackMatch, fallbackMatch != nil
 }
 
 func (s *Server) listSquadAudit(w http.ResponseWriter, r *http.Request) {
@@ -3811,6 +3889,14 @@ func defaultMeteringCurrency(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "USD"
+	}
+	return value
+}
+
+// orString returns value when non-empty, otherwise the fallback.
+func orString(value, fallback string) string {
+	if value == "" {
+		return fallback
 	}
 	return value
 }

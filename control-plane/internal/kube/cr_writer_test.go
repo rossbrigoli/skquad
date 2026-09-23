@@ -277,3 +277,98 @@ func TestNewCRWriterMissingCAFileFallsBackToSystemPool(t *testing.T) {
 		t.Fatalf("missing CA file should not fail construction: %v", err)
 	}
 }
+
+// WP5 (ADR-0010 D4): the Agent CR must carry the model binding ids, and
+// defaultModel must prefer the resolved bound AI Model name over the
+// legacy free-text column.
+func TestUpsertAgentEmitsModelBindingFields(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	writer := &CRWriter{
+		baseURL:      server.URL,
+		namespace:    "skquad-system",
+		groupVersion: "skquad.io/v1",
+		agentImage:   "example.com/skquad/agent-runtime:test",
+		token:        "test-token",
+		client:       server.Client(),
+	}
+
+	agent := &domain.Agent{
+		ID:                  "agent-bind",
+		SquadID:             "squad-1",
+		Role:                "coder",
+		DefaultProvider:     "legacy-provider-id",
+		DefaultModel:        "legacy-model",
+		AIModelID:           "ai-primary-uuid",
+		FallbackAIModelID:   "ai-fallback-uuid",
+		AIModelName:         "gpt-6-sol",
+		FallbackAIModelName: "halogen/qwen3.8-flash-next",
+		IdleTimeoutSec:      300,
+	}
+	if err := writer.UpsertAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := gotBody["spec"].(map[string]any)
+	if got := spec["aiModelId"]; got != "ai-primary-uuid" {
+		t.Fatalf("aiModelId = %v, want ai-primary-uuid", got)
+	}
+	if got := spec["fallbackAiModelId"]; got != "ai-fallback-uuid" {
+		t.Fatalf("fallbackAiModelId = %v, want ai-fallback-uuid", got)
+	}
+	// Resolved binding name wins over the legacy free-text default.
+	if got := spec["defaultModel"]; got != "gpt-6-sol" {
+		t.Fatalf("defaultModel = %v, want gpt-6-sol", got)
+	}
+}
+
+func TestUpsertAgentDefaultModelFallsBackToLegacyWhenBindingUnresolved(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	writer := &CRWriter{
+		baseURL:      server.URL,
+		namespace:    "skquad-system",
+		groupVersion: "skquad.io/v1",
+		agentImage:   "example.com/skquad/agent-runtime:test",
+		token:        "test-token",
+		client:       server.Client(),
+	}
+
+	agent := &domain.Agent{
+		ID:             "agent-legacy",
+		SquadID:        "squad-1",
+		Role:           "coder",
+		DefaultModel:   "legacy-model",
+		AIModelID:      "ai-unresolved-uuid",
+		IdleTimeoutSec: 300,
+	}
+	if err := writer.UpsertAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := gotBody["spec"].(map[string]any)
+	if got := spec["defaultModel"]; got != "legacy-model" {
+		t.Fatalf("defaultModel = %v, want legacy-model (unresolved binding must not blank the field)", got)
+	}
+	if got := spec["aiModelId"]; got != "ai-unresolved-uuid" {
+		t.Fatalf("aiModelId = %v, want ai-unresolved-uuid", got)
+	}
+}

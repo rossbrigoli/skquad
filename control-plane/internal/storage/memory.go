@@ -2219,7 +2219,21 @@ func cloneMeteringEvent(event *domain.MeteringEvent) *domain.MeteringEvent {
 		return nil
 	}
 	v := *event
+	// Deep-copy the rate snapshot pointers so a later mutation of the
+	// caller's event cannot rewrite the stored historical snapshot.
+	v.RateInputPer1M = cloneFloatPtr(event.RateInputPer1M)
+	v.RateCachedInputPer1M = cloneFloatPtr(event.RateCachedInputPer1M)
+	v.RateCacheWritePer1M = cloneFloatPtr(event.RateCacheWritePer1M)
+	v.RateOutputPer1M = cloneFloatPtr(event.RateOutputPer1M)
 	return &v
+}
+
+func cloneFloatPtr(v *float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
 }
 
 func cloneAuditEntry(entry *domain.AuditEntry) *domain.AuditEntry {

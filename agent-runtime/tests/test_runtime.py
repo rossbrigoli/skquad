@@ -1678,5 +1678,117 @@ class LLMMessageHandlerTest(unittest.TestCase):
             self.assertEqual(prompt, "You are a terse pirate.")
 
 
+class ModelUsedObservabilityTest(unittest.TestCase):
+    """WP5 / ADR-0010 Risk 3: the runtime must record which model
+    ACTUALLY served each turn, not which model was requested."""
+
+    def _task_config(self, tmp):
+        virtual_key = Path(tmp) / "llm-gateway"
+        virtual_key.write_text("virtual-key", encoding="utf-8")
+        return load_bootstrap_config(
+            {
+                "SKQUAD_AGENT_ID": "agent-1",
+                "SKQUAD_SQUAD_ID": "squad-1",
+                "SKQUAD_AGENT_CREDENTIAL_PATH": str(Path(tmp) / "agent"),
+                "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH": str(virtual_key),
+                "SKQUAD_CONTROL_PLANE_URL": "http://control-plane",
+                "SKQUAD_LLM_GATEWAY_URL": "http://gateway",
+                "SKQUAD_DEFAULT_MODEL": "primary-model",
+                "SKQUAD_AI_MODEL_ID": "ai-model-primary-uuid",
+                "SKQUAD_FALLBACK_MODEL_ID": "ai-model-fallback-uuid",
+            }
+        )
+
+    def test_task_records_requested_model_when_gateway_echoes_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._task_config(tmp)
+
+            def completion(**kwargs):
+                return {
+                    "model": kwargs["model"],
+                    "choices": [{"message": {"content": "SKQUAD_STATUS: done\nok"}}],
+                }
+
+            handler = LiteLLMTaskHandler(completion=completion, discover_resources=False)
+            result = handler.handle_task(fake_task("task-1"), config)
+            self.assertEqual(result.status, "done")
+            self.assertEqual(result.model_used, "primary-model")
+
+    def test_task_records_fallback_served_model_differing_from_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._task_config(tmp)
+
+            def completion(**kwargs):
+                # Simulate the gateway having failed over: the response
+                # body carries the fallback deployment's model name while
+                # the request asked for the primary.
+                return {
+                    "model": "fallback-model",
+                    "choices": [{"message": {"content": "SKQUAD_STATUS: done\nok"}}],
+                }
+
+            handler = LiteLLMTaskHandler(completion=completion, discover_resources=False)
+            result = handler.handle_task(fake_task("task-1"), config)
+            self.assertEqual(result.status, "done")
+            self.assertEqual(result.model_used, "fallback-model")
+            self.assertNotEqual(result.model_used, "primary-model")
+
+    def test_task_model_used_falls_back_to_requested_when_response_has_no_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._task_config(tmp)
+
+            def completion(**kwargs):
+                # A response shape with no model field at all: we report
+                # the requested model rather than guessing a fallback.
+                return {"choices": [{"message": {"content": "SKQUAD_STATUS: done\nok"}}]}
+
+            handler = LiteLLMTaskHandler(completion=completion, discover_resources=False)
+            result = handler.handle_task(fake_task("task-1"), config)
+            self.assertEqual(result.model_used, "primary-model")
+
+    def test_task_model_used_tracks_last_step_after_tool_loop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._task_config(tmp)
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs["model"])
+                if len(calls) == 1:
+                    return fake_tool_completion("call-1", "echo", {"message": "hi"})
+                return {
+                    "model": "fallback-model",
+                    "choices": [{"message": {"content": "SKQUAD_STATUS: done\nok"}}],
+                }
+
+            plugin = EchoPlugin()
+            handler = LiteLLMTaskHandler(plugins=[plugin], completion=completion, discover_resources=False)
+            result = handler.handle_task(fake_task("task-1"), config)
+            self.assertEqual(result.status, "done")
+            self.assertEqual(result.model_used, "fallback-model")
+
+    def test_chat_records_fallback_served_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._task_config(tmp)
+            client = FakeChatClient(None)
+
+            def completion(**kwargs):
+                return {
+                    "model": "fallback-model",
+                    "choices": [{"message": {"content": "hello from fallback"}}],
+                }
+
+            handler = LLMMessageHandler(completion=completion)
+            handler._client = client
+            result = handler.handle_message(user_msg("m-1", "hi"), config)
+            self.assertTrue(result.ok)
+            self.assertEqual(result.model_used, "fallback-model")
+
+    def test_bootstrap_config_exposes_binding_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._task_config(tmp)
+            self.assertEqual(config.ai_model_id, "ai-model-primary-uuid")
+            self.assertEqual(config.fallback_model_id, "ai-model-fallback-uuid")
+
+
 if __name__ == "__main__":
     unittest.main()
