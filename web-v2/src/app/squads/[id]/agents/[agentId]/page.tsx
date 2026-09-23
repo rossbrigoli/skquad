@@ -33,6 +33,16 @@ import {
 } from "../../../../../lib/api";
 import { formatCost, formatRelativeTime, formatTokens, leaseState } from "../../../../../lib/format";
 import { agentStatus } from "../../../../../lib/status";
+import type { AIModel } from "../../../../../lib/aimodels";
+import {
+  bindingWarnings,
+  buildBindingPayload,
+  fallbackChoices,
+  findModelById,
+  modelLabel,
+  selectableModels,
+  withCurrentOption,
+} from "../../../../../lib/agentLlm";
 
 const GRANTABLE_TYPES: { type: ResourceType; path: string; label: string }[] = [
   { type: "skill", path: "skills", label: "Skills" },
@@ -57,6 +67,8 @@ export default function AgentProfilePage() {
   const audit = useApi<AuditEntry[]>(`/squads/${squadId}/audit?limit=50`, 30000);
   const chat = useApi<Message[]>(`/agents/${agentId}/chat`, 10000);
   const providers = useApi<LLMProvider[]>("/registry/llm-providers", 60000);
+  // WP7 (S-112): the caller's granted+active AI Models for the LLM tab pickers.
+  const myModels = useApi<AIModel[]>("/models/me", 60000);
 
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -70,6 +82,10 @@ export default function AgentProfilePage() {
   const live = tasks.filter((t) => leaseState(t) === "running");
   const stalled = tasks.filter((t) => leaseState(t) === "stalled");
   const agentActivity = (audit.data || []).filter((e) => e.resource_id === agentId);
+  // WP2 (ADR-0010) made llm_provider grants legacy: they are no longer
+  // grantable and the LLM tab supersedes them, so hide any surviving
+  // llm_provider rows from the permissions surface (WP8 drops the type).
+  const resourceGrants = (perms.data || []).filter((p) => p.resource_type !== "llm_provider");
 
   if (!agent && !agents.loading) {
     return (
@@ -119,8 +135,8 @@ export default function AgentProfilePage() {
           <MetricTile label="Assigned tasks" value={tasks.length} sub={`${live.length} running now`} />
           <MetricTile
             label="Granted resources"
-            value={perms.data?.length ?? "—"}
-            sub={(perms.data || []).length === 0 ? "no resource grants" : "see below"}
+            value={resourceGrants.length}
+            sub={resourceGrants.length === 0 ? "no resource grants" : "see below"}
           />
         </div>
 
@@ -171,19 +187,37 @@ export default function AgentProfilePage() {
 
         <section style={{ marginTop: "var(--space-5)" }}>
           <div className="section-head">
+            <h2>LLM model</h2>
+          </div>
+          {agent ? (
+            <LlmBindingSection
+              key={`${agent.id}:${agent.ai_model_id || ""}:${agent.fallback_ai_model_id || ""}`}
+              agentId={agentId}
+              token={token}
+              primaryId={agent.ai_model_id || ""}
+              fallbackId={agent.fallback_ai_model_id || ""}
+              onSaved={() => agents.refresh()}
+            />
+          ) : (
+            <div className="notice">Loading agent…</div>
+          )}
+        </section>
+
+        <section style={{ marginTop: "var(--space-5)" }}>
+          <div className="section-head">
             <h2>Granted resources</h2>
             <button type="button" className="btn btn-sm" onClick={() => setGranting(true)}>
               + Grant access
             </button>
           </div>
-          {(perms.data || []).length === 0 ? (
+          {resourceGrants.length === 0 ? (
             <EmptyState
               title="No resource grants"
               hint="This agent cannot reach any registered workspaces, APIs or knowledge bases yet."
             />
           ) : (
             <div className="entity-list">
-              {(perms.data || []).map((grant) => (
+              {resourceGrants.map((grant) => (
                 <div key={grant.id} className="entity-row">
                   <div className="entity-main">
                     <span className="entity-title">{grant.resource_type}</span>
@@ -195,7 +229,10 @@ export default function AgentProfilePage() {
                       type="button"
                       className="btn btn-sm btn-danger"
                       onClick={async () => {
-                        const next = (perms.data || [])
+                        // Rebuild from resourceGrants (llm_provider rows
+                        // excluded): the backend rejects them on PUT, so
+                        // replaying legacy rows would break every revoke.
+                        const next = resourceGrants
                           .filter((p) => p.id !== grant.id)
                           .map((p) => ({ resource_type: p.resource_type, resource_id: p.resource_id }));
                         await apiPut(`/agents/${agentId}/permissions`, token, next);
@@ -260,7 +297,7 @@ export default function AgentProfilePage() {
           <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)", margin: 0 }}>
             {agent?.identity_id
               ? "Identity provisioned — credentials live in the squad namespace as projected secrets. Rotating invalidates the previous credential."
-              : "This agent has no runtime identity yet. It cannot connect to the control plane until an identity is provisioned. The agent needs at least one granted LLM provider model."}
+              : "This agent has no runtime identity yet. It cannot connect to the control plane until an identity is provisioned. Bind a primary model in the LLM model section above so provisioning can issue the agent's gateway key."}
           </p>
         </section>
 
@@ -304,7 +341,7 @@ export default function AgentProfilePage() {
 
         {granting ? (
           <GrantModal
-            existing={perms.data || []}
+            existing={resourceGrants}
             token={token}
             agentId={agentId}
             onClose={() => setGranting(false)}
@@ -449,6 +486,141 @@ function ChatThread({
       setBusy(false);
     }
   }
+}
+
+// WP7 (S-112) — LLM model binding section (ADR-0010 D4): primary is
+// required, fallback optional. Options come from the caller's granted+
+// active models (/models/me); the selected primary is excluded from the
+// fallback list. Warnings are soft — Save is never disabled by them.
+function LlmBindingSection({
+  agentId,
+  token,
+  primaryId,
+  fallbackId,
+  onSaved,
+}: {
+  agentId: string;
+  token: string;
+  primaryId: string;
+  fallbackId: string;
+  onSaved: () => void;
+}) {
+  const myModels = useApi<AIModel[]>("/models/me", 60000);
+  const [primary, setPrimary] = useState(primaryId);
+  const [fallback, setFallback] = useState(fallbackId);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  const models = myModels.data || [];
+  const primaryOpts = withCurrentOption(selectableModels(models), models, primary);
+  const fallbackOpts = fallbackChoices(models, primary);
+  const primaryModel = findModelById(models, primary);
+  const fallbackModel = findModelById(models, fallback);
+  const warnings = bindingWarnings(primaryModel, fallbackModel);
+  const dirty = primary !== primaryId || fallback !== fallbackId;
+
+  async function save() {
+    setBusy(true);
+    setError("");
+    setSaved(false);
+    try {
+      await apiPatch(`/agents/${agentId}`, token, buildBindingPayload(primary, fallback));
+      setSaved(true);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ display: "grid", gap: "var(--space-3)" }}>
+      {myModels.error ? <div className="notice error">{myModels.error}</div> : null}
+      {!myModels.loading && models.length === 0 ? (
+        <div className="notice">
+          You have no granted AI Models. Ask a platform admin to grant you models in Settings → Access
+          before binding this agent.
+        </div>
+      ) : null}
+      <div className="field-row">
+        <label className="field">
+          <span>Primary model (required)</span>
+          <select
+            value={primary}
+            onChange={(e) => {
+              setPrimary(e.target.value);
+              setSaved(false);
+              // A model cannot be its own fallback — clear it if it collides.
+              if (e.target.value === fallback) setFallback("");
+            }}
+          >
+            <option value="">— choose a model —</option>
+            {primaryOpts.models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {modelLabel(m)}
+              </option>
+            ))}
+            {primaryOpts.staleCurrent ? (
+              <option value={primary}>{`current binding (${primary.slice(0, 12)}…)`}</option>
+            ) : null}
+          </select>
+          {primaryOpts.staleCurrent ? (
+            <span className="field-hint">
+              The current binding is no longer granted/active for you — pick a new model to rebind.
+            </span>
+          ) : null}
+        </label>
+        <label className="field">
+          <span>Fallback model (optional)</span>
+          <select
+            value={fallback}
+            onChange={(e) => {
+              setFallback(e.target.value);
+              setSaved(false);
+            }}
+          >
+            <option value="">— none —</option>
+            {fallbackOpts.map((m) => (
+              <option key={m.id} value={m.id}>
+                {modelLabel(m)}
+              </option>
+            ))}
+          </select>
+          {primary && fallbackOpts.length === 0 && !myModels.loading ? (
+            <span className="field-hint">No other granted model available for fallback.</span>
+          ) : null}
+        </label>
+      </div>
+
+      {fallback && warnings.length > 0 ? (
+        <div style={{ display: "grid", gap: "var(--space-2)" }}>
+          {warnings.map((w) => (
+            <div key={w.code} className="notice warn">
+              ⚠ {w.message}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+        <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          disabled={busy || primary === ""}
+          onClick={() => void save()}
+        >
+          {busy ? "Saving…" : "Save binding"}
+        </button>
+        {saved && !dirty ? <span className="field-hint">Binding saved.</span> : null}
+        <span className="field-hint">
+          Changing the binding re-provisions the agent&apos;s gateway key immediately.
+        </span>
+      </div>
+      {error ? <div className="notice error">{error}</div> : null}
+    </div>
+  );
 }
 
 function GrantModal({
