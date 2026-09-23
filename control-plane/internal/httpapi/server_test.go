@@ -702,7 +702,8 @@ func TestAgentIdentityProvisionsLiteLLMVirtualKey(t *testing.T) {
 	cfg.LiteLLMAdminURL = gateway.URL
 	cfg.LiteLLMMasterKey = "sk-test-master"
 	crWriter := &fakeCRWriter{}
-	handler := NewWithCRWriter(cfg, storage.NewMemoryStore(), crWriter)
+	store := storage.NewMemoryStore()
+	handler := NewWithCRWriter(cfg, store, crWriter)
 
 	var squad domain.Squad
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
@@ -724,11 +725,15 @@ func TestAgentIdentityProvisionsLiteLLMVirtualKey(t *testing.T) {
 		"models":        []string{"openai/local-default", "openai/local-fast"},
 	}, http.StatusCreated, &provider)
 
-	var perms []domain.AgentPermission
-	doJSON(t, handler, http.MethodPut, "/api/v1/agents/"+agent.ID+"/permissions", []map[string]string{
-		{"resource_type": string(domain.ResLLMProvider), "resource_id": provider.ID},
-	}, http.StatusOK, &perms)
-	require.Len(t, perms, 1)
+	// The llm_provider grant type is closed at the API (ADR-0010 / S-107);
+	// seed the legacy grant directly so identity provisioning still has
+	// models to compile into the virtual key until WP3 moves to bindings.
+	require.NoError(t, store.GrantAgentPermission(context.Background(), &domain.AgentPermission{
+		AgentID:      agent.ID,
+		ResourceType: domain.ResLLMProvider,
+		ResourceID:   provider.ID,
+		GrantedBy:    "test",
+	}))
 
 	var identity domain.AgentIdentity
 	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+agent.ID+"/identity", nil, http.StatusCreated, &identity)
@@ -768,10 +773,15 @@ func TestAgentPermissionsSetAndList(t *testing.T) {
 		"name": "permission-skill",
 	}, http.StatusCreated, &skill)
 
+	var skill2 domain.RegistryResource
+	doJSON(t, handler, http.MethodPost, "/api/v1/registry/skills", map[string]any{
+		"name": "permission-skill-two",
+	}, http.StatusCreated, &skill2)
+
 	var perms []domain.AgentPermission
 	doJSON(t, handler, http.MethodPut, "/api/v1/agents/"+agent.ID+"/permissions", []map[string]string{
-		{"resource_type": string(domain.ResLLMProvider), "resource_id": provider.ID},
 		{"resource_type": string(domain.ResSkill), "resource_id": skill.ID},
+		{"resource_type": string(domain.ResSkill), "resource_id": skill2.ID},
 		{"resource_type": string(domain.ResSkill), "resource_id": skill.ID},
 	}, http.StatusOK, &perms)
 	require.Len(t, perms, 2)
@@ -800,7 +810,8 @@ func TestAgentRuntimeResourcesReturnsGrantedActiveResources(t *testing.T) {
 	t.Parallel()
 
 	crWriter := &fakeCRWriter{}
-	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
+	store := storage.NewMemoryStore()
+	handler := NewWithCRWriter(testConfig(), store, crWriter)
 
 	var squad domain.Squad
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
@@ -845,11 +856,20 @@ func TestAgentRuntimeResourcesReturnsGrantedActiveResources(t *testing.T) {
 
 	var perms []domain.AgentPermission
 	doJSON(t, handler, http.MethodPut, "/api/v1/agents/"+agent.ID+"/permissions", []map[string]string{
-		{"resource_type": string(domain.ResLLMProvider), "resource_id": provider.ID},
 		{"resource_type": string(domain.ResTool), "resource_id": tool.ID},
 		{"resource_type": string(domain.ResSkill), "resource_id": deprecated.ID},
 	}, http.StatusOK, &perms)
-	require.Len(t, perms, 3)
+	require.Len(t, perms, 2)
+
+	// The llm_provider grant type is closed at the API (ADR-0010 / S-107);
+	// seed the legacy grant directly — the runtime resource listing for
+	// existing provider grants is still exercised until WP3 replaces it.
+	require.NoError(t, store.GrantAgentPermission(context.Background(), &domain.AgentPermission{
+		AgentID:      agent.ID,
+		ResourceType: domain.ResLLMProvider,
+		ResourceID:   provider.ID,
+		GrantedBy:    "test",
+	}))
 
 	var resources []map[string]any
 	doAgentJSON(t, handler, agent.ID, credential, http.MethodGet, "/api/v1/agents/me/resources", nil, http.StatusOK, &resources)
@@ -2090,8 +2110,8 @@ func TestDeleteRegistryResourceInUseWarnsThenForceDeletes(t *testing.T) {
 
 	// In-use delete must warn with 409 + usage list, not delete.
 	var conflict struct {
-		Error string             `json:"error"`
-		Usage []deleteUsage      `json:"usage"`
+		Error string        `json:"error"`
+		Usage []deleteUsage `json:"usage"`
 	}
 	doJSON(t, handler, http.MethodDelete, "/api/v1/registry/skills/"+skill.ID, nil, http.StatusConflict, &conflict)
 	require.Equal(t, "in_use", conflict.Error)
@@ -2115,7 +2135,8 @@ func TestDeleteRegistryResourceInUseWarnsThenForceDeletes(t *testing.T) {
 }
 
 func TestDeleteLLMProviderInUseWarnsThenForceDeletes(t *testing.T) {
-	handler := New(testConfig(), storage.NewMemoryStore())
+	store := storage.NewMemoryStore()
+	handler := New(testConfig(), store)
 
 	var squad domain.Squad
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "prov-squad"}, http.StatusCreated, &squad)
@@ -2133,9 +2154,14 @@ func TestDeleteLLMProviderInUseWarnsThenForceDeletes(t *testing.T) {
 		"models":        []string{"example/model"},
 	}, http.StatusCreated, &provider)
 
-	doJSON(t, handler, http.MethodPut, "/api/v1/agents/"+agent.ID+"/permissions", []map[string]string{
-		{"resource_type": "llm_provider", "resource_id": provider.ID},
-	}, http.StatusOK, &[]map[string]string{})
+	// The llm_provider grant type is closed at the API (ADR-0010 / S-107);
+	// seed the legacy grant directly to exercise the S-103 delete warning.
+	require.NoError(t, store.GrantAgentPermission(context.Background(), &domain.AgentPermission{
+		AgentID:      agent.ID,
+		ResourceType: domain.ResLLMProvider,
+		ResourceID:   provider.ID,
+		GrantedBy:    "test",
+	}))
 
 	var conflict struct {
 		Error string        `json:"error"`

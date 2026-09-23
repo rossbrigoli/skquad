@@ -124,12 +124,21 @@ func newGatewayFixture(t *testing.T) *gatewayFixture {
 
 func (f *gatewayFixture) setPerms(t *testing.T, providerIDs ...string) {
 	t.Helper()
-	body := make([]map[string]string, 0, len(providerIDs))
+	// The llm_provider grant type is closed at the API (ADR-0010 / S-107).
+	// Seed the grants directly and converge the gateway key through the
+	// admin reconcile endpoint — the same convergence machinery the grant
+	// path used to drive inline.
+	perms := make([]domain.AgentPermission, 0, len(providerIDs))
 	for _, id := range providerIDs {
-		body = append(body, map[string]string{"resource_type": string(domain.ResLLMProvider), "resource_id": id})
+		perms = append(perms, domain.AgentPermission{
+			AgentID:      f.agentID,
+			ResourceType: domain.ResLLMProvider,
+			ResourceID:   id,
+			GrantedBy:    "test",
+		})
 	}
-	var perms []domain.AgentPermission
-	doJSON(t, f.handler, http.MethodPut, "/api/v1/agents/"+f.agentID+"/permissions", body, http.StatusOK, &perms)
+	require.NoError(t, f.store.SetAgentPermissions(context.Background(), f.agentID, perms))
+	doJSONNoBody(t, f.handler, http.MethodPost, "/api/v1/admin/gateway/keys/reconcile", nil, http.StatusOK)
 }
 
 func (f *gatewayFixture) identity(t *testing.T) *domain.AgentIdentity {
@@ -204,24 +213,32 @@ func TestGatewayKeyReProvisionedOnReGrant(t *testing.T) {
 	require.NotEmpty(t, identity.GatewayKeyToken)
 }
 
-func TestGatewayKeyFailureAbortsPermissionChange(t *testing.T) {
+func TestGatewayKeyFailureSurfacesInReconcile(t *testing.T) {
 	f := newGatewayFixture(t)
 	f.setPerms(t, f.provider)
 	f.createIdentity(t)
+	token := f.identity(t).GatewayKeyToken
 
 	f.gateway.mu.Lock()
 	f.gateway.failUpdate = true
 	f.gateway.mu.Unlock()
 
-	// Gateway update failure must 502 and leave permissions unchanged.
-	body := []map[string]string{{"resource_type": string(domain.ResLLMProvider), "resource_id": f.provider2}}
-	doJSONNoBody(t, f.handler, http.MethodPut, "/api/v1/agents/"+f.agentID+"/permissions", body, http.StatusBadGateway)
+	// The grant API can no longer carry llm_provider (S-107), so the
+	// gateway-failure path is exercised through reconcile: a failing
+	// gateway update must be reported without corrupting key state.
+	require.NoError(t, f.store.SetAgentPermissions(context.Background(), f.agentID, []domain.AgentPermission{
+		{AgentID: f.agentID, ResourceType: domain.ResLLMProvider, ResourceID: f.provider, GrantedBy: "test"},
+		{AgentID: f.agentID, ResourceType: domain.ResLLMProvider, ResourceID: f.provider2, GrantedBy: "test"},
+	}))
+	var summary map[string]any
+	doJSON(t, f.handler, http.MethodPost, "/api/v1/admin/gateway/keys/reconcile", nil, http.StatusOK, &summary)
+	require.EqualValues(t, 1, summary["errors"])
+	require.Contains(t, summary, "failures")
 
-	perms, err := f.store.ListAgentPermissions(context.Background(), f.agentID)
-	require.NoError(t, err)
-	require.Len(t, perms, 1, "permissions must not change when gateway sync fails")
-	require.Equal(t, f.provider, perms[0].ResourceID)
-	require.Equal(t, domain.GatewayKeyActive, f.identity(t).GatewayKeyStatus)
+	// Key state untouched: still active with the original token.
+	identity := f.identity(t)
+	require.Equal(t, domain.GatewayKeyActive, identity.GatewayKeyStatus)
+	require.Equal(t, token, identity.GatewayKeyToken)
 }
 
 func TestDeleteAgentRevokesGatewayKey(t *testing.T) {

@@ -44,6 +44,7 @@ type Store interface {
 	storage.BoardStore
 	storage.GrantStore
 	storage.RegistryStore
+	storage.AIModelStore
 	storage.PermissionStore
 	storage.MeteringStore
 	storage.WakeLatencyStore
@@ -238,6 +239,20 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Patch("/registry/llm-providers/{providerID}", s.updateLLMProvider)
 			r.Post("/registry/llm-providers/{providerID}/deprecate", s.deprecateLLMProvider)
 			r.Delete("/registry/llm-providers/{providerID}", s.deleteLLMProvider)
+
+			r.Get("/ai-models", s.listAIModels)
+			r.Post("/ai-models", s.createAIModel)
+			r.Get("/ai-models/{modelID}", s.getAIModel)
+			r.Patch("/ai-models/{modelID}", s.updateAIModel)
+			r.Post("/ai-models/{modelID}/deprecate", s.deprecateAIModel)
+			r.Delete("/ai-models/{modelID}", s.deleteAIModel)
+
+			r.Get("/users/{userID}/models", s.listUserModels)
+			r.Put("/users/{userID}/models", s.setUserModels)
+
+			// Self-service read for the agent UI: calling user's granted,
+			// active models only (ADR-0010 D3).
+			r.Get("/models/me", s.listMyModels)
 
 			r.Post("/registry/{registryType}", s.createRegistryResource)
 			r.Get("/registry/{registryType}", s.listRegistryResources)
@@ -469,9 +484,13 @@ func registryTypeFromRequest(w http.ResponseWriter, r *http.Request) (domain.Res
 	}
 }
 
+// resourceTypeFromString maps a grant request to a GRANTABLE resource type.
+// llm_provider is deliberately absent (ADR-0010 / S-107): model access is
+// granted to users via AI Models, not to agents via providers. The constant
+// itself stays until WP8 drops the DB CHECK constraint.
 func resourceTypeFromString(value string) (domain.ResourceType, bool) {
 	switch domain.ResourceType(value) {
-	case domain.ResLLMProvider, domain.ResSkill, domain.ResTool, domain.ResAPI, domain.ResKnowledgeBase, domain.ResProjectWorkspace:
+	case domain.ResSkill, domain.ResTool, domain.ResAPI, domain.ResKnowledgeBase, domain.ResProjectWorkspace:
 		return domain.ResourceType(value), true
 	default:
 		return "", false
@@ -1878,6 +1897,14 @@ func (s *Server) setAgentPermissions(w http.ResponseWriter, r *http.Request) {
 	perms := make([]domain.AgentPermission, 0, len(req))
 	seen := map[string]bool{}
 	for _, item := range req {
+		// ADR-0010 / S-107: the old door is closed. llm_provider grants are
+		// replaced by user-level AI Model grants; give the operator an
+		// actionable error instead of a generic invalid-type rejection.
+		if strings.TrimSpace(item.ResourceType) == string(domain.ResLLMProvider) {
+			writeError(w, http.StatusBadRequest, "provider_not_grantable",
+				"llm_provider is no longer grantable to agents; grant AI Models to the user instead (Settings \u2192 AI Models)")
+			return
+		}
 		typ, ok := resourceTypeFromString(item.ResourceType)
 		if !ok {
 			writeError(w, http.StatusBadRequest, "bad_request", "resource_type is invalid")
@@ -2009,10 +2036,6 @@ func (s *Server) setAgentPermissions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ensureRegistryResourceExists(ctx context.Context, typ domain.ResourceType, resourceID string) error {
-	if typ == domain.ResLLMProvider {
-		_, err := s.store.GetLLMProvider(ctx, resourceID)
-		return err
-	}
 	_, err := s.store.GetResource(ctx, typ, resourceID)
 	return err
 }
