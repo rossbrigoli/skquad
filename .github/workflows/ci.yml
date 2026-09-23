@@ -419,6 +419,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      # The skquad self-hosted runner image has no npm on PATH; the earlier
+      # npm-audit steps failed with exit 127 (run 35848631030). Provide Node
+      # explicitly — matches the version the web/web-v2 jobs build with.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
       - uses: actions/setup-go@v7
         with:
           go-version-file: operator/go.mod

@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 import urllib.parse
 import urllib.request
 
@@ -182,15 +183,32 @@ def main() -> int:
             f"(maintainability; non-blocking)."
         )
 
+    if findings:
+        # SonarQube reconciles issue state (e.g. marking an issue FIXED when a
+        # scan no longer reproduces it) asynchronously *after* the scanner
+        # reports success. A gate that queries immediately can still see
+        # findings the just-finished scan already fixed — observed on run
+        # 35848631030: typescript:S2871 was FIXED moments after the gate
+        # read it as OPEN. Settle and re-check once before failing.
+        settle = int(os.environ.get("GATE_SETTLE_SECONDS", "20"))
+        print(
+            f"sonar gate: {len(findings)} open Critical/Blocker {gate_types} finding(s) "
+            f"for '{project}'; re-checking in {settle}s "
+            f"(Sonar issue reconciliation is async)..."
+        )
+        time.sleep(settle)
+        findings = fetch_findings(sonar_url, token, project, gate_types)
+
     if not findings:
         print(
-            f"sonar gate: OK — no open Critical/Blocker {gate_types} findings for '{project}'"
+            f"sonar gate: OK — no open Critical/Blocker {gate_types} findings for "
+            f"'{project}' (clean after re-check)"
         )
         return 0
 
     print(
         f"sonar gate: {len(findings)} open Critical/Blocker {gate_types} finding(s) "
-        f"for '{project}':"
+        f"for '{project}' (still present after re-check):"
     )
     for finding in findings[:MAX_LISTED]:
         print(format_finding(finding))
