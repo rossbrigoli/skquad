@@ -187,7 +187,7 @@ describe("buildAttention agents", () => {
         ],
       }),
     );
-    expect(items.map((i) => i.id).sort()).toEqual(["agent_error:a1", "agent_error:a2"]);
+    expect(items.map((i) => i.id).sort((a, b) => a.localeCompare(b))).toEqual(["agent_error:a1", "agent_error:a2"]);
     expect(items[0].href).toBe("/squads/s1/agents/a1");
   });
 });
