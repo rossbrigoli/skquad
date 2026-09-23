@@ -443,8 +443,14 @@ jobs:
         run: |
           # The self-hosted runner image lacks python3-venv (ensurepip), so run
           # pip-audit inside a pinned Python container instead of a local venv.
-          docker run --rm -v "$PWD:/w:z" -w /w python:3.11-slim bash -c '
+          # Mount READ-ONLY and copy the source into the container's own
+          # filesystem first: pip writes root-owned build/ and egg-info/
+          # artifacts into the package dir, which previously poisoned the runner
+          # workspace (checkout EACCES, run 35854258137).
+          docker run --rm -v "$PWD:/w:ro,z" python:3.11-slim bash -c '
             set -e
+            cp -r /w /tmp/audit
+            cd /tmp/audit
             pip install --quiet --upgrade pip pip-audit
             pip install --quiet ./agent-runtime
             pip install --quiet --upgrade "setuptools>=83.0.0"
