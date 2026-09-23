@@ -1,6 +1,6 @@
 module github.com/rossbrigoli/skquad/control-plane
 
-go 1.25
+go 1.23
 
 require (
 	github.com/coreos/go-oidc/v3 v3.11.0
