@@ -237,12 +237,14 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/registry/llm-providers/{providerID}", s.getLLMProvider)
 			r.Patch("/registry/llm-providers/{providerID}", s.updateLLMProvider)
 			r.Post("/registry/llm-providers/{providerID}/deprecate", s.deprecateLLMProvider)
+			r.Delete("/registry/llm-providers/{providerID}", s.deleteLLMProvider)
 
 			r.Post("/registry/{registryType}", s.createRegistryResource)
 			r.Get("/registry/{registryType}", s.listRegistryResources)
 			r.Get("/registry/{registryType}/{resourceID}", s.getRegistryResource)
 			r.Patch("/registry/{registryType}/{resourceID}", s.updateRegistryResource)
 			r.Post("/registry/{registryType}/{resourceID}/deprecate", s.deprecateRegistryResource)
+			r.Delete("/registry/{registryType}/{resourceID}", s.deleteRegistryResource)
 
 			r.Get("/metering/summary", s.getMeteringSummary)
 			r.Get("/audit", s.listAudit)
@@ -881,6 +883,101 @@ func (s *Server) deprecateRegistryResource(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := s.store.DeprecateResource(s.pendingUserAuditCtx(r, "registry.resource.deprecate", string(typ), chi.URLParam(r, "resourceID"), "", nil), typ, chi.URLParam(r, "resourceID")); err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteUsage describes one agent that holds a grant on a resource being
+// deleted; surfaced to the UI so the operator sees the blast radius (S-103).
+type deleteUsage struct {
+	AgentID   string `json:"agent_id"`
+	AgentName string `json:"agent_name"`
+	SquadID   string `json:"squad_id"`
+}
+
+// resourceUsage lists the agents currently granted the given resource.
+func (s *Server) resourceUsage(ctx context.Context, typ domain.ResourceType, resourceID string) ([]deleteUsage, error) {
+	perms, err := s.store.ListPermissionsByResource(ctx, typ, resourceID)
+	if err != nil {
+		return nil, err
+	}
+	usage := make([]deleteUsage, 0, len(perms))
+	for _, perm := range perms {
+		agent, err := s.store.GetAgent(ctx, perm.AgentID)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		usage = append(usage, deleteUsage{AgentID: agent.ID, AgentName: agent.Name, SquadID: agent.SquadID})
+	}
+	return usage, nil
+}
+
+// deleteLLMProvider hard-deletes a provider (S-103). While any agent still
+// holds a grant on it, the delete is refused with 409 + the usage list so
+// the UI can warn; force=true deletes and revokes those grants.
+func (s *Server) deleteLLMProvider(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePlatformAdmin(w, r) {
+		return
+	}
+	providerID := chi.URLParam(r, "providerID")
+	force := r.URL.Query().Get("force") == "true"
+	if !force {
+		usage, err := s.resourceUsage(r.Context(), domain.ResLLMProvider, providerID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		if len(usage) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":   "in_use",
+				"message": fmt.Sprintf("provider is granted to %d agent(s); retry with force to delete it and revoke those grants", len(usage)),
+				"usage":   usage,
+			})
+			return
+		}
+	}
+	if err := s.store.DeleteLLMProvider(s.pendingUserAuditCtx(r, "registry.llm_provider.delete", string(domain.ResLLMProvider), providerID, "", nil), providerID); err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	// Best-effort convergence of gateway keys after the provider is gone.
+	s.syncAgentsWithLLMProvider(r.Context(), providerID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteRegistryResource hard-deletes a registry resource (S-103) with the
+// same in-use warning semantics as deleteLLMProvider.
+func (s *Server) deleteRegistryResource(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePlatformAdmin(w, r) {
+		return
+	}
+	typ, ok := registryTypeFromRequest(w, r)
+	if !ok {
+		return
+	}
+	resourceID := chi.URLParam(r, "resourceID")
+	force := r.URL.Query().Get("force") == "true"
+	if !force {
+		usage, err := s.resourceUsage(r.Context(), typ, resourceID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		if len(usage) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":   "in_use",
+				"message": fmt.Sprintf("resource is granted to %d agent(s); retry with force to delete it and revoke those grants", len(usage)),
+				"usage":   usage,
+			})
+			return
+		}
+	}
+	if err := s.store.DeleteResource(s.pendingUserAuditCtx(r, "registry.resource.delete", string(typ), resourceID, "", nil), typ, resourceID); err != nil {
 		writeStorageError(w, err)
 		return
 	}

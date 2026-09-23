@@ -161,12 +161,17 @@ type RegistryStore interface {
 	GetLLMProvider(ctx context.Context, id string) (*domain.LLMProvider, error)
 	UpdateLLMProvider(ctx context.Context, p *domain.LLMProvider) (*domain.LLMProvider, error)
 	DeprecateLLMProvider(ctx context.Context, id string) error
+	DeleteLLMProvider(ctx context.Context, id string) error
 	ListLLMProviders(ctx context.Context) ([]*domain.LLMProvider, error)
 
 	CreateResource(ctx context.Context, r *domain.RegistryResource) (*domain.RegistryResource, error)
 	GetResource(ctx context.Context, typ domain.ResourceType, id string) (*domain.RegistryResource, error)
 	UpdateResource(ctx context.Context, r *domain.RegistryResource) (*domain.RegistryResource, error)
 	DeprecateResource(ctx context.Context, typ domain.ResourceType, id string) error
+	// DeleteResource hard-deletes a registry resource and revokes every agent
+	// grant that references it (S-103). Callers must surface usage to the
+	// operator before forcing deletion.
+	DeleteResource(ctx context.Context, typ domain.ResourceType, id string) error
 	ListResources(ctx context.Context, typ domain.ResourceType) ([]*domain.RegistryResource, error)
 }
 
@@ -177,6 +182,9 @@ type PermissionStore interface {
 	ListAgentPermissions(ctx context.Context, agentID string) ([]*domain.AgentPermission, error)
 	SetAgentPermissions(ctx context.Context, agentID string, perms []domain.AgentPermission) error
 	AgentHasPermission(ctx context.Context, agentID string, typ domain.ResourceType, resourceID string) (bool, error)
+	// ListPermissionsByResource returns every agent grant pointing at one
+	// resource — the usage check behind delete warnings (S-103).
+	ListPermissionsByResource(ctx context.Context, typ domain.ResourceType, resourceID string) ([]*domain.AgentPermission, error)
 }
 
 // GrantStore persists owner-issued access grants.

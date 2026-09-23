@@ -1014,6 +1014,35 @@ func (p *PostgresStore) DeprecateLLMProvider(ctx context.Context, id string) err
 	}
 	return mapPgErr(tx.Commit(ctx))
 }
+
+// DeleteLLMProvider hard-deletes the provider and revokes every grant that
+// references it in the same transaction (S-103).
+func (p *PostgresStore) DeleteLLMProvider(ctx context.Context, id string) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM agent_permissions WHERE resource_type = $1 AND resource_id = $2`,
+		domain.ResLLMProvider, id,
+	); err != nil {
+		return mapPgErr(err)
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM llm_providers WHERE id = $1`, id)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, id); err != nil {
+		return err
+	}
+	return mapPgErr(tx.Commit(ctx))
+}
+
 func (p *PostgresStore) ListLLMProviders(ctx context.Context) ([]*domain.LLMProvider, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, name, kind, base_url, api_key_ref, default_model, models, pricing, status, registered_by::text, created_at
@@ -1126,6 +1155,35 @@ func (p *PostgresStore) DeprecateResource(ctx context.Context, typ domain.Resour
 	}
 	return mapPgErr(tx.Commit(ctx))
 }
+
+// DeleteResource hard-deletes a registry resource and revokes every agent
+// grant that references it in the same transaction (S-103).
+func (p *PostgresStore) DeleteResource(ctx context.Context, typ domain.ResourceType, id string) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM agent_permissions WHERE resource_type = $1 AND resource_id = $2`,
+		typ, id,
+	); err != nil {
+		return mapPgErr(err)
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM registry_resources WHERE type = $1 AND id = $2`, typ, id)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, id); err != nil {
+		return err
+	}
+	return mapPgErr(tx.Commit(ctx))
+}
+
 func (p *PostgresStore) ListResources(ctx context.Context, typ domain.ResourceType) ([]*domain.RegistryResource, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, type, name, description, endpoint, auth_ref, manifest, status, registered_by::text, created_at
@@ -1173,6 +1231,31 @@ func (p *PostgresStore) ListAgentPermissions(ctx context.Context, agentID string
 		WHERE agent_id = $1
 		ORDER BY resource_type, resource_id
 	`, agentID)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+
+	var perms []*domain.AgentPermission
+	for rows.Next() {
+		perm, err := scanAgentPermission(rows)
+		if err != nil {
+			return nil, err
+		}
+		perms = append(perms, perm)
+	}
+	return perms, mapPgErr(rows.Err())
+}
+
+// ListPermissionsByResource returns every agent grant pointing at one
+// resource — the usage check behind delete warnings (S-103).
+func (p *PostgresStore) ListPermissionsByResource(ctx context.Context, typ domain.ResourceType, resourceID string) ([]*domain.AgentPermission, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id::text, agent_id::text, resource_type, resource_id::text, granted_by::text, created_at
+		FROM agent_permissions
+		WHERE resource_type = $1 AND resource_id = $2
+		ORDER BY agent_id
+	`, typ, resourceID)
 	if err != nil {
 		return nil, mapPgErr(err)
 	}

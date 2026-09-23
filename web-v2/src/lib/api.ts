@@ -190,10 +190,13 @@ export function setApiBaseOverride(base: string | null): void {
 
 export class ApiError extends Error {
   status: number;
+  // Parsed JSON body when available — carries the S-103 in-use usage list.
+  body: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -237,13 +240,14 @@ async function apiRequest<T>(path: string, token: string, options: { method: str
   });
   if (!response.ok) {
     let message = response.statusText;
+    let body: unknown = undefined;
     try {
-      const body = await response.json();
-      message = body?.error?.message || message;
+      body = await response.json();
+      message = (body as any)?.error?.message || (body as any)?.message || message;
     } catch {
       // Keep the HTTP status text when the body is not JSON.
     }
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, message, body);
   }
   if (response.status === 204) {
     return undefined as T;

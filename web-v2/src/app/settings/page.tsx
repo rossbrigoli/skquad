@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { AuthGate } from "../../components/AuthGate";
 import { AppShell } from "../../components/AppShell";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { EmptyState } from "../../components/EmptyState";
 import { Modal, ModalForm } from "../../components/Modal";
 import { StatusChip } from "../../components/StatusChip";
@@ -10,11 +11,87 @@ import { useAuth } from "../../lib/auth";
 import { useApi } from "../../lib/useApi";
 import { useTheme } from "../../lib/ThemeProvider";
 import {
+  apiDelete,
   apiPatch,
   apiPost,
+  ApiError,
   type LLMProvider,
   type RegistryResource,
 } from "../../lib/api";
+
+type DeleteUsage = { agent_id: string; agent_name: string; squad_id: string };
+
+// DeleteResourceButton (S-103): tries a plain delete; if the API reports
+// the resource is granted to agents (409), warns with the usage list and
+// offers a force delete that also revokes those grants.
+function DeleteResourceButton({
+  path,
+  name,
+  onDeleted,
+}: {
+  path: string;
+  name: string;
+  onDeleted: () => void;
+}) {
+  const { token } = useAuth();
+  const [usage, setUsage] = useState<DeleteUsage[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function attempt(force: boolean) {
+    setBusy(true);
+    setError("");
+    try {
+      await apiDelete(path + (force ? "?force=true" : ""), token);
+      setUsage(null);
+      onDeleted();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        const body = err.body as { usage?: DeleteUsage[] } | undefined;
+        setUsage(body?.usage ?? []);
+      } else {
+        setError(err instanceof Error ? err.message : "delete failed");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        className="btn btn-sm btn-danger"
+        disabled={busy}
+        onClick={() => void attempt(false)}
+      >
+        Delete
+      </button>
+      {error ? (
+        <span className="notice error" role="alert" style={{ marginLeft: 8 }}>
+          {error}
+        </span>
+      ) : null}
+      {usage !== null ? (
+        <ConfirmDialog
+          title={`Delete “${name}”?`}
+          body={
+            usage.length > 0
+              ? `This is currently granted to ${usage.length} agent(s): ${usage
+                  .map((u) => u.agent_name)
+                  .join(", ")}. Deleting will revoke those grants.`
+              : "Delete this resource?"
+          }
+          confirmLabel="Delete and revoke"
+          onConfirm={async () => {
+            await attempt(true);
+          }}
+          onClose={() => setUsage(null)}
+        />
+      ) : null}
+    </>
+  );
+}
 
 type Tab = "providers" | "resources" | "appearance" | "session";
 
@@ -127,6 +204,13 @@ function ProvidersTab({ isAdmin }: { isAdmin: boolean }) {
                     Deprecate
                   </button>
                 ) : null}
+                {isAdmin ? (
+                  <DeleteResourceButton
+                    path={`/registry/llm-providers/${p.id}`}
+                    name={p.name}
+                    onDeleted={() => void providers.refresh()}
+                  />
+                ) : null}
               </div>
             </div>
           ))}
@@ -200,6 +284,13 @@ function ResourcesTab({ isAdmin }: { isAdmin: boolean }) {
                   <button type="button" className="btn btn-sm" onClick={() => setEditing(r)}>
                     Edit
                   </button>
+                ) : null}
+                {isAdmin ? (
+                  <DeleteResourceButton
+                    path={`/registry/${active.key}/${r.id}`}
+                    name={r.name}
+                    onDeleted={() => void resources.refresh()}
+                  />
                 ) : null}
               </div>
             </div>

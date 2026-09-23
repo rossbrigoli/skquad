@@ -2065,3 +2065,101 @@ func TestOIDCNoAdminGroupsNeverPromotesOrStrips(t *testing.T) {
 		http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &second)
 	require.Equal(t, domain.RolePlatformAdmin, second.Role, "operator promotion must survive")
 }
+
+// --- S-103: registry deletes with in-use warnings ---
+
+func TestDeleteRegistryResourceInUseWarnsThenForceDeletes(t *testing.T) {
+	handler := New(testConfig(), storage.NewMemoryStore())
+
+	var squad domain.Squad
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "delete-squad"}, http.StatusCreated, &squad)
+	var agent domain.Agent
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
+		"name": "worker-one",
+		"role": "worker",
+	}, http.StatusCreated, &agent)
+	var skill domain.RegistryResource
+	doJSON(t, handler, http.MethodPost, "/api/v1/registry/skills", map[string]any{
+		"name":     "dangerous-skill",
+		"manifest": map[string]any{"version": "1"},
+	}, http.StatusCreated, &skill)
+
+	doJSON(t, handler, http.MethodPut, "/api/v1/agents/"+agent.ID+"/permissions", []map[string]string{
+		{"resource_type": "skill", "resource_id": skill.ID},
+	}, http.StatusOK, &[]map[string]string{})
+
+	// In-use delete must warn with 409 + usage list, not delete.
+	var conflict struct {
+		Error string             `json:"error"`
+		Usage []deleteUsage      `json:"usage"`
+	}
+	doJSON(t, handler, http.MethodDelete, "/api/v1/registry/skills/"+skill.ID, nil, http.StatusConflict, &conflict)
+	require.Equal(t, "in_use", conflict.Error)
+	require.Len(t, conflict.Usage, 1)
+	require.Equal(t, agent.ID, conflict.Usage[0].AgentID)
+	require.Equal(t, "worker-one", conflict.Usage[0].AgentName)
+	require.Equal(t, squad.ID, conflict.Usage[0].SquadID)
+
+	// Resource still exists after the refused delete.
+	doJSON(t, handler, http.MethodGet, "/api/v1/registry/skills/"+skill.ID, nil, http.StatusOK, &skill)
+
+	// Force delete succeeds and revokes the dangling grant.
+	doJSONNoBody(t, handler, http.MethodDelete, "/api/v1/registry/skills/"+skill.ID+"?force=true", nil, http.StatusNoContent)
+	doJSON(t, handler, http.MethodGet, "/api/v1/registry/skills/"+skill.ID, nil, http.StatusNotFound, &map[string]any{})
+
+	var perms []domain.AgentPermission
+	doJSON(t, handler, http.MethodGet, "/api/v1/agents/"+agent.ID+"/permissions", nil, http.StatusOK, &perms)
+	for _, p := range perms {
+		require.NotEqual(t, skill.ID, p.ResourceID, "force delete must revoke grants to the deleted resource")
+	}
+}
+
+func TestDeleteLLMProviderInUseWarnsThenForceDeletes(t *testing.T) {
+	handler := New(testConfig(), storage.NewMemoryStore())
+
+	var squad domain.Squad
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "prov-squad"}, http.StatusCreated, &squad)
+	var agent domain.Agent
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
+		"name": "llm-worker",
+		"role": "worker",
+	}, http.StatusCreated, &agent)
+	var provider domain.LLMProvider
+	doJSON(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+		"name":          "delete-me-llm",
+		"kind":          "openai",
+		"base_url":      "http://example.invalid",
+		"default_model": "example/model",
+		"models":        []string{"example/model"},
+	}, http.StatusCreated, &provider)
+
+	doJSON(t, handler, http.MethodPut, "/api/v1/agents/"+agent.ID+"/permissions", []map[string]string{
+		{"resource_type": "llm_provider", "resource_id": provider.ID},
+	}, http.StatusOK, &[]map[string]string{})
+
+	var conflict struct {
+		Error string        `json:"error"`
+		Usage []deleteUsage `json:"usage"`
+	}
+	doJSON(t, handler, http.MethodDelete, "/api/v1/registry/llm-providers/"+provider.ID, nil, http.StatusConflict, &conflict)
+	require.Equal(t, "in_use", conflict.Error)
+	require.Len(t, conflict.Usage, 1)
+	require.Equal(t, agent.ID, conflict.Usage[0].AgentID)
+
+	// Unused resources delete without force.
+	var spare domain.RegistryResource
+	doJSON(t, handler, http.MethodPost, "/api/v1/registry/skills", map[string]any{
+		"name":     "spare-skill",
+		"manifest": map[string]any{"version": "1"},
+	}, http.StatusCreated, &spare)
+	doJSONNoBody(t, handler, http.MethodDelete, "/api/v1/registry/skills/"+spare.ID, nil, http.StatusNoContent)
+
+	doJSONNoBody(t, handler, http.MethodDelete, "/api/v1/registry/llm-providers/"+provider.ID+"?force=true", nil, http.StatusNoContent)
+	doJSON(t, handler, http.MethodGet, "/api/v1/registry/llm-providers/"+provider.ID, nil, http.StatusNotFound, &map[string]any{})
+}
+
+func TestDeleteRegistryResourceNotFound(t *testing.T) {
+	handler := New(testConfig(), storage.NewMemoryStore())
+	doJSONNoBody(t, handler, http.MethodDelete, "/api/v1/registry/skills/11111111-1111-1111-1111-111111111111", nil, http.StatusNotFound)
+	doJSONNoBody(t, handler, http.MethodDelete, "/api/v1/registry/llm-providers/11111111-1111-1111-1111-111111111111", nil, http.StatusNotFound)
+}

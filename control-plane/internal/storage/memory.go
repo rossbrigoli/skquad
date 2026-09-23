@@ -659,6 +659,23 @@ func (m *MemoryStore) DeprecateLLMProvider(ctx context.Context, id string) error
 	return nil
 }
 
+// DeleteLLMProvider hard-deletes the provider and revokes dangling grants (S-103).
+func (m *MemoryStore) DeleteLLMProvider(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.llmProviders[id]; !ok {
+		return ErrNotFound
+	}
+	delete(m.llmProviders, id)
+	for key, perm := range m.permissions {
+		if perm.ResourceType == domain.ResLLMProvider && perm.ResourceID == id {
+			delete(m.permissions, key)
+		}
+	}
+	m.drainPendingAuditsLocked(ctx, id)
+	return nil
+}
+
 func (m *MemoryStore) ListLLMProviders(_ context.Context) ([]*domain.LLMProvider, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -734,6 +751,25 @@ func (m *MemoryStore) DeprecateResource(ctx context.Context, typ domain.Resource
 	return nil
 }
 
+// DeleteResource hard-deletes the registry resource and revokes every agent
+// grant that references it (S-103).
+func (m *MemoryStore) DeleteResource(ctx context.Context, typ domain.ResourceType, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	resource, ok := m.resources[id]
+	if !ok || resource.Type != typ {
+		return ErrNotFound
+	}
+	delete(m.resources, id)
+	for key, perm := range m.permissions {
+		if perm.ResourceType == typ && perm.ResourceID == id {
+			delete(m.permissions, key)
+		}
+	}
+	m.drainPendingAuditsLocked(ctx, id)
+	return nil
+}
+
 func (m *MemoryStore) ListResources(_ context.Context, typ domain.ResourceType) ([]*domain.RegistryResource, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -793,6 +829,21 @@ func (m *MemoryStore) ListAgentPermissions(_ context.Context, agentID string) ([
 			return strings.Compare(string(a.ResourceType), string(b.ResourceType))
 		}
 		return strings.Compare(a.ResourceID, b.ResourceID)
+	})
+	return out, nil
+}
+
+func (m *MemoryStore) ListPermissionsByResource(_ context.Context, typ domain.ResourceType, resourceID string) ([]*domain.AgentPermission, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := []*domain.AgentPermission{}
+	for _, perm := range m.permissions {
+		if perm.ResourceType == typ && perm.ResourceID == resourceID {
+			out = append(out, cloneAgentPermission(perm))
+		}
+	}
+	slices.SortFunc(out, func(a, b *domain.AgentPermission) int {
+		return strings.Compare(a.AgentID, b.AgentID)
 	})
 	return out, nil
 }
