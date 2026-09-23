@@ -55,6 +55,22 @@ async def send_metering_event(
         LOGGER.warning("skquad metering callback skipped: missing agent/squad metadata")
         return
 
+    requested = str(kwargs.get("model") or metadata.get("model") or "")
+    # Best available signal. LiteLLM's body `model` can be restamped to match the
+    # client under router aliases; the deployment-level truth is the opaque
+    # x-litellm-model-id response header, which the callback API does not expose.
+    # In our architecture primary and fallback are distinct model_list entries, so
+    # a fallback-served response is built from the fallback deployment and carries
+    # its name. Treat as best-effort, not a guarantee (see ADR-0010 L1/L2).
+    served = str(value(response_obj, "model") or requested)
+    if served != requested:
+        LOGGER.info(
+            "skquad metering: served model differs from requested agent=%s requested=%s served=%s",
+            agent_id,
+            requested,
+            served,
+        )
+
     usage = response_usage(response_obj)
     payload = {
         "status": status,
@@ -62,7 +78,12 @@ async def send_metering_event(
         "squad_id": squad_id,
         "task_id": str(metadata.get("skquad_task_id") or ""),
         "provider_id": str(metadata.get("skquad_provider_id") or ""),
-        "model": str(kwargs.get("model") or metadata.get("model") or ""),
+        "model": requested,
+        # ADR-0010 Risk 3: metering must distinguish a fallback-served turn from a
+        # primary-served one. kwargs["model"] is what the CLIENT asked for; the
+        # served model lives on the response body. Without this, metering.model_used
+        # collapses onto the requested model and fallback turns are invisible.
+        "model_used": served,
         "input_tokens": int_value(usage.get("prompt_tokens")),
         "output_tokens": int_value(usage.get("completion_tokens")),
         "cost": float_value(kwargs.get("response_cost")),

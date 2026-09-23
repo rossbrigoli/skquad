@@ -253,6 +253,36 @@ class SendMeteringEventTests(EnvMixin):
 
     # -- payload ------------------------------------------------------------
 
+    def test_model_used_reports_served_model_not_requested(self) -> None:
+        # ADR-0010 Risk 3: when the gateway fails over, metering must show the
+        # model that ACTUALLY served the turn, not the one the agent asked for.
+        kwargs = metadata_kwargs(
+            skquad_agent_id="agent-1",
+            skquad_squad_id="squad-1",
+        )
+        kwargs["model"] = "gpt-6-sol"
+        response = {
+            "model": "gpt-6-luna",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+        }
+
+        run(callbacks.send_metering_event("success", kwargs, response, ""))
+        payload = self._sent_payload()
+        self.assertEqual(payload["model"], "gpt-6-sol")
+        self.assertEqual(payload["model_used"], "gpt-6-luna")
+
+    def test_model_used_falls_back_to_requested_when_response_has_none(self) -> None:
+        # No served model on the response must not produce an empty model_used.
+        kwargs = metadata_kwargs(
+            skquad_agent_id="agent-1",
+            skquad_squad_id="squad-1",
+        )
+        kwargs["model"] = "gpt-6-sol"
+
+        run(callbacks.send_metering_event("success", kwargs, {}, ""))
+        payload = self._sent_payload()
+        self.assertEqual(payload["model_used"], "gpt-6-sol")
+
     def test_payload_fields(self) -> None:
         kwargs = metadata_kwargs(
             skquad_agent_id="agent-1",
@@ -276,6 +306,9 @@ class SendMeteringEventTests(EnvMixin):
                 "task_id": "task-1",
                 "provider_id": "prov-1",
                 "model": "gpt-5.5",
+                # ADR-0010 Risk 3: served model is reported alongside the
+                # requested one so fallback turns are distinguishable.
+                "model_used": "gpt-5.5",
                 "input_tokens": 21,
                 "output_tokens": 9,
                 "cost": 0.125,
