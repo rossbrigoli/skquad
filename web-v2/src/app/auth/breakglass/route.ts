@@ -86,10 +86,21 @@ export async function POST(request: Request) {
   };
 
   const res = NextResponse.json({ ok: true, user: body.user ?? null });
+  // The shared sessionCookieOpts() derives `secure` from the OIDC redirect URL,
+  // which is https://skquad-v2.rossbrigoli.com. Break-glass is reached over
+  // plain-HTTP on the internal name (http://skquad-v2.lab) or over Tailscale,
+  // so inheriting secure=true would mean the browser never sends the cookie back
+  // and every proxied call comes back 401 "session expired".
+  //
+  // Follow the protocol the request actually arrived on instead. This weakens
+  // cookie confidentiality on the LAN only, and only for the break-glass
+  // session — which is already restricted to LAN/Tailscale by the control-plane.
+  const forwardedProto = (request.headers.get("x-forwarded-proto") || "").split(",")[0].trim();
+  const secure = (forwardedProto || new URL(request.url).protocol.replace(":", "")) === "https";
   res.cookies.set(
     SESSION_COOKIE,
     encodeSession(session),
-    { ...sessionCookieOpts(), path: "/", maxAge: Math.max(60, Math.floor((expiresAt - Date.now()) / 1000)) },
+    { ...sessionCookieOpts(), secure, path: "/", maxAge: Math.max(60, Math.floor((expiresAt - Date.now()) / 1000)) },
   );
   return res;
 }
