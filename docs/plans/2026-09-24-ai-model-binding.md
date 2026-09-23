@@ -152,14 +152,23 @@
 
 **Objective:** move live data onto the new model, then remove the old door.
 
+> **Sequencing correction (caught in WP1 review, 2026-09-24):** WP1 originally dropped
+> `providers.models` / `default_model` / `pricing`. That would have destroyed the only
+> backfill source **against the live database** before any mapping existed. The drops are now
+> deferred to the END of WP8. WP1 leaves those columns present but deprecated/read-only.
+
+- **Pre-flight, mandatory:** `pg_dump` of `providers`, `agents`, `agent_permissions` retained
+  before running anything.
 - Script/migration `0012_ai_model_backfill.sql` (+ Go migration helper if logic needed):
-  1. `llm_providers.models[]` → `ai_models` rows inheriting provider credential.
+  1. Read the **retained legacy** `providers.models[]` / `default_model` / `pricing` →
+     `ai_models` rows inheriting the provider credential.
   2. Each agent's `llm_provider` grants → grant those models to the **agent owner** (union).
   3. `agents(default_provider_id, default_model)` → `agents.ai_model_id` where the pair resolves.
   4. Unresolved agents → report to an admin "needs binding" list; do **not** guess.
   5. `NOT NULL` on `agents.ai_model_id` only after step 3 reaches 100%.
   6. Drop `'llm_provider'` from the `agent_permissions` CHECK constraint.
-  7. Drop legacy `default_provider` / `default_model` columns.
+  7. Drop legacy `providers.models` / `default_model` / `pricing` and
+     `agents.default_provider` / `default_model` — **last**, never before step 3 is verified.
 - Dry-run mode that prints the mapping table and unresolved rows **before** mutating.
 - Tests: fixture → expected mapping; unresolved rows surfaced.
 

@@ -31,11 +31,15 @@ CREATE TABLE IF NOT EXISTS providers (
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 
--- Model metadata no longer lives on the credential holder (it moved to
--- ai_models; see ADR-0010 D2).
-ALTER TABLE providers DROP COLUMN IF EXISTS models;
-ALTER TABLE providers DROP COLUMN IF EXISTS default_model;
-ALTER TABLE providers DROP COLUMN IF EXISTS pricing;
+-- ⚠️ DELIBERATELY NOT DROPPED HERE.
+-- models / default_model / pricing are now superseded by ai_models (ADR-0010 D2),
+-- but they are the ONLY source for the WP8 backfill (existing llm_providers.models[]
+-- -> ai_models rows, and agents(default_provider, default_model) -> ai_model_id).
+-- Dropping them in this migration would destroy the backfill source against the live
+-- database before any mapping exists. They are dropped in 0012_ai_model_backfill.sql
+-- AFTER the mapping is written and verified. Until then these columns are deprecated,
+-- read-only legacy: nothing new writes to them.
+-- See docs/plans/2026-09-24-ai-model-binding.md WP8 (dry-run-first rule).
 
 -- ---------------------------------------------------------------------------
 -- AI models: the admin-registered, grantable unit (ADR-0010 D1).
