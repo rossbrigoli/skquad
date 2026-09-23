@@ -39,6 +39,7 @@ const (
 func main() {
 	password := flag.String("password", "", "password to hash (omit for interactive prompt)")
 	username := flag.String("username", "breakglass", "break-glass username")
+	confirm := flag.Bool("confirm", true, "ask for the password twice (disable for scripted use)")
 	flag.Parse()
 
 	pw := *password
@@ -48,12 +49,14 @@ func main() {
 		if err != nil {
 			fail(err)
 		}
-		confirm, err := promptHidden("Confirm password:    ")
-		if err != nil {
-			fail(err)
-		}
-		if pw != confirm {
-			fail(fmt.Errorf("passwords do not match"))
+		if *confirm {
+			check, err := promptHidden("Confirm password:    ")
+			if err != nil {
+				fail(err)
+			}
+			if pw != check {
+				fail(fmt.Errorf("passwords do not match"))
+			}
 		}
 	}
 	if len(pw) < 20 {
