@@ -669,3 +669,35 @@ func TestMapDeploymentToAgent(t *testing.T) {
 		t.Fatalf("unlabeled deployment mapped to %d requests, want 0", len(got))
 	}
 }
+
+func TestAgentReconcilerFlagsCredentialNotProvisioned(t *testing.T) {
+	t.Parallel()
+
+	scheme := testScheme(t)
+	agent := s104Agent("agent-s104-noid", "ffffffff-6666-6666-6666-666666666666")
+	agent.Spec.CredentialSecret = ""
+	agent.Spec.VirtualKeySecret = ""
+	squad := &skquadv1.Squad{
+		ObjectMeta: metav1.ObjectMeta{Name: "squad-s104-noid", Namespace: "skquad-system"},
+		Spec:       skquadv1.SquadSpec{SquadID: agent.Spec.SquadID, Namespace: "squad-s104-noid"},
+	}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&skquadv1.Agent{}, &skquadv1.Squad{}).
+		WithObjects(squad, agent).
+		Build()
+	reconciler := &AgentReconciler{Client: k8sClient, Scheme: scheme}
+
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := getAgentStatus(t, k8sClient, types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace})
+	if got.Status.Ready {
+		t.Fatal("agent without credential secret must not be Ready")
+	}
+	if got.Status.Reason != "CredentialNotProvisioned" {
+		t.Fatalf("reason = %q, want CredentialNotProvisioned", got.Status.Reason)
+	}
+}

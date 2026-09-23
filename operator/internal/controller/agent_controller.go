@@ -196,6 +196,11 @@ func (r *AgentReconciler) evaluateAgentReadiness(ctx context.Context, agent *skq
 	if replicas == 0 {
 		return true, "ScaledToZero", fmt.Sprintf("Deployment %s/%s is scaled to zero", namespace, deployment.Name)
 	}
+	if agent.Spec.CredentialSecret == "" {
+		// The runtime can never pass /readyz without credentials; say so
+		// explicitly instead of blaming the pod (S-104).
+		return false, "CredentialNotProvisioned", fmt.Sprintf("agent %s/%s has no credential secret reference; provision its identity", agent.Namespace, agent.Name)
+	}
 	if agent.Spec.CredentialSecret != "" {
 		var secret corev1.Secret
 		if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: agent.Spec.CredentialSecret}, &secret); err != nil {
