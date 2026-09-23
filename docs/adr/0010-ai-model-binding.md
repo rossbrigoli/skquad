@@ -151,6 +151,47 @@ owner-reassign path instead.
 4. **Mid-conversation model switch.** Router cooldown auto-return means the model can change
    mid-thread, altering voice and context window. Accepted; must be visible in the turn record.
 
+## Known limitations (verified against the LiteLLM API during WP3, 2026-09-24)
+
+These are upstream constraints, not implementation shortcuts. Confirmed against
+`litellm.types.router.UpdateRouterConfig` and the callback API rather than assumed.
+
+### L1 — D7's "do NOT fall back on 400-class" is not expressible in LiteLLM
+
+Generic `fallbacks` fire on **every** exception class; there is no per-class exclusion. We set
+`BadRequestErrorRetries: 0` so an oversized/bad prompt is not retried, but **the fallback
+deployment is still attempted once** on a 400 / context-length error.
+
+`context_window_fallbacks` exists but does the *inverse* of what we want (it deliberately
+falls back to a smaller context), so it is not a remedy.
+
+**Residual risk: low.** The fallback will almost certainly fail on the same request, so the
+caller still sees the error — we do not silently truncate. The cost is one wasted upstream
+call per 400. The dangerous failure mode D7 was written to prevent (silent truncation) does
+not occur, because nothing truncates: both models simply reject the request.
+
+**Do not claim D7 is fully enforced.** If a future LiteLLM release adds per-class fallback
+exclusion, tighten this.
+
+### L2 — The upstream 401/403 alert is best-effort
+
+`async_log_failure_event` fires when the request **ultimately** fails. If the fallback
+succeeds, the upstream auth failure may never reach the callback and the alert is missed.
+What is implemented: whenever a failure event does arrive with 401/403, it alerts loudly
+(`LOGGER.error` + `alert: "upstream_auth_failure"` in the metering payload → control-plane
+`llm.upstream_auth_alert` audit event).
+
+**Consequence:** a dead primary credential can persist unnoticed if the fallback always
+carries the load. **Mitigation to schedule:** an active health probe on each provider's
+primary deployment, independent of the request path.
+
+### Implemented faithfully
+
+Transport / 5xx / timeout fallback; 429-after-retries fallback via the retry budget;
+upstream 401/403 falls back; per-key precedence (key > team > global).
+Recommended belt-and-braces: enable `general_settings.enforce_fallback_model_access: true`
+gateway-side, though our keys already carry the fallback in `models`.
+
 ## References
 
 - LiteLLM Router — cooldowns, fallbacks, retries: https://docs.litellm.ai/docs/routing#fallbacks
