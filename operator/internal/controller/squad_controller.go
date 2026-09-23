@@ -26,8 +26,8 @@ const (
 	managedBy                 = "skquad-operator"
 	squadFinalizer            = "skquad.io/squad-cleanup"
 	agentServiceAccountName   = "skquad-agent"
-	apiSecretWriterRoleName   = "skquad-api-agent-secret-writer"
-	apiSecretWriterBinding    = "skquad-api-agent-secret-writer"
+	apiSecretWriterRoleName   = "skquad-api-agent-secret-writer" // #nosec G101 -- K8s Role name, not a credential
+	apiSecretWriterBinding    = "skquad-api-agent-secret-writer" // #nosec G101 -- K8s RoleBinding name, not a credential
 	defaultDenyPolicyName     = "default-deny"
 	dnsEgressPolicyName       = "allow-dns-egress"
 	platformEgressPolicyName  = "allow-skquad-platform-egress"
@@ -383,6 +383,11 @@ func parseGrantedEgress(squad *skquadv1.Squad) ([]skquadv1.EgressGrant, error) {
 }
 
 func networkPolicyPort(protocol corev1.Protocol, port int) networkingv1.NetworkPolicyPort {
+	// Ports are 0-65535; the guard makes the int32 conversion provably safe
+	// (gosec G115) and turns a programmer error into a loud failure.
+	if port < 0 || port > 65535 {
+		panic(fmt.Sprintf("networkPolicyPort: port %d out of range", port))
+	}
 	return networkingv1.NetworkPolicyPort{
 		Protocol: &protocol,
 		Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: int32(port)},

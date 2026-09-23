@@ -24,7 +24,7 @@ const (
 	agentContainerName = "agent"
 	agentFinalizer     = "skquad.io/agent-cleanup"
 	defaultAgentImage  = "skquad/agent-runtime:0.1.0"
-	credentialsMount   = "/var/run/skquad/credentials"
+	credentialsMount   = "/var/run/skquad/credentials" // #nosec G101 -- mount path, not a credential
 	workspacesMount    = "/var/run/skquad/workspaces"
 	runtimeHTTPPort    = int32(8080)
 )
