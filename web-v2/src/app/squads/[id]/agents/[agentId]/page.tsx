@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityFeed } from "../../../../../components/ActivityFeed";
 import { AgentFormModal } from "../../../../../components/AgentForm";
 import { AuthGate } from "../../../../../components/AuthGate";
@@ -319,6 +319,14 @@ export default function AgentProfilePage() {
   );
 }
 
+// Initials for chat avatars: first + last initial of a name (S-105).
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
 function ChatThread({
   messages,
   agentName,
@@ -335,37 +343,74 @@ function ChatThread({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const { user } = useAuth();
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  const sorted = [...messages].sort((a, b) => (a.created_at || "").localeCompare(b.created_at || ""));
+  const sorted = useMemo(
+    () => [...messages].sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "")),
+    [messages],
+  );
+
+  // Keep the newest message in view (S-105).
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [sorted.length]);
+
+  function autoGrow(node: HTMLTextAreaElement | null) {
+    if (!node) return;
+    node.style.height = "auto";
+    node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
+  }
 
   return (
-    <div>
-      {sorted.length === 0 ? (
-        <EmptyState
-          title="No conversation yet"
-          hint={`Send a message and ${agentName} will pick it up when it wakes. Replies appear here.`}
-        />
-      ) : (
-        <div className="chat-thread">
-          {sorted.map((msg) => {
+    <div className="chat">
+      <div className="chat-scroll" ref={scrollRef}>
+        {sorted.length === 0 ? (
+          <div className="chat-empty">
+            <div className="chat-avatar agent">{initials(agentName)}</div>
+            <div className="chat-empty-title">{agentName} is listening</div>
+            <p className="chat-empty-hint">
+              Send a message below. If the agent is asleep it will pick your message up when it
+              wakes; replies appear right here.
+            </p>
+          </div>
+        ) : (
+          sorted.map((msg) => {
             const fromUser = msg.from_type === "user";
             return (
-              <div key={msg.id} className={`chat-msg ${fromUser ? "from-user" : "from-agent"}`}>
-                <div className="chat-who">{fromUser ? "You" : agentName}</div>
-                <div className="chat-text">{msg.payload?.message || "(no text)"}</div>
-                <div className="chat-time">
-                  {formatRelativeTime(msg.created_at)} · {msg.status}
+              <div key={msg.id} className={`chat-row ${fromUser ? "mine" : "theirs"}`}>
+                <div className={`chat-avatar ${fromUser ? "me" : "agent"}`} aria-hidden="true">
+                  {fromUser ? initials(user?.name || "You") : initials(agentName)}
+                </div>
+                <div className="chat-bubble">
+                  <div className="chat-head">
+                    <span className="chat-name">{fromUser ? "You" : agentName}</span>
+                    <span className="chat-time">{formatRelativeTime(msg.created_at)}</span>
+                    {!fromUser && msg.status ? <span className="chat-status mono">{msg.status}</span> : null}
+                  </div>
+                  <div className="chat-text">{msg.payload?.message || "(no text)"}</div>
                 </div>
               </div>
             );
-          })}
-        </div>
-      )}
-      {error ? <div className="notice error">{error}</div> : null}
-      <div className="chat-composer">
+          })
+        )}
+      </div>
+      {error ? <div className="notice error" style={{ margin: "var(--space-2) var(--space-3) 0" }}>{error}</div> : null}
+      <form
+        className="chat-composer"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void send();
+        }}
+      >
         <textarea
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          rows={1}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            autoGrow(e.target);
+          }}
           placeholder={`Message ${agentName}…`}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -374,10 +419,19 @@ function ChatThread({
             }
           }}
         />
-        <button type="button" className="btn btn-primary" disabled={busy || draft.trim() === ""} onClick={() => void send()}>
-          Send
+        <button
+          type="submit"
+          className="chat-send"
+          disabled={busy || draft.trim() === ""}
+          aria-label="Send message"
+          title="Send"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M2 14L14 2M14 2H5M14 2V11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </button>
-      </div>
+      </form>
+      <div className="chat-hint">Enter to send · Shift+Enter for a new line</div>
     </div>
   );
 
