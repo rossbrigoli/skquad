@@ -1,15 +1,22 @@
 name: Images
 
+# Publishing is gated on the CI workflow (tests + security scans, Kanbunny
+# S-102): images are only pushed after CI succeeds on main. Release tags are
+# expected to be cut from a green main; workflow_dispatch stays available as
+# the manual override.
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
+  push:
     tags: ["v*.*.*"]
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
+  actions: read
 
 env:
   DOCKERHUB_NAMESPACE: brigss007
@@ -18,8 +25,24 @@ env:
   GHCR_NAMESPACE: rossbrigoli
 
 jobs:
+  gate:
+    name: CI gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a successful CI run
+        env:
+          EVENT: ${{ github.event_name }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          if [ "$EVENT" = "workflow_run" ] && [ "$CONCLUSION" != "success" ]; then
+            echo "CI conclusion is '$CONCLUSION' — refusing to publish images." >&2
+            exit 1
+          fi
+          echo "Gate passed (event=$EVENT)."
+
   build:
     name: Build ${{ matrix.component }} image
+    needs: gate
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -46,6 +69,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # workflow_run executes from the default branch's copy of this file;
+          # build the commit that actually triggered the CI run.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - uses: docker/setup-buildx-action@v4
 

@@ -369,3 +369,103 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
         run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # Security jobs (Kanbunny S-102). Self-hosted on the in-cluster skquad runner:
+  # SonarQube is unreachable from GitHub-hosted runners (Cloudflare Access gate),
+  # so scans run where the server lives. Any Critical/High finding fails CI, and
+  # images.yml only publishes after CI (including these) is green.
+  # ---------------------------------------------------------------------------
+  security-sonar:
+    name: Security — SonarQube
+    if: vars.SECURITY_RUNNER_READY == 'true'
+    runs-on: [self-hosted, skquad]
+    timeout-minutes: 45
+    env:
+      SONAR_URL: http://sonarqube-sonarqube.sonarqube.svc.cluster.local:9000
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      KANBUNNY_URL: http://kanbunny.kanbunny.svc.cluster.local:3500
+      KANBUNNY_TOKEN: ${{ secrets.KANBUNNY_TOKEN }}
+      KANBUNNY_BOARD: e5b3865d-1d64-482c-b153-411b84a9b132
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          version: "17"
+      - name: Cache SonarScanner CLI
+        id: sonar-cli
+        uses: actions/cache@v4
+        with:
+          path: .sonar-scanner
+          key: sonar-scanner-cli-8.1.0.6389
+      - name: Install SonarScanner CLI
+        if: steps.sonar-cli.outputs.cache-hit != 'true'
+        run: |
+          curl -sSLo /tmp/sonar.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-8.1.0.6389-linux-x64.zip
+          mkdir -p .sonar-scanner
+          unzip -q /tmp/sonar.zip -d .sonar-scanner
+      - name: Run SonarQube analysis
+        env:
+          SONAR_SCANNER_OPTS: "-Xmx1g"
+        run: .sonar-scanner/sonar-scanner-*/bin/sonar-scanner -Dsonar.host.url="$SONAR_URL"
+      - name: Critical/High severity gate (+ Kanbunny card)
+        run: python3 scripts/sonar-severity-gate.py
+
+  security-sca:
+    name: Security — SCA
+    if: vars.SECURITY_RUNNER_READY == 'true'
+    runs-on: [self-hosted, skquad]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: operator/go.mod
+          cache-dependency-path: |
+            control-plane/go.sum
+            operator/go.sum
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: govulncheck control-plane
+        working-directory: control-plane
+        run: $(go env GOPATH)/bin/govulncheck ./...
+      - name: govulncheck operator
+        working-directory: operator
+        run: $(go env GOPATH)/bin/govulncheck ./...
+      - name: pip-audit agent-runtime
+        run: |
+          python3 -m venv /tmp/sca-venv
+          /tmp/sca-venv/bin/pip install -q --upgrade pip pip-audit
+          /tmp/sca-venv/bin/pip install -q ./agent-runtime
+          /tmp/sca-venv/bin/pip-audit
+      - name: npm audit web (high+ critical)
+        working-directory: web
+        run: npm audit --audit-level=high --package-lock-only
+      - name: npm audit web-v2 (high+ critical)
+        working-directory: web-v2
+        run: npm audit --audit-level=high --package-lock-only
+
+  security-sast:
+    name: Security — SAST (gosec)
+    if: vars.SECURITY_RUNNER_READY == 'true'
+    runs-on: [self-hosted, skquad]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: operator/go.mod
+          cache-dependency-path: |
+            control-plane/go.sum
+            operator/go.sum
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+      - name: gosec control-plane (fail on HIGH/CRITICAL)
+        working-directory: control-plane
+        run: $(go env GOPATH)/bin/gosec -severity high -sort severity ./...
+      - name: gosec operator (fail on HIGH/CRITICAL)
+        working-directory: operator
+        run: $(go env GOPATH)/bin/gosec -severity high -sort severity ./...
