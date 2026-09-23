@@ -347,8 +347,9 @@ func TestMyModelsOnlyGrantedAndActive(t *testing.T) {
 		"model_ids": []string{m1.ID, m2.ID, m3.ID},
 	}, http.StatusOK, &[]domain.AIModel{})
 
-	// Deprecate m2; revoke m3 (m1 remains granted + active).
-	doAdminNoBody(t, handler, http.MethodPost, "/api/v1/ai-models/"+m2.ID+"/deprecate", http.StatusNoContent)
+	// Deprecate m2; revoke m3 (m1 remains granted + active). WP4:
+	// deprecate returns 200 with the cascade report (affected counts).
+	doAdminNoBody(t, handler, http.MethodPost, "/api/v1/ai-models/"+m2.ID+"/deprecate", http.StatusOK)
 	doJSONAuth(t, handler, "Bearer admin", http.MethodPut, "/api/v1/users/"+alice.ID+"/models", map[string]any{
 		"model_ids": []string{m1.ID, m2.ID},
 	}, http.StatusOK, &[]domain.AIModel{})

@@ -27,10 +27,45 @@ type recordingGateway struct {
 	generated    []map[string]any
 	updated      []map[string]any
 	deleted      []string
+	live         map[string][]string // token → current model allow-list (WP4 invariant)
 	failGenerate bool
 	failUpdate   bool
 	failDelete   bool
 	seq          int
+}
+
+// canCall reports whether the virtual key identified by token is still live
+// AND allowed to call model. This simulates the gateway-side enforcement
+// of the compiled allow-list: if key convergence is skipped, the live
+// entry still contains the revoked model and canCall stays true — which
+// is exactly what the WP4 invariant tests assert against.
+func (g *recordingGateway) canCall(token, model string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.live == nil {
+		return false
+	}
+	models, ok := g.live[token]
+	if !ok {
+		return false
+	}
+	for _, m := range models {
+		if m == model {
+			return true
+		}
+	}
+	return false
+}
+
+func gatewayModelsField(body map[string]any) []string {
+	raw, _ := body["models"].([]any)
+	out := make([]string, 0, len(raw))
+	for _, m := range raw {
+		if s, ok := m.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (g *recordingGateway) handler() http.Handler {
@@ -46,15 +81,23 @@ func (g *recordingGateway) handler() http.Handler {
 				return
 			}
 			g.seq++
+			token := "tok-" + string(rune('a'+g.seq))
+			if g.live == nil {
+				g.live = map[string][]string{}
+			}
+			g.live[token] = gatewayModelsField(body)
 			g.generated = append(g.generated, body)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"key":   "sk-generated-" + string(rune('a'+g.seq)),
-				"token": "tok-" + string(rune('a'+g.seq)),
+				"token": token,
 			})
 		case "/key/update":
 			if g.failUpdate {
 				w.WriteHeader(http.StatusBadGateway)
 				return
+			}
+			if token, ok := body["key"].(string); ok && g.live != nil {
+				g.live[token] = gatewayModelsField(body)
 			}
 			g.updated = append(g.updated, body)
 			_ = json.NewEncoder(w).Encode(map[string]any{"updated": true})
@@ -62,6 +105,9 @@ func (g *recordingGateway) handler() http.Handler {
 			if g.failDelete {
 				w.WriteHeader(http.StatusBadGateway)
 				return
+			}
+			if token, ok := body["key"].(string); ok && g.live != nil {
+				delete(g.live, token)
 			}
 			g.deleted = append(g.deleted, body["key"].(string))
 			_ = json.NewEncoder(w).Encode(map[string]any{"deleted": true})
@@ -274,7 +320,11 @@ func TestUngrantedFallbackRejectedOnProvision(t *testing.T) {
 func TestDeprecatedModelRejectedOnProvision(t *testing.T) {
 	f := newGatewayFixture(t)
 	f.bind(t, f.modelA.ID, f.modelB.ID)
-	doAdminNoBody(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelB.ID+"/deprecate", http.StatusNoContent)
+	doAdminNoBody(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelB.ID+"/deprecate", http.StatusOK) // WP4: 200 + cascade report
+	// WP4's deprecate cascade cleared the fallback binding; re-seed it
+	// out-of-band so provisioning-time rejection of a deprecated binding
+	// (WP3) is still what fails here.
+	f.seedBinding(t, f.modelA.ID, f.modelB.ID)
 	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
 		http.StatusConflict, "model_deprecated")
 }
@@ -282,7 +332,8 @@ func TestDeprecatedModelRejectedOnProvision(t *testing.T) {
 func TestDeprecatedFallbackRejectedOnProvision(t *testing.T) {
 	f := newGatewayFixture(t)
 	f.bind(t, f.modelA.ID, f.modelB.ID)
-	doAdminNoBody(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelA.ID+"/deprecate", http.StatusNoContent)
+	doAdminNoBody(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelA.ID+"/deprecate", http.StatusOK) // WP4: 200 + cascade report
+	f.seedBinding(t, f.modelA.ID, f.modelB.ID)
 	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
 		http.StatusConflict, "model_deprecated")
 }
@@ -345,7 +396,7 @@ func TestPatchUnknownModelRejected(t *testing.T) {
 func TestPatchDeprecatedModelRejected(t *testing.T) {
 	f := newGatewayFixture(t)
 	f.bind(t, f.modelA.ID, "")
-	doAdminNoBody(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelB.ID+"/deprecate", http.StatusNoContent)
+	doAdminNoBody(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelB.ID+"/deprecate", http.StatusOK) // WP4: 200 + cascade report
 	requireErrorCode(t, f.handler, http.MethodPatch, "/api/v1/agents/"+f.agentID, map[string]any{
 		"fallback_ai_model_id": f.modelB.ID,
 	}, http.StatusConflict, "model_deprecated")
@@ -495,11 +546,11 @@ func TestReconcileReportsUngrantedBindingAsError(t *testing.T) {
 	f.bind(t, f.modelA.ID, "")
 	f.createIdentity(t)
 
-	// Grant revoked out-of-band (WP4 will own the forced cascade; WP3's
-	// sync must refuse to converge rather than silently keep the key).
-	doJSON(t, f.handler, http.MethodPut, "/api/v1/users/"+f.ownerID+"/models",
-		map[string]any{"model_ids": []string{f.modelB.ID}}, http.StatusOK, &[]domain.AIModel{})
-
+	// WP4 owns forced grant-revocation cascades (which clear bindings and
+	// converge keys). WP3's sync must still REFUSE to converge a binding
+	// that is not granted — seed the ungranted binding directly so the
+	// reconcile path itself is what refuses.
+	f.seedBinding(t, f.modelNoGrant.ID, "")
 	var summary map[string]any
 	doJSON(t, f.handler, http.MethodPost, "/api/v1/admin/gateway/keys/reconcile", nil, http.StatusOK, &summary)
 	require.EqualValues(t, 1, summary["errors"])

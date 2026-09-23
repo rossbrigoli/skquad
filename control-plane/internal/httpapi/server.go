@@ -292,6 +292,7 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 
 			r.Get("/users/{userID}/models", s.listUserModels)
 			r.Put("/users/{userID}/models", s.setUserModels)
+			r.Delete("/users/{userID}/models/{modelID}", s.revokeUserModel)
 
 			// Self-service read for the agent UI: calling user's granted,
 			// active models only (ADR-0010 D3).

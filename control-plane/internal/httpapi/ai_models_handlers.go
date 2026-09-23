@@ -2,8 +2,8 @@
 //
 // AI Models are the grantable unit (D1); grants follow users (D3). All
 // admin surfaces here mirror the existing LLM-provider registry handler
-// patterns (auth helpers, audit-ctx, error envelopes). Key provisioning
-// and revoke-cascade convergence are WP3/WP4 and intentionally absent.
+// patterns (auth helpers, audit-ctx, error envelopes). Revoke/deprecate/
+// delete cascades converge virtual keys via model_cascade.go (WP4, D9).
 
 package httpapi
 
@@ -41,6 +41,10 @@ type aiModelUsageEntry struct {
 	AgentID   string `json:"agent_id"`
 	AgentName string `json:"agent_name"`
 	SquadID   string `json:"squad_id"`
+	// Slot names which binding references the model ("primary" or
+	// "fallback"); empty for grant-only entries. Additive to the S-103
+	// shape so the WP6 dialog renders it unchanged.
+	Slot string `json:"slot,omitempty"`
 }
 
 // validateAIModelPricing enforces the four-rate contract. Returns a
@@ -291,18 +295,28 @@ func (s *Server) updateAIModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
+// deprecateAIModel deprecates the model and then runs the WP4 cascade:
+// every agent bound to it (primary or fallback, any owner) has the slot
+// cleared and its virtual key converged. Deprecation does NOT hard-block
+// on in-use references — it is the intended "stop using this" action —
+// but it reports how many agents/users were affected and any key
+// convergence failures. Response is 200 with the cascade report.
 func (s *Server) deprecateAIModel(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
 	}
 	modelID := chi.URLParam(r, "modelID")
+	model, err := s.store.GetAIModel(r.Context(), modelID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
 	if err := s.store.DeprecateAIModel(s.pendingUserAuditCtx(r, "aimodel.deprecate", "ai_model", modelID, "", nil), modelID); err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	// Key convergence for grants/bindings of this model is WP4's revoke
-	// cascade; the reconcile endpoint repairs anything missed in the interim.
-	w.WriteHeader(http.StatusNoContent)
+	report := s.deprecateAIModelCascade(r, model)
+	s.finishCascade(w, r, report, false)
 }
 
 // aiModelUsage enumerates every live reference to an AI Model: user grants
@@ -332,7 +346,7 @@ func (s *Server) aiModelUsage(ctx context.Context, modelID string) ([]aiModelUsa
 		if agent.AIModelID != modelID && agent.FallbackAIModelID != modelID {
 			continue
 		}
-		entry := aiModelUsageEntry{AgentID: agent.ID, AgentName: agent.Name, SquadID: agent.SquadID}
+		entry := aiModelUsageEntry{AgentID: agent.ID, AgentName: agent.Name, SquadID: agent.SquadID, Slot: agentBoundSlot(agent, modelID)}
 		// Owner identification is best-effort: the agent binding is the
 		// load-bearing signal even if the owner lookup fails.
 		if squad, err := s.store.GetSquad(ctx, agent.SquadID); err == nil {
@@ -354,7 +368,8 @@ func (s *Server) deleteAIModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	modelID := chi.URLParam(r, "modelID")
-	if _, err := s.store.GetAIModel(r.Context(), modelID); err != nil {
+	model, err := s.store.GetAIModel(r.Context(), modelID)
+	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
@@ -373,25 +388,41 @@ func (s *Server) deleteAIModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if force {
-		agents, err := s.store.ListAllAgents(r.Context())
+		// WP4: unbinding alone is not enough — every affected virtual
+		// key must converge before the model disappears, or a live key
+		// could keep calling a deleted model. Converge first; if any
+		// convergence fails the delete is NOT performed (502,
+		// retryable) so a half-applied state is never reported as
+		// success.
+		affected, err := s.modelBoundAgents(r.Context(), modelID, "")
 		if err != nil {
 			writeStorageError(w, err)
 			return
 		}
-		for _, agent := range agents {
-			if agent.AIModelID != modelID && agent.FallbackAIModelID != modelID {
-				continue
+		userSet := map[string]bool{}
+		for _, agent := range affected {
+			if squad, err := s.store.GetSquad(r.Context(), agent.SquadID); err == nil && squad.OwnerID != "" {
+				userSet[squad.OwnerID] = true
 			}
-			if agent.AIModelID == modelID {
-				agent.AIModelID = ""
-			}
-			if agent.FallbackAIModelID == modelID {
-				agent.FallbackAIModelID = ""
-			}
-			if _, err := s.store.UpdateAgent(r.Context(), agent); err != nil {
-				writeStorageError(w, err)
-				return
-			}
+		}
+		report := &cascadeReport{
+			ModelID:        modelID,
+			Operation:      "delete",
+			AffectedAgents: len(affected),
+			AffectedUsers:  make([]string, 0, len(userSet)),
+		}
+		for uid := range userSet {
+			report.AffectedUsers = append(report.AffectedUsers, uid)
+		}
+		if len(affected) > 0 {
+			actions, failures := s.convergeAfterModelRemoval(r, modelID, model.ModelName, "deleted", affected)
+			report.KeyActions = actions
+			report.Failures = failures
+			s.notifyCascadeOwners(r.Context(), model.ModelName, "deleted", affected)
+		}
+		if report.hasFailures() {
+			s.finishCascade(w, r, report, true)
+			return
 		}
 	}
 	if err := s.store.DeleteAIModel(s.pendingUserAuditCtx(r, "aimodel.delete", "ai_model", modelID, "", nil), modelID); err != nil {
@@ -446,7 +477,8 @@ func (s *Server) setUserModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID := chi.URLParam(r, "userID")
-	if _, err := s.store.GetUser(r.Context(), userID); err != nil {
+	user, err := s.store.GetUser(r.Context(), userID)
+	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
@@ -483,6 +515,43 @@ func (s *Server) setUserModels(w http.ResponseWriter, r *http.Request) {
 	for _, grant := range current {
 		currentSet[grant.AIModelID] = true
 	}
+
+	// WP4 (D9): removals from the desired set are revokes and must not
+	// strand live keys. If any user-owned agent still binds a model that
+	// is about to be removed, require ?force=true; with force the full
+	// cascade (clear slots → converge keys) runs for each removal.
+	force := r.URL.Query().Get("force") == "true"
+	type pendingRemoval struct {
+		modelID string
+		agents  []*domain.Agent
+	}
+	removals := make([]pendingRemoval, 0)
+	boundTotal := 0
+	for _, grant := range current {
+		if desired[grant.AIModelID] {
+			continue
+		}
+		bound, err := s.modelBoundAgents(r.Context(), grant.AIModelID, userID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		if len(bound) > 0 {
+			boundTotal += len(bound)
+		}
+		removals = append(removals, pendingRemoval{modelID: grant.AIModelID, agents: bound})
+	}
+	if boundTotal > 0 && !force {
+		usage := make([]aiModelUsageEntry, 0, boundTotal)
+		for _, rem := range removals {
+			usage = append(usage, cascadeUsage(user.ID, user.Email, rem.agents, rem.modelID)...)
+		}
+		writeInUseConflict(w,
+			fmt.Sprintf("removing grants would orphan %d bound agent(s); retry with force=true to revoke the grants, clear the bindings and converge the virtual keys", boundTotal),
+			usage)
+		return
+	}
+
 	u := currentUser(r.Context())
 	metadata, _ := json.Marshal(map[string]any{"user_id": userID, "model_ids": desiredIDs})
 	if err := s.recordUserAuditRequired(r, "aimodel.grants.set", "user_model_grant", userID, "", metadata); err != nil {
@@ -502,14 +571,31 @@ func (s *Server) setUserModels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	for _, grant := range current {
-		if desired[grant.AIModelID] {
-			continue
-		}
-		if err := s.store.RevokeModelFromUser(r.Context(), userID, grant.AIModelID); err != nil && !errors.Is(err, storage.ErrNotFound) {
+	var cascadeFailures []cascadeFailure
+	for _, rem := range removals {
+		meta, _ := json.Marshal(map[string]any{"user_id": userID, "model_id": rem.modelID, "forced": true})
+		if err := s.store.RevokeModelFromUser(s.pendingUserAuditCtx(r, "aimodel.grant.revoke", "user_model_grant", rem.modelID, "", meta), userID, rem.modelID); err != nil && !errors.Is(err, storage.ErrNotFound) {
 			writeStorageError(w, err)
 			return
 		}
+		model, err := s.store.GetAIModel(r.Context(), rem.modelID)
+		modelName := rem.modelID
+		if err == nil {
+			modelName = model.ModelName
+		}
+		_, failures := s.convergeAfterModelRemoval(r, rem.modelID, modelName, "revoked", rem.agents)
+		cascadeFailures = append(cascadeFailures, failures...)
+		s.notifyCascadeOwners(r.Context(), modelName, "revoked from user "+user.Email, rem.agents)
+	}
+	if len(cascadeFailures) > 0 {
+		// Grants were applied — that part is done — but some virtual keys
+		// did not converge. Report truthfully instead of a clean 200.
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error":    "convergence_failed",
+			"message":  fmt.Sprintf("grants updated but %d virtual key(s) failed to converge; the gateway reconcile endpoint repairs them", len(cascadeFailures)),
+			"failures": cascadeFailures,
+		})
+		return
 	}
 	models, err := s.grantedAIModels(r.Context(), userID)
 	if err != nil {
