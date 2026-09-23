@@ -61,11 +61,10 @@ export function TokenProvider({ children }: { children: ReactNode }) {
         } catch (err) {
           if (!cancelled) setError(err instanceof Error ? err.message : "session check failed");
         }
-        // Not signed in: bounce to the IdP. Full-page navigation is required
-        // (OIDC redirect flow leaves the React app entirely).
+        // Not signed in. Do NOT auto-redirect: the login screen presents a
+        // chooser (SSO vs break-glass) instead of firing the user straight at the
+        // IdP, which also keeps an unreachable Dex from producing a redirect loop.
         if (!cancelled) {
-          // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-          window.location.assign("/auth/login");
           setLoading(false);
         }
         return;

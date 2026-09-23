@@ -1,0 +1,20 @@
+{{- $bg := .Values.breakGlass | default dict }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-breakglass
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: breakglass
+data:
+  # The on/off switch lives here, NOT in the Secret, so break-glass can be
+  # flipped without re-sealing anything.
+  SKQUAD_BREAKGLASS_ENABLED: {{ $bg.enabled | default false | quote }}
+  SKQUAD_BREAKGLASS_USERNAME: {{ $bg.username | default "breakglass" | quote }}
+  SKQUAD_BREAKGLASS_TOKEN_TTL: {{ $bg.tokenTTL | default "60m" | quote }}
+  SKQUAD_BREAKGLASS_MAX_ATTEMPTS: {{ $bg.maxAttempts | default 5 | quote }}
+  SKQUAD_BREAKGLASS_WINDOW: {{ $bg.window | default "15m" | quote }}
+  # LAN + Tailscale CGNAT only. Requests arriving through Cloudflare are
+  # rejected outright regardless of these values.
+  SKQUAD_BREAKGLASS_ALLOWED_CIDRS: {{ $bg.allowedCIDRs | default (list "192.168.68.0/24" "100.64.0.0/10") | join "," | quote }}

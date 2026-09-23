@@ -3,10 +3,13 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rossbrigoli/skquad/control-plane/internal/breakglass"
 )
 
 // AuthMode selects how the API authenticates human users.
@@ -31,6 +34,20 @@ type Config struct {
 	// OIDCAdminGroups binds IdP group claims to platform_admin. Without it every
 	// OIDC principal lands as RoleUser and the admin UI is unreachable.
 	OIDCAdminGroups []string
+	// BreakGlass* configure an OIDC-independent admin path (see
+	// internal/breakglass). Everything here is ConfigMap-safe EXCEPT the two
+	// secrets, which must come from a SealedSecret:
+	// SKQUAD_BREAKGLASS_PASSWORD_HASH and SKQUAD_BREAKGLASS_JWT_KEY.
+	// The on/off switch is deliberately a plain ConfigMap value so it can be
+	// flipped without re-sealing anything.
+	BreakGlassEnabled      bool     // SKQUAD_BREAKGLASS_ENABLED (default false)
+	BreakGlassUsername     string  // SKQUAD_BREAKGLASS_USERNAME
+	BreakGlassPasswordHash string  // SKQUAD_BREAKGLASS_PASSWORD_HASH (argon2id PHC) - SECRET
+	BreakGlassJWTKey       string  // SKQUAD_BREAKGLASS_JWT_KEY - SECRET
+	BreakGlassAllowedCIDRs []string // SKQUAD_BREAKGLASS_ALLOWED_CIDRS (comma-separated)
+	BreakGlassTokenTTL     time.Duration // SKQUAD_BREAKGLASS_TOKEN_TTL (default 60m)
+	BreakGlassMaxAttempts  int           // SKQUAD_BREAKGLASS_MAX_ATTEMPTS (default 5)
+	BreakGlassWindow       time.Duration // SKQUAD_BREAKGLASS_WINDOW (default 15m)
 	DevEmail        string // fixed principal email (AuthMode=dev)
 	DevName         string // fixed principal name (AuthMode=dev)
 
@@ -72,6 +89,14 @@ func Load() (*Config, error) {
 		IssuerURL:               os.Getenv("SKQUAD_OIDC_ISSUER"),
 		Audience:                os.Getenv("SKQUAD_OIDC_AUDIENCE"),
 		OIDCAdminGroups:         envList("SKQUAD_OIDC_ADMIN_GROUPS"),
+		BreakGlassEnabled:     envBool("SKQUAD_BREAKGLASS_ENABLED", false),
+		BreakGlassUsername:    strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_USERNAME")),
+		BreakGlassPasswordHash: strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_PASSWORD_HASH")),
+		BreakGlassJWTKey:      strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_JWT_KEY")),
+		BreakGlassAllowedCIDRs: envList("SKQUAD_BREAKGLASS_ALLOWED_CIDRS"),
+		BreakGlassTokenTTL:    envDuration("SKQUAD_BREAKGLASS_TOKEN_TTL", 60*time.Minute),
+		BreakGlassMaxAttempts: envInt("SKQUAD_BREAKGLASS_MAX_ATTEMPTS", 5),
+		BreakGlassWindow:      envDuration("SKQUAD_BREAKGLASS_WINDOW", 15*time.Minute),
 		DevEmail:                envOr("SKQUAD_DEV_EMAIL", "dev@skquad.local"),
 		DevName:                 envOr("SKQUAD_DEV_NAME", "Dev Admin"),
 		DatabaseURL:             os.Getenv("SKQUAD_DATABASE_URL"),
@@ -162,6 +187,54 @@ func (c *Config) AdminGroupMatched(groups []string) bool {
 		}
 	}
 	return false
+}
+
+// BreakGlassConfig converts the flat env-derived settings into a breakglass.Config,
+// parsing the CIDR allowlist. Returns an error rather than a half-built config so
+// a typo in an allowlist entry fails loudly at startup instead of silently
+// widening or closing access at request time.
+func (c *Config) BreakGlassConfig() (*breakglass.Config, error) {
+	bg := &breakglass.Config{
+		Enabled:      c.BreakGlassEnabled,
+		Username:     c.BreakGlassUsername,
+		PasswordHash: c.BreakGlassPasswordHash,
+		JWTKey:       []byte(c.BreakGlassJWTKey),
+		TokenTTL:     c.BreakGlassTokenTTL,
+		MaxAttempts:  c.BreakGlassMaxAttempts,
+		Window:       c.BreakGlassWindow,
+	}
+	for _, raw := range c.BreakGlassAllowedCIDRs {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if !strings.Contains(raw, "/") {
+			// Bare IP: treat as a single-host prefix.
+			if strings.Contains(raw, ":") {
+				raw += "/128"
+			} else {
+				raw += "/32"
+			}
+		}
+		_, netBlock, err := net.ParseCIDR(raw)
+		if err != nil {
+			return nil, fmt.Errorf("SKQUAD_BREAKGLASS_ALLOWED_CIDRS: invalid CIDR %q", raw)
+		}
+		bg.AllowedCIDRs = append(bg.AllowedCIDRs, netBlock)
+	}
+	return bg, nil
+}
+
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 func envBool(key string, def bool) bool {

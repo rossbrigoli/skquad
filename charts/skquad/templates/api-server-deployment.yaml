@@ -14,6 +14,12 @@ spec:
       app.kubernetes.io/component: api-server
   template:
     metadata:
+      annotations:
+        # ConfigMap/Secret edits do not restart a pod on their own. These checksums
+        # make a change to either one roll the api-server, which is what flipping
+        # SKQUAD_BREAKGLASS_ENABLED actually needs to do.
+        checksum/breakglass-config: {{ include (print $.Template.BasePath "/breakglass-configmap.yaml") . | sha256sum | quote }}
+        checksum/breakglass-secret: {{ include (print $.Template.BasePath "/breakglass-secret.yaml") . | sha256sum | quote }}
       labels:
         {{- include "skquad.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api-server
@@ -29,9 +35,30 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+          envFrom:
+            # Break-glass toggles (including the enabled switch) live in a
+            # ConfigMap so they can be flipped without touching any secret.
+            - configMapRef:
+                name: {{ .Release.Name }}-breakglass
           env:
             - name: SKQUAD_ADDR
               value: ":8080"
+            # The two secret inputs are optional so a deployment with break-glass
+            # disabled never blocks on a missing Secret. If break-glass IS enabled
+            # without them, the process fails loudly at startup instead of running
+            # with a broken emergency path.
+            - name: SKQUAD_BREAKGLASS_PASSWORD_HASH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.breakGlass.secretName | default "skquad-breakglass" | quote }}
+                  key: password-hash
+                  optional: true
+            - name: SKQUAD_BREAKGLASS_JWT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.breakGlass.secretName | default "skquad-breakglass" | quote }}
+                  key: jwt-key
+                  optional: true
             - name: SKQUAD_AUTH_MODE
               value: {{ .Values.apiServer.authMode | quote }}
             - name: SKQUAD_K8S_ENABLED

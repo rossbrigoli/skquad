@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"math"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/auth"
+	"github.com/rossbrigoli/skquad/control-plane/internal/breakglass"
 	"github.com/rossbrigoli/skquad/control-plane/internal/config"
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 	"github.com/rossbrigoli/skquad/control-plane/internal/storage"
@@ -61,6 +63,9 @@ type Server struct {
 	oidcAuth   OIDCAuthenticator
 	crWriter   CRWriter
 	llmGateway LLMGatewayProvisioner
+	// breakGlass is the OIDC-independent admin path. nil or disabled means the
+	// endpoints return 404 and no break-glass bearer is ever accepted.
+	breakGlass *breakglass.Auth
 }
 
 // OIDCAuthenticator authenticates OIDC Authorization headers.
@@ -130,11 +135,35 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 	}
 	s := &Server{cfg: cfg, store: store, oidcAuth: oidcAuth, crWriter: crWriter, llmGateway: llmGateway}
 
+	// Break-glass is built at startup. If it is ENABLED but misconfigured we fail
+	// loudly here rather than quietly running with a broken emergency path — a
+	// silent failure would only be discovered at 3am when it is actually needed.
+	if cfg != nil && cfg.BreakGlassEnabled {
+		bgCfg, err := cfg.BreakGlassConfig()
+		if err != nil {
+			panic(fmt.Sprintf("break-glass is enabled but misconfigured: %v", err))
+		}
+		bg, err := breakglass.New(*bgCfg)
+		if err != nil {
+			panic(fmt.Sprintf("break-glass is enabled but misconfigured: %v", err))
+		}
+		s.breakGlass = bg
+		log.Printf("break-glass admin path ENABLED (username=%q, allowed_cidrs=%d, ttl=%s) - reachable only from the allowlisted networks",
+			cfg.BreakGlassUsername, len(bgCfg.AllowedCIDRs), cfg.BreakGlassTokenTTL)
+	}
+
 	r := chi.NewRouter()
 	r.Get("/healthz", s.health)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/gateway/metering", s.ingestGatewayMetering)
+
+		// Break-glass login. Registered outside the human-auth middleware because
+		// it is the thing that has to work when that middleware cannot be satisfied.
+		r.Route("/auth/breakglass", func(r chi.Router) {
+			r.Get("/status", s.breakGlassStatus)
+			r.Post("/login", s.breakGlassLogin)
+		})
 
 		r.Route("/agents/me", func(r chi.Router) {
 			r.Use(s.authenticateAgent)
@@ -256,6 +285,29 @@ type agentPrincipal struct {
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Break-glass is checked AHEAD of the AuthMode switch so an operator can
+		// get in regardless of mode and regardless of Dex being reachable.
+		if s.breakGlass != nil && s.breakGlass.Enabled() {
+			tok := bearerToken(r.Header.Get("Authorization"))
+			if breakglass.IsBreakGlassToken(tok) {
+				claims, err := s.breakGlass.VerifyToken(tok, time.Now())
+				if err != nil {
+					writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or expired break-glass token")
+					return
+				}
+				user := &domain.User{
+					ID:            claims.ID,
+					Email:         claims.Email,
+					Name:          "break-glass",
+					Role:          domain.RolePlatformAdmin,
+					OIDCIssuer:    "local",
+					OIDCSubject:   "breakglass",
+					EmailVerified: true,
+				}
+				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, user)))
+				return
+			}
+		}
 		switch s.cfg.AuthMode {
 		case config.AuthDev:
 			u := &domain.User{

@@ -106,6 +106,39 @@ apiServer:
         - ALL
     readOnlyRootFilesystem: true
 
+# ---------------------------------------------------------------------------
+# Break-glass admin path (OIDC-independent).
+#
+# Everything except the two credentials is a plain ConfigMap value, so the
+# feature can be flipped on/off without re-sealing anything. The credentials
+# come from a SealedSecret named `secretName`.
+#
+# REACHABILITY: LAN + Tailscale only. Requests that arrive through Cloudflare
+# are refused regardless of source IP, because Cloudflare always stamps CF-Ray
+# on what it proxies. Use the internal address (http://skquad-v2.lab), never
+# the public hostname, when using break-glass.
+#
+# Generate credentials with:
+#   go run ./control-plane/cmd/breakglass-hash
+# ---------------------------------------------------------------------------
+breakGlass:
+  # Flip this in the ConfigMap to enable/disable. Default off.
+  enabled: false
+  username: breakglass
+  tokenTTL: 60m
+  maxAttempts: 5
+  window: 15m
+  # RFC1918 LAN + Tailscale CGNAT range.
+  allowedCIDRs:
+    - 192.168.68.0/24
+    - 100.64.0.0/10
+  # SealedSecret name holding `password-hash` and `jwt-key`.
+  secretName: skquad-breakglass
+  # Only for local/dev. Leave empty under GitOps — put the values in the
+  # SealedSecret instead so they never land in git.
+  passwordHash: ""
+  jwtKey: ""
+
 llmGateway:
   imagePullPolicy: IfNotPresent
   port: 4000
