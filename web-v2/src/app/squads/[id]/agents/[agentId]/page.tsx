@@ -7,6 +7,7 @@ import { ActivityFeed } from "../../../../../components/ActivityFeed";
 import { AgentFormModal } from "../../../../../components/AgentForm";
 import { AuthGate } from "../../../../../components/AuthGate";
 import { AppShell } from "../../../../../components/AppShell";
+import { Collapsible } from "../../../../../components/Collapsible";
 import { ConfirmDialog } from "../../../../../components/ConfirmDialog";
 import { EmptyState } from "../../../../../components/EmptyState";
 import { MetricTile } from "../../../../../components/MetricTile";
@@ -299,15 +300,16 @@ export default function AgentProfilePage() {
           </p>
         </section>
 
-        <section style={{ marginTop: "var(--space-5)" }}>
-          <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>Recent activity</h2>
+        {/* S-120: collapsed by default, reusing the S-118 Collapsible with a
+            session key distinct from the squad page's key. */}
+        <Collapsible id="agent-recent-activity" title="Recent activity">
           <ActivityFeed
             squadId={squadId}
             entries={agentActivity}
             emptyTitle="No recorded activity for this agent"
             emptyHint="Assignments, status changes and identity events show up here."
           />
-        </section>
+        </Collapsible>
 
         {editing && agent ? (
           <AgentFormModal

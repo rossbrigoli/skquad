@@ -95,3 +95,25 @@ describe("persistExpanded", () => {
     expect(() => persistExpanded(undefined, "x", false)).not.toThrow();
   });
 });
+
+// S-120: the Agent page's Recent Activity uses its own session key so it
+// collapses/expands independently of the squad page's section (S-118).
+describe("agent-page recent activity (S-120)", () => {
+  it("is collapsed by default with no session state", () => {
+    expect(initialExpanded("agent-recent-activity", null)).toBe(false);
+    expect(initialExpanded("agent-recent-activity", memStore())).toBe(false);
+  });
+
+  it("uses a session key distinct from the squad page's key", () => {
+    expect(collapseKey("agent-recent-activity")).toBe("skquad:collapsible:agent-recent-activity");
+    expect(collapseKey("agent-recent-activity")).not.toBe(collapseKey("squad-recent-activity"));
+  });
+
+  it("expanding the squad section does not expand the agent section", () => {
+    const s = memStore();
+    persistExpanded(s, "squad-recent-activity", true);
+    expect(initialExpanded("agent-recent-activity", s)).toBe(false);
+    persistExpanded(s, "agent-recent-activity", true);
+    expect(initialExpanded("agent-recent-activity", s)).toBe(true);
+  });
+});
