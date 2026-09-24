@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   formatCost,
+  formatMoney,
   formatRelativeTime,
   formatTokens,
   leaseState,
@@ -75,6 +76,39 @@ describe("formatCost", () => {
 
   it("treats a missing cost as zero", () => {
     expect(formatCost({ currency: "USD" })).toBe("USD 0.0000");
+  });
+
+  it("shows significant digits for sub-tenth-of-cent costs instead of a misleading zero", () => {
+    // 679 in + 112 out @ $0.01/$0.02 per 1M = $9.03e-06 — toFixed(4)
+    // rendered this as "USD 0.0000", making the cost page look empty.
+    expect(formatCost({ cost: 0.00000903, currency: "USD" })).toBe("USD 0.000009");
+    expect(formatCost({ cost: 0.00001753, currency: "USD" })).toBe("USD 0.000018");
+    expect(formatCost({ cost: 0.00005, currency: "USD" })).toBe("USD 0.00005");
+  });
+
+  it("keeps four-decimal rendering at or above a tenth of a cent", () => {
+    expect(formatCost({ cost: 0.0001234, currency: "USD" })).toBe("USD 0.0001");
+    expect(formatCost({ cost: 0.0099999, currency: "USD" })).toBe("USD 0.0100");
+  });
+});
+
+describe("formatMoney", () => {
+  it("formats zero with the fixed four-decimal shape", () => {
+    expect(formatMoney(0)).toBe("USD 0.0000");
+    expect(formatMoney(0, "EUR")).toBe("EUR 0.0000");
+  });
+
+  it("defaults to USD", () => {
+    expect(formatMoney(1.5)).toBe("USD 1.5000");
+  });
+
+  it("uses two significant digits below a tenth of a cent", () => {
+    expect(formatMoney(1.753e-05)).toBe("USD 0.000018");
+    expect(formatMoney(-9.03e-06)).toBe("USD -0.000009");
+  });
+
+  it("does not leave a dangling decimal point after trimming", () => {
+    expect(formatMoney(0.1)).toBe("USD 0.1000");
   });
 });
 

@@ -7,7 +7,7 @@ import { AppShell } from "../../components/AppShell";
 import { EmptyState } from "../../components/EmptyState";
 import { useAuth } from "../../lib/auth";
 import { apiGet, type Agent, type MeteringSummary, type Squad } from "../../lib/api";
-import { formatCost, formatTokens } from "../../lib/format";
+import { formatCost, formatMoney, formatTokens } from "../../lib/format";
 
 type SquadCost = {
   squad: Squad;
@@ -84,7 +84,7 @@ export default function CostsPage() {
         ) : (
           <>
             <p style={{ color: "var(--ink-muted)", marginTop: 0 }}>
-              All squads combined: <strong>{grandTotal.toFixed(4)} USD</strong>
+              All squads combined: <strong>{formatMoney(grandTotal)}</strong>
             </p>
             <div className="entity-list">
               {rows.map((row) => (

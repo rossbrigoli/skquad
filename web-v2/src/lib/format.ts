@@ -7,9 +7,29 @@ export function formatCost(summary: MeteringSummary | null): string {
   if (!summary) {
     return "-";
   }
-  const cost = summary.cost ?? 0;
-  const currency = summary.currency || "USD";
-  return `${currency} ${cost.toFixed(4)}`;
+  return formatMoney(summary.cost ?? 0, summary.currency || "USD");
+}
+
+// formatMoney renders a currency amount. Four decimals cover ordinary spend,
+// but per-1M-token LLM pricing routinely produces sub-tenth-of-cent totals
+// that `toFixed(4)` would show as a misleading "0.0000" — for those we show
+// two significant digits instead, so real spend never looks like no spend.
+export function formatMoney(amount: number, currency = "USD"): string {
+  const abs = Math.abs(amount);
+  if (abs === 0) {
+    return `${currency} 0.0000`;
+  }
+  if (abs >= 0.0001) {
+    return `${currency} ${amount.toFixed(4)}`;
+  }
+  return `${currency} ${trimZeros(amount.toPrecision(2))}`;
+}
+
+function trimZeros(value: string): string {
+  if (!value.includes(".")) {
+    return value;
+  }
+  return value.replace(/0+$/, "").replace(/\.$/, ".0");
 }
 
 export function formatTokens(summary: MeteringSummary | null): string {
