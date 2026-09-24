@@ -744,6 +744,12 @@ class LLMMessageHandler:
         try:
             response = completion(
                 model=model,
+                # The gateway is OpenAI-compatible by architecture. litellm's
+                # provider inference rejects bare model names
+                # ("LLM Provider NOT provided", incident 2026-09-24), so the
+                # provider is declared explicitly instead of prefixing the
+                # model string — keeps metering/model names canonical.
+                custom_llm_provider="openai",
                 messages=chat_messages,
                 api_base=config.llm_gateway_url.rstrip("/"),
                 api_key=virtual_key,
@@ -862,6 +868,8 @@ class LiteLLMTaskHandler:
         for _ in range(max_steps):
             completion_kwargs: dict[str, object] = {
                 "model": model,
+                # See chat handler: bare names fail litellm provider inference.
+                "custom_llm_provider": "openai",
                 "messages": messages,
                 "api_base": config.llm_gateway_url.rstrip("/"),
                 "api_key": virtual_key,
