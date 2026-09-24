@@ -127,8 +127,11 @@ type aiModelResolver interface {
 
 // deriveBindingModelNames resolves the agent's primary/fallback AI Model
 // ids into model names on the CR payload. Unresolvable ids are logged and
-// left empty so the CR writer falls back to the legacy default_model —
-// one stale binding must not block the whole CR sync (same posture as
+// left empty — since the WP8 step-4 cutover the CR writer no longer falls
+// back to the legacy free-text default_model, so an unresolvable binding
+// surfaces as an empty defaultModel (runtime: "SKQUAD_DEFAULT_MODEL is
+// required") rather than silently serving stale config. One stale binding
+// still must not block the whole CR sync (same posture as
 // deriveWorkspaceSecrets).
 func deriveBindingModelNames(ctx context.Context, resolver aiModelResolver, agent *domain.Agent) {
 	if resolver == nil {
@@ -137,7 +140,7 @@ func deriveBindingModelNames(ctx context.Context, resolver aiModelResolver, agen
 	if id := strings.TrimSpace(agent.AIModelID); id != "" {
 		model, err := resolver.GetAIModel(ctx, id)
 		if err != nil {
-			slog.Warn("cannot resolve bound primary AI model; CR defaultModel falls back to legacy value",
+			slog.Warn("cannot resolve bound primary AI model; CR defaultModel left empty",
 				"agent", agent.ID, "ai_model_id", id, "error", err)
 		} else {
 			agent.AIModelName = model.ModelName

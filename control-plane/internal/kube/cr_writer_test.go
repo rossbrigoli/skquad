@@ -97,11 +97,15 @@ func TestUpsertAgentMapsGeneratedSecretRefs(t *testing.T) {
 	if got := spec["virtualKeySecret"]; got != "agent-agent-1-virtual-key-efgh5678" {
 		t.Fatalf("virtualKeySecret = %q", got)
 	}
-	if got := spec["defaultProviderId"]; got != agent.DefaultProvider {
-		t.Fatalf("defaultProviderId = %q, want %q", got, agent.DefaultProvider)
+	// WP8 step-4 cutover: the legacy defaultProviderId field is no longer
+	// written to the CR at all.
+	if _, present := spec["defaultProviderId"]; present {
+		t.Fatalf("defaultProviderId must be absent from the CR spec after the WP8 cutover")
 	}
-	if got := spec["defaultModel"]; got != agent.DefaultModel {
-		t.Fatalf("defaultModel = %q, want %q", got, agent.DefaultModel)
+	// No binding resolved → defaultModel is empty; the legacy free-text
+	// default_model must NOT leak into the CR.
+	if got := spec["defaultModel"]; got != "" {
+		t.Fatalf("defaultModel = %v, want empty (binding-derived only)", got)
 	}
 }
 
@@ -331,7 +335,7 @@ func TestUpsertAgentEmitsModelBindingFields(t *testing.T) {
 	}
 }
 
-func TestUpsertAgentDefaultModelFallsBackToLegacyWhenBindingUnresolved(t *testing.T) {
+func TestUpsertAgentDefaultModelNeverFallsBackToLegacy(t *testing.T) {
 	t.Parallel()
 
 	var gotBody map[string]any
@@ -365,8 +369,11 @@ func TestUpsertAgentDefaultModelFallsBackToLegacyWhenBindingUnresolved(t *testin
 	}
 
 	spec := gotBody["spec"].(map[string]any)
-	if got := spec["defaultModel"]; got != "legacy-model" {
-		t.Fatalf("defaultModel = %v, want legacy-model (unresolved binding must not blank the field)", got)
+	// WP8 step-4 cutover: an unresolved binding leaves defaultModel EMPTY.
+	// The legacy free-text default_model is never a fallback — a stale
+	// binding must surface as a loud runtime error, not silent stale config.
+	if got := spec["defaultModel"]; got != "" {
+		t.Fatalf("defaultModel = %v, want empty (legacy fallback removed in WP8 step 4)", got)
 	}
 	if got := spec["aiModelId"]; got != "ai-unresolved-uuid" {
 		t.Fatalf("aiModelId = %v, want ai-unresolved-uuid", got)

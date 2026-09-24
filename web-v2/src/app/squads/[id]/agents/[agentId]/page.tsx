@@ -24,7 +24,6 @@ import {
   type AgentPermission,
   type AuditEntry,
   type BoardPayload,
-  type LLMProvider,
   type Message,
   type MeteringSummary,
   type RegistryResource,
@@ -66,7 +65,6 @@ export default function AgentProfilePage() {
   const perms = useApi<AgentPermission[]>(`/agents/${agentId}/permissions`, 60000);
   const audit = useApi<AuditEntry[]>(`/squads/${squadId}/audit?limit=50`, 30000);
   const chat = useApi<Message[]>(`/agents/${agentId}/chat`, 10000);
-  const providers = useApi<LLMProvider[]>("/registry/llm-providers", 60000);
   // WP7 (S-112): the caller's granted+active AI Models for the LLM tab pickers.
   const myModels = useApi<AIModel[]>("/models/me", 60000);
 
@@ -315,7 +313,6 @@ export default function AgentProfilePage() {
           <AgentFormModal
             title={`Edit ${agent.name}`}
             submitLabel="Save changes"
-            providers={providers.data || []}
             initial={agent}
             onClose={() => setEditing(false)}
             onSubmit={async (values) => {

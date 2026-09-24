@@ -43,7 +43,6 @@ class RuntimeBootstrapTest(unittest.TestCase):
                 "SKQUAD_AGENT_ID": "agent-1",
                 "SKQUAD_SQUAD_ID": "squad-1",
                 "SKQUAD_AGENT_ROLE": "coder",
-                "SKQUAD_DEFAULT_PROVIDER_ID": "provider-1",
                 "SKQUAD_DEFAULT_MODEL": "openai/gpt-4o-mini",
                 "SKQUAD_IDLE_TIMEOUT": "300s",
                 "SKQUAD_CREDENTIALS_DIR": "/tmp/credentials",
@@ -63,7 +62,6 @@ class RuntimeBootstrapTest(unittest.TestCase):
         self.assertEqual(config.agent_id, "agent-1")
         self.assertEqual(config.squad_id, "squad-1")
         self.assertEqual(config.role, "coder")
-        self.assertEqual(config.default_provider_id, "provider-1")
         self.assertEqual(config.default_model, "openai/gpt-4o-mini")
         self.assertEqual(config.plugin_modules, ())
         self.assertEqual(config.enabled_plugins, ())
@@ -140,7 +138,6 @@ class RuntimeBootstrapTest(unittest.TestCase):
                 {
                     "SKQUAD_AGENT_ID": "agent-1",
                     "SKQUAD_SQUAD_ID": "squad-1",
-                    "SKQUAD_DEFAULT_PROVIDER_ID": "provider-1",
                     "SKQUAD_DEFAULT_MODEL": "model-1",
                     "SKQUAD_AGENT_CREDENTIAL_PATH": str(credential_dir),
                     "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH": str(virtual_key_dir),
@@ -763,7 +760,6 @@ class RuntimeBootstrapTest(unittest.TestCase):
                     "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH": str(virtual_key),
                     "SKQUAD_CONTROL_PLANE_URL": "http://control-plane",
                     "SKQUAD_LLM_GATEWAY_URL": "http://gateway",
-                    "SKQUAD_DEFAULT_PROVIDER_ID": "provider-1",
                     "SKQUAD_DEFAULT_MODEL": "model-1",
                 }
             )
@@ -790,7 +786,10 @@ class RuntimeBootstrapTest(unittest.TestCase):
                 },
             )
 
-    def test_litellm_handler_falls_back_to_legacy_provider_env_for_model(self):
+    def test_litellm_handler_ignores_legacy_provider_env_and_requires_model(self):
+        # WP8 step-4 cutover: SKQUAD_DEFAULT_PROVIDER_ID is no longer read,
+        # and it is NEVER usable as a model-name fallback (the old latent bug).
+        # An agent with no bound model must fail loudly.
         with tempfile.TemporaryDirectory() as tmp:
             virtual_key = Path(tmp) / "llm-gateway"
             virtual_key.write_text("virtual-key", encoding="utf-8")
@@ -804,18 +803,10 @@ class RuntimeBootstrapTest(unittest.TestCase):
                     "SKQUAD_DEFAULT_PROVIDER_ID": "legacy-model-alias",
                 }
             )
-            calls = []
-
-            def completion(**kwargs):
-                calls.append(kwargs)
-                return fake_completion("Ready for review.")
-
-            handler = LiteLLMTaskHandler(completion=completion, discover_resources=False)
-
-            result = handler.handle_task(fake_task("task-1"), config)
-
-            self.assertEqual(result.status, "in-review")
-            self.assertEqual(calls[0]["model"], "legacy-model-alias")
+            self.assertEqual(config.default_model, "")
+            handler = LiteLLMTaskHandler(completion=lambda **kw: fake_completion("x"), discover_resources=False)
+            with self.assertRaises(RuntimeError):
+                handler.handle_task(fake_task("task-1"), config)
 
     def test_litellm_handler_includes_runtime_resources_in_prompt(self):
         with tempfile.TemporaryDirectory() as tmp:

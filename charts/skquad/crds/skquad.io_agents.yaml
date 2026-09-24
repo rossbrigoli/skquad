@@ -43,8 +43,6 @@ spec:
                   type: string
                 systemPrompt:
                   type: string
-                defaultProviderId:
-                  type: string
                 defaultModel:
                   type: string
                 aiModelId:

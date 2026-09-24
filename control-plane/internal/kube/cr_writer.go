@@ -102,22 +102,23 @@ func (w *CRWriter) DeleteSquad(ctx context.Context, squad *domain.Squad) error {
 
 func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identity *domain.AgentIdentity) error {
 	spec := map[string]any{
-		"agentId":           agent.ID,
-		"squadId":           agent.SquadID,
-		"role":              agent.Role,
-		"systemPrompt":      agent.SystemPrompt,
-		"defaultProviderId": agent.DefaultProvider,
-		// defaultModel carries the bound AI Model's model_name when the
-		// outbox worker resolved it (WP5); legacy agents without a binding
-		// keep their free-text default_model. This is what the operator
-		// injects as SKQUAD_DEFAULT_MODEL so the runtime keeps working.
-		"defaultModel":      agentDefaultModel(agent),
-		"aiModelId":         agent.AIModelID,
-		"fallbackAiModelId": agent.FallbackAIModelID,
-		"image":             w.agentImage,
-		"permissions":       rawJSON(agent.Permissions, []any{}),
-		"idleTimeout":       fmt.Sprintf("%ds", agent.IdleTimeoutSec),
-		"desiredActive":     agent.Status == domain.AgentBusy,
+		"agentId":      agent.ID,
+		"squadId":      agent.SquadID,
+		"role":         agent.Role,
+		"systemPrompt": agent.SystemPrompt,
+		// defaultModel carries the bound AI Model's model_name, resolved by
+		// the outbox worker (WP5). WP8 step-4 cutover: binding-derived only —
+		// the legacy free-text agents.default_model is NO LONGER a fallback.
+		// Unbound agents get an empty model and surface at the runtime as
+		// "SKQUAD_DEFAULT_MODEL is required" instead of silently serving a
+		// stale free-text value. The legacy defaultProviderId field is gone.
+		"defaultModel":          strings.TrimSpace(agent.AIModelName),
+		"aiModelId":             agent.AIModelID,
+		"fallbackAiModelId":     agent.FallbackAIModelID,
+		"image":                 w.agentImage,
+		"permissions":           rawJSON(agent.Permissions, []any{}),
+		"idleTimeout":           fmt.Sprintf("%ds", agent.IdleTimeoutSec),
+		"desiredActive":         agent.Status == domain.AgentBusy,
 	}
 	if w.controlPlaneURL != "" {
 		spec["controlPlaneUrl"] = w.controlPlaneURL
@@ -290,16 +291,10 @@ func (w *CRWriter) deleteCore(ctx context.Context, plural, namespace, name strin
 	return nil
 }
 
-// agentDefaultModel returns the gateway-routable model name for the CR's
-// defaultModel field: the resolved bound AI Model name when available
-// (WP5), otherwise the legacy free-text default_model so pre-binding
-// agents keep reconciling unchanged.
-func agentDefaultModel(agent *domain.Agent) string {
-	if name := strings.TrimSpace(agent.AIModelName); name != "" {
-		return name
-	}
-	return agent.DefaultModel
-}
+// agentDefaultModel was removed in the WP8 step-4 cutover: the CR's
+// defaultModel is now derived exclusively from the resolved AI Model
+// binding (agent.AIModelName), never from the legacy free-text
+// agents.default_model.
 
 func rawJSON(raw json.RawMessage, fallback any) any {
 	if len(raw) == 0 {

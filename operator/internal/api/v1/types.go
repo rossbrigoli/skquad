@@ -89,12 +89,15 @@ type SquadList struct {
 
 // AgentSpec declares the desired state for an agent Deployment.
 type AgentSpec struct {
-	AgentID           string               `json:"agentId"`
-	SquadID           string               `json:"squadId"`
-	Role              string               `json:"role,omitempty"`
-	SystemPrompt      string               `json:"systemPrompt,omitempty"`
-	DefaultProviderID string               `json:"defaultProviderId,omitempty"`
-	DefaultModel      string               `json:"defaultModel,omitempty"`
+	AgentID      string `json:"agentId"`
+	SquadID      string `json:"squadId"`
+	Role         string `json:"role,omitempty"`
+	SystemPrompt string `json:"systemPrompt,omitempty"`
+	// DefaultModel carries the RESOLVED bound AI Model's model_name
+	// (control-plane CR writer, WP5 + WP8 step-4 cutover). It is no longer
+	// populated from the legacy free-text agents.default_model, and the
+	// legacy defaultProviderId field has been removed from the CR entirely.
+	DefaultModel string `json:"defaultModel,omitempty"`
 	// AIModelID is the bound primary AI Model (ADR-0010 D4). Injected into
 	// the runtime as SKQUAD_AI_MODEL_ID so the agent's binding is visible
 	// downstream of the control plane (WP5).
