@@ -753,10 +753,17 @@ class LLMMessageHandler:
                 messages=chat_messages,
                 api_base=config.llm_gateway_url.rstrip("/"),
                 api_key=virtual_key,
-                metadata={
-                    "skquad_agent_id": config.agent_id,
-                    "skquad_squad_id": config.squad_id,
-                    "skquad_message_id": message.id,
+                # litellm 1.102.1 silently drops the bare `metadata=` kwarg on
+                # the OpenAI-SDK→proxy path (incident 2026-09-24: metering never
+                # recorded). The wire field the proxy honours is `litellm_metadata`
+                # in extra_body; the gateway callback reads it back as
+                # litellm_params.metadata.
+                extra_body={
+                    "litellm_metadata": {
+                        "skquad_agent_id": config.agent_id,
+                        "skquad_squad_id": config.squad_id,
+                        "skquad_message_id": message.id,
+                    }
                 },
             )
         except Exception as exc:
@@ -873,10 +880,14 @@ class LiteLLMTaskHandler:
                 "messages": messages,
                 "api_base": config.llm_gateway_url.rstrip("/"),
                 "api_key": virtual_key,
-                "metadata": {
-                    "skquad_agent_id": config.agent_id,
-                    "skquad_squad_id": config.squad_id,
-                    "skquad_task_id": task.id,
+                # See chat handler: bare `metadata=` never reaches the proxy;
+                # metering rides on extra_body.litellm_metadata (incident 2026-09-24).
+                "extra_body": {
+                    "litellm_metadata": {
+                        "skquad_agent_id": config.agent_id,
+                        "skquad_squad_id": config.squad_id,
+                        "skquad_task_id": task.id,
+                    }
                 },
             }
             if tools:

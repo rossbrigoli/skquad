@@ -778,12 +778,17 @@ class RuntimeBootstrapTest(unittest.TestCase):
             self.assertEqual(calls[0]["api_base"], "http://gateway")
             self.assertEqual(calls[0]["api_key"], "virtual-key")
             self.assertEqual(
-                calls[0]["metadata"],
+                calls[0]["extra_body"]["litellm_metadata"],
                 {
                     "skquad_agent_id": "agent-1",
                     "skquad_squad_id": "squad-1",
                     "skquad_task_id": "task-1",
                 },
+            )
+            self.assertNotIn(
+                "metadata",
+                calls[0],
+                "bare metadata= never reaches the proxy (litellm 1.102.1 incident 2026-09-24)",
             )
 
     def test_litellm_handler_ignores_legacy_provider_env_and_requires_model(self):
