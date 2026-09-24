@@ -1,8 +1,7 @@
 <div align="center">
 
-  <pre>
+
    <img src="docs/images/logo/skquad-banner.png" alt="skquad">                                         
-  </pre>
 
   <div>
     <a href="https://github.com/rossbrigoli/skquad/actions/workflows/ci.yml">
