@@ -67,23 +67,37 @@ const (
 // Agent is a member of a squad. It runs in its own pod and has its own
 // identity, credentials, and permission set.
 type Agent struct {
-	ID              string          `json:"id"`
-	SquadID         string          `json:"squad_id"`
-	Name            string          `json:"name"`
-	Role            string          `json:"role"`
-	SystemPrompt    string          `json:"system_prompt,omitempty"`
-	IdentityID      string          `json:"identity_id,omitempty"`
-	DefaultProvider string          `json:"default_provider_id,omitempty"`
-	DefaultModel    string          `json:"default_model,omitempty"`
-	Permissions     json.RawMessage `json:"permissions"`
-	IdleTimeoutSec  int             `json:"idle_timeout_sec"`
-	Status          AgentStatus     `json:"status"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	ID              string `json:"id"`
+	SquadID         string `json:"squad_id"`
+	Name            string `json:"name"`
+	Role            string `json:"role"`
+	SystemPrompt    string `json:"system_prompt,omitempty"`
+	IdentityID      string `json:"identity_id,omitempty"`
+	DefaultProvider string `json:"default_provider_id,omitempty"`
+	DefaultModel    string `json:"default_model,omitempty"`
+	// AIModelID is the bound primary model (ADR-0010 D4). Nullable until the
+	// WP8 backfill makes it required; must be granted to the agent's owner.
+	AIModelID string `json:"ai_model_id,omitempty"`
+	// FallbackAIModelID is the optional failover model (ADR-0010 D4/D6).
+	// Must differ from AIModelID and be granted to the agent's owner.
+	FallbackAIModelID string          `json:"fallback_ai_model_id,omitempty"`
+	Permissions       json.RawMessage `json:"permissions"`
+	IdleTimeoutSec    int             `json:"idle_timeout_sec"`
+	Status            AgentStatus     `json:"status"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
 	// WorkspaceSecrets is derived from the agent's project_workspace grants at
 	// CR-write time (outbox worker); it is NOT persisted on the agents table.
 	// See ADR-0009 and the operator WorkspaceSecret spec.
 	WorkspaceSecrets []WorkspaceSecret `json:"workspace_secrets,omitempty"`
+	// AIModelName / FallbackAIModelName are derived from the bound AI Model
+	// rows at CR-apply time (outbox worker), like WorkspaceSecrets — they are
+	// NOT persisted on the agents table. They carry the gateway-routable
+	// model_name so the Agent CR's defaultModel (and the runtime's
+	// SKQUAD_DEFAULT_MODEL) reflects the bound AI Model rather than the
+	// legacy free-text column (WP5, ADR-0010 D4).
+	AIModelName         string `json:"ai_model_name,omitempty"`
+	FallbackAIModelName string `json:"fallback_ai_model_name,omitempty"`
 }
 
 // WorkspaceSecret links a granted git workspace (registry resource id) to the
@@ -210,13 +224,13 @@ type Task struct {
 	// Workspace linkage: set when the task ran against a granted git
 	// workspace. WorkspaceResourceID points at the registry resource, and
 	// Branch/CommitSHA record what the runtime pushed (audit trail).
-	WorkspaceResourceID string `json:"workspace_resource_id,omitempty"`
-	WorkspaceBranch     string `json:"workspace_branch,omitempty"`
-	WorkspaceCommitSHA  string `json:"workspace_commit_sha,omitempty"`
-	ExecutionID     string     `json:"execution_id,omitempty"`
-	WorkerID        string     `json:"worker_id,omitempty"`
-	FencingToken    string     `json:"fencing_token,omitempty"`
-	LeaseExpiresAt  time.Time  `json:"lease_expires_at,omitempty"`
+	WorkspaceResourceID string    `json:"workspace_resource_id,omitempty"`
+	WorkspaceBranch     string    `json:"workspace_branch,omitempty"`
+	WorkspaceCommitSHA  string    `json:"workspace_commit_sha,omitempty"`
+	ExecutionID         string    `json:"execution_id,omitempty"`
+	WorkerID            string    `json:"worker_id,omitempty"`
+	FencingToken        string    `json:"fencing_token,omitempty"`
+	LeaseExpiresAt      time.Time `json:"lease_expires_at,omitempty"`
 }
 
 // TaskExecutionStatus is the lifecycle of one runtime attempt for a task.
@@ -385,6 +399,42 @@ type LLMProvider struct {
 	CreatedAt    time.Time       `json:"created_at"`
 }
 
+// AIModel is an admin-registered, grantable model (ADR-0010 D1). It
+// references an internal provider credential holder so N models from one
+// account share one base_url + api_key_ref (D2). This — not the provider —
+// is the unit shown in the UI and granted to users.
+type AIModel struct {
+	ID          string `json:"id"`
+	ProviderID  string `json:"provider_id"`
+	DisplayName string `json:"display_name"`
+	ModelName   string `json:"model_name"`
+	// ContextWindow is the model's maximum context in tokens (0 = unknown).
+	ContextWindow int `json:"context_window"`
+	// SupportsTools records tool-calling capability; fallbacks without it
+	// break the agent tool loop (ADR-0010 Risk 2).
+	SupportsTools bool `json:"supports_tools"`
+	// Pricing holds the four per-1M rates (input_per_1m, cached_input_per_1m,
+	// cache_write_per_1m, output_per_1m) per ADR-0010 D8. Cost is
+	// snapshotted at metering time and never re-derived from live pricing.
+	Pricing json.RawMessage `json:"pricing"`
+	// LongContextThresholdTokens splits short vs long context pricing tiers.
+	LongContextThresholdTokens int            `json:"long_context_threshold_tokens"`
+	Status                     ResourceStatus `json:"status"`
+	RegisteredBy               string         `json:"registered_by"`
+	CreatedAt                  time.Time      `json:"created_at"`
+	UpdatedAt                  time.Time      `json:"updated_at,omitempty"`
+}
+
+// UserModelGrant records that a user may bind an AI Model to their agents
+// (ADR-0010 D3: grants follow people, the authenticated OIDC principal).
+type UserModelGrant struct {
+	ID            string    `json:"id"`
+	GranteeUserID string    `json:"grantee_user_id"`
+	AIModelID     string    `json:"ai_model_id"`
+	GrantedBy     string    `json:"granted_by"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
 // RegistryResource is a generic registry entry (skill, tool, api, kb, ws).
 type RegistryResource struct {
 	ID           string          `json:"id"`
@@ -431,6 +481,13 @@ type AccessGrant struct {
 }
 
 // MeteringEvent records token usage for an agent (and squad) LLM call.
+//
+// WP5 (ADR-0010 D8 + Risk 3): ModelUsed names the model that ACTUALLY
+// served the call (which may differ from the requested Model when the
+// gateway fell back), and the Rate* fields snapshot the per-1M pricing
+// used at event time together with the cost computed from that snapshot.
+// Historical cost must never be re-derived by joining to live pricing —
+// vendors change prices and the history would silently rewrite itself.
 type MeteringEvent struct {
 	ID           string    `json:"id"`
 	AgentID      string    `json:"agent_id"`
@@ -443,6 +500,19 @@ type MeteringEvent struct {
 	Cost         float64   `json:"cost"`
 	Currency     string    `json:"currency"`
 	Timestamp    time.Time `json:"timestamp"`
+	// ModelUsed is the model that actually served the turn. Empty means the
+	// reporter could not tell us; consumers fall back to Model.
+	ModelUsed string `json:"model_used,omitempty"`
+	// Rate snapshot (per 1M tokens), captured from the serving AI Model's
+	// pricing at event time. Nil rates mean no snapshot was resolvable and
+	// Cost is the reporter-supplied value.
+	RateInputPer1M       *float64 `json:"rate_input_per_1m,omitempty"`
+	RateCachedInputPer1M *float64 `json:"rate_cached_input_per_1m,omitempty"`
+	RateCacheWritePer1M  *float64 `json:"rate_cache_write_per_1m,omitempty"`
+	RateOutputPer1M      *float64 `json:"rate_output_per_1m,omitempty"`
+	// RateSnapshot is true when the rates above were resolved from the AI
+	// Model registry and Cost was computed from them.
+	RateSnapshot bool `json:"rate_snapshot,omitempty"`
 }
 
 // WakeLatencyEvent records one task-delivery wake path (S-87): from the

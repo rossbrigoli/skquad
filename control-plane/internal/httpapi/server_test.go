@@ -529,6 +529,132 @@ func TestGatewayFailureCallbackRecordsAuditOnly(t *testing.T) {
 	require.Contains(t, auditActions(audit), "llm.failure")
 }
 
+// WP5 (ADR-0010 D8 + Risk 3): the metering ingest must store the served
+// model, snapshot the bound AI Model's rates at event time, and compute
+// cost FROM THE SNAPSHOT — never trusting the reporter's figure when a
+// snapshot resolves, and never re-deriving from live pricing later.
+func TestGatewayMeteringSnapshotsRatesAndComputesCost(t *testing.T) {
+	t.Parallel()
+
+	store := storage.NewMemoryStore()
+	cfg := testConfig()
+	cfg.GatewayCallbackToken = "callback-token"
+	handler := New(cfg, store)
+
+	var squad domain.Squad
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+		"name": "Snapshot Squad",
+	}, http.StatusCreated, &squad)
+
+	var agent domain.Agent
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
+		"name": "Snapshot Agent",
+	}, http.StatusCreated, &agent)
+
+	provider, err := store.CreateLLMProvider(context.Background(), &domain.LLMProvider{
+		Name:         "snapshot-provider",
+		Kind:         "openai",
+		BaseURL:      "https://api.example.test",
+		APIKeyRef:    "k8s:secret/snapshot-provider",
+		RegisteredBy: squad.OwnerID,
+	})
+	require.NoError(t, err)
+	primary, err := store.CreateAIModel(context.Background(), &domain.AIModel{
+		ProviderID:   provider.ID,
+		DisplayName:  "Primary Model",
+		ModelName:    "primary-model",
+		Pricing:      json.RawMessage(`{"input_per_1m":1,"cached_input_per_1m":0.1,"cache_write_per_1m":1.25,"output_per_1m":2}`),
+		RegisteredBy: squad.OwnerID,
+	})
+	require.NoError(t, err)
+	fallback, err := store.CreateAIModel(context.Background(), &domain.AIModel{
+		ProviderID:   provider.ID,
+		DisplayName:  "Fallback Model",
+		ModelName:    "fallback-model",
+		Pricing:      json.RawMessage(`{"input_per_1m":3,"cached_input_per_1m":0.3,"cache_write_per_1m":3.75,"output_per_1m":7}`),
+		RegisteredBy: squad.OwnerID,
+	})
+	require.NoError(t, err)
+
+	// Bind the agent directly on the store (the binding PATCH path is
+	// covered by S-108 tests; here we only need the binding present at
+	// metering time).
+	storedAgent, err := store.GetAgent(context.Background(), agent.ID)
+	require.NoError(t, err)
+	storedAgent.AIModelID = primary.ID
+	storedAgent.FallbackAIModelID = fallback.ID
+	_, err = store.UpdateAgent(context.Background(), storedAgent)
+	require.NoError(t, err)
+
+	// A fallback-served turn: the reporter asks for primary but says the
+	// fallback served it, and sends a bogus cost that must be ignored in
+	// favour of the snapshot computation.
+	doGatewayCallback(t, handler, "callback-token", map[string]any{
+		"agent_id":      agent.ID,
+		"squad_id":      squad.ID,
+		"model":         "primary-model",
+		"model_used":    "fallback-model",
+		"input_tokens":  1000000,
+		"output_tokens": 500000,
+		"cost":          999.0,
+		"currency":      "USD",
+	}, http.StatusAccepted)
+
+	// fallback pricing: 1M*3/1M + 0.5M*7/1M = 3 + 3.5 = 6.5
+	var usage domain.MeteringEvent
+	doJSON(t, handler, http.MethodGet, "/api/v1/agents/"+agent.ID+"/metering", nil, http.StatusOK, &usage)
+	require.InDelta(t, 6.5, usage.Cost, 0.0001)
+
+	// The snapshot must be frozen: changing live pricing afterwards must
+	// not rewrite the historical cost.
+	fallback.Pricing = json.RawMessage(`{"input_per_1m":100,"cached_input_per_1m":10,"cache_write_per_1m":125,"output_per_1m":200}`)
+	_, err = store.UpdateAIModel(context.Background(), fallback)
+	require.NoError(t, err)
+
+	doJSON(t, handler, http.MethodGet, "/api/v1/agents/"+agent.ID+"/metering", nil, http.StatusOK, &usage)
+	require.InDelta(t, 6.5, usage.Cost, 0.0001)
+
+	// The stored event's rate columns + served model are asserted at the
+	// storage layer (metering_snapshot_test.go); the API-level checks
+	// above prove the snapshot was computed at ingest and frozen.
+}
+
+// When no AI Model matches the served model, the ingest must keep the
+// reporter-supplied cost and record NO snapshot rather than fabricating
+// rates.
+func TestGatewayMeteringWithoutResolvableModelKeepsReportedCost(t *testing.T) {
+	t.Parallel()
+
+	store := storage.NewMemoryStore()
+	cfg := testConfig()
+	cfg.GatewayCallbackToken = "callback-token"
+	handler := New(cfg, store)
+
+	var squad domain.Squad
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+		"name": "Unpriced Squad",
+	}, http.StatusCreated, &squad)
+
+	var agent domain.Agent
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
+		"name": "Unpriced Agent",
+	}, http.StatusCreated, &agent)
+
+	doGatewayCallback(t, handler, "callback-token", map[string]any{
+		"agent_id":      agent.ID,
+		"squad_id":      squad.ID,
+		"model":         "unknown-model",
+		"input_tokens":  10,
+		"output_tokens": 5,
+		"cost":          0.12,
+		"currency":      "USD",
+	}, http.StatusAccepted)
+
+	var usage domain.MeteringEvent
+	doJSON(t, handler, http.MethodGet, "/api/v1/agents/"+agent.ID+"/metering", nil, http.StatusOK, &usage)
+	require.InDelta(t, 0.12, usage.Cost, 0.0001)
+}
+
 func TestSquadAndAgentMutationsWriteCustomResources(t *testing.T) {
 	t.Parallel()
 
@@ -702,7 +828,8 @@ func TestAgentIdentityProvisionsLiteLLMVirtualKey(t *testing.T) {
 	cfg.LiteLLMAdminURL = gateway.URL
 	cfg.LiteLLMMasterKey = "sk-test-master"
 	crWriter := &fakeCRWriter{}
-	handler := NewWithCRWriter(cfg, storage.NewMemoryStore(), crWriter)
+	store := storage.NewMemoryStore()
+	handler := NewWithCRWriter(cfg, store, crWriter)
 
 	var squad domain.Squad
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
@@ -724,21 +851,31 @@ func TestAgentIdentityProvisionsLiteLLMVirtualKey(t *testing.T) {
 		"models":        []string{"openai/local-default", "openai/local-fast"},
 	}, http.StatusCreated, &provider)
 
-	var perms []domain.AgentPermission
-	doJSON(t, handler, http.MethodPut, "/api/v1/agents/"+agent.ID+"/permissions", []map[string]string{
-		{"resource_type": string(domain.ResLLMProvider), "resource_id": provider.ID},
-	}, http.StatusOK, &perms)
-	require.Len(t, perms, 1)
+	// WP3: the virtual key is compiled from the agent's model binding
+	// (ADR-0010 D5), not from llm_provider grants. Register AI models,
+	// grant them to the squad owner, and bind primary+fallback.
+	modelDefault := createTestAIModel(t, handler, provider.ID, "openai/local-default")
+	modelFast := createTestAIModel(t, handler, provider.ID, "openai/local-fast")
+	doJSON(t, handler, http.MethodPut, "/api/v1/users/"+squad.OwnerID+"/models",
+		map[string]any{"model_ids": []string{modelDefault.ID, modelFast.ID}}, http.StatusOK, &[]domain.AIModel{})
+	doJSON(t, handler, http.MethodPatch, "/api/v1/agents/"+agent.ID, map[string]any{
+		"ai_model_id":          modelDefault.ID,
+		"fallback_ai_model_id": modelFast.ID,
+	}, http.StatusOK, &agent)
 
 	var identity domain.AgentIdentity
 	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+agent.ID+"/identity", nil, http.StatusCreated, &identity)
 	require.NotEmpty(t, identity.ID)
 	require.Equal(t, "sk-agent-virtual-key", crWriter.credentialTokens[identity.VirtualKeyRef])
 	require.Len(t, keyRequests, 1)
+	// The invariant: primary AND fallback are both on the key so the
+	// fallback is authorised during a primary outage.
 	require.ElementsMatch(t, []any{"openai/local-default", "openai/local-fast"}, keyRequests[0]["models"])
+	require.Contains(t, keyRequests[0], "router_settings", "D7 fallback policy must travel with the key")
 	metadata := keyRequests[0]["metadata"].(map[string]any)
 	require.Equal(t, agent.ID, metadata["skquad_agent_id"])
 	require.Equal(t, squad.ID, metadata["skquad_squad_id"])
+	require.Equal(t, "openai/local-fast", metadata["skquad_fallback_model"])
 }
 
 func TestAgentPermissionsSetAndList(t *testing.T) {
@@ -768,10 +905,15 @@ func TestAgentPermissionsSetAndList(t *testing.T) {
 		"name": "permission-skill",
 	}, http.StatusCreated, &skill)
 
+	var skill2 domain.RegistryResource
+	doJSON(t, handler, http.MethodPost, "/api/v1/registry/skills", map[string]any{
+		"name": "permission-skill-two",
+	}, http.StatusCreated, &skill2)
+
 	var perms []domain.AgentPermission
 	doJSON(t, handler, http.MethodPut, "/api/v1/agents/"+agent.ID+"/permissions", []map[string]string{
-		{"resource_type": string(domain.ResLLMProvider), "resource_id": provider.ID},
 		{"resource_type": string(domain.ResSkill), "resource_id": skill.ID},
+		{"resource_type": string(domain.ResSkill), "resource_id": skill2.ID},
 		{"resource_type": string(domain.ResSkill), "resource_id": skill.ID},
 	}, http.StatusOK, &perms)
 	require.Len(t, perms, 2)
@@ -800,7 +942,8 @@ func TestAgentRuntimeResourcesReturnsGrantedActiveResources(t *testing.T) {
 	t.Parallel()
 
 	crWriter := &fakeCRWriter{}
-	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
+	store := storage.NewMemoryStore()
+	handler := NewWithCRWriter(testConfig(), store, crWriter)
 
 	var squad domain.Squad
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
@@ -845,11 +988,20 @@ func TestAgentRuntimeResourcesReturnsGrantedActiveResources(t *testing.T) {
 
 	var perms []domain.AgentPermission
 	doJSON(t, handler, http.MethodPut, "/api/v1/agents/"+agent.ID+"/permissions", []map[string]string{
-		{"resource_type": string(domain.ResLLMProvider), "resource_id": provider.ID},
 		{"resource_type": string(domain.ResTool), "resource_id": tool.ID},
 		{"resource_type": string(domain.ResSkill), "resource_id": deprecated.ID},
 	}, http.StatusOK, &perms)
-	require.Len(t, perms, 3)
+	require.Len(t, perms, 2)
+
+	// The llm_provider grant type is closed at the API (ADR-0010 / S-107);
+	// seed the legacy grant directly — the runtime resource listing for
+	// existing provider grants is still exercised until WP3 replaces it.
+	require.NoError(t, store.GrantAgentPermission(context.Background(), &domain.AgentPermission{
+		AgentID:      agent.ID,
+		ResourceType: domain.ResLLMProvider,
+		ResourceID:   provider.ID,
+		GrantedBy:    "test",
+	}))
 
 	var resources []map[string]any
 	doAgentJSON(t, handler, agent.ID, credential, http.MethodGet, "/api/v1/agents/me/resources", nil, http.StatusOK, &resources)
@@ -2090,8 +2242,8 @@ func TestDeleteRegistryResourceInUseWarnsThenForceDeletes(t *testing.T) {
 
 	// In-use delete must warn with 409 + usage list, not delete.
 	var conflict struct {
-		Error string             `json:"error"`
-		Usage []deleteUsage      `json:"usage"`
+		Error string        `json:"error"`
+		Usage []deleteUsage `json:"usage"`
 	}
 	doJSON(t, handler, http.MethodDelete, "/api/v1/registry/skills/"+skill.ID, nil, http.StatusConflict, &conflict)
 	require.Equal(t, "in_use", conflict.Error)
@@ -2115,7 +2267,8 @@ func TestDeleteRegistryResourceInUseWarnsThenForceDeletes(t *testing.T) {
 }
 
 func TestDeleteLLMProviderInUseWarnsThenForceDeletes(t *testing.T) {
-	handler := New(testConfig(), storage.NewMemoryStore())
+	store := storage.NewMemoryStore()
+	handler := New(testConfig(), store)
 
 	var squad domain.Squad
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "prov-squad"}, http.StatusCreated, &squad)
@@ -2133,9 +2286,14 @@ func TestDeleteLLMProviderInUseWarnsThenForceDeletes(t *testing.T) {
 		"models":        []string{"example/model"},
 	}, http.StatusCreated, &provider)
 
-	doJSON(t, handler, http.MethodPut, "/api/v1/agents/"+agent.ID+"/permissions", []map[string]string{
-		{"resource_type": "llm_provider", "resource_id": provider.ID},
-	}, http.StatusOK, &[]map[string]string{})
+	// The llm_provider grant type is closed at the API (ADR-0010 / S-107);
+	// seed the legacy grant directly to exercise the S-103 delete warning.
+	require.NoError(t, store.GrantAgentPermission(context.Background(), &domain.AgentPermission{
+		AgentID:      agent.ID,
+		ResourceType: domain.ResLLMProvider,
+		ResourceID:   provider.ID,
+		GrantedBy:    "test",
+	}))
 
 	var conflict struct {
 		Error string        `json:"error"`

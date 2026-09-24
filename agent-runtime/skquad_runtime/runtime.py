@@ -64,6 +64,13 @@ class BootstrapConfig:
     workspace_enabled: bool = True
     workspaces_dir: str = DEFAULT_WORKSPACES_DIR
     workspace_base: str = DEFAULT_WORKSPACE_BASE
+    # WP5 (ADR-0010 D4): the agent's model binding, injected by the
+    # operator. The runtime does NOT route on these ids (the gateway owns
+    # failover, D6); they make the binding visible in the runtime env and
+    # let logs/metering correlate requested vs served. default_model is
+    # populated from the bound AI Model's model_name upstream.
+    ai_model_id: str = ""
+    fallback_model_id: str = ""
 
     @property
     def missing_required(self) -> list[str]:
@@ -162,12 +169,18 @@ class RuntimeMessage:
 class TaskResult:
     status: str = "in-review"
     summary: str = ""
+    # model_used is the model that ACTUALLY served the final LLM step of
+    # the task, read from the gateway response (WP5 / ADR-0010 Risk 3).
+    # It can differ from the requested model when the gateway fell back.
+    model_used: str = ""
 
 
 @dataclass(frozen=True)
 class MessageResult:
     ok: bool = True
     summary: str = ""
+    # model_used: see TaskResult.model_used.
+    model_used: str = ""
 
 
 @dataclass(frozen=True)
@@ -300,6 +313,8 @@ def load_bootstrap_config(environ: Mapping[str, str] | None = None) -> Bootstrap
         system_prompt=env.get("SKQUAD_AGENT_SYSTEM_PROMPT", ""),
         default_provider_id=env.get("SKQUAD_DEFAULT_PROVIDER_ID", ""),
         default_model=env.get("SKQUAD_DEFAULT_MODEL", ""),
+        ai_model_id=env.get("SKQUAD_AI_MODEL_ID", ""),
+        fallback_model_id=env.get("SKQUAD_FALLBACK_MODEL_ID", ""),
         idle_timeout=env.get("SKQUAD_IDLE_TIMEOUT", ""),
         credentials_dir=credentials_dir,
         agent_credential_path=Path(
@@ -740,6 +755,16 @@ class LLMMessageHandler:
         except Exception as exc:
             return MessageResult(ok=False, summary=f"LLM call failed: {exc}")
 
+        model_used = served_model(response, model)
+        if model_used != model:
+            # ADR-0010 Risk 3: make fallback usage visible in the logs.
+            LOGGER.info(
+                "chat turn served by fallback model: requested=%s served=%s agent=%s",
+                model,
+                model_used,
+                config.agent_id,
+            )
+
         reply_text = str(message_value(first_message(response), "content") or "").strip()
         if not reply_text:
             return MessageResult(ok=False, summary="LLM returned an empty reply")
@@ -751,7 +776,7 @@ class LLMMessageHandler:
         except Exception as exc:
             return MessageResult(ok=False, summary=f"failed to post chat reply: {exc}")
 
-        return MessageResult(ok=True, summary="replied to user chat message")
+        return MessageResult(ok=True, summary="replied to user chat message", model_used=model_used)
 
     def _build_chat_messages(
         self, message: RuntimeMessage, config: BootstrapConfig
@@ -830,6 +855,7 @@ class LiteLLMTaskHandler:
         tools = self.tool_schemas(plugins)
         completion = self.completion()
         last_content = ""
+        last_model_used = model
 
         max_steps = max(1, self.max_steps or config.max_llm_steps)
         for _ in range(max_steps):
@@ -847,6 +873,16 @@ class LiteLLMTaskHandler:
             if tools:
                 completion_kwargs["tools"] = tools
             response = completion(**completion_kwargs)
+            last_model_used = served_model(response, model)
+            if last_model_used != model:
+                # ADR-0010 Risk 3: make fallback usage visible in the logs.
+                LOGGER.info(
+                    "task step served by fallback model: requested=%s served=%s agent=%s task=%s",
+                    model,
+                    last_model_used,
+                    config.agent_id,
+                    task.id,
+                )
             message = first_message(response)
             content = str(message_value(message, "content") or "")
             last_content = content
@@ -856,6 +892,7 @@ class LiteLLMTaskHandler:
                 return TaskResult(
                     status=status_from_content(content),
                     summary=trim_text(content, config.task_summary_max_chars),
+                    model_used=last_model_used,
                 )
             for call in tool_calls:
                 result = self.invoke_tool(call, config, plugins)
@@ -873,6 +910,7 @@ class LiteLLMTaskHandler:
         return TaskResult(
             status="in-review",
             summary=trim_text(last_content, config.task_summary_max_chars),
+            model_used=last_model_used,
         )
 
     def completion(self) -> Callable[..., object]:
@@ -1141,6 +1179,33 @@ def status_from_content(content: str) -> str:
 
 def message_value(message: object, key: str) -> object | None:
     return object_value(message, key)
+
+
+def served_model(response: object, requested: str) -> str:
+    """Return the model that actually served this response.
+
+    WP5 / ADR-0010 Risk 3: with gateway-side failover (D6) the requested
+    model may not be the model that answered, and invisible fallback usage
+    breaks cost attribution. The runtime learns the served model only from
+    the gateway's response payload.
+
+    Evidence (LiteLLM proxy response-header docs, checked 2026-09-24):
+    the response body ``model`` field is the served model name in our
+    architecture because primary and fallback are DISTINCT model_list
+    entries (the virtual-key allow-list is compiled from the binding's
+    primary+fallback model names), so a fallback-served response is built
+    from the fallback deployment and carries its name. Caveats we do not
+    paper over: the body model is restamped to the client's alias when a
+    router alias is used (we do not use aliases), and the deployment-level
+    truth is the opaque ``x-litellm-model-id`` header, which cannot be
+    mapped to pricing without a live gateway lookup. So this is the best
+    available signal, not a guarantee: if the body carries no model we
+    report the requested model rather than guessing a fallback happened.
+    """
+    model = object_value(response, "model")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return requested
 
 
 def int_value(value: object) -> int:

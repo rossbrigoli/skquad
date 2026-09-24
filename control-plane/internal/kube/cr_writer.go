@@ -107,7 +107,13 @@ func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identit
 		"role":              agent.Role,
 		"systemPrompt":      agent.SystemPrompt,
 		"defaultProviderId": agent.DefaultProvider,
-		"defaultModel":      agent.DefaultModel,
+		// defaultModel carries the bound AI Model's model_name when the
+		// outbox worker resolved it (WP5); legacy agents without a binding
+		// keep their free-text default_model. This is what the operator
+		// injects as SKQUAD_DEFAULT_MODEL so the runtime keeps working.
+		"defaultModel":      agentDefaultModel(agent),
+		"aiModelId":         agent.AIModelID,
+		"fallbackAiModelId": agent.FallbackAIModelID,
 		"image":             w.agentImage,
 		"permissions":       rawJSON(agent.Permissions, []any{}),
 		"idleTimeout":       fmt.Sprintf("%ds", agent.IdleTimeoutSec),
@@ -282,6 +288,17 @@ func (w *CRWriter) deleteCore(ctx context.Context, plural, namespace, name strin
 		return fmt.Errorf("kube: delete %s/%s: %s: %s", plural, name, resp.Status, responseSnippet(resp.Body))
 	}
 	return nil
+}
+
+// agentDefaultModel returns the gateway-routable model name for the CR's
+// defaultModel field: the resolved bound AI Model name when available
+// (WP5), otherwise the legacy free-text default_model so pre-binding
+// agents keep reconciling unchanged.
+func agentDefaultModel(agent *domain.Agent) string {
+	if name := strings.TrimSpace(agent.AIModelName); name != "" {
+		return name
+	}
+	return agent.DefaultModel
 }
 
 func rawJSON(raw json.RawMessage, fallback any) any {

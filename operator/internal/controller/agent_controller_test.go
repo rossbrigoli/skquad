@@ -583,7 +583,7 @@ func TestAgentReconcilerSelfHealsReadyFlagWhenPodRegresses(t *testing.T) {
 			Namespace: squadNS,
 			Labels:    map[string]string{"skquad.io/agent-id": agent.Spec.AgentID},
 		},
-		Spec: appsv1.DeploymentSpec{Replicas: &replicas},
+		Spec:   appsv1.DeploymentSpec{Replicas: &replicas},
 		Status: appsv1.DeploymentStatus{ReadyReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1},
 	}
 	k8sClient := fake.NewClientBuilder().
@@ -699,5 +699,80 @@ func TestAgentReconcilerFlagsCredentialNotProvisioned(t *testing.T) {
 	}
 	if got.Status.Reason != "CredentialNotProvisioned" {
 		t.Fatalf("reason = %q, want CredentialNotProvisioned", got.Status.Reason)
+	}
+}
+
+// WP5 (ADR-0010 D4): the operator injects the model binding env vars
+// and keeps SKQUAD_DEFAULT_MODEL populated from the AI Model's
+// model_name (carried on the CR by the control-plane writer).
+func TestAgentDeploymentInjectsModelBindingEnv(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := skquadv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	squad := &skquadv1.Squad{
+		ObjectMeta: metav1.ObjectMeta{Name: "squad-bind", Namespace: "skquad-system"},
+		Spec: skquadv1.SquadSpec{
+			SquadID:   "33333333-3333-3333-3333-333333333333",
+			Namespace: "squad-bind",
+		},
+	}
+	agent := &skquadv1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "agent-bind", Namespace: "skquad-system"},
+		Spec: skquadv1.AgentSpec{
+			AgentID:           "44444444-4444-4444-4444-444444444444",
+			SquadID:           squad.Spec.SquadID,
+			Role:              "worker",
+			DefaultProviderID: "provider-id",
+			DefaultModel:      "gpt-6-sol",
+			AIModelID:         "ai-primary-uuid",
+			FallbackAIModelID: "ai-fallback-uuid",
+			Image:             "example.com/skquad/agent:test",
+			CredentialSecret:  "agent-credential",
+			VirtualKeySecret:  "agent-virtual-key",
+			ControlPlaneURL:   "http://skquad-api-server.skquad-system.svc.cluster.local:8080",
+			LLMGatewayURL:     "http://skquad-llm-gateway.skquad-system.svc.cluster.local:4000",
+			IdleTimeout:       "300s",
+			DesiredActive:     true,
+		},
+	}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(squad, agent).
+		Build()
+	reconciler := &AgentReconciler{Client: k8sClient, Scheme: scheme}
+
+	// First pass adds the finalizer and requeues; second pass creates the
+	// Deployment (same two-pass pattern as the other tests here).
+	for i := 0; i < 2; i++ {
+		if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace},
+		}); err != nil {
+			t.Fatalf("reconcile pass %d: %v", i, err)
+		}
+	}
+
+	var deployment appsv1.Deployment
+	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: agent.Name, Namespace: squad.Spec.Namespace}, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if got := envValue(container.Env, "SKQUAD_AI_MODEL_ID"); got != "ai-primary-uuid" {
+		t.Fatalf("SKQUAD_AI_MODEL_ID = %q, want ai-primary-uuid", got)
+	}
+	if got := envValue(container.Env, "SKQUAD_FALLBACK_MODEL_ID"); got != "ai-fallback-uuid" {
+		t.Fatalf("SKQUAD_FALLBACK_MODEL_ID = %q, want ai-fallback-uuid", got)
+	}
+	// Runtime compatibility: SKQUAD_DEFAULT_MODEL still carries the AI
+	// Model's model_name so the existing resolution keeps working.
+	if got := envValue(container.Env, "SKQUAD_DEFAULT_MODEL"); got != "gpt-6-sol" {
+		t.Fatalf("SKQUAD_DEFAULT_MODEL = %q, want gpt-6-sol", got)
 	}
 }

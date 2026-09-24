@@ -1,6 +1,12 @@
+// WP3 tests: binding-derived virtual-key allow-lists, precise provisioning
+// errors, the agent binding PATCH API, and bidirectional key convergence
+// (ADR-0010 D4/D5/D6/D7). These replace the WP-era grant-union tests:
+// no key provisioning path may derive models from llm_provider grants.
+
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -21,10 +27,45 @@ type recordingGateway struct {
 	generated    []map[string]any
 	updated      []map[string]any
 	deleted      []string
+	live         map[string][]string // token → current model allow-list (WP4 invariant)
 	failGenerate bool
 	failUpdate   bool
 	failDelete   bool
 	seq          int
+}
+
+// canCall reports whether the virtual key identified by token is still live
+// AND allowed to call model. This simulates the gateway-side enforcement
+// of the compiled allow-list: if key convergence is skipped, the live
+// entry still contains the revoked model and canCall stays true — which
+// is exactly what the WP4 invariant tests assert against.
+func (g *recordingGateway) canCall(token, model string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.live == nil {
+		return false
+	}
+	models, ok := g.live[token]
+	if !ok {
+		return false
+	}
+	for _, m := range models {
+		if m == model {
+			return true
+		}
+	}
+	return false
+}
+
+func gatewayModelsField(body map[string]any) []string {
+	raw, _ := body["models"].([]any)
+	out := make([]string, 0, len(raw))
+	for _, m := range raw {
+		if s, ok := m.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (g *recordingGateway) handler() http.Handler {
@@ -40,15 +81,23 @@ func (g *recordingGateway) handler() http.Handler {
 				return
 			}
 			g.seq++
+			token := "tok-" + string(rune('a'+g.seq))
+			if g.live == nil {
+				g.live = map[string][]string{}
+			}
+			g.live[token] = gatewayModelsField(body)
 			g.generated = append(g.generated, body)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"key":   "sk-generated-" + string(rune('a'+g.seq)),
-				"token": "tok-" + string(rune('a'+g.seq)),
+				"token": token,
 			})
 		case "/key/update":
 			if g.failUpdate {
 				w.WriteHeader(http.StatusBadGateway)
 				return
+			}
+			if token, ok := body["key"].(string); ok && g.live != nil {
+				g.live[token] = gatewayModelsField(body)
 			}
 			g.updated = append(g.updated, body)
 			_ = json.NewEncoder(w).Encode(map[string]any{"updated": true})
@@ -56,6 +105,9 @@ func (g *recordingGateway) handler() http.Handler {
 			if g.failDelete {
 				w.WriteHeader(http.StatusBadGateway)
 				return
+			}
+			if token, ok := body["key"].(string); ok && g.live != nil {
+				delete(g.live, token)
 			}
 			g.deleted = append(g.deleted, body["key"].(string))
 			_ = json.NewEncoder(w).Encode(map[string]any{"deleted": true})
@@ -72,16 +124,20 @@ func (g *recordingGateway) counts() (gen, upd int, del []string) {
 }
 
 // gatewayFixture wires a server to a recording gateway and returns the pieces
-// needed to drive key-lifecycle scenarios: one squad, one agent, two LLM
-// providers (models "openai/one" and "openai/two").
+// needed to drive binding-based key-lifecycle scenarios: one squad (owned by
+// the dev admin), one agent, and two granted AI models named "openai/one"
+// and "openai/two" plus a third model ("openai/three") that is deliberately
+// NOT granted to the owner.
 type gatewayFixture struct {
-	handler   http.Handler
-	store     *storage.MemoryStore
-	gateway   *recordingGateway
-	squadID   string
-	agentID   string
-	provider  string
-	provider2 string
+	handler      http.Handler
+	store        *storage.MemoryStore
+	gateway      *recordingGateway
+	squadID      string
+	ownerID      string
+	agentID      string
+	modelA       domain.AIModel
+	modelB       domain.AIModel
+	modelNoGrant domain.AIModel
 }
 
 func newGatewayFixture(t *testing.T) *gatewayFixture {
@@ -100,36 +156,51 @@ func newGatewayFixture(t *testing.T) *gatewayFixture {
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "Key Squad"}, http.StatusCreated, &squad)
 	var agent domain.Agent
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{"name": "Key Agent"}, http.StatusCreated, &agent)
-	var p1 domain.LLMProvider
-	doJSON(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
-		"name": "Provider One", "kind": "openai", "base_url": "http://one.local/v1",
-		"api_key_ref": "secret/one", "default_model": "openai/one", "models": []string{"openai/one"},
-	}, http.StatusCreated, &p1)
-	var p2 domain.LLMProvider
-	doJSON(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
-		"name": "Provider Two", "kind": "openai", "base_url": "http://two.local/v1",
-		"api_key_ref": "secret/two", "default_model": "openai/two", "models": []string{"openai/two"},
-	}, http.StatusCreated, &p2)
+	provider := createTestProvider(t, handler, "gw-provider")
+	modelA := createTestAIModel(t, handler, provider.ID, "openai/one")
+	modelB := createTestAIModel(t, handler, provider.ID, "openai/two")
+	modelNoGrant := createTestAIModel(t, handler, provider.ID, "openai/three")
+
+	// Grant A and B (but NOT modelNoGrant) to the squad owner.
+	doJSON(t, handler, http.MethodPut, "/api/v1/users/"+squad.OwnerID+"/models",
+		map[string]any{"model_ids": []string{modelA.ID, modelB.ID}}, http.StatusOK, &[]domain.AIModel{})
 
 	return &gatewayFixture{
-		handler:   handler,
-		store:     store,
-		gateway:   gw,
-		squadID:   squad.ID,
-		agentID:   agent.ID,
-		provider:  p1.ID,
-		provider2: p2.ID,
+		handler:      handler,
+		store:        store,
+		gateway:      gw,
+		squadID:      squad.ID,
+		ownerID:      squad.OwnerID,
+		agentID:      agent.ID,
+		modelA:       modelA,
+		modelB:       modelB,
+		modelNoGrant: modelNoGrant,
 	}
 }
 
-func (f *gatewayFixture) setPerms(t *testing.T, providerIDs ...string) {
+// bind sets the agent's primary/fallback through the public PATCH API.
+// Empty strings clear the respective slot.
+func (f *gatewayFixture) bind(t *testing.T, primary, fallback string) domain.Agent {
 	t.Helper()
-	body := make([]map[string]string, 0, len(providerIDs))
-	for _, id := range providerIDs {
-		body = append(body, map[string]string{"resource_type": string(domain.ResLLMProvider), "resource_id": id})
-	}
-	var perms []domain.AgentPermission
-	doJSON(t, f.handler, http.MethodPut, "/api/v1/agents/"+f.agentID+"/permissions", body, http.StatusOK, &perms)
+	var agent domain.Agent
+	doJSON(t, f.handler, http.MethodPatch, "/api/v1/agents/"+f.agentID, map[string]any{
+		"ai_model_id":          primary,
+		"fallback_ai_model_id": fallback,
+	}, http.StatusOK, &agent)
+	return agent
+}
+
+// seedBinding writes the binding directly to the store, bypassing PATCH
+// validation and key convergence — used to exercise the provisioning-time
+// error paths that the write API would normally block earlier.
+func (f *gatewayFixture) seedBinding(t *testing.T, primary, fallback string) {
+	t.Helper()
+	agent, err := f.store.GetAgent(context.Background(), f.agentID)
+	require.NoError(t, err)
+	agent.AIModelID = primary
+	agent.FallbackAIModelID = fallback
+	_, err = f.store.UpdateAgent(context.Background(), agent)
+	require.NoError(t, err)
 }
 
 func (f *gatewayFixture) identity(t *testing.T) *domain.AgentIdentity {
@@ -146,114 +217,295 @@ func (f *gatewayFixture) createIdentity(t *testing.T) {
 	require.NotEmpty(t, identity.ID)
 }
 
-func TestGatewayKeyRevokedWhenLastLLMGrantRemoved(t *testing.T) {
-	f := newGatewayFixture(t)
-	f.setPerms(t, f.provider)
-	f.createIdentity(t)
-	gen, _, _ := f.gateway.counts()
-	require.Equal(t, 1, gen)
-	require.Equal(t, domain.GatewayKeyActive, f.identity(t).GatewayKeyStatus)
-	token := f.identity(t).GatewayKeyToken
-	require.NotEmpty(t, token)
-
-	// Remove the only LLM grant → key must be revoked at the gateway.
-	f.setPerms(t)
-
-	gen, upd, del := f.gateway.counts()
-	require.Equal(t, 1, gen, "no new key should be generated")
-	require.Equal(t, 0, upd, "no update expected on full revocation")
-	require.Equal(t, []string{token}, del)
-	identity := f.identity(t)
-	require.Equal(t, domain.GatewayKeyRevoked, identity.GatewayKeyStatus)
+func requireErrorCode(t *testing.T, handler http.Handler, method, path string, body any, wantStatus int, wantCode string) {
+	t.Helper()
+	var payload []byte
+	if body != nil {
+		var err error
+		payload, err = json.Marshal(body)
+		require.NoError(t, err)
+	}
+	req := httptest.NewRequest(method, path, bytes.NewReader(payload))
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, wantStatus, rec.Code, rec.Body.String())
+	errObj := errorEnvelope(t, rec)
+	require.Equal(t, wantCode, errObj["code"])
+	require.NotEmpty(t, errObj["message"])
 }
 
-func TestGatewayKeyUpdatedOnPermissionChange(t *testing.T) {
+// fallbacksOf extracts the router_settings.fallbacks mapping recorded on a
+// key generate/update body.
+func fallbacksOf(t *testing.T, body map[string]any) []any {
+	t.Helper()
+	rs, ok := body["router_settings"].(map[string]any)
+	require.True(t, ok, "key request carried no router_settings: %v", body)
+	fbs, ok := rs["fallbacks"].([]any)
+	require.True(t, ok, "router_settings carried no fallbacks: %v", rs)
+	return fbs
+}
+
+// ---------------------------------------------------------------------------
+// THE CRITICAL INVARIANT (ADR-0010 D5)
+// ---------------------------------------------------------------------------
+
+func TestBoundKeyContainsPrimaryAndFallback(t *testing.T) {
 	f := newGatewayFixture(t)
-	f.setPerms(t, f.provider)
+	f.bind(t, f.modelA.ID, f.modelB.ID)
+	f.createIdentity(t)
+
+	gen, _, _ := f.gateway.counts()
+	require.Equal(t, 1, gen)
+	keyReq := f.gateway.generated[0]
+
+	// The invariant: the virtual key's allow-list MUST contain BOTH the
+	// primary and the fallback. If it only contained the primary, the
+	// fallback would fail authorisation at the gateway during a primary
+	// outage — the exact moment it is needed.
+	require.ElementsMatch(t, []any{"openai/one", "openai/two"}, keyReq["models"])
+
+	// The gateway (not the runtime) owns the failover: the key carries a
+	// primary→fallback router mapping.
+	require.Equal(t, []any{map[string]any{"openai/one": []any{"openai/two"}}}, fallbacksOf(t, keyReq))
+
+	// D7 failure-class policy travels with the key.
+	rs := keyReq["router_settings"].(map[string]any)
+	rp := rs["retry_policy"].(map[string]any)
+	require.EqualValues(t, 0, rp["BadRequestErrorRetries"], "400-class must not be retried")
+	require.EqualValues(t, 0, rp["AuthenticationErrorRetries"], "upstream auth failures must not be retried with the same dead key")
+	require.Greater(t, rp["RateLimitErrorRetries"], float64(0), "429 gets retries before fallback")
+	require.Greater(t, rp["TimeoutErrorRetries"], float64(0), "timeouts get retries before fallback")
+}
+
+func TestBoundKeyWithoutFallbackHasNoFallbackMapping(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.bind(t, f.modelA.ID, "")
+	f.createIdentity(t)
+
+	_, _, _ = f.gateway.counts()
+	keyReq := f.gateway.generated[0]
+	require.ElementsMatch(t, []any{"openai/one"}, keyReq["models"])
+	require.Empty(t, fallbacksOf(t, keyReq))
+}
+
+// ---------------------------------------------------------------------------
+// Precise provisioning errors (replaces the S-104 no_llm_models_granted)
+// ---------------------------------------------------------------------------
+
+func TestUnboundAgentIdentityRejected(t *testing.T) {
+	f := newGatewayFixture(t)
+	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
+		http.StatusConflict, "model_not_bound")
+}
+
+func TestNotGrantedToOwnerRejectedOnProvision(t *testing.T) {
+	f := newGatewayFixture(t)
+	// Seed past the PATCH validation so the provisioning path itself is
+	// what rejects the ungranted binding.
+	f.seedBinding(t, f.modelNoGrant.ID, "")
+	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
+		http.StatusForbidden, "model_not_granted")
+}
+
+func TestUngrantedFallbackRejectedOnProvision(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.seedBinding(t, f.modelA.ID, f.modelNoGrant.ID)
+	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
+		http.StatusForbidden, "model_not_granted")
+}
+
+func TestDeprecatedModelRejectedOnProvision(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.bind(t, f.modelA.ID, f.modelB.ID)
+	doAdminNoBody(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelB.ID+"/deprecate", http.StatusOK) // WP4: 200 + cascade report
+	// WP4's deprecate cascade cleared the fallback binding; re-seed it
+	// out-of-band so provisioning-time rejection of a deprecated binding
+	// (WP3) is still what fails here.
+	f.seedBinding(t, f.modelA.ID, f.modelB.ID)
+	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
+		http.StatusConflict, "model_deprecated")
+}
+
+func TestDeprecatedFallbackRejectedOnProvision(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.bind(t, f.modelA.ID, f.modelB.ID)
+	doAdminNoBody(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelA.ID+"/deprecate", http.StatusOK) // WP4: 200 + cascade report
+	f.seedBinding(t, f.modelA.ID, f.modelB.ID)
+	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
+		http.StatusConflict, "model_deprecated")
+}
+
+func TestGatewayFailureStillSurfacesAsBadGateway(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.bind(t, f.modelA.ID, f.modelB.ID)
+	f.gateway.mu.Lock()
+	f.gateway.failGenerate = true
+	f.gateway.mu.Unlock()
+	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
+		http.StatusBadGateway, "llm_gateway_unavailable")
+}
+
+// ---------------------------------------------------------------------------
+// Agent binding PATCH API
+// ---------------------------------------------------------------------------
+
+func TestPatchBindingPersistsAndConvergesKey(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.bind(t, f.modelA.ID, "")
 	f.createIdentity(t)
 	token := f.identity(t).GatewayKeyToken
 
-	// Add a second provider → key allow-list updated, not re-created.
-	f.setPerms(t, f.provider, f.provider2)
+	agent := f.bind(t, f.modelA.ID, f.modelB.ID)
+	require.Equal(t, f.modelA.ID, agent.AIModelID)
+	require.Equal(t, f.modelB.ID, agent.FallbackAIModelID)
 
 	gen, upd, del := f.gateway.counts()
 	require.Equal(t, 1, gen)
-	require.Equal(t, 1, upd)
+	require.Equal(t, 1, upd, "binding change must converge the live key")
 	require.Empty(t, del)
 	require.Equal(t, token, f.gateway.updated[0]["key"])
 	require.ElementsMatch(t, []any{"openai/one", "openai/two"}, f.gateway.updated[0]["models"])
+	require.Equal(t, []any{map[string]any{"openai/one": []any{"openai/two"}}}, fallbacksOf(t, f.gateway.updated[0]))
+}
+
+func TestPatchFallbackEqualsPrimaryRejected(t *testing.T) {
+	f := newGatewayFixture(t)
+	requireErrorCode(t, f.handler, http.MethodPatch, "/api/v1/agents/"+f.agentID, map[string]any{
+		"ai_model_id":          f.modelA.ID,
+		"fallback_ai_model_id": f.modelA.ID,
+	}, http.StatusBadRequest, "fallback_same_as_primary")
+}
+
+func TestPatchUngrantedModelRejected(t *testing.T) {
+	f := newGatewayFixture(t)
+	requireErrorCode(t, f.handler, http.MethodPatch, "/api/v1/agents/"+f.agentID, map[string]any{
+		"ai_model_id": f.modelNoGrant.ID,
+	}, http.StatusForbidden, "model_not_granted")
+}
+
+func TestPatchUnknownModelRejected(t *testing.T) {
+	f := newGatewayFixture(t)
+	requireErrorCode(t, f.handler, http.MethodPatch, "/api/v1/agents/"+f.agentID, map[string]any{
+		"ai_model_id": "00000000-0000-4000-8000-000000000000",
+	}, http.StatusBadRequest, "model_not_found")
+}
+
+func TestPatchDeprecatedModelRejected(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.bind(t, f.modelA.ID, "")
+	doAdminNoBody(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelB.ID+"/deprecate", http.StatusOK) // WP4: 200 + cascade report
+	requireErrorCode(t, f.handler, http.MethodPatch, "/api/v1/agents/"+f.agentID, map[string]any{
+		"fallback_ai_model_id": f.modelB.ID,
+	}, http.StatusConflict, "model_deprecated")
+}
+
+func TestPatchFallbackWithoutPrimaryRejected(t *testing.T) {
+	f := newGatewayFixture(t)
+	requireErrorCode(t, f.handler, http.MethodPatch, "/api/v1/agents/"+f.agentID, map[string]any{
+		"ai_model_id":          "",
+		"fallback_ai_model_id": f.modelB.ID,
+	}, http.StatusBadRequest, "bad_request")
+}
+
+func TestPatchClearFallbackShrinksAllowList(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.bind(t, f.modelA.ID, f.modelB.ID)
+	f.createIdentity(t)
+
+	agent := f.bind(t, f.modelA.ID, "")
+	require.Empty(t, agent.FallbackAIModelID)
+
+	_, upd, _ := f.gateway.counts()
+	require.Equal(t, 1, upd)
+	require.ElementsMatch(t, []any{"openai/one"}, f.gateway.updated[0]["models"])
+	require.Empty(t, fallbacksOf(t, f.gateway.updated[0]), "cleared fallback must clear the router fallbacks mapping")
+}
+
+func TestGetAgentReturnsBindingFields(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.bind(t, f.modelA.ID, f.modelB.ID)
+	var agent domain.Agent
+	doJSON(t, f.handler, http.MethodGet, "/api/v1/agents/"+f.agentID, nil, http.StatusOK, &agent)
+	require.Equal(t, f.modelA.ID, agent.AIModelID)
+	require.Equal(t, f.modelB.ID, agent.FallbackAIModelID)
+}
+
+// ---------------------------------------------------------------------------
+// Convergence: sync in both directions
+// ---------------------------------------------------------------------------
+
+func TestSyncPrimaryChangeUpdatesKey(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.bind(t, f.modelA.ID, f.modelB.ID)
+	f.createIdentity(t)
+
+	f.bind(t, f.modelB.ID, f.modelA.ID)
+	_, upd, del := f.gateway.counts()
+	require.Equal(t, 1, upd)
+	require.Empty(t, del)
+	require.ElementsMatch(t, []any{"openai/two", "openai/one"}, f.gateway.updated[0]["models"])
+	require.Equal(t, []any{map[string]any{"openai/two": []any{"openai/one"}}}, fallbacksOf(t, f.gateway.updated[0]))
+}
+
+func TestSyncUnbindRevokesKey(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.bind(t, f.modelA.ID, f.modelB.ID)
+	f.createIdentity(t)
+	token := f.identity(t).GatewayKeyToken
+
+	f.bind(t, "", "")
+	_, _, del := f.gateway.counts()
+	require.Equal(t, []string{token}, del)
+	require.Equal(t, domain.GatewayKeyRevoked, f.identity(t).GatewayKeyStatus)
+}
+
+func TestSyncRebindReprovisionsKey(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.bind(t, f.modelA.ID, "")
+	f.createIdentity(t)
+	f.bind(t, "", "") // revoked
+	genBefore, _, _ := f.gateway.counts()
+
+	f.bind(t, f.modelB.ID, f.modelA.ID)
+	genAfter, upd, _ := f.gateway.counts()
+	require.Equal(t, genBefore+1, genAfter)
+	require.Equal(t, 0, upd)
 	require.Equal(t, domain.GatewayKeyActive, f.identity(t).GatewayKeyStatus)
 }
 
-func TestGatewayKeyReProvisionedOnReGrant(t *testing.T) {
+func TestGatewayFailureSurfacesInReconcile(t *testing.T) {
 	f := newGatewayFixture(t)
-	f.setPerms(t, f.provider)
+	f.bind(t, f.modelA.ID, f.modelB.ID)
 	f.createIdentity(t)
-	f.setPerms(t) // revoked
-	genBefore, _, _ := f.gateway.counts()
-
-	// Re-grant → a fresh key is provisioned against the existing identity.
-	f.setPerms(t, f.provider)
-
-	genAfter, upd, del := f.gateway.counts()
-	require.Equal(t, genBefore+1, genAfter)
-	require.Equal(t, 0, upd)
-	require.Len(t, del, 1)
-	identity := f.identity(t)
-	require.Equal(t, domain.GatewayKeyActive, identity.GatewayKeyStatus)
-	require.NotEmpty(t, identity.GatewayKeyToken)
-}
-
-func TestGatewayKeyFailureAbortsPermissionChange(t *testing.T) {
-	f := newGatewayFixture(t)
-	f.setPerms(t, f.provider)
-	f.createIdentity(t)
+	token := f.identity(t).GatewayKeyToken
 
 	f.gateway.mu.Lock()
 	f.gateway.failUpdate = true
 	f.gateway.mu.Unlock()
 
-	// Gateway update failure must 502 and leave permissions unchanged.
-	body := []map[string]string{{"resource_type": string(domain.ResLLMProvider), "resource_id": f.provider2}}
-	doJSONNoBody(t, f.handler, http.MethodPut, "/api/v1/agents/"+f.agentID+"/permissions", body, http.StatusBadGateway)
+	// Change the binding out-of-band so reconcile is what tries (and
+	// fails) to converge the key.
+	f.seedBinding(t, f.modelB.ID, f.modelA.ID)
+	var summary map[string]any
+	doJSON(t, f.handler, http.MethodPost, "/api/v1/admin/gateway/keys/reconcile", nil, http.StatusOK, &summary)
+	require.EqualValues(t, 1, summary["errors"])
+	require.Contains(t, summary, "failures")
 
-	perms, err := f.store.ListAgentPermissions(context.Background(), f.agentID)
-	require.NoError(t, err)
-	require.Len(t, perms, 1, "permissions must not change when gateway sync fails")
-	require.Equal(t, f.provider, perms[0].ResourceID)
-	require.Equal(t, domain.GatewayKeyActive, f.identity(t).GatewayKeyStatus)
-}
-
-func TestDeleteAgentRevokesGatewayKey(t *testing.T) {
-	f := newGatewayFixture(t)
-	f.setPerms(t, f.provider)
-	f.createIdentity(t)
-	token := f.identity(t).GatewayKeyToken
-
-	doJSONNoBody(t, f.handler, http.MethodDelete, "/api/v1/agents/"+f.agentID, nil, http.StatusNoContent)
-
-	_, _, del := f.gateway.counts()
-	require.Equal(t, []string{token}, del)
-}
-
-func TestDeleteSquadRevokesGatewayKeys(t *testing.T) {
-	f := newGatewayFixture(t)
-	f.setPerms(t, f.provider)
-	f.createIdentity(t)
-	token := f.identity(t).GatewayKeyToken
-
-	doJSONNoBody(t, f.handler, http.MethodDelete, "/api/v1/squads/"+f.squadID, nil, http.StatusNoContent)
-
-	_, _, del := f.gateway.counts()
-	require.Equal(t, []string{token}, del)
+	// Key state untouched: still active with the original token.
+	identity := f.identity(t)
+	require.Equal(t, domain.GatewayKeyActive, identity.GatewayKeyStatus)
+	require.Equal(t, token, identity.GatewayKeyToken)
 }
 
 func TestReconcileGatewayKeysRepairsDrift(t *testing.T) {
 	f := newGatewayFixture(t)
-	f.setPerms(t, f.provider)
+	f.bind(t, f.modelA.ID, f.modelB.ID)
 	f.createIdentity(t)
 
-	// Simulate drift: identity says revoked but a grant is active.
+	// Simulate drift: identity says revoked but a binding is active.
 	_, err := f.store.SetAgentIdentityGatewayKey(context.Background(), f.agentID, "tok-lost", domain.GatewayKeyRevoked)
 	require.NoError(t, err)
 
@@ -265,20 +517,21 @@ func TestReconcileGatewayKeysRepairsDrift(t *testing.T) {
 	require.Equal(t, domain.GatewayKeyActive, identity.GatewayKeyStatus)
 	require.NotEmpty(t, identity.GatewayKeyToken)
 
-	// Idempotent: second run changes nothing.
+	// Idempotent: second run re-converges without error and without
+	// generating another key.
 	var summary2 map[string]any
 	doJSON(t, f.handler, http.MethodPost, "/api/v1/admin/gateway/keys/reconcile", nil, http.StatusOK, &summary2)
 	require.EqualValues(t, 1, summary2["updated"])
 }
 
-func TestReconcileRevokesKeyWithNoGrants(t *testing.T) {
+func TestReconcileRevokesUnboundAgentKey(t *testing.T) {
 	f := newGatewayFixture(t)
-	f.setPerms(t, f.provider)
+	f.bind(t, f.modelA.ID, f.modelB.ID)
 	f.createIdentity(t)
 	token := f.identity(t).GatewayKeyToken
 
-	// Drift: grants removed out-of-band but key still marked active.
-	require.NoError(t, f.store.SetAgentPermissions(context.Background(), f.agentID, nil))
+	// Drift: binding cleared out-of-band but key still marked active.
+	f.seedBinding(t, "", "")
 
 	var summary map[string]any
 	doJSON(t, f.handler, http.MethodPost, "/api/v1/admin/gateway/keys/reconcile", nil, http.StatusOK, &summary)
@@ -288,16 +541,42 @@ func TestReconcileRevokesKeyWithNoGrants(t *testing.T) {
 	require.Equal(t, []string{token}, del)
 }
 
-func TestDeprecateProviderConvergesKeys(t *testing.T) {
+func TestReconcileReportsUngrantedBindingAsError(t *testing.T) {
 	f := newGatewayFixture(t)
-	f.setPerms(t, f.provider, f.provider2)
+	f.bind(t, f.modelA.ID, "")
 	f.createIdentity(t)
 
-	doJSONNoBody(t, f.handler, http.MethodPost, "/api/v1/registry/llm-providers/"+f.provider+"/deprecate", nil, http.StatusNoContent)
+	// WP4 owns forced grant-revocation cascades (which clear bindings and
+	// converge keys). WP3's sync must still REFUSE to converge a binding
+	// that is not granted — seed the ungranted binding directly so the
+	// reconcile path itself is what refuses.
+	f.seedBinding(t, f.modelNoGrant.ID, "")
+	var summary map[string]any
+	doJSON(t, f.handler, http.MethodPost, "/api/v1/admin/gateway/keys/reconcile", nil, http.StatusOK, &summary)
+	require.EqualValues(t, 1, summary["errors"])
+	require.Equal(t, domain.GatewayKeyActive, f.identity(t).GatewayKeyStatus, "refused convergence must not mutate the key")
+}
 
-	gen, upd, del := f.gateway.counts()
-	require.Equal(t, 1, gen)
-	require.Equal(t, 1, upd, "deprecation should trigger a key update")
-	require.Empty(t, del)
-	require.ElementsMatch(t, []any{"openai/two"}, f.gateway.updated[0]["models"])
+func TestDeleteAgentRevokesGatewayKey(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.bind(t, f.modelA.ID, f.modelB.ID)
+	f.createIdentity(t)
+	token := f.identity(t).GatewayKeyToken
+
+	doJSONNoBody(t, f.handler, http.MethodDelete, "/api/v1/agents/"+f.agentID, nil, http.StatusNoContent)
+
+	_, _, del := f.gateway.counts()
+	require.Equal(t, []string{token}, del)
+}
+
+func TestDeleteSquadRevokesGatewayKeys(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.bind(t, f.modelA.ID, f.modelB.ID)
+	f.createIdentity(t)
+	token := f.identity(t).GatewayKeyToken
+
+	doJSONNoBody(t, f.handler, http.MethodDelete, "/api/v1/squads/"+f.squadID, nil, http.StatusNoContent)
+
+	_, _, del := f.gateway.counts()
+	require.Equal(t, []string{token}, del)
 }

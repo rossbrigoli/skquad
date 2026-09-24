@@ -34,7 +34,42 @@ const (
 	defaultTaskExecutionLease  = 2 * time.Minute
 )
 
-var errNoGatewayModels = errors.New("no active LLM provider models granted")
+// Binding errors (ADR-0010 D4/D5, WP3). These replace the old
+// errNoGatewayModels / "no_llm_models_granted" S-104 error, which blamed
+// a missing provider grant for what is really a missing or invalid model
+// binding. writeBindingError maps them to HTTP semantics.
+type bindingError struct {
+	code    string
+	message string
+}
+
+func (e *bindingError) Error() string { return e.message }
+
+var (
+	errModelNotBound   = &bindingError{"model_not_bound", "agent has no primary AI model bound"}
+	errModelNotFound   = &bindingError{"model_not_found", "bound AI model does not exist"}
+	errModelNotGranted = &bindingError{"model_not_granted", "bound AI model is not granted to the agent's owner"}
+	errModelDeprecated = &bindingError{"model_deprecated", "bound AI model is deprecated"}
+)
+
+// writeBindingError maps a binding error to its HTTP response and returns
+// true when err was a binding error. Provisioning failures that are not
+// binding errors fall through to the caller's gateway-unavailable mapping.
+func writeBindingError(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, errModelNotBound):
+		writeError(w, http.StatusConflict, "model_not_bound", err.Error())
+	case errors.Is(err, errModelNotFound):
+		writeError(w, http.StatusBadRequest, "model_not_found", err.Error())
+	case errors.Is(err, errModelNotGranted):
+		writeError(w, http.StatusForbidden, "model_not_granted", err.Error())
+	case errors.Is(err, errModelDeprecated):
+		writeError(w, http.StatusConflict, "model_deprecated", err.Error())
+	default:
+		return false
+	}
+	return true
+}
 
 // Store is the persistence surface required by the current API slice.
 type Store interface {
@@ -44,6 +79,7 @@ type Store interface {
 	storage.BoardStore
 	storage.GrantStore
 	storage.RegistryStore
+	storage.AIModelStore
 	storage.PermissionStore
 	storage.MeteringStore
 	storage.WakeLatencyStore
@@ -89,8 +125,9 @@ type LLMGatewayProvisioner interface {
 	// ProvisionAgentKey creates a new virtual key and returns the key
 	// (handed to the agent) plus its token (kept for later update/revoke).
 	ProvisionAgentKey(ctx context.Context, req GatewayKeyRequest) (key string, token string, err error)
-	// UpdateAgentKey rewrites the model allow-list of an existing key.
-	UpdateAgentKey(ctx context.Context, token string, models []string) error
+	// UpdateAgentKey rewrites the model allow-list and fallback/router
+	// configuration of an existing key.
+	UpdateAgentKey(ctx context.Context, token string, req GatewayKeyRequest) error
 	// RevokeAgentKey deletes a key so further model calls fail.
 	RevokeAgentKey(ctx context.Context, token string) error
 }
@@ -100,6 +137,13 @@ type GatewayKeyRequest struct {
 	AgentID string
 	SquadID string
 	Models  []string
+	// PrimaryModel is the LiteLLM model name of the agent's bound primary.
+	// It keys the gateway's fallback mapping.
+	PrimaryModel string
+	// FallbackModel is the LiteLLM model name of the agent's bound
+	// fallback. The gateway router performs the failover (ADR-0010 D6);
+	// the runtime never sees this and never implements fallback itself.
+	FallbackModel string
 }
 
 // New returns an HTTP handler for the control-plane API.
@@ -239,6 +283,22 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Post("/registry/llm-providers/{providerID}/deprecate", s.deprecateLLMProvider)
 			r.Delete("/registry/llm-providers/{providerID}", s.deleteLLMProvider)
 
+			r.Get("/ai-models", s.listAIModels)
+			r.Post("/ai-models", s.createAIModel)
+			r.Get("/ai-models/{modelID}", s.getAIModel)
+			r.Patch("/ai-models/{modelID}", s.updateAIModel)
+			r.Post("/ai-models/{modelID}/deprecate", s.deprecateAIModel)
+			r.Delete("/ai-models/{modelID}", s.deleteAIModel)
+
+			r.Get("/users", s.listUsers)
+			r.Get("/users/{userID}/models", s.listUserModels)
+			r.Put("/users/{userID}/models", s.setUserModels)
+			r.Delete("/users/{userID}/models/{modelID}", s.revokeUserModel)
+
+			// Self-service read for the agent UI: calling user's granted,
+			// active models only (ADR-0010 D3).
+			r.Get("/models/me", s.listMyModels)
+
 			r.Post("/registry/{registryType}", s.createRegistryResource)
 			r.Get("/registry/{registryType}", s.listRegistryResources)
 			r.Get("/registry/{registryType}/{resourceID}", s.getRegistryResource)
@@ -278,8 +338,8 @@ func (noopLLMGateway) ProvisionAgentKey(context.Context, GatewayKeyRequest) (str
 	return key, "noop-" + key, nil
 }
 
-func (noopLLMGateway) UpdateAgentKey(context.Context, string, []string) error { return nil }
-func (noopLLMGateway) RevokeAgentKey(context.Context, string) error           { return nil }
+func (noopLLMGateway) UpdateAgentKey(context.Context, string, GatewayKeyRequest) error { return nil }
+func (noopLLMGateway) RevokeAgentKey(context.Context, string) error                    { return nil }
 
 type principalKey struct{}
 type agentPrincipalKey struct{}
@@ -469,9 +529,13 @@ func registryTypeFromRequest(w http.ResponseWriter, r *http.Request) (domain.Res
 	}
 }
 
+// resourceTypeFromString maps a grant request to a GRANTABLE resource type.
+// llm_provider is deliberately absent (ADR-0010 / S-107): model access is
+// granted to users via AI Models, not to agents via providers. The constant
+// itself stays until WP8 drops the DB CHECK constraint.
 func resourceTypeFromString(value string) (domain.ResourceType, bool) {
 	switch domain.ResourceType(value) {
-	case domain.ResLLMProvider, domain.ResSkill, domain.ResTool, domain.ResAPI, domain.ResKnowledgeBase, domain.ResProjectWorkspace:
+	case domain.ResSkill, domain.ResTool, domain.ResAPI, domain.ResKnowledgeBase, domain.ResProjectWorkspace:
 		return domain.ResourceType(value), true
 	default:
 		return "", false
@@ -1399,10 +1463,19 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		DefaultModel      *string          `json:"default_model"`
 		Permissions       *json.RawMessage `json:"permissions"`
 		IdleTimeoutSec    *int             `json:"idle_timeout_sec"`
+		// AI model binding (ADR-0010 D4). Pointer semantics: nil = leave
+		// unchanged, "" = clear the slot, id = bind. A successful binding
+		// change converges the agent's virtual key immediately (D5).
+		AIModelID         *string `json:"ai_model_id"`
+		FallbackAIModelID *string `json:"fallback_ai_model_id"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	// Captured before any mutation so a post-gateway persist failure can
+	// roll the virtual key back to the pre-request binding.
+	prevPrimary, prevFallback := agent.AIModelID, agent.FallbackAIModelID
+	bindingTouched := false
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name == "" {
@@ -1433,9 +1506,72 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		agent.IdleTimeoutSec = *req.IdleTimeoutSec
 	}
+	if req.AIModelID != nil || req.FallbackAIModelID != nil {
+		newPrimary := agent.AIModelID
+		if req.AIModelID != nil {
+			newPrimary = strings.TrimSpace(*req.AIModelID)
+		}
+		newFallback := agent.FallbackAIModelID
+		if req.FallbackAIModelID != nil {
+			newFallback = strings.TrimSpace(*req.FallbackAIModelID)
+		}
+		if newPrimary == "" && newFallback != "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "cannot keep a fallback model without a primary model")
+			return
+		}
+		if newFallback != "" && newFallback == newPrimary {
+			// The store enforces this too (ErrConflict); surface it as a
+			// clean 400 instead of leaking the constraint error.
+			writeError(w, http.StatusBadRequest, "fallback_same_as_primary", "fallback_ai_model_id must differ from ai_model_id")
+			return
+		}
+		squad, err := s.store.GetSquad(r.Context(), agent.SquadID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		granted, err := s.ownerGrantedModelIDs(r.Context(), squad.OwnerID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		if newPrimary != "" {
+			if _, err := s.resolveBindingModel(r.Context(), newPrimary, "ai_model_id", granted); err != nil {
+				writeBindingError(w, err)
+				return
+			}
+		}
+		if newFallback != "" {
+			if _, err := s.resolveBindingModel(r.Context(), newFallback, "fallback_ai_model_id", granted); err != nil {
+				writeBindingError(w, err)
+				return
+			}
+		}
+		// Converge the virtual key BEFORE persisting so a gateway failure
+		// aborts the mutation with the previous binding intact (same
+		// ordering discipline the permission-set path used).
+		prevPrimary, prevFallback = agent.AIModelID, agent.FallbackAIModelID
+		agent.AIModelID, agent.FallbackAIModelID = newPrimary, newFallback
+		bindingTouched = true
+		if _, err := s.syncAgentGatewayKey(r.Context(), agent); err != nil {
+			agent.AIModelID, agent.FallbackAIModelID = prevPrimary, prevFallback
+			if writeBindingError(w, err) {
+				return
+			}
+			writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to converge LLM gateway virtual key")
+			return
+		}
+	}
 
 	updated, err := s.store.UpdateAgent(s.pendingUserAuditCtx(r, "agent.update", "agent", agent.ID, agent.SquadID, nil), agent)
 	if err != nil {
+		// If the binding converged at the gateway but the row failed to
+		// persist, roll the key back to the previous binding best-effort;
+		// the reconcile endpoint is the final repair path either way.
+		if bindingTouched {
+			agent.AIModelID, agent.FallbackAIModelID = prevPrimary, prevFallback
+			_, _ = s.syncAgentGatewayKey(r.Context(), agent)
+		}
 		writeStorageError(w, err)
 		return
 	}
@@ -1637,8 +1773,7 @@ func (s *Server) createAgentIdentity(w http.ResponseWriter, r *http.Request) {
 	}
 	virtualKey, keyToken, err := s.provisionAgentVirtualKey(r.Context(), agent)
 	if err != nil {
-		if errors.Is(err, errNoGatewayModels) {
-			writeError(w, http.StatusConflict, "no_llm_models_granted", "agent has no active granted LLM provider models")
+		if writeBindingError(w, err) {
 			return
 		}
 		writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to provision LLM gateway virtual key")
@@ -1688,8 +1823,7 @@ func (s *Server) rotateAgentIdentity(w http.ResponseWriter, r *http.Request) {
 	}
 	virtualKey, keyToken, err := s.provisionAgentVirtualKey(r.Context(), agent)
 	if err != nil {
-		if errors.Is(err, errNoGatewayModels) {
-			writeError(w, http.StatusConflict, "no_llm_models_granted", "agent has no active granted LLM provider models")
+		if writeBindingError(w, err) {
 			return
 		}
 		writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to provision LLM gateway virtual key")
@@ -1728,75 +1862,105 @@ func (s *Server) gatewayConfigured() bool {
 }
 
 func (s *Server) provisionAgentVirtualKey(ctx context.Context, agent *domain.Agent) (string, string, error) {
-	models, err := s.allowedGatewayModels(ctx, agent)
-	if err != nil {
-		return "", "", err
+	req := GatewayKeyRequest{AgentID: agent.ID, SquadID: agent.SquadID}
+	if s.gatewayConfigured() {
+		models, primary, fallback, err := s.boundModelAllowList(ctx, agent)
+		if err != nil {
+			return "", "", err
+		}
+		req.Models = models
+		req.PrimaryModel = primary
+		req.FallbackModel = fallback
 	}
-	if s.gatewayConfigured() && len(models) == 0 {
-		return "", "", fmt.Errorf("%w to agent %s", errNoGatewayModels, agent.ID)
-	}
-	return s.llmGateway.ProvisionAgentKey(ctx, GatewayKeyRequest{
-		AgentID: agent.ID,
-		SquadID: agent.SquadID,
-		Models:  models,
-	})
+	return s.llmGateway.ProvisionAgentKey(ctx, req)
 }
 
-func (s *Server) allowedGatewayModels(ctx context.Context, agent *domain.Agent) ([]string, error) {
-	perms, err := s.store.ListAgentPermissions(ctx, agent.ID)
+// ownerGrantedModelIDs returns the set of AI model IDs granted to a user
+// (ADR-0010 D3: grants follow people; the agent's authorisation boundary
+// is its squad owner's grant set).
+func (s *Server) ownerGrantedModelIDs(ctx context.Context, userID string) (map[string]bool, error) {
+	grants, err := s.store.ListUserModelGrants(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	return s.gatewayModelsFromPerms(ctx, perms)
+	set := make(map[string]bool, len(grants))
+	for _, g := range grants {
+		set[g.AIModelID] = true
+	}
+	return set, nil
 }
 
-// gatewayModelsFromPerms derives the model allow-list a permission set implies.
-// Inactive (deprecated) providers contribute no models.
-func (s *Server) gatewayModelsFromPerms(ctx context.Context, perms []*domain.AgentPermission) ([]string, error) {
-	seen := map[string]bool{}
-	var models []string
-	add := func(model string) {
-		model = strings.TrimSpace(model)
-		if model == "" || seen[model] {
-			return
-		}
-		seen[model] = true
-		models = append(models, model)
+// resolveBindingModel validates one bound model id: it must exist, be
+// granted to the agent's owner, and still be active. field names the
+// offending agent column so the error message is actionable.
+func (s *Server) resolveBindingModel(ctx context.Context, modelID, field string, granted map[string]bool) (*domain.AIModel, error) {
+	model, err := s.store.GetAIModel(ctx, modelID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil, fmt.Errorf("%w: %s", errModelNotFound, field)
 	}
-	for _, perm := range perms {
-		if perm.ResourceType != domain.ResLLMProvider {
-			continue
-		}
-		provider, err := s.store.GetLLMProvider(ctx, perm.ResourceID)
-		if err != nil {
-			return nil, err
-		}
-		if provider.Status != domain.ResourceActive {
-			continue
-		}
-		add(provider.DefaultModel)
-		var providerModels []string
-		if len(provider.Models) > 0 {
-			if err := json.Unmarshal(provider.Models, &providerModels); err == nil {
-				for _, model := range providerModels {
-					add(model)
-				}
-			}
-		}
-	}
-	return models, nil
-}
-
-// syncAgentGatewayKey converges an agent's LiteLLM virtual key to its current
-// granted models: update when the allow-list changes, revoke when nothing is
-// granted, provision when a key is missing but models are granted. It is
-// idempotent and used by the admin reconcile endpoint and provider deprecation.
-// Returns the action taken: "none"|"updated"|"revoked"|"provisioned".
-func (s *Server) syncAgentGatewayKey(ctx context.Context, agent *domain.Agent) (string, error) {
-	models, err := s.allowedGatewayModels(ctx, agent)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
+	if !granted[modelID] {
+		return nil, fmt.Errorf("%w: %s", errModelNotGranted, field)
+	}
+	if model.Status != domain.ResourceActive {
+		return nil, fmt.Errorf("%w: %s", errModelDeprecated, field)
+	}
+	return model, nil
+}
+
+// boundModelAllowList resolves the agent's primary+fallback binding into the
+// LiteLLM virtual-key allow-list (ADR-0010 D5: the grant compiles into the
+// key; the runtime never re-checks grants).
+//
+// ⚠️ CRITICAL INVARIANT: whenever a fallback is bound, the returned allow-
+// list MUST contain BOTH the primary and the fallback model names. If the
+// key were provisioned with only [primary], the fallback would fail
+// authorisation at the gateway at the exact moment it is needed — during a
+// primary outage — turning an availability feature into an auth failure.
+// Never filter the fallback out of this list (covered explicitly by
+// TestBoundKeyContainsPrimaryAndFallback).
+func (s *Server) boundModelAllowList(ctx context.Context, agent *domain.Agent) ([]string, string, string, error) {
+	if strings.TrimSpace(agent.AIModelID) == "" {
+		return nil, "", "", errModelNotBound
+	}
+	squad, err := s.store.GetSquad(ctx, agent.SquadID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	granted, err := s.ownerGrantedModelIDs(ctx, squad.OwnerID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	primary, err := s.resolveBindingModel(ctx, agent.AIModelID, "ai_model_id", granted)
+	if err != nil {
+		return nil, "", "", err
+	}
+	models := []string{primary.ModelName}
+	fallbackName := ""
+	if strings.TrimSpace(agent.FallbackAIModelID) != "" {
+		fallback, err := s.resolveBindingModel(ctx, agent.FallbackAIModelID, "fallback_ai_model_id", granted)
+		if err != nil {
+			return nil, "", "", err
+		}
+		fallbackName = fallback.ModelName
+		// Distinct IDs can still share a model name across providers; the
+		// allow-list is a set of names, so only append a distinct one.
+		if fallbackName != primary.ModelName {
+			models = append(models, fallbackName)
+		}
+	}
+	return models, primary.ModelName, fallbackName, nil
+}
+
+// syncAgentGatewayKey converges an agent's LiteLLM virtual key to its
+// current model binding (ADR-0010 D5) in every direction: primary changed,
+// fallback added, fallback removed, or fully unbound. It is idempotent and
+// used by the agent-binding PATCH, the admin reconcile endpoint, and
+// provider deprecation. Returns the action taken:
+// "none"|"updated"|"revoked"|"provisioned".
+func (s *Server) syncAgentGatewayKey(ctx context.Context, agent *domain.Agent) (string, error) {
 	identity, err := s.store.GetAgentIdentity(ctx, agent.ID)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
@@ -1804,48 +1968,65 @@ func (s *Server) syncAgentGatewayKey(ctx context.Context, agent *domain.Agent) (
 		}
 		return "", err
 	}
-	switch {
-	case identity.GatewayKeyStatus == domain.GatewayKeyActive && identity.GatewayKeyToken != "":
-		if len(models) == 0 {
-			if err := s.llmGateway.RevokeAgentKey(ctx, identity.GatewayKeyToken); err != nil {
-				return "", err
-			}
-			if _, err := s.store.SetAgentIdentityGatewayKey(ctx, agent.ID, identity.GatewayKeyToken, domain.GatewayKeyRevoked); err != nil {
-				return "", err
-			}
-			return "revoked", nil
+	hasKey := identity.GatewayKeyStatus == domain.GatewayKeyActive && identity.GatewayKeyToken != ""
+
+	models, primary, fallback, bindErr := s.boundModelAllowList(ctx, agent)
+	if bindErr != nil {
+		// An unbound agent must not keep a live key: convergence here means
+		// revoke. Other binding failures (not found / not granted /
+		// deprecated) refuse convergence so the operator sees the precise
+		// error instead of a silently revoked or stale key; WP4's force
+		// cascade owns grant-revocation cleanup.
+		if !errors.Is(bindErr, errModelNotBound) {
+			return "", bindErr
 		}
-		if err := s.llmGateway.UpdateAgentKey(ctx, identity.GatewayKeyToken, models); err != nil {
+		if !hasKey {
+			return "none", nil
+		}
+		if err := s.llmGateway.RevokeAgentKey(ctx, identity.GatewayKeyToken); err != nil {
+			return "", err
+		}
+		if _, err := s.store.SetAgentIdentityGatewayKey(ctx, agent.ID, identity.GatewayKeyToken, domain.GatewayKeyRevoked); err != nil {
+			return "", err
+		}
+		return "revoked", nil
+	}
+
+	keyReq := GatewayKeyRequest{
+		AgentID:       agent.ID,
+		SquadID:       agent.SquadID,
+		Models:        models,
+		PrimaryModel:  primary,
+		FallbackModel: fallback,
+	}
+	if hasKey {
+		// Always rewrite the allow-list so primary changes, fallback adds
+		// and fallback removals all converge (the gateway update is cheap
+		// and idempotent).
+		if err := s.llmGateway.UpdateAgentKey(ctx, identity.GatewayKeyToken, keyReq); err != nil {
 			return "", err
 		}
 		return "updated", nil
-	case len(models) > 0:
-		squad, err := s.store.GetSquad(ctx, agent.SquadID)
-		if err != nil {
-			return "", err
-		}
-		key, token, err := s.llmGateway.ProvisionAgentKey(ctx, GatewayKeyRequest{
-			AgentID: agent.ID,
-			SquadID: agent.SquadID,
-			Models:  models,
-		})
-		if err != nil {
-			return "", err
-		}
-		ref := generatedVirtualKeyRef(squad.Namespace, agent.ID)
-		if err := s.crWriter.WriteAgentCredential(ctx, ref, agent.ID, key); err != nil {
-			_ = s.llmGateway.RevokeAgentKey(ctx, token)
-			return "", err
-		}
-		if _, err := s.store.SetAgentIdentityGatewayKey(ctx, agent.ID, token, domain.GatewayKeyActive); err != nil {
-			_ = s.llmGateway.RevokeAgentKey(ctx, token)
-			_ = s.crWriter.DeleteAgentCredential(ctx, ref)
-			return "", err
-		}
-		return "provisioned", nil
-	default:
-		return "none", nil
 	}
+	squad, err := s.store.GetSquad(ctx, agent.SquadID)
+	if err != nil {
+		return "", err
+	}
+	key, token, err := s.llmGateway.ProvisionAgentKey(ctx, keyReq)
+	if err != nil {
+		return "", err
+	}
+	ref := generatedVirtualKeyRef(squad.Namespace, agent.ID)
+	if err := s.crWriter.WriteAgentCredential(ctx, ref, agent.ID, key); err != nil {
+		_ = s.llmGateway.RevokeAgentKey(ctx, token)
+		return "", err
+	}
+	if _, err := s.store.SetAgentIdentityGatewayKey(ctx, agent.ID, token, domain.GatewayKeyActive); err != nil {
+		_ = s.llmGateway.RevokeAgentKey(ctx, token)
+		_ = s.crWriter.DeleteAgentCredential(ctx, ref)
+		return "", err
+	}
+	return "provisioned", nil
 }
 
 func (s *Server) listAgentPermissions(w http.ResponseWriter, r *http.Request) {
@@ -1878,6 +2059,14 @@ func (s *Server) setAgentPermissions(w http.ResponseWriter, r *http.Request) {
 	perms := make([]domain.AgentPermission, 0, len(req))
 	seen := map[string]bool{}
 	for _, item := range req {
+		// ADR-0010 / S-107: the old door is closed. llm_provider grants are
+		// replaced by user-level AI Model grants; give the operator an
+		// actionable error instead of a generic invalid-type rejection.
+		if strings.TrimSpace(item.ResourceType) == string(domain.ResLLMProvider) {
+			writeError(w, http.StatusBadRequest, "provider_not_grantable",
+				"llm_provider is no longer grantable to agents; grant AI Models to the user instead (Settings \u2192 AI Models)")
+			return
+		}
 		typ, ok := resourceTypeFromString(item.ResourceType)
 		if !ok {
 			writeError(w, http.StatusBadRequest, "bad_request", "resource_type is invalid")
@@ -1904,101 +2093,18 @@ func (s *Server) setAgentPermissions(w http.ResponseWriter, r *http.Request) {
 			GrantedBy:    u.ID,
 		})
 	}
-	// Sync the agent's LLM gateway virtual key before committing permissions:
-	// revocations take effect at the gateway first, so a gateway failure
-	// aborts the mutation with the previous state intact instead of leaving
-	// a live key behind a revoked grant.
-	prospectivePerms := make([]*domain.AgentPermission, 0, len(perms))
-	for i := range perms {
-		prospectivePerms = append(prospectivePerms, &perms[i])
-	}
-	prospective, err := s.gatewayModelsFromPerms(r.Context(), prospectivePerms)
-	if err != nil {
-		writeStorageError(w, err)
-		return
-	}
-	identity, err := s.store.GetAgentIdentity(r.Context(), agent.ID)
-	if err != nil && !errors.Is(err, storage.ErrNotFound) {
-		writeStorageError(w, err)
-		return
-	}
-
-	gatewayAction := "none"
-	var newKeyToken string
-	var newKeyRef string
-	if identity != nil && identity.GatewayKeyStatus == domain.GatewayKeyActive && identity.GatewayKeyToken != "" {
-		if len(prospective) == 0 {
-			if err := s.llmGateway.RevokeAgentKey(r.Context(), identity.GatewayKeyToken); err != nil {
-				writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to revoke LLM gateway virtual key")
-				return
-			}
-			gatewayAction = "revoked"
-		} else {
-			if err := s.llmGateway.UpdateAgentKey(r.Context(), identity.GatewayKeyToken, prospective); err != nil {
-				writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to update LLM gateway virtual key")
-				return
-			}
-			gatewayAction = "updated"
-		}
-	} else if identity != nil && len(prospective) > 0 {
-		squad, err := s.store.GetSquad(r.Context(), agent.SquadID)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		key, token, err := s.llmGateway.ProvisionAgentKey(r.Context(), GatewayKeyRequest{
-			AgentID: agent.ID,
-			SquadID: agent.SquadID,
-			Models:  prospective,
-		})
-		if err != nil {
-			writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to provision LLM gateway virtual key")
-			return
-		}
-		ref := generatedVirtualKeyRef(squad.Namespace, agent.ID)
-		if err := s.crWriter.WriteAgentCredential(r.Context(), ref, agent.ID, key); err != nil {
-			_ = s.llmGateway.RevokeAgentKey(r.Context(), token)
-			writeError(w, http.StatusInternalServerError, "internal", "failed to write agent virtual-key secret")
-			return
-		}
-		newKeyToken = token
-		newKeyRef = ref
-		gatewayAction = "provisioned"
-	}
-
-	cleanupProvisionedKey := func() {
-		if gatewayAction != "provisioned" {
-			return
-		}
-		_ = s.llmGateway.RevokeAgentKey(r.Context(), newKeyToken)
-		if newKeyRef != "" {
-			_ = s.crWriter.DeleteAgentCredential(r.Context(), newKeyRef)
-		}
-	}
-
-	metadata, _ := json.Marshal(map[string]any{"count": len(perms), "gateway_action": gatewayAction})
+	// ADR-0010 D5: agent permissions no longer decide the LLM allow-list —
+	// the agent's model binding does. This endpoint must NOT touch the virtual
+	// key; key convergence for binding changes happens in the agent PATCH
+	// handler and the admin reconcile endpoint.
+	metadata, _ := json.Marshal(map[string]any{"count": len(perms)})
 	if err := s.recordUserAuditRequired(r, "agent_permissions.set", "agent", agent.ID, agent.SquadID, metadata); err != nil {
-		cleanupProvisionedKey()
 		writeError(w, http.StatusInternalServerError, "internal", "failed to audit agent permission update")
 		return
 	}
 	if err := s.store.SetAgentPermissions(r.Context(), agent.ID, perms); err != nil {
-		cleanupProvisionedKey()
 		writeStorageError(w, err)
 		return
-	}
-	// Permissions are committed; record the key lifecycle transition. If the
-	// identity bookkeeping fails, the gateway is already correct and the
-	// reconcile endpoint will repair the record.
-	switch gatewayAction {
-	case "revoked":
-		if _, err := s.store.SetAgentIdentityGatewayKey(r.Context(), agent.ID, identity.GatewayKeyToken, domain.GatewayKeyRevoked); err != nil {
-			s.recordUserAudit(r, "agent_permissions.gateway_key_record_stale", "agent", agent.ID, agent.SquadID, metadata)
-		}
-	case "provisioned":
-		if _, err := s.store.SetAgentIdentityGatewayKey(r.Context(), agent.ID, newKeyToken, domain.GatewayKeyActive); err != nil {
-			s.recordUserAudit(r, "agent_permissions.gateway_key_record_stale", "agent", agent.ID, agent.SquadID, metadata)
-		}
 	}
 	current, err := s.store.ListAgentPermissions(r.Context(), agent.ID)
 	if err != nil {
@@ -2009,10 +2115,6 @@ func (s *Server) setAgentPermissions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ensureRegistryResourceExists(ctx context.Context, typ domain.ResourceType, resourceID string) error {
-	if typ == domain.ResLLMProvider {
-		_, err := s.store.GetLLMProvider(ctx, resourceID)
-		return err
-	}
 	_, err := s.store.GetResource(ctx, typ, resourceID)
 	return err
 }
@@ -2129,6 +2231,15 @@ type gatewayMeteringRequest struct {
 	Currency     string    `json:"currency"`
 	Error        string    `json:"error"`
 	Timestamp    time.Time `json:"timestamp"`
+	// ModelUsed names the model that actually served the call when the
+	// reporter knows it (WP5 / ADR-0010 Risk 3). The gateway callback
+	// currently reports only the requested model, so this is optional and
+	// falls back to Model at ingest.
+	ModelUsed string `json:"model_used"`
+	// Alert carries a gateway-raised alert signal, e.g.
+	// "upstream_auth_failure" for upstream 401/403 (ADR-0010 D7: fall
+	// back AND alert so a dead key never runs silently on fallback).
+	Alert string `json:"alert"`
 }
 
 func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
@@ -2163,6 +2274,7 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 
 	metadata, _ := json.Marshal(map[string]any{
 		"model":         req.Model,
+		"model_used":    orString(strings.TrimSpace(req.ModelUsed), req.Model),
 		"provider_id":   req.ProviderID,
 		"task_id":       req.TaskID,
 		"input_tokens":  req.InputTokens,
@@ -2173,6 +2285,13 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 	})
 	if req.Status == "failure" {
 		_ = s.recordSystemAudit(r.Context(), "llm.failure", "agent", req.AgentID, req.SquadID, metadata)
+		if req.Alert != "" {
+			// Loud alert per ADR-0010 D7: the gateway fell back past an
+			// upstream auth failure. Dedicated audit action so it is
+			// greppable independently of ordinary LLM failures.
+			alertMeta, _ := json.Marshal(map[string]any{"alert": req.Alert, "error": trimRunes(req.Error, 512), "model": req.Model})
+			_ = s.recordSystemAudit(r.Context(), "llm.upstream_auth_alert", "agent", req.AgentID, req.SquadID, alertMeta)
+		}
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -2185,23 +2304,95 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "cost must not be negative")
 		return
 	}
+
+	// WP5 / ADR-0010 D8 + Risk 3: resolve the model that served the call
+	// and snapshot its pricing at event time. When a snapshot resolves, the
+	// stored cost is computed FROM THE SNAPSHOT (never the reporter's
+	// figure, and never re-derived from live pricing later). When no
+	// snapshot resolves we keep the reporter-supplied cost and record no
+	// rates, so the gap is visible rather than fabricated.
+	modelUsed := strings.TrimSpace(req.ModelUsed)
+	if modelUsed == "" {
+		modelUsed = strings.TrimSpace(req.Model)
+	}
+	cost := req.Cost
+	var (
+		rateIn, rateCached, rateWrite, rateOut *float64
+		snapshot                            bool
+	)
+	if modelUsed != "" {
+		if model, ok := s.resolveMeteringModel(r.Context(), agent, modelUsed); ok {
+			if pricing, err := domain.ParseModelPricing(model.Pricing); err == nil && pricing != nil {
+				cost = pricing.CostFor(req.InputTokens, req.OutputTokens)
+				rateIn = &pricing.InputPer1M
+				rateCached = &pricing.CachedInputPer1M
+				rateWrite = &pricing.CacheWritePer1M
+				rateOut = &pricing.OutputPer1M
+				snapshot = true
+			}
+		}
+	}
+
 	if err := s.store.RecordMetering(r.Context(), &domain.MeteringEvent{
 		AgentID:      req.AgentID,
 		SquadID:      req.SquadID,
 		TaskID:       req.TaskID,
 		ProviderID:   req.ProviderID,
 		Model:        req.Model,
+		ModelUsed:    modelUsed,
 		InputTokens:  req.InputTokens,
 		OutputTokens: req.OutputTokens,
-		Cost:         req.Cost,
+		Cost:         cost,
 		Currency:     req.Currency,
 		Timestamp:    req.Timestamp,
+		RateInputPer1M:       rateIn,
+		RateCachedInputPer1M: rateCached,
+		RateCacheWritePer1M:  rateWrite,
+		RateOutputPer1M:      rateOut,
+		RateSnapshot:         snapshot,
 	}); err != nil {
 		writeStorageError(w, err)
 		return
 	}
 	_ = s.recordSystemAudit(r.Context(), "llm.metering.ingest", "agent", req.AgentID, req.SquadID, metadata)
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// resolveMeteringModel finds the AI Model row whose model_name matches the
+// served model, preferring the agent's own binding (primary, then
+// fallback) because the binding is the authoritative context the key was
+// provisioned with. Returns ok=false when nothing matches so the caller
+// records no rate snapshot instead of guessing.
+func (s *Server) resolveMeteringModel(ctx context.Context, agent *domain.Agent, modelUsed string) (*domain.AIModel, bool) {
+	if id := strings.TrimSpace(agent.AIModelID); id != "" {
+		if model, err := s.store.GetAIModel(ctx, id); err == nil && model.ModelName == modelUsed {
+			return model, true
+		}
+	}
+	if id := strings.TrimSpace(agent.FallbackAIModelID); id != "" {
+		if model, err := s.store.GetAIModel(ctx, id); err == nil && model.ModelName == modelUsed {
+			return model, true
+		}
+	}
+	models, err := s.store.ListAIModels(ctx, "")
+	if err != nil {
+		return nil, false
+	}
+	var fallbackMatch *domain.AIModel
+	for _, model := range models {
+		if model.ModelName != modelUsed {
+			continue
+		}
+		if model.Status == domain.ResourceActive {
+			return model, true
+		}
+		if fallbackMatch == nil {
+			fallbackMatch = model
+		}
+	}
+	// Prefer an active match; a deprecated model still prices honestly for
+	// historical turns over recording nothing.
+	return fallbackMatch, fallbackMatch != nil
 }
 
 func (s *Server) listSquadAudit(w http.ResponseWriter, r *http.Request) {
@@ -3699,6 +3890,14 @@ func defaultMeteringCurrency(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "USD"
+	}
+	return value
+}
+
+// orString returns value when non-empty, otherwise the fallback.
+func orString(value, fallback string) string {
+	if value == "" {
+		return fallback
 	}
 	return value
 }

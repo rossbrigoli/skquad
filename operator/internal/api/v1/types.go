@@ -95,6 +95,14 @@ type AgentSpec struct {
 	SystemPrompt      string               `json:"systemPrompt,omitempty"`
 	DefaultProviderID string               `json:"defaultProviderId,omitempty"`
 	DefaultModel      string               `json:"defaultModel,omitempty"`
+	// AIModelID is the bound primary AI Model (ADR-0010 D4). Injected into
+	// the runtime as SKQUAD_AI_MODEL_ID so the agent's binding is visible
+	// downstream of the control plane (WP5).
+	AIModelID string `json:"aiModelId,omitempty"`
+	// FallbackAIModelID is the optional failover model (ADR-0010 D4/D6).
+	// Injected as SKQUAD_FALLBACK_MODEL_ID. The runtime only OBSERVES
+	// this binding; failover itself is executed by the gateway (D6).
+	FallbackAIModelID string               `json:"fallbackAiModelId,omitempty"`
 	Image             string               `json:"image"`
 	CredentialSecret  string               `json:"credentialSecret,omitempty"`
 	VirtualKeySecret  string               `json:"virtualKeySecret,omitempty"`

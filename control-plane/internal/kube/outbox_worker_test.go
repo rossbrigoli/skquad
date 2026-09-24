@@ -155,3 +155,67 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// WP5 (ADR-0010 D4): the outbox worker resolves the agent's bound AI
+// Model ids into gateway-routable names before writing the CR.
+type fakeAIModelResolver struct {
+	models map[string]*domain.AIModel
+	err    error
+}
+
+func (f *fakeAIModelResolver) GetAIModel(_ context.Context, id string) (*domain.AIModel, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if m, ok := f.models[id]; ok {
+		return m, nil
+	}
+	return nil, storage.ErrNotFound
+}
+
+func TestDeriveBindingModelNamesResolvesPrimaryAndFallback(t *testing.T) {
+	t.Parallel()
+
+	resolver := &fakeAIModelResolver{models: map[string]*domain.AIModel{
+		"primary-id":  {ID: "primary-id", ModelName: "gpt-6-sol"},
+		"fallback-id": {ID: "fallback-id", ModelName: "halogen/qwen3.8-flash-next"},
+	}}
+	agent := &domain.Agent{ID: "agent-1", AIModelID: "primary-id", FallbackAIModelID: "fallback-id"}
+
+	deriveBindingModelNames(context.Background(), resolver, agent)
+
+	if agent.AIModelName != "gpt-6-sol" {
+		t.Fatalf("AIModelName = %q, want gpt-6-sol", agent.AIModelName)
+	}
+	if agent.FallbackAIModelName != "halogen/qwen3.8-flash-next" {
+		t.Fatalf("FallbackAIModelName = %q, want halogen/qwen3.8-flash-next", agent.FallbackAIModelName)
+	}
+}
+
+func TestDeriveBindingModelNamesUnresolvedLeavesNamesEmpty(t *testing.T) {
+	t.Parallel()
+
+	resolver := &fakeAIModelResolver{models: map[string]*domain.AIModel{}}
+	agent := &domain.Agent{ID: "agent-1", AIModelID: "gone-primary", FallbackAIModelID: "gone-fallback"}
+
+	// Must not error: an unresolvable binding degrades to empty names so
+	// the CR writer falls back to the legacy default_model.
+	deriveBindingModelNames(context.Background(), resolver, agent)
+
+	if agent.AIModelName != "" || agent.FallbackAIModelName != "" {
+		t.Fatalf("unresolved binding must leave names empty, got %q / %q", agent.AIModelName, agent.FallbackAIModelName)
+	}
+}
+
+func TestDeriveBindingModelNamesNoBindingIsNoop(t *testing.T) {
+	t.Parallel()
+
+	resolver := &fakeAIModelResolver{err: errors.New("resolver must not be called")}
+	agent := &domain.Agent{ID: "agent-1"}
+
+	deriveBindingModelNames(context.Background(), resolver, agent)
+
+	if agent.AIModelName != "" || agent.FallbackAIModelName != "" {
+		t.Fatal("unbound agent must not gain model names")
+	}
+}
