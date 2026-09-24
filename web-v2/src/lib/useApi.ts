@@ -12,6 +12,12 @@ export function useApi<T>(path: string, pollMs = 0): ApiState<T> & { refresh: ()
   const [tick, setTick] = useState(0);
 
   const load = useCallback(async () => {
+    // Empty path = caller has nothing to fetch (e.g. menu data that only
+    // exists in a certain route context). Skip without an error state.
+    if (!path) {
+      setState({ data: null, loading: false, error: "" });
+      return;
+    }
     const authed = mode === "oidc" ? !!user : !!token;
     if (!authed) {
       setState({ data: null, loading: false, error: "not authenticated" });

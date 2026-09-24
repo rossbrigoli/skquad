@@ -276,6 +276,71 @@ button {
   font-weight: 700;
 }
 
+/* S-119 expandable menu groups (Squads / Agents) */
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-group-parent {
+  padding-right: var(--space-2);
+}
+
+.nav-group-link {
+  flex: 1;
+  color: inherit;
+  text-decoration: none;
+  font: inherit;
+  text-align: left;
+}
+
+button.nav-group-parent {
+  width: 100%;
+}
+
+.nav-group-chevron {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 var(--space-1);
+  font-size: var(--text-sm);
+  line-height: 1;
+}
+
+.nav-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: var(--space-4);
+}
+
+.nav-subitem {
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-3);
+}
+
+.nav-subgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-subgroup-label {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+  padding: var(--space-2) var(--space-3) 0;
+}
+
+.nav-sub-empty {
+  font-size: var(--text-sm);
+  color: var(--ink-faint);
+  padding: var(--space-1) var(--space-3);
+}
+
 .rail-footer {
   margin-top: auto;
   padding-top: var(--space-4);
