@@ -80,10 +80,12 @@ describe("buildAIModelPayload", () => {
     // The critical contract point: the threshold is NOT inside pricing.
     expect(payload.pricing).not.toHaveProperty("long_context_threshold_tokens");
     // decodeJSON DisallowUnknownFields — no stray keys anywhere.
-    expect(Object.keys(payload).sort()).toEqual(
+    expect(Object.keys(payload).sort((a, b) => a.localeCompare(b))).toEqual(
       ["context_window", "display_name", "long_context_threshold_tokens", "model_name", "pricing", "provider_id", "supports_tools"],
     );
-    expect(Object.keys(payload.pricing as object).sort()).toEqual([...PRICING_RATE_KEYS].sort());
+    expect(Object.keys(payload.pricing as object).sort((a, b) => a.localeCompare(b))).toEqual(
+      [...PRICING_RATE_KEYS].sort((a, b) => a.localeCompare(b)),
+    );
   });
 
   it("omits display_name when blank so the backend default (= model_name) applies", () => {
