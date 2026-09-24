@@ -32,6 +32,15 @@ import {
   type Squad,
 } from "../../../../../lib/api";
 import { formatCost, formatRelativeTime, formatTokens, leaseState } from "../../../../../lib/format";
+import {
+  chatContextTokens,
+  chatToolCalls,
+  formatContextTokens,
+  prettyToolArgs,
+  sortChatMessages,
+  summarizeToolArgs,
+  truncateText,
+} from "../../../../../lib/chat";
 import { agentStatus } from "../../../../../lib/status";
 import type { AIModel } from "../../../../../lib/aimodels";
 import {
@@ -382,10 +391,11 @@ function ChatThread({
   const { user } = useAuth();
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const sorted = useMemo(
-    () => [...messages].sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "")),
-    [messages],
-  );
+  const sorted = useMemo(() => sortChatMessages(messages), [messages]);
+  // S-122: tiny context-size bar — the prompt-token count the runtime
+  // recorded on the most recent agent reply (the real context size of the
+  // last LLM call, not an estimate).
+  const contextTokens = useMemo(() => chatContextTokens(messages), [messages]);
 
   // Keep the newest message in view (S-105).
   useEffect(() => {
@@ -414,6 +424,7 @@ function ChatThread({
         ) : (
           sorted.map((msg) => {
             const fromUser = msg.from_type === "user";
+            const toolCalls = fromUser ? [] : chatToolCalls(msg);
             return (
               <div key={msg.id} className={`chat-row ${fromUser ? "mine" : "theirs"}`}>
                 <div className={`chat-avatar ${fromUser ? "me" : "agent"}`} aria-hidden="true">
@@ -426,11 +437,35 @@ function ChatThread({
                     {!fromUser && msg.status ? <span className="chat-status mono">{msg.status}</span> : null}
                   </div>
                   <div className="chat-text">{msg.payload?.message || "(no text)"}</div>
+                  {toolCalls.length > 0 ? (
+                    <div className="chat-tools">
+                      {toolCalls.map((call, idx) => (
+                        <details key={idx} className={`chat-tool${call.ok ? "" : " failed"}`}>
+                          <summary className="chat-tool-summary">
+                            <span className="chat-tool-name">🔧 {call.name}</span>
+                            {summarizeToolArgs(call.arguments) ? (
+                              <span className="chat-tool-args mono">{summarizeToolArgs(call.arguments)}</span>
+                            ) : null}
+                            <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
+                          </summary>
+                          <pre className="chat-tool-detail mono">{prettyToolArgs(call.arguments)}</pre>
+                          {call.result ? (
+                            <pre className="chat-tool-detail mono result">{truncateText(call.result, 4000)}</pre>
+                          ) : null}
+                        </details>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             );
           })
         )}
+      </div>
+      <div className="chat-context-bar" role="status" aria-live="polite">
+        {contextTokens === null
+          ? "context: — tokens (waiting for the agent's first reply)"
+          : `context ≈ ${formatContextTokens(contextTokens)} tokens · last agent turn`}
       </div>
       {error ? <div className="notice error" style={{ margin: "var(--space-2) var(--space-3) 0" }}>{error}</div> : null}
       <form

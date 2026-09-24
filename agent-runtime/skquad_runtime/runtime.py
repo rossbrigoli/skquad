@@ -36,6 +36,12 @@ LOGGER = logging.getLogger(__name__)
 # (agent, started_at) so each container start records at most one wake.
 PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
 
+# S-122: chat turns may invoke tools (the agent's loaded plugins). The loop
+# is bounded so a chatty model cannot spin forever, and recorded tool results
+# are truncated so reply payloads stay small enough for the chat history API.
+DEFAULT_CHAT_TOOL_STEPS = 4
+CHAT_TOOL_RESULT_MAX_CHARS = 500
+
 
 @dataclass(frozen=True)
 class BootstrapConfig:
@@ -444,17 +450,27 @@ class ControlPlaneClient:
         text: str,
         correlation_id: str = "",
         to_agent_id: str = "",
+        extra: Mapping[str, object] | None = None,
     ) -> RuntimeMessage:
         """Post an agent-authored reply into the agent's own chat history.
 
         The reply is addressed to the agent itself so it shows up in the agent
         chat window. It is acked by the message handler (agent-authored
         messages are not re-processed by the LLM), which avoids a reply loop.
+
+        ``extra`` (S-122) merges additional keys into the message payload —
+        e.g. ``tool_calls`` (chat tool invocations) and ``context_tokens``
+        (prompt size of the final chat LLM call) — so the web chat UI can
+        render them without extra API round-trips. The control plane stores
+        the payload verbatim (JSONB), so this is backwards-compatible.
         """
+        payload_obj: dict[str, object] = {"message": text}
+        if extra:
+            payload_obj.update(extra)
         body: dict[str, object] = {
             "to_agent_id": to_agent_id or self.agent_id,
             "type": "reply",
-            "message": text,
+            "payload": payload_obj,
         }
         if correlation_id:
             body["correlation_id"] = correlation_id
@@ -703,11 +719,18 @@ class LLMMessageHandler:
         model: str | None = None,
         max_history: int = 20,
         client: "ControlPlaneClient | None" = None,
+        plugins: list[RuntimePlugin] | None = None,
+        max_tool_steps: int | None = None,
     ) -> None:
         self._completion = completion
         self.model = model
         self.max_history = max_history
         self._client = client
+        # S-122: chat turns may use the agent's loaded plugins as tools, and
+        # every invocation is recorded into the reply payload so the web chat
+        # shows *what the agent actually did* during the turn.
+        self.plugins = plugins or []
+        self.max_tool_steps = max_tool_steps
 
     def _control_plane(self, config: BootstrapConfig) -> "ControlPlaneClient":
         if self._client is not None:
@@ -741,33 +764,71 @@ class LLMMessageHandler:
 
         chat_messages = self._build_chat_messages(message, config)
         completion = self._completion or self._default_completion()
-        try:
-            response = completion(
-                model=model,
+        tools = self.tool_schemas()
+        tool_calls_log: list[dict[str, object]] = []
+        max_steps = max(1, self.max_tool_steps or DEFAULT_CHAT_TOOL_STEPS)
+        response: object = None
+        for step in range(max_steps):
+            completion_kwargs: dict[str, object] = {
+                "model": model,
                 # The gateway is OpenAI-compatible by architecture. litellm's
                 # provider inference rejects bare model names
                 # ("LLM Provider NOT provided", incident 2026-09-24), so the
                 # provider is declared explicitly instead of prefixing the
                 # model string — keeps metering/model names canonical.
-                custom_llm_provider="openai",
-                messages=chat_messages,
-                api_base=config.llm_gateway_url.rstrip("/"),
-                api_key=virtual_key,
+                "custom_llm_provider": "openai",
+                "messages": chat_messages,
+                "api_base": config.llm_gateway_url.rstrip("/"),
+                "api_key": virtual_key,
                 # litellm 1.102.1 silently drops the bare `metadata=` kwarg on
                 # the OpenAI-SDK→proxy path (incident 2026-09-24: metering never
                 # recorded). The wire field the proxy honours is `litellm_metadata`
                 # in extra_body; the gateway callback reads it back as
                 # litellm_params.metadata.
-                extra_body={
+                "extra_body": {
                     "litellm_metadata": {
                         "skquad_agent_id": config.agent_id,
                         "skquad_squad_id": config.squad_id,
                         "skquad_message_id": message.id,
                     }
                 },
+            }
+            if tools:
+                completion_kwargs["tools"] = tools
+            try:
+                response = completion(**completion_kwargs)
+            except Exception as exc:
+                return MessageResult(ok=False, summary=f"LLM call failed: {exc}")
+            assistant = first_message(response)
+            calls = parse_tool_calls(assistant)
+            if not calls:
+                break
+            if step == max_steps - 1:
+                return MessageResult(
+                    ok=False,
+                    summary=f"chat tool-call budget exhausted after {max_steps} steps",
+                )
+            chat_messages.append(
+                assistant_message(str(message_value(assistant, "content") or ""), calls)
             )
-        except Exception as exc:
-            return MessageResult(ok=False, summary=f"LLM call failed: {exc}")
+            for call in calls:
+                result = invoke_plugin_tool(call, config, self.plugins)
+                tool_calls_log.append(
+                    {
+                        "name": call.name,
+                        "arguments": call.arguments,
+                        "ok": result.ok,
+                        "result": trim_text(result.content, CHAT_TOOL_RESULT_MAX_CHARS),
+                    }
+                )
+                chat_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "name": call.name,
+                        "content": result.content,
+                    }
+                )
 
         model_used = served_model(response, model)
         if model_used != model:
@@ -784,13 +845,27 @@ class LLMMessageHandler:
             return MessageResult(ok=False, summary="LLM returned an empty reply")
 
         try:
+            extra: dict[str, object] = {}
+            if tool_calls_log:
+                extra["tool_calls"] = tool_calls_log
+            context_tokens = usage_prompt_tokens(response)
+            if context_tokens is not None:
+                extra["context_tokens"] = context_tokens
             self._control_plane(config).send_chat_reply(
-                reply_text, correlation_id=message.correlation_id or message.id
+                reply_text,
+                correlation_id=message.correlation_id or message.id,
+                extra=extra or None,
             )
         except Exception as exc:
             return MessageResult(ok=False, summary=f"failed to post chat reply: {exc}")
 
         return MessageResult(ok=True, summary="replied to user chat message", model_used=model_used)
+
+    def tool_schemas(self) -> list[Mapping[str, object]]:
+        schemas: list[Mapping[str, object]] = []
+        for plugin in self.plugins:
+            schemas.extend(plugin.tools())
+        return schemas
 
     def _build_chat_messages(
         self, message: RuntimeMessage, config: BootstrapConfig
@@ -975,20 +1050,30 @@ class LiteLLMTaskHandler:
         plugins: list[RuntimePlugin] | None = None,
     ) -> ToolResult:
         candidates = self.plugins if plugins is None else plugins
-        plugin = next((item for item in candidates if item.name == call.name), None)
-        if plugin is None:
-            return ToolResult(content=f"tool {call.name!r} is not available", ok=False)
-        try:
-            result = plugin.invoke(call, config)
-            if inspect.isawaitable(result):
-                import asyncio
+        return invoke_plugin_tool(call, config, candidates)
 
-                result = asyncio.run(result)
-            if isinstance(result, ToolResult):
-                return result
-            return ToolResult(content=str(result))
-        except Exception as exc:
-            return ToolResult(content=f"tool {call.name!r} failed: {exc}", ok=False)
+
+def invoke_plugin_tool(
+    call: ToolCall,
+    config: BootstrapConfig,
+    plugins: list[RuntimePlugin],
+) -> ToolResult:
+    """Invoke a tool call against the plugin list (shared by the task handler
+    and, since S-122, the chat handler)."""
+    plugin = next((item for item in plugins if item.name == call.name), None)
+    if plugin is None:
+        return ToolResult(content=f"tool {call.name!r} is not available", ok=False)
+    try:
+        result = plugin.invoke(call, config)
+        if inspect.isawaitable(result):
+            import asyncio
+
+            result = asyncio.run(result)
+        if isinstance(result, ToolResult):
+            return result
+        return ToolResult(content=str(result))
+    except Exception as exc:
+        return ToolResult(content=f"tool {call.name!r} failed: {exc}", ok=False)
 
 
 def load_runtime_plugins(
@@ -1239,6 +1324,31 @@ def object_value(item: object, key: str) -> object | None:
     if isinstance(item, Mapping):
         return item.get(key)
     return getattr(item, key, None)
+
+
+def usage_prompt_tokens(response: object) -> int | None:
+    """Prompt-token count reported by the LLM response (S-122).
+
+    This is the size of the context the model actually saw on that call —
+    the chat UI uses it for the tiny context-size status bar. Handles both
+    dict-shaped (mocks / JSON) and attribute-shaped (litellm ModelResponse)
+    responses, and both OpenAI (``prompt_tokens``) and Anthropic-style
+    (``input_tokens``) usage fields. Returns ``None`` when the provider
+    reported nothing usable."""
+    usage = object_value(response, "usage")
+    if usage is None:
+        return None
+    for key in ("prompt_tokens", "input_tokens"):
+        value = object_value(usage, key)
+        if value is None:
+            continue
+        try:
+            tokens = int(value)
+        except (TypeError, ValueError):
+            continue
+        if tokens >= 0:
+            return tokens
+    return None
 
 
 def poll_once(config: BootstrapConfig, client: ControlPlaneClient | None = None) -> RuntimeTask | None:
@@ -1679,7 +1789,10 @@ def main() -> None:
         worker = threading.Thread(
             target=run_task_loop,
             args=(config, LiteLLMTaskHandler(plugins=plugins, max_steps=config.max_llm_steps)),
-            kwargs={"message_handler": LLMMessageHandler(), "state": state},
+            kwargs={
+                "message_handler": LLMMessageHandler(plugins=plugins),
+                "state": state,
+            },
             daemon=True,
         )
         worker.start()

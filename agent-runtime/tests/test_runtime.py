@@ -33,6 +33,7 @@ from skquad_runtime.runtime import (
     read_secret_value,
     run_task_once,
     runtime_metrics_text,
+    usage_prompt_tokens,
 )
 
 
@@ -1454,8 +1455,8 @@ class FakeChatClient(FakeControlPlaneClient):
     def list_message_history(self):
         return self.history
 
-    def send_chat_reply(self, text, correlation_id="", to_agent_id=""):
-        self.replies.append((text, correlation_id, to_agent_id))
+    def send_chat_reply(self, text, correlation_id="", to_agent_id="", extra=None):
+        self.replies.append((text, correlation_id, to_agent_id, extra))
         return fake_message("reply-1", "reply", status="pending")
 
 
@@ -1489,6 +1490,32 @@ def agent_msg(message_id, text):
         status="delivered",
         correlation_id="",
     )
+
+
+class UsagePromptTokensTest(unittest.TestCase):
+    def test_dict_shape_prompt_tokens(self):
+        self.assertEqual(
+            usage_prompt_tokens({"usage": {"prompt_tokens": 4321}}), 4321
+        )
+
+    def test_input_tokens_fallback(self):
+        self.assertEqual(usage_prompt_tokens({"usage": {"input_tokens": 99}}), 99)
+
+    def test_object_shape(self):
+        class Usage:
+            prompt_tokens = 77
+
+        class Resp:
+            usage = Usage()
+
+        self.assertEqual(usage_prompt_tokens(Resp()), 77)
+
+    def test_missing_usage_returns_none(self):
+        self.assertIsNone(usage_prompt_tokens({"choices": []}))
+
+    def test_garbage_returns_none(self):
+        self.assertIsNone(usage_prompt_tokens({"usage": {"prompt_tokens": "oops"}}))
+        self.assertIsNone(usage_prompt_tokens({"usage": {"prompt_tokens": -5}}))
 
 
 class LLMMessageHandlerTest(unittest.TestCase):
@@ -1527,7 +1554,9 @@ class LLMMessageHandlerTest(unittest.TestCase):
             self.assertTrue(result.ok)
             # to_agent_id is left empty so the client defaults it to its own
             # agent id (the reply is addressed to the agent itself).
-            self.assertEqual(client.replies, [("Hello! How can I help?", "m-1", "")])
+            self.assertEqual(
+                client.replies, [("Hello! How can I help?", "m-1", "", None)]
+            )
             self.assertEqual(seen["model"], "gpt-4o")
             self.assertEqual(seen["api_base"], "http://llm-gateway:4000")
             self.assertEqual(seen["api_key"], "virtual-key")
@@ -1659,6 +1688,132 @@ class LLMMessageHandlerTest(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertIn("LLM call failed", result.summary)
             self.assertEqual(client.replies, [])
+
+    def test_chat_tool_calls_recorded_in_reply_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            plugin = EchoPlugin()
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    return fake_tool_completion("call-1", "echo", {"message": "hi"})
+                return {
+                    "choices": [{"message": {"content": "Echo said hi back."}}],
+                    "usage": {"prompt_tokens": 1234, "completion_tokens": 21},
+                }
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(
+                completion=completion, client=client, plugins=[plugin]
+            )
+
+            result = handler.handle_message(user_msg("m-1", "ask echo"), config)
+
+            self.assertTrue(result.ok)
+            self.assertEqual(plugin.calls, [{"message": "hi"}])
+            # Tools are offered to the model on the chat path.
+            self.assertEqual(calls[0]["tools"][0]["function"]["name"], "echo")
+            # The tool result is fed back as a role=tool message on step 2.
+            tool_messages = [m for m in calls[1]["messages"] if m["role"] == "tool"]
+            self.assertEqual(tool_messages[-1]["content"], "echo: hi")
+            # The reply payload carries the tool-call log + context size.
+            text, correlation, to_agent, extra = client.replies[-1]
+            self.assertEqual(text, "Echo said hi back.")
+            self.assertEqual(correlation, "m-1")
+            self.assertEqual(to_agent, "")
+            self.assertEqual(
+                extra["tool_calls"],
+                [
+                    {
+                        "name": "echo",
+                        "arguments": {"message": "hi"},
+                        "ok": True,
+                        "result": "echo: hi",
+                    }
+                ],
+            )
+            self.assertEqual(extra["context_tokens"], 1234)
+
+    def test_chat_without_plugins_sends_no_tools_kwarg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            seen = {}
+
+            def fake_completion(**kwargs):
+                seen.update(kwargs)
+                return fake_completion_response("plain answer")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=fake_completion, client=client)
+
+            result = handler.handle_message(user_msg("m-1", "hi"), config)
+
+            self.assertTrue(result.ok)
+            self.assertNotIn("tools", seen)
+            # No tool calls -> no tool_calls key; no usage -> no context_tokens.
+            self.assertIsNone(client.replies[-1][3])
+
+    def test_chat_tool_budget_exhausted_fails_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            plugin = EchoPlugin()
+
+            def completion(**kwargs):
+                return fake_tool_completion("call-x", "echo", {"message": "loop"})
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(
+                completion=completion,
+                client=client,
+                plugins=[plugin],
+                max_tool_steps=2,
+            )
+
+            result = handler.handle_message(user_msg("m-1", "loop forever"), config)
+
+            self.assertFalse(result.ok)
+            self.assertIn("budget exhausted", result.summary)
+            self.assertEqual(client.replies, [])
+
+    def test_chat_missing_tool_result_is_truncated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+
+            class BigPlugin:
+                name = "big"
+
+                def tools(self):
+                    return [
+                        {
+                            "type": "function",
+                            "function": {"name": "big", "description": "big output"},
+                        }
+                    ]
+
+                def invoke(self, call, config):
+                    return "x" * 5000
+
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    return fake_tool_completion("c1", "big", {})
+                return fake_completion_response("done")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(
+                completion=completion, client=client, plugins=[BigPlugin()]
+            )
+
+            result = handler.handle_message(user_msg("m-1", "big please"), config)
+
+            self.assertTrue(result.ok)
+            logged = client.replies[-1][3]["tool_calls"][0]
+            self.assertTrue(logged["result"].endswith("[truncated]"))
+            self.assertLess(len(logged["result"]), 600)
 
     def test_chat_system_prompt_mentions_role(self):
         with tempfile.TemporaryDirectory() as tmp:

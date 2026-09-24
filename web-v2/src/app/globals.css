@@ -1038,6 +1038,100 @@ button.nav-group-parent {
   color: var(--ink);
 }
 
+/* S-122: anchor messages to the bottom of the box so new messages push up
+   from the bottom like ChatGPT/Telegram. margin-top:auto on the first child
+   (instead of justify-content:flex-end) keeps the overflow scrollable. */
+.chat-scroll > :first-child {
+  margin-top: auto;
+}
+
+/* S-122: tool calls rendered inside agent bubbles — collapsed by default,
+   expandable to full args + (truncated) result. */
+.chat-tools {
+  margin-top: var(--space-2);
+  display: grid;
+  gap: 4px;
+}
+
+.chat-tool {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  font-size: var(--text-xs);
+  overflow: hidden;
+}
+
+.chat-tool.failed {
+  border-color: rgba(220, 70, 70, 0.45);
+}
+
+.chat-tool-summary {
+  cursor: pointer;
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  padding: 4px 8px;
+  list-style: none;
+  user-select: none;
+}
+
+.chat-tool-summary::-webkit-details-marker {
+  display: none;
+}
+
+.chat-tool-name {
+  font-weight: 700;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.chat-tool-args {
+  color: var(--ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-tool-state {
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.chat-tool.failed .chat-tool-state {
+  color: #d35454;
+}
+
+.chat-tool-detail {
+  margin: 0;
+  padding: 8px;
+  border-top: 1px solid var(--line);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink-muted);
+  max-height: 240px;
+  overflow: auto;
+  font-size: var(--text-xs);
+}
+
+.chat-tool-detail.result {
+  border-top-style: dashed;
+}
+
+/* S-122: tiny context-size status bar between history and composer. */
+.chat-context-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 3px var(--space-3);
+  font-size: 11px;
+  color: var(--ink-faint);
+  border-top: 1px solid var(--line);
+  background: var(--surface-sunken);
+  user-select: none;
+}
+
 .chat-empty {
   margin: auto;
   display: flex;

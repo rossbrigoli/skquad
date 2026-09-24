@@ -231,6 +231,23 @@ The shipped message handler (`LLMMessageHandler`) powers the agent chat window:
   `system_prompt` when set, otherwise a default built from its role. The LLM
   response is posted back into the agent's own chat history as an
   agent-authored `reply` (correlated to the original message).
+- **Chat tool calls (S-122):** when the agent has plugins loaded, their tool
+  schemas are offered to the model on the chat path too. If the model issues
+  tool calls, the handler executes them (bounded by `DEFAULT_CHAT_TOOL_STEPS`,
+  default 4) and feeds results back before producing the final reply. Every
+  invocation is recorded into the reply's `payload.tool_calls` array as
+  `{name, arguments, ok, result}` (result truncated to
+  `CHAT_TOOL_RESULT_MAX_CHARS`, default 500) so the web chat can render an
+  expandable "what the agent did" block. A turn that exhausts the tool budget
+  without a final answer is failed (retried/dead-lettered) rather than posted
+  as a partial reply.
+- **Context-size reporting (S-122):** the handler reads the prompt-token count
+  the gateway reported for the final chat call (`usage.prompt_tokens`, with an
+  `input_tokens` fallback) and stores it on the reply as
+  `payload.context_tokens`. The web chat's tiny status bar shows the most
+  recent agent reply's `context_tokens` — the real context size of the last
+  LLM turn, not an estimate. It is absent until a runtime that reports usage
+  answers, in which case the UI shows a waiting placeholder.
 - **Agent-authored messages** (`ping`, `reply`, `consult` — including the
   replies this handler posts) are acknowledged without an LLM call, so a reply
   never triggers another reply.

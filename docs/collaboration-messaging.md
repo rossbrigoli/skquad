@@ -66,6 +66,13 @@ message(
   `POST /api/v1/agents/me/messages`, `GET /api/v1/agents/me/messages`,
   `POST /api/v1/agents/me/messages/:id/ack`, and user-facing
   `POST`/`GET /api/v1/agents/:id/chat`.
+- **Chat reply payload (S-122):** agent-authored `reply` messages posted from
+  the chat handler carry extra keys in their JSON payload alongside `message`:
+  `tool_calls` (array of `{name, arguments, ok, result}` — one per tool
+  invocation during the turn, result truncated) and `context_tokens` (the
+  prompt-token size of the final LLM call). The control plane stores payloads
+  verbatim (JSONB, no schema change), and the web chat UI renders these for
+  tool-call visibility and the context-size status bar.
 
 ---
 
