@@ -65,6 +65,31 @@ func managerOptions(cfg config) ctrl.Options {
 		HealthProbeBindAddress: cfg.probeAddr,
 		LeaderElection:         cfg.leaderElection,
 		LeaderElectionID:       leaderElectionID,
+		// These resources are only ever touched by fixed, known names, which
+		// RBAC scopes via resourceNames. resourceNames does not apply to
+		// list/watch, so caching them would demand cluster-wide list
+		// permissions; the manager client reads them directly instead.
+		//
+		// Secrets MUST stay in this list: RBAC withholds list/watch on
+		// secrets by design (ADR-0009), so a cached Secret read spins up a
+		// cluster-scoped informer that can never sync and blocks the
+		// reconcile worker forever (incident 2026-09-24: agent-139e6315
+		// never received its credential mounts because the first
+		// evaluateAgentReadiness Secret Get hung the single agent-controller
+		// worker). Keep this in sync with the resourceNames-scoped types in
+		// charts/skquad/templates/operator-rbac.yaml.
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				DisableFor: []client.Object{
+					&corev1.Secret{},
+					&corev1.ServiceAccount{},
+					&rbacv1.Role{},
+					&rbacv1.RoleBinding{},
+					&networkingv1.NetworkPolicy{},
+					&corev1.ResourceQuota{},
+				},
+			},
+		},
 	}
 }
 
@@ -77,19 +102,6 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
 	managerOpts := managerOptions(*cfg)
-	// These resources are only ever touched by fixed, known names, which RBAC
-	// scopes via resourceNames. resourceNames does not apply to list/watch, so
-	// caching them would demand cluster-wide list permissions; the manager
-	// client reads them directly instead.
-	managerOpts.Client.Cache = &client.CacheOptions{
-		DisableFor: []client.Object{
-			&corev1.ServiceAccount{},
-			&rbacv1.Role{},
-			&rbacv1.RoleBinding{},
-			&networkingv1.NetworkPolicy{},
-			&corev1.ResourceQuota{},
-		},
-	}
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), managerOpts)
 	if err != nil {
 		ctrl.Log.Error(err, "unable to start manager")

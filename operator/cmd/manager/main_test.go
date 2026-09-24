@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	skquadv1 "github.com/rossbrigoli/skquad/operator/internal/api/v1"
@@ -96,6 +98,38 @@ func TestManagerOptions(t *testing.T) {
 	}
 	if opts.LeaderElectionID != "skquad-operator.skquad.io" {
 		t.Errorf("LeaderElectionID = %q, want skquad-operator.skquad.io", opts.LeaderElectionID)
+	}
+}
+
+// TestResourceNamesScopedTypesBypassCache guards the ADR-0009 invariant: every
+// type RBAC restricts via resourceNames (and Secrets, whose list/watch is
+// deliberately withheld) must be in Client.Cache.DisableFor. A cached read of
+// such a type starts a cluster-scoped informer that can never sync under this
+// RBAC, blocking the reconcile worker forever (incident 2026-09-24: the QA
+// agent's deployment never received its credential mounts).
+func TestResourceNamesScopedTypesBypassCache(t *testing.T) {
+	opts := managerOptions(config{})
+	if opts.Client.Cache == nil {
+		t.Fatal("Client.Cache must be configured with DisableFor for resourceNames-scoped types")
+	}
+
+	disabled := map[string]bool{}
+	for _, obj := range opts.Client.Cache.DisableFor {
+		disabled[fmt.Sprintf("%T", obj)] = true
+	}
+
+	required := []client.Object{
+		&corev1.Secret{},
+		&corev1.ServiceAccount{},
+		&rbacv1.Role{},
+		&rbacv1.RoleBinding{},
+		&networkingv1.NetworkPolicy{},
+		&corev1.ResourceQuota{},
+	}
+	for _, obj := range required {
+		if !disabled[fmt.Sprintf("%T", obj)] {
+			t.Errorf("%T must be in Client.Cache.DisableFor; cached reads would demand cluster-wide list/watch that RBAC withholds", obj)
+		}
 	}
 }
 
