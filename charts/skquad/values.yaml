@@ -181,6 +181,10 @@ llmGateway:
   resources: {}
 
 web:
+  # v1 UI retired 2026-09-24 (S-113 WP8 prep): all new UI work lands in web-v2.
+  # Flag added so the app can disable v1; default true keeps existing installs
+  # unchanged until they opt out.
+  enabled: true
   imagePullPolicy: IfNotPresent
   port: 3000
   apiBaseUrl: /api/v1
