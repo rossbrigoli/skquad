@@ -9,7 +9,6 @@ import { Modal, ModalForm } from "../../components/Modal";
 import { StatusChip } from "../../components/StatusChip";
 import { useAuth } from "../../lib/auth";
 import { useApi } from "../../lib/useApi";
-import { useTheme } from "../../lib/ThemeProvider";
 import {
   apiDelete,
   apiPatch,
@@ -115,7 +114,10 @@ function DeleteResourceButton({
   );
 }
 
-type Tab = "providers" | "resources" | "ai-models" | "access" | "appearance" | "session";
+// S-117: "appearance" and "session" tabs removed — theme switching lives
+// in the top-right ThemeToggle and session details/sign-out in the
+// bottom-left UserMenu popover, both available on every page.
+type Tab = "providers" | "resources" | "ai-models" | "access";
 
 const RESOURCE_TABS: { key: string; label: string }[] = [
   { key: "skills", label: "Skills" },
@@ -126,7 +128,7 @@ const RESOURCE_TABS: { key: string; label: string }[] = [
 ];
 
 export default function SettingsPage() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const [tab, setTab] = useState<Tab>("providers");
   const isAdmin = isPlatformAdmin(user?.role);
   // WP6 (S-111): AI Models + Access are admin-only surfaces. The tab
@@ -155,15 +157,9 @@ export default function SettingsPage() {
               Access
             </button>
           ) : null}
-          <button type="button" className={activeTab === "appearance" ? "active" : ""} onClick={() => setTab("appearance")}>
-            Appearance
-          </button>
-          <button type="button" className={activeTab === "session" ? "active" : ""} onClick={() => setTab("session")}>
-            Session
-          </button>
         </div>
 
-        {!isAdmin && tab !== "session" ? (
+        {!isAdmin ? (
           <div className="notice" style={{ marginBottom: "var(--space-4)" }}>
             You are signed in as <strong>{user?.role || "user"}</strong>. Registering or changing providers and
             resources requires the <strong>platform_admin</strong> role.
@@ -174,20 +170,6 @@ export default function SettingsPage() {
         {activeTab === "resources" ? <ResourcesTab isAdmin={isAdmin} /> : null}
         {isAdmin && activeTab === "ai-models" ? <AIModelsTab isAdmin={isAdmin} /> : null}
         {isAdmin && activeTab === "access" ? <AccessTab /> : null}
-        {activeTab === "appearance" ? <AppearanceTab /> : null}
-        {activeTab === "session" ? (
-          <div className="card" style={{ maxWidth: 480 }}>
-            <div className="field">
-              <span>Signed in as</span>
-              <div style={{ fontSize: "var(--text-md)" }}>
-                {user?.name || "—"} &lt;{user?.email || "?"}&gt; · role <strong>{user?.role || "?"}</strong>
-              </div>
-            </div>
-            <button type="button" className="btn" onClick={logout}>
-              Sign out
-            </button>
-          </div>
-        ) : null}
       </AppShell>
     </AuthGate>
   );
@@ -798,40 +780,6 @@ function GrantEditor({ user }: { user: AdminUser }) {
           onClose={() => setUsage(null)}
         />
       ) : null}
-    </div>
-  );
-}
-
-function AppearanceTab() {
-  const { mode, resolved, setMode } = useTheme();
-  const options: { value: "system" | "light" | "dark"; label: string; hint: string }[] = [
-    { value: "system", label: "System", hint: "Follow your OS preference (default)" },
-    { value: "light", label: "Light", hint: "Always use the light theme" },
-    { value: "dark", label: "Dark", hint: "Always use the dark theme" },
-  ];
-  return (
-    <div className="card" style={{ maxWidth: 520 }}>
-      <div className="field">
-        <span>Theme</span>
-        <div className="segmented" role="radiogroup" aria-label="Theme">
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              role="radio"
-              aria-checked={mode === opt.value}
-              className={`segmented-btn${mode === opt.value ? " active" : ""}`}
-              onClick={() => setMode(opt.value)}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-        <span className="field-hint">
-          {options.find((o) => o.value === mode)?.hint}
-          {mode === "system" ? ` — currently ${resolved}.` : ""}
-        </span>
-      </div>
     </div>
   );
 }

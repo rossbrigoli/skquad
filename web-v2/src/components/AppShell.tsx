@@ -9,6 +9,8 @@ import { useAttention } from "../lib/useAttention";
 import { useApi } from "../lib/useApi";
 import type { Agent, Squad } from "../lib/api";
 import type { DashboardPayload } from "../lib/dashboard";
+import { ThemeToggle } from "./ThemeToggle";
+import { UserMenu } from "./UserMenu";
 import {
   agentsSectionActive,
   buildGlobalAgentGroups,
@@ -103,6 +105,8 @@ export function AppShell({
         {menuOpen ? "✕" : "☰"}
       </button>
       <div className="drawer-backdrop" aria-hidden="true" onClick={() => setMenuOpen(false)} />
+      {/* S-117: theme switcher pinned top-right on every page. */}
+      <ThemeToggle />
       <nav className="rail rail-primary" aria-label="Primary navigation">
         <Link href="/dashboard" className="rail-brand">
           <span className="dot" />
@@ -183,18 +187,8 @@ export function AppShell({
           </Link>
         ))}
         <div className="rail-footer">
-          {user ? (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--space-2)" }}>
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {user.name || user.email}
-              </span>
-              <button type="button" className="btn" onClick={logout}>
-                Sign out
-              </button>
-            </div>
-          ) : (
-            <span>not signed in</span>
-          )}
+          {/* S-117: name opens the profile popover (avatar, role, sign out). */}
+          <UserMenu user={user} onSignOut={logout} />
         </div>
       </nav>
       {secondary ? (
