@@ -1,8 +1,22 @@
 # WP8 Migration Plan — AIModel-8 / S-113: Backfill agent model bindings & drop the `llm_provider` grant type
 
-Status: DRAFT v2 (authored by Sherlock after two planning runs died pre-write; read-only planning — no code modified, no DB touched)
+Status: EXECUTING — 0013 backfill + step-4 cutover implemented & validated 2026-09-24 (scratch-DB round-trip: live-shaped seed → backfill → idempotent re-run → flat/per-model pricing → unresolvable-left-unbound). 0014 drops remain next-cycle per gates.
 Date: 2026-09-24
 Baseline: `main` @ 3dbb458 (ADR-0010 epic WP1–WP7 merged)
+
+## 0a. LIVE DRY-RUN RESULTS (skquad-system/skquad-postgres-0)
+
+**Live DB is at 0010** — epic migrations (0011/0012) NOT yet applied; deployed api-server predates the merge. Backfill sequence must be: deploy epic control-plane (0011+0012) → 0013 backfill → step-4 cutover → 0014 drops.
+
+Verified shapes:
+- `llm_providers.models` = **plain JSON string array** ✓ (`["halogen-qwen3.8-flash-next"]`)
+- `llm_providers.pricing` = **`{}` on BOTH providers** → every backfilled `ai_models` row starts zero-priced until admin fills rates (Halogen = own hardware, plausibly intentional; Local LLM likewise)
+- DB column is **`agents.default_provider`** (NOT `default_provider_id` — that's only the JSON name). Plan SQL corrected.
+- Agents (3): `test agent`, `Enzo`, `Mary` — ALL → Halogen + `halogen-qwen3.8-flash-next`. **100% resolvable** once the ai_models row exists. Unresolvable list: EMPTY.
+- `agent_permissions`: exactly **1 `llm_provider` row** (inert; 0014 deletes).
+- Provider `Local LLM` (default_model="default", models=[]) has no agents; contributes no backfill rows; candidate for plain deletion by admin.
+
+Implication: backfill is trivial at current scale — one ai_models row (Halogen/halogen-qwen3.8-flash-next), three agent bindings, zero-priced.
 
 ## 0. Numbering correction
 

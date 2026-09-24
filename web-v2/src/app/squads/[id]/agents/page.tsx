@@ -13,14 +13,23 @@ import { useApi } from "../../../../lib/useApi";
 import { useAuth } from "../../../../lib/auth";
 import { apiPost } from "../../../../lib/api";
 import { agentStatus } from "../../../../lib/status";
-import type { Agent, LLMProvider } from "../../../../lib/api";
+import { findModelById, modelLabel } from "../../../../lib/agentLlm";
+import type { AIModel } from "../../../../lib/aimodels";
+import type { Agent } from "../../../../lib/api";
+
+// boundModelName renders the agent's bound primary model for the list row.
+// WP8 step-4: the legacy default_model text is no longer shown anywhere.
+function boundModelName(models: AIModel[] | null | undefined, aiModelId: string | undefined): string {
+  const m = findModelById(models || [], aiModelId);
+  return m ? modelLabel(m) : "no model bound — set in LLM tab";
+}
 
 export default function SquadAgentsPage() {
   const params = useParams<{ id: string }>();
   const squadId = String(params?.id || "");
   const { token } = useAuth();
   const agents = useApi<Agent[]>(`/squads/${squadId}/agents`, 15000);
-  const providers = useApi<LLMProvider[]>("/registry/llm-providers", 60000);
+  const myModels = useApi<AIModel[]>("/models/me", 60000);
   const [creating, setCreating] = useState(false);
   const items = agents.data || [];
 
@@ -53,7 +62,7 @@ export default function SquadAgentsPage() {
                 key={agent.id}
                 href={`/squads/${squadId}/agents/${agent.id}`}
                 title={agent.name}
-                meta={`${agent.role || "no role"} · ${agent.default_model || "platform default model"}`}
+                meta={`${agent.role || "no role"} · ${boundModelName(myModels.data, agent.ai_model_id)}`}
                 side={<StatusChip status={agentStatus(agent)} />}
               />
             ))}
@@ -63,7 +72,6 @@ export default function SquadAgentsPage() {
           <AgentFormModal
             title="New agent"
             submitLabel="Create agent"
-            providers={providers.data || []}
             onClose={() => setCreating(false)}
             onSubmit={async (values) => {
               await apiPost<Agent>(`/squads/${squadId}/agents`, token, values);

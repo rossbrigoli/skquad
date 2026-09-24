@@ -36,8 +36,9 @@ CREATE TABLE IF NOT EXISTS providers (
 -- but they are the ONLY source for the WP8 backfill (existing llm_providers.models[]
 -- -> ai_models rows, and agents(default_provider, default_model) -> ai_model_id).
 -- Dropping them in this migration would destroy the backfill source against the live
--- database before any mapping exists. They are dropped in 0012_ai_model_backfill.sql
--- AFTER the mapping is written and verified. Until then these columns are deprecated,
+-- database before any mapping exists. They are dropped in 0014_drop_legacy_llm_provider.sql
+-- AFTER the mapping (0013_ai_model_backfill.sql) is written and verified. Until then
+-- these columns are deprecated,
 -- read-only legacy: nothing new writes to them.
 -- See docs/plans/2026-09-24-ai-model-binding.md WP8 (dry-run-first rule).
 

@@ -41,11 +41,10 @@ func TestAgentReconcilerCreatesDeployment(t *testing.T) {
 	agent := &skquadv1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "agent-test", Namespace: "skquad-system"},
 		Spec: skquadv1.AgentSpec{
-			AgentID:           "22222222-2222-2222-2222-222222222222",
-			SquadID:           squad.Spec.SquadID,
-			Role:              "worker",
-			DefaultProviderID: "provider-id",
-			DefaultModel:      "openai/gpt-4o-mini",
+			AgentID:       "22222222-2222-2222-2222-222222222222",
+			SquadID:     squad.Spec.SquadID,
+			Role:        "worker",
+			DefaultModel: "openai/gpt-4o-mini",
 			Image:             "example.com/skquad/agent:test",
 			CredentialSecret:  "agent-credential",
 			VirtualKeySecret:  "agent-virtual-key",
@@ -112,8 +111,11 @@ func TestAgentReconcilerCreatesDeployment(t *testing.T) {
 	if got := envValue(container.Env, "SKQUAD_LLM_GATEWAY_URL"); got != agent.Spec.LLMGatewayURL {
 		t.Fatalf("llm gateway url env = %q, want %q", got, agent.Spec.LLMGatewayURL)
 	}
-	if got := envValue(container.Env, "SKQUAD_DEFAULT_PROVIDER_ID"); got != agent.Spec.DefaultProviderID {
-		t.Fatalf("default provider env = %q, want %q", got, agent.Spec.DefaultProviderID)
+	// WP8 step-4 cutover: the legacy SKQUAD_DEFAULT_PROVIDER_ID env is gone.
+	for _, ev := range container.Env {
+		if ev.Name == "SKQUAD_DEFAULT_PROVIDER_ID" {
+			t.Fatalf("SKQUAD_DEFAULT_PROVIDER_ID must not be injected after the WP8 cutover")
+		}
 	}
 	if got := envValue(container.Env, "SKQUAD_DEFAULT_MODEL"); got != agent.Spec.DefaultModel {
 		t.Fatalf("default model env = %q, want %q", got, agent.Spec.DefaultModel)
@@ -727,11 +729,10 @@ func TestAgentDeploymentInjectsModelBindingEnv(t *testing.T) {
 	agent := &skquadv1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "agent-bind", Namespace: "skquad-system"},
 		Spec: skquadv1.AgentSpec{
-			AgentID:           "44444444-4444-4444-4444-444444444444",
-			SquadID:           squad.Spec.SquadID,
-			Role:              "worker",
-			DefaultProviderID: "provider-id",
-			DefaultModel:      "gpt-6-sol",
+			AgentID:       "44444444-4444-4444-4444-444444444444",
+			SquadID:     squad.Spec.SquadID,
+			Role:        "worker",
+			DefaultModel: "gpt-6-sol",
 			AIModelID:         "ai-primary-uuid",
 			FallbackAIModelID: "ai-fallback-uuid",
 			Image:             "example.com/skquad/agent:test",

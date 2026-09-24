@@ -42,7 +42,9 @@ class BootstrapConfig:
     agent_id: str
     squad_id: str
     role: str
-    default_provider_id: str
+    # WP8 step-4 cutover: the legacy default_provider_id is gone. The
+    # runtime resolves its model exclusively from default_model, which the
+    # control plane populates from the bound AI Model's model_name.
     default_model: str
     idle_timeout: str
     credentials_dir: Path
@@ -80,7 +82,7 @@ class BootstrapConfig:
         if not self.squad_id:
             missing.append("SKQUAD_SQUAD_ID")
         if self.task_loop_enabled:
-            if not self.default_model and not self.default_provider_id:
+            if not self.default_model:
                 missing.append("SKQUAD_DEFAULT_MODEL")
             if not self.control_plane_url:
                 missing.append("SKQUAD_CONTROL_PLANE_URL")
@@ -311,7 +313,6 @@ def load_bootstrap_config(environ: Mapping[str, str] | None = None) -> Bootstrap
         squad_id=env.get("SKQUAD_SQUAD_ID", ""),
         role=env.get("SKQUAD_AGENT_ROLE", ""),
         system_prompt=env.get("SKQUAD_AGENT_SYSTEM_PROMPT", ""),
-        default_provider_id=env.get("SKQUAD_DEFAULT_PROVIDER_ID", ""),
         default_model=env.get("SKQUAD_DEFAULT_MODEL", ""),
         ai_model_id=env.get("SKQUAD_AI_MODEL_ID", ""),
         fallback_model_id=env.get("SKQUAD_FALLBACK_MODEL_ID", ""),
@@ -730,7 +731,7 @@ class LLMMessageHandler:
             return MessageResult(ok=False, summary="LLM gateway virtual key is not loaded")
         if not config.llm_gateway_url:
             return MessageResult(ok=False, summary="SKQUAD_LLM_GATEWAY_URL is required")
-        model = self.model or config.default_model or config.default_provider_id
+        model = self.model or config.default_model
         if not model:
             return MessageResult(ok=False, summary="SKQUAD_DEFAULT_MODEL is required")
 
@@ -834,7 +835,7 @@ class LiteLLMTaskHandler:
             raise RuntimeError("LLM gateway virtual key is not loaded")
         if not config.llm_gateway_url:
             raise RuntimeError("SKQUAD_LLM_GATEWAY_URL is required")
-        model = self.model or config.default_model or config.default_provider_id
+        model = self.model or config.default_model
         if not model:
             raise RuntimeError("SKQUAD_DEFAULT_MODEL is required")
 
