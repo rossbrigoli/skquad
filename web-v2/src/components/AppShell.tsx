@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
@@ -108,8 +109,18 @@ export function AppShell({
       {/* S-117: theme switcher pinned top-right on every page. */}
       <ThemeToggle />
       <nav className="rail rail-primary" aria-label="Primary navigation">
-        <Link href="/dashboard" className="rail-brand">
-          <span className="dot" />
+        <Link href="/dashboard" className="rail-brand" aria-label="Skquad dashboard">
+          {/* S-123: brand mark from docs/images/logo/skquad-logo.png (transparent,
+              vivid orange — reads on both light and dark themes, so no per-theme
+              variant swap is needed). Pre-resized 64px source shown at 28px. */}
+          <Image
+            src="/skquad-logo-64.png"
+            width={28}
+            height={28}
+            alt=""
+            className="rail-brand-logo"
+            priority
+          />
           skquad<span style={{ color: "var(--accent)" }}>v2</span>
         </Link>
         {simpleNav.map((item) => (

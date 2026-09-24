@@ -225,11 +225,13 @@ button {
   margin-bottom: var(--space-4);
 }
 
-.rail-brand .dot {
-  width: 10px;
-  height: 10px;
-  border-radius: var(--radius-pill);
-  background: var(--accent);
+.rail-brand-logo {
+  /* S-123: logo mark beside the wordmark. Rounded slightly so it matches
+     the pill look of the old dot in both themes. */
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md, 8px);
+  flex-shrink: 0;
 }
 
 .rail-label {
