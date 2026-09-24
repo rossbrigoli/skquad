@@ -1,14 +1,7 @@
 <div align="center">
 
   <pre>
-                                              
-                                   █▄
-       ▄▄                          ██
- ▄██▀█ ██ ▄█▀ ▄████ ██ ██ ▄▀▀█▄ ▄████
- ▀███▄ ████   ██ ██ ██ ██ ▄█▀██ ██ ██
-█▄▄██▀▄██ ▀█▄▄▀████▄▀██▀█▄▀█▄██▄█▀███
-                 ██                  
-                                   ▀                                                  
+   <img src="docs/images/logo/skquad-banner.png" alt="skquad">                                         
   </pre>
 
   <div>
