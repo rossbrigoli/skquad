@@ -33,7 +33,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   return (
     <div className="auth-gate">
       <div className="card auth-card">
-        <h1 style={{ margin: "0 0 var(--space-2)", fontSize: "var(--text-xl)" }}>Sign in to Skquad v2</h1>
+        <h1 style={{ margin: "0 0 var(--space-2)", fontSize: "var(--text-xl)" }}>Sign in to Skquad</h1>
         <p style={{ color: "var(--ink-muted)", marginTop: 0 }}>
           Paste your Skquad API token. The v2 UI talks to the same control-plane API as v1.
         </p>

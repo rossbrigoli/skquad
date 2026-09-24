@@ -121,7 +121,7 @@ export function AppShell({
             className="rail-brand-logo"
             priority
           />
-          skquad<span style={{ color: "var(--accent)" }}>v2</span>
+          skquad
         </Link>
         {simpleNav.map((item) => (
           <Link

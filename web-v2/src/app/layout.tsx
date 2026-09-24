@@ -6,7 +6,7 @@ import { ThemeProvider } from "../lib/ThemeProvider";
 import { THEME_INIT_SCRIPT } from "../lib/theme";
 
 export const metadata: Metadata = {
-  title: "Skquad v2",
+  title: "Skquad",
   description: "Skquad control plane — redesigned UI (A/B testing)",
 };
 
