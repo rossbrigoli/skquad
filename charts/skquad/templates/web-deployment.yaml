@@ -1,3 +1,4 @@
+{{- if .Values.web.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -33,3 +34,4 @@ spec:
               value: {{ .Values.web.apiBaseUrl | quote }}
           resources:
             {{- toYaml .Values.web.resources | nindent 12 }}
+{{- end }}
