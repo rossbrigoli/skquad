@@ -21,6 +21,9 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/.next ./.next
 COPY --from=build /app/src ./src
+# S-123: public/ holds the brand logo + favicon assets served by next start;
+# without this COPY they 404 in the runtime image.
+COPY --from=build /app/public ./public
 RUN addgroup -S skquad -g 65532 \
     && adduser -S skquad -u 65532 -G skquad
 
