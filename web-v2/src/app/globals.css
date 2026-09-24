@@ -1365,3 +1365,32 @@ button.nav-group-parent {
 .user-signout {
   width: 100%;
 }
+
+/* Collapsible sections (S-118): collapsed-by-default blocks, e.g. Recent activity */
+.collapsible-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: inherit;
+  cursor: pointer;
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+}
+.collapsible-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+.collapsible-chevron {
+  display: inline-flex;
+  transition: transform 120ms ease;
+}
+.collapsible-chevron-open {
+  transform: rotate(180deg);
+}
+.collapsible-body {
+  margin-top: var(--space-3);
+}

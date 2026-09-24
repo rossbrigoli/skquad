@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 import { ActivityFeed } from "../../../components/ActivityFeed";
+import { Collapsible } from "../../../components/Collapsible";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
 import { Modal, ModalForm } from "../../../components/Modal";
 import { AuthGate } from "../../../components/AuthGate";
@@ -148,17 +149,6 @@ export default function SquadCockpitPage() {
         ) : null}
 
         <section style={{ marginTop: "var(--space-5)" }}>
-          <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>Recent activity</h2>
-          <ActivityFeed
-            squadId={squadId}
-            entries={audit.data || []}
-            emptyTitle="No recorded activity yet"
-            emptyHint="Actions on tasks, agents and grants show up here as they happen."
-            nameFor={auditName}
-          />
-        </section>
-
-        <section style={{ marginTop: "var(--space-5)" }}>
           <div className="section-head">
             <h2>Agents</h2>
             <Link href={`/squads/${squadId}/agents`} className="btn btn-sm">
@@ -179,6 +169,16 @@ export default function SquadCockpitPage() {
             ))}
           </div>
         </section>
+
+        <Collapsible id="squad-recent-activity" title="Recent activity">
+          <ActivityFeed
+            squadId={squadId}
+            entries={audit.data || []}
+            emptyTitle="No recorded activity yet"
+            emptyHint="Actions on tasks, agents and grants show up here as they happen."
+            nameFor={auditName}
+          />
+        </Collapsible>
 
         {editing && squad ? (
           <SquadEditModal
