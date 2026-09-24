@@ -239,6 +239,7 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 
 			r.Get("/auth/me", s.me)
 
+			r.Get("/dashboard", s.getDashboard)
 			r.Get("/inbox", s.listInbox)
 			r.Post("/inbox/{messageID}/read", s.markInboxRead)
 

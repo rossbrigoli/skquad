@@ -8,6 +8,7 @@ import { useAuth } from "../lib/auth";
 import { useAttention } from "../lib/useAttention";
 
 const primaryNav = [
+  { href: "/dashboard", label: "Dashboard" },
   { href: "/inbox", label: "Inbox" },
   { href: "/squads", label: "Squads" },
   { href: "/costs", label: "Costs" },
@@ -51,7 +52,7 @@ export function AppShell({
       </button>
       <div className="drawer-backdrop" aria-hidden="true" onClick={() => setMenuOpen(false)} />
       <nav className="rail rail-primary" aria-label="Primary navigation">
-        <Link href="/squads" className="rail-brand">
+        <Link href="/dashboard" className="rail-brand">
           <span className="dot" />
           skquad<span style={{ color: "var(--accent)" }}>v2</span>
         </Link>

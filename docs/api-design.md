@@ -183,6 +183,24 @@ blocks and via `notify-owner`. Agents cannot forge `task_completed`.
 
 ---
 
+## 8b. Dashboard (landing aggregation, S-116)
+
+One aggregated read powering the web landing page, scoped by caller so the UI
+never waterfalls per-squad calls.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/dashboard` | Squads (task counts, per-squad + per-agent cost, agent status), LLM provider liveness, resource overview |
+
+Scoping: platform admins get every squad (`"scope": "all"`); everyone else gets
+owned squads **plus** squads granted to them with the `read` action (same grant
+semantics as `GET /squads/{id}`). Provider liveness is a lightweight HTTP probe
+of each **active** provider's `base_url` (2s timeout; any HTTP answer = online,
+transport failure = offline; deprecated providers are reported inactive without a
+probe).
+
+---
+
 ## 9. Resource Registry
 
 > The web UI presents this as **Resources**; API routes remain `/registry/*`.
