@@ -503,3 +503,12 @@ squads 1—* metering
   (later).
 - **Soft vs hard delete** — confirm per table (squads cascade hard; users/agents
   soft where noted).
+
+## Metering `model_used` (2026-09-25, S-114 drill)
+
+`metering.model` is the model the client requested; `metering.model_used` is the
+model that actually served the turn. A fallback-served turn records
+`model_used = <fallback model_name>` (verified live: failover →
+`drill-fallback-model`, restored primary → `halogen-qwen3.8-flash-next`).
+This is the ADR-0010 Risk-3 mitigation — fallback turns are distinguishable
+from primary turns in billing.

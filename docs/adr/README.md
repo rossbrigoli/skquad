@@ -15,6 +15,13 @@ the format: **Context → Decision → Consequences → Alternatives Considered*
 | [0006](0006-deployment.md) | Deployment — Vanilla K8s, Custom Operator + Helm (No OLM) | Accepted |
 | [0007](0007-agent-identity.md) | Agent Identity — Owner-Created, Platform-Facilitated | Accepted |
 | [0008](0008-languages.md) | Language & Runtime Choices | Accepted |
+| [0009](0009-workspace-as-git.md) | Workspace-as-Git | Accepted |
+| [0010](0010-ai-model-binding.md) | AI Model Binding — grants → bindings → gateway allow-list | Accepted |
+
+> **ADR-0010 drill (2026-09-25, S-114):** live fallback drill confirmed
+> primary→fallback failover and metering (`model_used`), and confirmed the L1
+> caveat — a 400-class primary error still triggers the fallback once (see
+> `docs/llm-gateway.md` §Fallback drill verification).
 
 ## How to add an ADR
 

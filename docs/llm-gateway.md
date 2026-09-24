@@ -219,3 +219,34 @@ provider deprecation. Budget enforcement remains follow-up work.
 - **Budgets** — hard spend caps per agent/squad with automatic cutoff (later).
 - **Streaming** — support streaming responses end-to-end (confirm in
   implementation).
+
+## Fallback drill verification (2026-09-25, S-114)
+
+A live drill was run against the production gateway to verify the ADR-0010
+primary→fallback behaviour end-to-end. A throwaway squad + agent (owner =
+break-glass) was bound to primary `halogen-qwen3.8-flash-next` with a synthetic
+`drill-fallback-model` (an in-cluster OpenAI-compatible stub) as fallback. The
+virtual key was provisioned with `models=[primary, fallback]` and
+`router_settings.fallbacks=[{primary:[fallback]}]`.
+
+Results:
+
+| Scenario | Primary state | Reply arrives? | `metering.model_used` | Verdict |
+| --- | --- | --- | --- | --- |
+| Failover | primary unreachable (dead endpoint) | yes | `drill-fallback-model` | PASS — fallback served + metered |
+| 400-class | primary returns HTTP 400 | **yes** | `drill-fallback-model` | **fallback STILL fires** (see below) |
+| Restore | primary back on real endpoint | yes | `halogen-qwen3.8-flash-next` | PASS — primary used again |
+
+**400-class caveat (confirms ADR-0010 L1).** The brief expected a 400 bad-request
+to *not* trigger failover. It does. LiteLLM's generic `fallbacks` fire on every
+exception class; `BadRequestErrorRetries=0` only suppresses the *retry* of the
+primary, not the fallback attempt. This is the documented, accepted gap in
+ADR-0010 L1 ("do not claim D7 is fully enforced"). A 400 from the primary is
+therefore served once by the fallback. If a future LiteLLM release adds
+per-class fallback exclusion, this can be tightened.
+
+**Operational note — gateway model-list reload is not live.** `/model/new` and
+`/model/update` persist to the gateway DB but the running router does **not**
+pick up the change until the gateway pod restarts (`kubectl rollout restart
+deployment skquad-llm-gateway`). Any gateway deployment change must be followed
+by a rollout restart before it takes effect.

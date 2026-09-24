@@ -216,3 +216,18 @@ belongs to the runtime/plugin-loader slice.
 - **Scoping** — whether some resources are platform-wide vs. per-tenant (start
   platform-wide).
 - **Discovery** — search/filter the registry in the web app (later).
+
+## AI Model binding — drill notes (2026-09-25, S-114)
+
+- Binding an agent's `ai_model_id`/`fallback_ai_model_id` via `PATCH
+  /api/v1/agents/{id}` is **owner-only** (`ensureSquadAccess(ownerOnly=true)`);
+  `platform_admin` (incl. break-glass) cannot rebind another user's squad agent.
+  Provisioning/rotating identity and binding therefore must be done by the squad
+  owner (UI) — the break-glass path can grant models and read, but not rebind.
+- A user grant (`PUT /api/v1/users/{id}/models`) is required before a model can
+  be bound to that owner's agents; the binding allow-list compiled onto the
+  virtual key is derived from the owner's grants (ADR-0010).
+- Creating an AI Model requires all four pricing fields
+  (`input_per_1m`, `cached_input_per_1m`, `cache_write_per_1m`, `output_per_1m`).
+- Deleting a granted/bound AI Model returns `409 in_use`; revoke grants and
+  unbind agents first (or `?force=true`).
