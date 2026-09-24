@@ -511,6 +511,12 @@ button {
   color: var(--status-error);
 }
 
+/* Soft bind-time warnings (WP7 LLM tab) — advisory, never blocking. */
+.notice.warn {
+  background: var(--status-in-review-bg);
+  color: var(--status-in-review);
+}
+
 /* ============================================================
    Responsive — primary rail becomes an overlay drawer; the
    contextual rail collapses to a sticky horizontal tab strip.

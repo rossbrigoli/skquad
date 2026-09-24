@@ -25,6 +25,10 @@ export type Agent = {
   identity_id?: string;
   default_provider_id?: string;
   default_model?: string;
+  // AI model binding (ADR-0010 D4, WP7). Bound via the agent page's
+  // LLM section; PATCH /agents/{id} with "" clears a slot.
+  ai_model_id?: string;
+  fallback_ai_model_id?: string;
   idle_timeout_sec?: number;
   status?: string;
   created_at?: string;
