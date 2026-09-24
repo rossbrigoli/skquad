@@ -30,7 +30,7 @@ export default function TaskDetailPage() {
   const squadId = String(params?.id || "");
   const taskId = String(params?.tid || "");
   const router = useRouter();
-  const { token } = useAuth();
+  const { token, authed } = useAuth();
 
   const task = useApi<Task>(`/tasks/${taskId}`, 15000);
   const thread = useApi<Message[]>(`/tasks/${taskId}/messages`, 15000);
@@ -52,7 +52,7 @@ export default function TaskDetailPage() {
   const timeline = (audit.data || []).filter((entry) => entry.resource_id === taskId);
 
   const send = useCallback(async () => {
-    if (!token || !draft.trim() || !current) {
+    if (!authed || !draft.trim() || !current) {
       return;
     }
     setSending(true);
@@ -66,10 +66,10 @@ export default function TaskDetailPage() {
     } finally {
       setSending(false);
     }
-  }, [token, draft, current, taskId, thread]);
+  }, [token, authed, draft, current, taskId, thread]);
 
   const move = async (status: string) => {
-    if (!token || !current) {
+    if (!authed || !current) {
       return;
     }
     setBusy(true);
@@ -84,7 +84,7 @@ export default function TaskDetailPage() {
   };
 
   const reassign = async (agentId: string) => {
-    if (!token) {
+    if (!authed) {
       return;
     }
     setBusy(true);

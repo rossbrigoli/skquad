@@ -16,6 +16,10 @@ type AuthValue = {
   loading: boolean;
   error: string;
   mode: AuthMode;
+  // authed is mode-aware: OIDC sessions authenticate via httpOnly cookie, so
+  // `token` is legitimately empty there. Gate fetches on `authed`, never on
+  // `token` — that pattern silently disabled pages under OIDC (S-121 follow-up).
+  authed: boolean;
   setToken: (token: string) => void;
   logout: () => void;
 };
@@ -130,8 +134,10 @@ export function TokenProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, [mode]);
 
+  const authed = mode === "oidc" ? !!user : !!token;
+
   return (
-    <AuthContext.Provider value={{ token, user, loading, error, mode, setToken, logout }}>
+    <AuthContext.Provider value={{ token, user, loading, error, mode, authed, setToken, logout }}>
       {children}
     </AuthContext.Provider>
   );

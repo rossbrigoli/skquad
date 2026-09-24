@@ -18,13 +18,13 @@ type SquadCost = {
 const POLL_MS = 60_000;
 
 export default function CostsPage() {
-  const { token } = useAuth();
+  const { token, authed } = useAuth();
   const [rows, setRows] = useState<SquadCost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!token) {
+    if (!authed) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoading(false);
       return;
@@ -68,7 +68,7 @@ export default function CostsPage() {
       active = false;
       window.clearInterval(timer);
     };
-  }, [token]);
+  }, [token, authed]);
 
   const grandTotal = rows.reduce((sum, row) => sum + (row.total?.cost ?? 0), 0);
 

@@ -21,7 +21,7 @@ const POLL_MS = 30_000;
 // Single provider so every page's nav badge shares one attention computation
 // instead of each AppShell instance re-fetching the world.
 export function AttentionProvider({ children }: { children: ReactNode }) {
-  const { token } = useAuth();
+  const { token, authed } = useAuth();
   const [items, setItems] = useState<AttentionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -32,7 +32,7 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     cancelledRef.current = false;
-    if (!token) {
+    if (!authed) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setItems([]);
       setLoading(false);
@@ -94,17 +94,17 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
       cancelledRef.current = true;
       window.clearInterval(timer);
     };
-  }, [token, tick]);
+  }, [token, authed, tick]);
 
   const markRead = useCallback(
     async (messageId: string) => {
-      if (!token) {
+      if (!authed) {
         return;
       }
       await apiPost(`/inbox/${messageId}/read`, token, {});
       setItems((current) => current.filter((item) => !item.id.endsWith(messageId)));
     },
-    [token],
+    [token, authed],
   );
 
   const value = useMemo(
