@@ -35,7 +35,7 @@ class WorkspaceHandle:
     push_url: str
 
 
-def _field(res: object, name: str, default: str = "") -> object:
+def _field(res: object, name: str, default: object = "") -> object:
     if isinstance(res, Mapping):
         return res.get(name, default)
     return getattr(res, name, default)

@@ -216,11 +216,11 @@ export default function TaskDetailPage() {
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    void send();
+                    send().catch(() => undefined);
                   }
                 }}
               />
-              <button type="button" className="btn btn-primary" disabled={sending || !draft.trim()} onClick={() => void send()}>
+              <button type="button" className="btn btn-primary" disabled={sending || !draft.trim()} onClick={() => send().catch(() => undefined)}>
                 {sending ? "Sending…" : "Send"}
               </button>
             </div>

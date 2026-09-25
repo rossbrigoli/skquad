@@ -79,7 +79,7 @@ export function ModalForm({
       className="modal-form"
       onSubmit={(event: FormEvent) => {
         event.preventDefault();
-        void onSubmit();
+        Promise.resolve(onSubmit()).catch(() => undefined);
       }}
     >
       {children}

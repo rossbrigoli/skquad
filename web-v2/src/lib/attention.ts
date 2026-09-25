@@ -58,6 +58,103 @@ function parseAge(value?: string): number | null {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
+// S3776: per-source collectors keep buildAttention's complexity down.
+function taskAttentionItems(
+  squadId: string,
+  task: Task,
+  nameOf: (id?: string) => string,
+  now: number,
+  staleAfter: number,
+): AttentionItem[] {
+  const out: AttentionItem[] = [];
+  const taskHref = `/squads/${squadId}/tasks/${task.id}`;
+  if (leaseState(task) === "stalled") {
+    out.push({
+      id: `stalled:${task.id}`,
+      reason: "stalled",
+      title: task.title,
+      href: taskHref,
+      meta: `${nameOf(task.assignee_agent_id)} lost its lease`,
+      createdAt: task.updated_at,
+    });
+  }
+  if (task.status === "blocked") {
+    out.push({
+      id: `blocked:${task.id}`,
+      reason: "blocked",
+      title: task.title,
+      href: taskHref,
+      meta: `blocked · ${nameOf(task.assignee_agent_id)}`,
+      createdAt: task.updated_at,
+    });
+  }
+  if (task.status === "in-review") {
+    const age = parseAge(task.updated_at);
+    if (age !== null && now - age >= staleAfter) {
+      const days = Math.floor((now - age) / 86_400_000);
+      out.push({
+        id: `stale_review:${task.id}`,
+        reason: "stale_review",
+        title: task.title,
+        href: taskHref,
+        meta: `waiting ${days >= 1 ? `${days}d` : "over a day"} for review`,
+        createdAt: task.updated_at,
+      });
+    }
+  }
+  return out;
+}
+
+function agentAttentionItems(agent: Agent): AttentionItem[] {
+  if (!isAgentError(agent)) {
+    return [];
+  }
+  return [
+    {
+      id: `agent_error:${agent.id}`,
+      reason: "agent_error",
+      title: agent.name,
+      href: `/squads/${agent.squad_id}/agents/${agent.id}`,
+      meta: `agent reported ${agent.status?.toLowerCase() || "error"}`,
+      createdAt: agent.updated_at,
+    },
+  ];
+}
+
+function inboxMessageHref(message: InboxMessage): string {
+  return message.task_id
+    ? `/squads/${message.squad_id}/tasks/${message.task_id}`
+    : `/squads/${message.squad_id}`;
+}
+
+function inboxAttentionItems(message: InboxMessage): AttentionItem[] {
+  if (message.read_at) {
+    return [];
+  }
+  if (message.kind === "action_required") {
+    return [
+      {
+        id: `action:${message.id}`,
+        reason: "action_required",
+        title: message.message,
+        href: inboxMessageHref(message),
+        meta: "agent needs your input",
+        createdAt: message.created_at,
+      },
+    ];
+  }
+  return [
+    {
+      id: `done:${message.id}`,
+      reason: "completed",
+      title: message.message,
+      href: inboxMessageHref(message),
+      meta: "completed",
+      createdAt: message.created_at,
+    },
+  ];
+}
+
 export function buildAttention(input: AttentionInput): AttentionItem[] {
   const staleAfter = input.staleReviewAfterMs ?? DEFAULT_STALE_REVIEW_MS;
   const nameOf = (id?: string): string =>
@@ -66,84 +163,16 @@ export function buildAttention(input: AttentionInput): AttentionItem[] {
 
   for (const [squadId, tasks] of Object.entries(input.tasksBySquad)) {
     for (const task of tasks) {
-      const taskHref = `/squads/${squadId}/tasks/${task.id}`;
-      if (leaseState(task) === "stalled") {
-        items.push({
-          id: `stalled:${task.id}`,
-          reason: "stalled",
-          title: task.title,
-          href: taskHref,
-          meta: `${nameOf(task.assignee_agent_id)} lost its lease`,
-          createdAt: task.updated_at,
-        });
-      }
-      if (task.status === "blocked") {
-        items.push({
-          id: `blocked:${task.id}`,
-          reason: "blocked",
-          title: task.title,
-          href: taskHref,
-          meta: `blocked · ${nameOf(task.assignee_agent_id)}`,
-          createdAt: task.updated_at,
-        });
-      }
-      if (task.status === "in-review") {
-        const age = parseAge(task.updated_at);
-        if (age !== null && input.now - age >= staleAfter) {
-          const days = Math.floor((input.now - age) / 86_400_000);
-          items.push({
-            id: `stale_review:${task.id}`,
-            reason: "stale_review",
-            title: task.title,
-            href: taskHref,
-            meta: `waiting ${days >= 1 ? `${days}d` : "over a day"} for review`,
-            createdAt: task.updated_at,
-          });
-        }
-      }
+      items.push(...taskAttentionItems(squadId, task, nameOf, input.now, staleAfter));
     }
   }
 
   for (const agent of input.agents) {
-    if (isAgentError(agent)) {
-      items.push({
-        id: `agent_error:${agent.id}`,
-        reason: "agent_error",
-        title: agent.name,
-        href: `/squads/${agent.squad_id}/agents/${agent.id}`,
-        meta: `agent reported ${agent.status?.toLowerCase() || "error"}`,
-        createdAt: agent.updated_at,
-      });
-    }
+    items.push(...agentAttentionItems(agent));
   }
 
   for (const message of input.inbox) {
-    if (message.read_at) {
-      continue;
-    }
-    if (message.kind === "action_required") {
-      items.push({
-        id: `action:${message.id}`,
-        reason: "action_required",
-        title: message.message,
-        href: message.task_id
-          ? `/squads/${message.squad_id}/tasks/${message.task_id}`
-          : `/squads/${message.squad_id}`,
-        meta: "agent needs your input",
-        createdAt: message.created_at,
-      });
-    } else {
-      items.push({
-        id: `done:${message.id}`,
-        reason: "completed",
-        title: message.message,
-        href: message.task_id
-          ? `/squads/${message.squad_id}/tasks/${message.task_id}`
-          : `/squads/${message.squad_id}`,
-        meta: "completed",
-        createdAt: message.created_at,
-      });
-    }
+    items.push(...inboxAttentionItems(message));
   }
 
   items.sort((a, b) => {

@@ -26,6 +26,20 @@ type AuthValue = {
 
 const AuthContext = createContext<AuthValue | null>(null);
 
+// S3776: mode detection extracted so the bootstrap effect stays shallow.
+async function detectAuthMode(): Promise<AuthMode> {
+  try {
+    const res = await fetch("/auth/config", { cache: "no-store" });
+    if (res.ok) {
+      const cfg = await res.json();
+      return cfg?.mode === "oidc" ? "oidc" : "token";
+    }
+  } catch {
+    // Static/dev fallback: token mode.
+  }
+  return "token";
+}
+
 export function TokenProvider({ children }: { children: ReactNode }) {
   const [token, setTokenState] = useState("");
   const [user, setUser] = useState<ApiUser | null>(null);
@@ -35,50 +49,44 @@ export function TokenProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      let detected: AuthMode = "token";
+
+    async function bootstrapOidc() {
+      setApiBaseOverride("/proxy");
       try {
-        const res = await fetch("/auth/config", { cache: "no-store" });
+        const res = await fetch("/auth/session", { cache: "no-store", credentials: "same-origin" });
         if (res.ok) {
-          const cfg = await res.json();
-          detected = cfg?.mode === "oidc" ? "oidc" : "token";
+          const me = await apiGet<ApiUser>("/auth/me", "");
+          if (!cancelled) {
+            setUser(me);
+            setError("");
+            setLoading(false);
+          }
+          return;
         }
-      } catch {
-        // Static/dev fallback: token mode.
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "session check failed");
       }
+      // Not signed in. Do NOT auto-redirect: the login screen presents a
+      // chooser (SSO vs break-glass) instead of firing the user straight at the
+      // IdP, which also keeps an unreachable Dex from producing a redirect loop.
+      if (!cancelled) {
+        setLoading(false);
+      }
+    }
+
+    async function bootstrap() {
+      const detected = await detectAuthMode();
       if (cancelled) return;
       setMode(detected);
-
       if (detected === "oidc") {
-        setApiBaseOverride("/proxy");
-        try {
-          const res = await fetch("/auth/session", { cache: "no-store", credentials: "same-origin" });
-          if (res.ok) {
-            const me = await apiGet<ApiUser>("/auth/me", "");
-            if (!cancelled) {
-              setUser(me);
-              setError("");
-              setLoading(false);
-            }
-            return;
-          }
-        } catch (err) {
-          if (!cancelled) setError(err instanceof Error ? err.message : "session check failed");
-        }
-        // Not signed in. Do NOT auto-redirect: the login screen presents a
-        // chooser (SSO vs break-glass) instead of firing the user straight at the
-        // IdP, which also keeps an unreachable Dex from producing a redirect loop.
-        if (!cancelled) {
-          setLoading(false);
-        }
+        await bootstrapOidc();
         return;
       }
-
       // Token (dev) mode — read localStorage post-hydration to avoid SSR mismatch.
-      if (!cancelled) {
-        setTokenState(window.localStorage.getItem(TOKEN_KEY) ?? "");
-      }
-    })();
+      setTokenState(window.localStorage.getItem(TOKEN_KEY) ?? "");
+    }
+
+    bootstrap().catch(() => undefined);
     return () => {
       cancelled = true;
     };

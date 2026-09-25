@@ -231,19 +231,18 @@ export default function Home() {
   // and refreshes on a gentle interval to catch agent notifications arriving.
   useEffect(() => {
     let cancelled = false;
-    const load = () =>
-      apiGet<InboxMessage[]>("/inbox", token).then(
-        (items) => {
-          if (!cancelled) {
-            setInbox({ data: items, loading: false, error: "" });
-          }
-        },
-        (error) => {
-          if (!cancelled) {
-            setInbox((current) => ({ data: current.data ?? [], loading: false, error: errorState(error).error }));
-          }
-        },
-      );
+    // S2004: handlers hoisted beside `load` to keep nesting shallow.
+    const applyItems = (items: InboxMessage[]) => {
+      if (!cancelled) {
+        setInbox({ data: items, loading: false, error: "" });
+      }
+    };
+    const applyError = (error: unknown) => {
+      if (!cancelled) {
+        setInbox((current) => ({ data: current.data ?? [], loading: false, error: errorState(error).error }));
+      }
+    };
+    const load = () => apiGet<InboxMessage[]>("/inbox", token).then(applyItems, applyError);
     load();
     const timer = window.setInterval(load, 15000);
     return () => {

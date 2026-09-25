@@ -30,6 +30,7 @@ import {
   type RegistryResource,
   type ResourceType,
   type Squad,
+  type Task,
 } from "../../../../../lib/api";
 import { formatCost, formatRelativeTime, formatTokens, leaseState } from "../../../../../lib/format";
 import {
@@ -60,6 +61,150 @@ const GRANTABLE_TYPES: { type: ResourceType; path: string; label: string }[] = [
   { type: "knowledge_base", path: "knowledge-bases", label: "Knowledge bases" },
   { type: "project_workspace", path: "project-workspaces", label: "Project workspaces" },
 ];
+
+// S3776 extractions from AgentProfilePage — presentation split, no behavior change.
+
+function leaseSub(live: Task[], stalled: Task[]): string {
+  if (live.length > 0) {
+    return live[0].title;
+  }
+  if (stalled.length > 0) {
+    return `${stalled.length} stalled task(s)`;
+  }
+  return "idle";
+}
+
+function TaskListSection({
+  title,
+  tasks,
+  squadId,
+  status,
+  leaseLabel,
+}: {
+  title: string;
+  tasks: Task[];
+  squadId: string;
+  status: "running" | "stalled";
+  leaseLabel: string;
+}) {
+  if (tasks.length === 0) {
+    return null;
+  }
+  return (
+    <section style={{ marginTop: "var(--space-5)" }}>
+      <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>{title}</h2>
+      <div className="entity-list">
+        {tasks.map((task) => (
+          <Link key={task.id} href={`/squads/${squadId}/tasks/${task.id}`} className="entity-row">
+            <div className="entity-main">
+              <span className="entity-title">{task.title}</span>
+              <span className="entity-meta">
+                {leaseLabel} {formatRelativeTime(task.lease_expires_at)}
+              </span>
+            </div>
+            <div className="entity-side">
+              <StatusChip status={status} />
+            </div>
+          </Link>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function GrantedResourcesSection({
+  grants,
+  agentId,
+  onGrantClick,
+  onRevoke,
+}: {
+  grants: AgentPermission[];
+  agentId: string;
+  onGrantClick: () => void;
+  onRevoke: (next: { resource_type: string; resource_id: string }[]) => Promise<void>;
+}) {
+  return (
+    <section style={{ marginTop: "var(--space-5)" }}>
+      <div className="section-head">
+        <h2>Granted resources</h2>
+        <button type="button" className="btn btn-sm" onClick={onGrantClick}>
+          + Grant access
+        </button>
+      </div>
+      {grants.length === 0 ? (
+        <EmptyState
+          title="No resource grants"
+          hint="This agent cannot reach any registered workspaces, APIs or knowledge bases yet."
+        />
+      ) : (
+        <div className="entity-list">
+          {grants.map((grant) => (
+            <div key={grant.id} className="entity-row">
+              <div className="entity-main">
+                <span className="entity-title">{grant.resource_type}</span>
+                <span className="entity-meta mono">{grant.resource_id.slice(0, 12)}</span>
+              </div>
+              <div className="entity-side">
+                <span className="entity-meta">{formatRelativeTime(grant.created_at)}</span>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-danger"
+                  onClick={() =>
+                    onRevoke(
+                      // Rebuild from grants (llm_provider rows excluded): the
+                      // backend rejects them on PUT, so replaying legacy rows
+                      // would break every revoke.
+                      grants
+                        .filter((p) => p.id !== grant.id)
+                        .map((p) => ({ resource_type: p.resource_type, resource_id: p.resource_id })),
+                    ).catch(() => undefined)
+                  }
+                >
+                  Revoke
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function RuntimeIdentitySection({
+  hasIdentity,
+  busy,
+  error,
+  onAction,
+}: {
+  hasIdentity: boolean;
+  busy: boolean;
+  error: string;
+  onAction: () => Promise<void>;
+}) {
+  return (
+    <section style={{ marginTop: "var(--space-5)" }}>
+      <div className="section-head">
+        <h2>Runtime identity</h2>
+        {hasIdentity ? (
+          <button type="button" className="btn btn-sm" disabled={busy} onClick={() => onAction().catch(() => undefined)}>
+            Rotate identity
+          </button>
+        ) : (
+          <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={() => onAction().catch(() => undefined)}>
+            Provision identity
+          </button>
+        )}
+      </div>
+      {error ? <div className="notice error">{error}</div> : null}
+      <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)", margin: 0 }}>
+        {hasIdentity
+          ? "Identity provisioned — credentials live in the squad namespace as projected secrets. Rotating invalidates the previous credential."
+          : "This agent has no runtime identity yet. It cannot connect to the control plane until an identity is provisioned. Bind a primary model in the LLM model section above so provisioning can issue the agent's gateway key."}
+      </p>
+    </section>
+  );
+}
 
 export default function AgentProfilePage() {
   const params = useParams<{ id: string; agentId: string }>();
@@ -129,7 +274,7 @@ export default function AgentProfilePage() {
           <MetricTile
             label="Current lease"
             value={live.length > 0 ? "1 task" : "none"}
-            sub={live.length > 0 ? live[0].title : stalled.length > 0 ? `${stalled.length} stalled task(s)` : "idle"}
+            sub={leaseSub(live, stalled)}
             attention={stalled.length > 0}
           />
           <MetricTile
@@ -145,43 +290,9 @@ export default function AgentProfilePage() {
           />
         </div>
 
-        {live.length > 0 ? (
-          <section style={{ marginTop: "var(--space-5)" }}>
-            <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>Working on</h2>
-            <div className="entity-list">
-              {live.map((task) => (
-                <Link key={task.id} href={`/squads/${squadId}/tasks/${task.id}`} className="entity-row">
-                  <div className="entity-main">
-                    <span className="entity-title">{task.title}</span>
-                    <span className="entity-meta">lease expires {formatRelativeTime(task.lease_expires_at)}</span>
-                  </div>
-                  <div className="entity-side">
-                    <StatusChip status="running" />
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </section>
-        ) : null}
+        <TaskListSection title="Working on" tasks={live} squadId={squadId} status="running" leaseLabel="lease expires" />
 
-        {stalled.length > 0 ? (
-          <section style={{ marginTop: "var(--space-5)" }}>
-            <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>Stalled work</h2>
-            <div className="entity-list">
-              {stalled.map((task) => (
-                <Link key={task.id} href={`/squads/${squadId}/tasks/${task.id}`} className="entity-row">
-                  <div className="entity-main">
-                    <span className="entity-title">{task.title}</span>
-                    <span className="entity-meta">lease expired {formatRelativeTime(task.lease_expires_at)}</span>
-                  </div>
-                  <div className="entity-side">
-                    <StatusChip status="stalled" />
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </section>
-        ) : null}
+        <TaskListSection title="Stalled work" tasks={stalled} squadId={squadId} status="stalled" leaseLabel="lease expired" />
 
         <section style={{ marginTop: "var(--space-5)" }}>
           <div className="section-head">
@@ -208,103 +319,33 @@ export default function AgentProfilePage() {
           )}
         </section>
 
-        <section style={{ marginTop: "var(--space-5)" }}>
-          <div className="section-head">
-            <h2>Granted resources</h2>
-            <button type="button" className="btn btn-sm" onClick={() => setGranting(true)}>
-              + Grant access
-            </button>
-          </div>
-          {resourceGrants.length === 0 ? (
-            <EmptyState
-              title="No resource grants"
-              hint="This agent cannot reach any registered workspaces, APIs or knowledge bases yet."
-            />
-          ) : (
-            <div className="entity-list">
-              {resourceGrants.map((grant) => (
-                <div key={grant.id} className="entity-row">
-                  <div className="entity-main">
-                    <span className="entity-title">{grant.resource_type}</span>
-                    <span className="entity-meta mono">{grant.resource_id.slice(0, 12)}</span>
-                  </div>
-                  <div className="entity-side">
-                    <span className="entity-meta">{formatRelativeTime(grant.created_at)}</span>
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-danger"
-                      onClick={async () => {
-                        // Rebuild from resourceGrants (llm_provider rows
-                        // excluded): the backend rejects them on PUT, so
-                        // replaying legacy rows would break every revoke.
-                        const next = resourceGrants
-                          .filter((p) => p.id !== grant.id)
-                          .map((p) => ({ resource_type: p.resource_type, resource_id: p.resource_id }));
-                        await apiPut(`/agents/${agentId}/permissions`, token, next);
-                        perms.refresh();
-                      }}
-                    >
-                      Revoke
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+        <GrantedResourcesSection
+          grants={resourceGrants}
+          agentId={agentId}
+          onGrantClick={() => setGranting(true)}
+          onRevoke={async (next) => {
+            await apiPut(`/agents/${agentId}/permissions`, token, next);
+            perms.refresh();
+          }}
+        />
 
-        <section style={{ marginTop: "var(--space-5)" }}>
-          <div className="section-head">
-            <h2>Runtime identity</h2>
-            {agent?.identity_id ? (
-              <button
-                type="button"
-                className="btn btn-sm"
-                disabled={identityBusy}
-                onClick={async () => {
-                  setIdentityBusy(true);
-                  setIdentityError("");
-                  try {
-                    await apiPost(`/agents/${agentId}/identity/rotate`, token, {});
-                    agents.refresh();
-                  } catch (err) {
-                    setIdentityError(err instanceof Error ? err.message : "rotate failed");
-                  } finally {
-                    setIdentityBusy(false);
-                  }
-                }}
-              >
-                Rotate identity
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="btn btn-sm btn-primary"
-                disabled={identityBusy}
-                onClick={async () => {
-                  setIdentityBusy(true);
-                  setIdentityError("");
-                  try {
-                    await apiPost(`/agents/${agentId}/identity`, token, {});
-                    agents.refresh();
-                  } catch (err) {
-                    setIdentityError(err instanceof Error ? err.message : "provision failed");
-                  } finally {
-                    setIdentityBusy(false);
-                  }
-                }}
-              >
-                Provision identity
-              </button>
-            )}
-          </div>
-          {identityError ? <div className="notice error">{identityError}</div> : null}
-          <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)", margin: 0 }}>
-            {agent?.identity_id
-              ? "Identity provisioned — credentials live in the squad namespace as projected secrets. Rotating invalidates the previous credential."
-              : "This agent has no runtime identity yet. It cannot connect to the control plane until an identity is provisioned. Bind a primary model in the LLM model section above so provisioning can issue the agent's gateway key."}
-          </p>
-        </section>
+        <RuntimeIdentitySection
+          hasIdentity={!!agent?.identity_id}
+          busy={identityBusy}
+          error={identityError}
+          onAction={async () => {
+            setIdentityBusy(true);
+            setIdentityError("");
+            try {
+              await apiPost(agent?.identity_id ? `/agents/${agentId}/identity/rotate` : `/agents/${agentId}/identity`, token, {});
+              agents.refresh();
+            } catch (err) {
+              setIdentityError(err instanceof Error ? err.message : agent?.identity_id ? "rotate failed" : "provision failed");
+            } finally {
+              setIdentityBusy(false);
+            }
+          }}
+        />
 
         {/* S-120: collapsed by default, reusing the S-118 Collapsible with a
             session key distinct from the squad page's key. */}

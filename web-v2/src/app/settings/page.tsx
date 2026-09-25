@@ -225,7 +225,7 @@ function ProvidersTab({ isAdmin }: { readonly isAdmin: boolean }) {
 
   async function deprecateProvider(providerID: string) {
     await apiPost(`/registry/llm-providers/${providerID}/deprecate`, token, {});
-    await providers.refresh();
+    providers.refresh();
   }
 
   return (
