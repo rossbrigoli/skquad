@@ -55,24 +55,14 @@ func (r *SquadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if squad.ObjectMeta.DeletionTimestamp.IsZero() {
-		if controllerutil.AddFinalizer(&squad, squadFinalizer) {
-			if err := r.Update(ctx, &squad); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{Requeue: true}, nil
+	if !squad.ObjectMeta.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, &squad)
+	}
+	if controllerutil.AddFinalizer(&squad, squadFinalizer) {
+		if err := r.Update(ctx, &squad); err != nil {
+			return ctrl.Result{}, err
 		}
-	} else {
-		if controllerutil.ContainsFinalizer(&squad, squadFinalizer) {
-			if err := r.cleanupSquad(ctx, &squad); err != nil {
-				return ctrl.Result{}, err
-			}
-			controllerutil.RemoveFinalizer(&squad, squadFinalizer)
-			if err := r.Update(ctx, &squad); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	namespaceName := SquadNamespace(&squad)
@@ -84,28 +74,54 @@ func (r *SquadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	if err := r.ensureAgentServiceAccount(ctx, &squad, namespaceName); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err := r.ensureAPISecretWriterRBAC(ctx, &squad, namespaceName); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err := r.ensureDefaultDenyNetworkPolicy(ctx, &squad, namespaceName); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err := r.ensureDNSEgressNetworkPolicy(ctx, &squad, namespaceName); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err := r.ensurePlatformEgressNetworkPolicy(ctx, &squad, namespaceName); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err := r.ensureGrantedEgressNetworkPolicy(ctx, &squad, namespaceName); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err := r.ensureResourceQuota(ctx, &squad, namespaceName); err != nil {
+	if err := r.ensureBaseResources(ctx, &squad, namespaceName); err != nil {
 		return ctrl.Result{}, err
 	}
 
+	if err := r.markSquadReady(ctx, &squad, namespaceName); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// reconcileDelete handles a Squad that is being deleted: it cleans up the
+// managed resources and removes the finalizer.
+func (r *SquadReconciler) reconcileDelete(ctx context.Context, squad *skquadv1.Squad) (ctrl.Result, error) {
+	if controllerutil.ContainsFinalizer(squad, squadFinalizer) {
+		if err := r.cleanupSquad(ctx, squad); err != nil {
+			return ctrl.Result{}, err
+		}
+		controllerutil.RemoveFinalizer(squad, squadFinalizer)
+		if err := r.Update(ctx, squad); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{}, nil
+}
+
+// ensureBaseResources creates or updates all resources the squad namespace
+// needs, stopping at the first error.
+func (r *SquadReconciler) ensureBaseResources(ctx context.Context, squad *skquadv1.Squad, namespaceName string) error {
+	ensureers := []func(context.Context, *skquadv1.Squad, string) error{
+		r.ensureAgentServiceAccount,
+		r.ensureAPISecretWriterRBAC,
+		r.ensureDefaultDenyNetworkPolicy,
+		r.ensureDNSEgressNetworkPolicy,
+		r.ensurePlatformEgressNetworkPolicy,
+		r.ensureGrantedEgressNetworkPolicy,
+		r.ensureResourceQuota,
+	}
+	for _, ensure := range ensureers {
+		if err := ensure(ctx, squad, namespaceName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// markSquadReady records the Ready status on the Squad and persists it.
+func (r *SquadReconciler) markSquadReady(ctx context.Context, squad *skquadv1.Squad, namespaceName string) error {
 	squad.Status.Namespace = namespaceName
 	squad.Status.Ready = true
 	squad.Status.Phase = "Ready"
@@ -118,11 +134,10 @@ func (r *SquadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		Message:            fmt.Sprintf("Namespace %s base resources are ready", namespaceName),
 		ObservedGeneration: squad.Generation,
 	})
-	if err := r.Status().Update(ctx, &squad); err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
+	if err := r.Status().Update(ctx, squad); err != nil && !apierrors.IsNotFound(err) {
+		return err
 	}
-
-	return ctrl.Result{}, nil
+	return nil
 }
 
 func (r *SquadReconciler) cleanupSquad(ctx context.Context, squad *skquadv1.Squad) error {
@@ -365,21 +380,30 @@ func parseGrantedEgress(squad *skquadv1.Squad) ([]skquadv1.EgressGrant, error) {
 		return nil, nil
 	}
 	for i, grant := range model.Egress.Allow {
-		if _, _, err := net.ParseCIDR(grant.CIDR); err != nil {
-			return nil, fmt.Errorf("egress.allow[%d]: invalid cidr %q", i, grant.CIDR)
-		}
-		for _, except := range grant.Except {
-			if _, _, err := net.ParseCIDR(except); err != nil {
-				return nil, fmt.Errorf("egress.allow[%d]: invalid except cidr %q", i, except)
-			}
-		}
-		for _, port := range grant.Ports {
-			if port < 1 || port > 65535 {
-				return nil, fmt.Errorf("egress.allow[%d]: port %d out of range", i, port)
-			}
+		if err := validateEgressGrant(i, grant); err != nil {
+			return nil, err
 		}
 	}
 	return model.Egress.Allow, nil
+}
+
+// validateEgressGrant validates a single egress allow entry: CIDRs, except
+// CIDRs, and port ranges.
+func validateEgressGrant(i int, grant skquadv1.EgressGrant) error {
+	if _, _, err := net.ParseCIDR(grant.CIDR); err != nil {
+		return fmt.Errorf("egress.allow[%d]: invalid cidr %q", i, grant.CIDR)
+	}
+	for _, except := range grant.Except {
+		if _, _, err := net.ParseCIDR(except); err != nil {
+			return fmt.Errorf("egress.allow[%d]: invalid except cidr %q", i, except)
+		}
+	}
+	for _, port := range grant.Ports {
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("egress.allow[%d]: port %d out of range", i, port)
+		}
+	}
+	return nil
 }
 
 func networkPolicyPort(protocol corev1.Protocol, port int) networkingv1.NetworkPolicyPort {
