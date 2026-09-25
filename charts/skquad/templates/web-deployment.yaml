@@ -19,6 +19,8 @@ spec:
         {{- include "skquad.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: web
     spec:
+      # S6865: this pod never calls the Kubernetes API — do not mount a SA token.
+      automountServiceAccountToken: false
       containers:
         - name: web
           image: {{ include "skquad.webImage" . | quote }}

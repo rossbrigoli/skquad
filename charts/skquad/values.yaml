@@ -45,7 +45,13 @@ postgres:
   password: skquad-dev-password
   storage:
     size: 10Gi
-  resources: {}
+  # S6864/S6870: containers need explicit memory + storage limits.
+  resources:
+    requests:
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+      ephemeral-storage: 2Gi
 
 observability:
   enabled: false   # toggle Prometheus metrics (see docs/observability-metering.md)
@@ -64,7 +70,12 @@ operator:
   metricsBindAddress: ":8080"
   healthProbeBindAddress: ":8081"
   imagePullPolicy: IfNotPresent
-  resources: {}
+  # S6864: explicit memory limit.
+  resources:
+    requests:
+      memory: 128Mi
+    limits:
+      memory: 256Mi
   podSecurityContext:
     runAsNonRoot: true
     seccompProfile:
@@ -94,7 +105,12 @@ apiServer:
     # IdP groups bound to platform_admin (rendered as SKQUAD_OIDC_ADMIN_GROUPS).
     # With Dex + GitHub these are org/team slugs, e.g. ross-private-cloud:platform.
     adminGroups: []
-  resources: {}
+  # S6864: explicit memory limit.
+  resources:
+    requests:
+      memory: 128Mi
+    limits:
+      memory: 512Mi
   podSecurityContext:
     runAsNonRoot: true
     seccompProfile:
@@ -178,7 +194,12 @@ llmGateway:
       overwrite_user_with_key_hash: true
       callbacks: skquad_litellm_callbacks.proxy_handler_instance
       success_callback: []
-  resources: {}
+  # S6864: explicit memory limit (litellm is Python; give it headroom).
+  resources:
+    requests:
+      memory: 256Mi
+    limits:
+      memory: 1Gi
 
 web:
   # v1 UI retired 2026-09-24 (S-113 WP8 prep): all new UI work lands in web-v2.
@@ -188,7 +209,12 @@ web:
   imagePullPolicy: IfNotPresent
   port: 3000
   apiBaseUrl: /api/v1
-  resources: {}
+  # S6864: explicit memory limit.
+  resources:
+    requests:
+      memory: 128Mi
+    limits:
+      memory: 512Mi
 
 # webV2 is the redesigned UI (docs/UI-V2-PLAN.md). Disabled by default so it
 # is a no-op for existing installs; enable alongside a skquad-v2.* ingress host
