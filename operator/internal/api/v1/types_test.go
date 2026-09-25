@@ -21,6 +21,13 @@ import (
 	skquadv1 "github.com/rossbrigoli/skquad/operator/internal/api/v1"
 )
 
+const (
+	addToSchemeErrFormat = "AddToScheme: %v"
+	agentsCRDFile        = "skquad.io_agents.yaml"
+	squadA               = "squad-a"
+	squadsCRDFile        = "skquad.io_squads.yaml"
+)
+
 // crdDir resolves the Helm chart CRD directory from this package. The chart is
 // the single source of truth for what the API server will actually accept, so
 // these tests deliberately reach into it instead of restating the schema.
@@ -66,7 +73,7 @@ func TestGroupVersionConstants(t *testing.T) {
 func TestSchemeRegistration(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := skquadv1.AddToScheme(scheme); err != nil {
-		t.Fatalf("AddToScheme: %v", err)
+		t.Fatalf(addToSchemeErrFormat, err)
 	}
 
 	for _, obj := range []runtime.Object{&skquadv1.Squad{}, &skquadv1.SquadList{}, &skquadv1.Agent{}, &skquadv1.AgentList{}} {
@@ -108,7 +115,7 @@ func TestAddToSchemeIsIdempotent(t *testing.T) {
 func TestMetaTypesRegistered(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := skquadv1.AddToScheme(scheme); err != nil {
-		t.Fatalf("AddToScheme: %v", err)
+		t.Fatalf(addToSchemeErrFormat, err)
 	}
 	gvk := schema.GroupVersionKind{Group: skquadv1.Group, Version: skquadv1.Version, Kind: "ListOptions"}
 	if !scheme.Recognizes(gvk) {
@@ -124,7 +131,7 @@ func TestMetaTypesRegistered(t *testing.T) {
 
 func TestSquadDeepCopyIsolation(t *testing.T) {
 	original := &skquadv1.Squad{}
-	original.SetName("squad-a")
+	original.SetName(squadA)
 	original.SetLabels(map[string]string{"team": "platform"})
 	original.Spec.OperatingModel = apiextensionsv1.JSON{Raw: []byte(`{"cadence":"daily"}`)}
 	original.Status.Conditions = conditions()
@@ -174,7 +181,7 @@ func TestAgentDeepCopyIsolation(t *testing.T) {
 
 func TestListDeepCopiesAreIsolated(t *testing.T) {
 	squad := &skquadv1.Squad{}
-	squad.SetName("squad-a")
+	squad.SetName(squadA)
 	squad.Spec.OperatingModel = apiextensionsv1.JSON{Raw: []byte(`{"a":1}`)}
 	squadList := &skquadv1.SquadList{Items: []skquadv1.Squad{*squad}}
 
@@ -218,7 +225,7 @@ func TestDeepCopyObjectNilReceivers(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCRDsAreStructurallyValid(t *testing.T) {
-	for _, file := range []string{"skquad.io_squads.yaml", "skquad.io_agents.yaml"} {
+	for _, file := range []string{squadsCRDFile, agentsCRDFile} {
 		t.Run(file, func(t *testing.T) {
 			crd := loadCRD(t, file)
 			validateStructural(t, crd.Spec.Versions[0].Schema.OpenAPIV3Schema)
@@ -231,7 +238,7 @@ func TestCRDsAreStructurallyValid(t *testing.T) {
 // required. If a second version is ever added this test must be replaced by
 // real round-trip conversion tests, not deleted silently.
 func TestCRDSingleServedVersion(t *testing.T) {
-	for _, file := range []string{"skquad.io_squads.yaml", "skquad.io_agents.yaml"} {
+	for _, file := range []string{squadsCRDFile, agentsCRDFile} {
 		t.Run(file, func(t *testing.T) {
 			crd := loadCRD(t, file)
 			if len(crd.Spec.Versions) != 1 {
@@ -270,8 +277,8 @@ func TestGoTypesMatchCRDProperties(t *testing.T) {
 		kind     string
 		specType reflect.Type
 	}{
-		{"skquad.io_squads.yaml", "Squad", reflect.TypeOf(skquadv1.SquadSpec{})},
-		{"skquad.io_agents.yaml", "Agent", reflect.TypeOf(skquadv1.AgentSpec{})},
+		{squadsCRDFile, "Squad", reflect.TypeOf(skquadv1.SquadSpec{})},
+		{agentsCRDFile, "Agent", reflect.TypeOf(skquadv1.AgentSpec{})},
 	}
 
 	for _, tc := range cases {
@@ -317,8 +324,8 @@ func TestCRDRequiredFieldsAreNotOmitempty(t *testing.T) {
 		file     string
 		specType reflect.Type
 	}{
-		{"skquad.io_squads.yaml", reflect.TypeOf(skquadv1.SquadSpec{})},
-		{"skquad.io_agents.yaml", reflect.TypeOf(skquadv1.AgentSpec{})},
+		{squadsCRDFile, reflect.TypeOf(skquadv1.SquadSpec{})},
+		{agentsCRDFile, reflect.TypeOf(skquadv1.AgentSpec{})},
 	}
 	for _, tc := range cases {
 		t.Run(tc.specType.Name(), func(t *testing.T) {
@@ -342,7 +349,7 @@ func TestCRDRequiredFieldsAreNotOmitempty(t *testing.T) {
 // TestCustomResourceValidation exercises the actual schema the API server uses:
 // required fields, type enforcement, and free-form payloads.
 func TestCustomResourceValidation(t *testing.T) {
-	agentCRD := loadCRD(t, "skquad.io_agents.yaml")
+	agentCRD := loadCRD(t, agentsCRDFile)
 	validator, err := newResourceValidator(agentCRD)
 	if err != nil {
 		t.Fatalf("build validator: %v", err)
@@ -463,7 +470,7 @@ func TestCustomResourceValidation(t *testing.T) {
 // TestSquadCustomResourceValidation covers the Squad schema required pair and
 // the free-form operatingModel payload.
 func TestSquadCustomResourceValidation(t *testing.T) {
-	crd := loadCRD(t, "skquad.io_squads.yaml")
+	crd := loadCRD(t, squadsCRDFile)
 	validator, err := newResourceValidator(crd)
 	if err != nil {
 		t.Fatalf("build validator: %v", err)
@@ -490,7 +497,7 @@ func TestSquadCustomResourceValidation(t *testing.T) {
 		broken := map[string]interface{}{
 			"apiVersion": "skquad.io/v1",
 			"kind":       "Squad",
-			"metadata":   map[string]interface{}{"name": "squad-a"},
+			"metadata":   map[string]interface{}{"name": squadA},
 			"spec":       map[string]interface{}{"squadId": "s-1", "ownerRef": "user:ross"},
 		}
 		spec := broken["spec"].(map[string]interface{})
@@ -514,8 +521,8 @@ func TestPrinterColumnsResolveAgainstGoTypes(t *testing.T) {
 		file     string
 		rootType reflect.Type
 	}{
-		{"skquad.io_squads.yaml", reflect.TypeOf(skquadv1.Squad{})},
-		{"skquad.io_agents.yaml", reflect.TypeOf(skquadv1.Agent{})},
+		{squadsCRDFile, reflect.TypeOf(skquadv1.Squad{})},
+		{agentsCRDFile, reflect.TypeOf(skquadv1.Agent{})},
 	}
 	for _, tc := range cases {
 		t.Run(tc.rootType.Name(), func(t *testing.T) {
@@ -537,7 +544,7 @@ func TestPrinterColumnsResolveAgainstGoTypes(t *testing.T) {
 func TestDecodeRoundTripPreservesSpec(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := skquadv1.AddToScheme(scheme); err != nil {
-		t.Fatalf("AddToScheme: %v", err)
+		t.Fatalf(addToSchemeErrFormat, err)
 	}
 
 	const agentManifest = `apiVersion: skquad.io/v1
