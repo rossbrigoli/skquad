@@ -683,7 +683,12 @@ button.nav-group-parent {
   }
 
   .content {
-    padding-top: var(--space-7);
+    padding-top: var(--space-5);
+  }
+
+  /* Keep the sticky top bar clear of the fixed hamburger button. */
+  .topbar {
+    padding-left: 64px;
   }
 }
 
@@ -1377,13 +1382,83 @@ dialog.modal-backdrop::backdrop {
 }
 
 /* ============================================================
-   S-117 — Theme toggle (top-right) + user profile popover
+   S-127 — Top nav bar (breadcrumbs + theme selector)
+   Slim sticky bar spanning the content area (right of the primary
+   rail). Replaces the S-117 floating theme toggle that overlapped
+   page actions like the dashboard "Refresh" button.
+   ============================================================ */
+.content-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: 0 var(--space-5);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar-crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  min-width: 0;
+}
+
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.crumb-link {
+  color: var(--ink-muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.crumb-link:hover {
+  color: var(--ink);
+  text-decoration: underline;
+}
+
+.crumb-sep {
+  margin: 0 var(--space-2);
+  color: var(--ink-faint);
+}
+
+.crumb-current {
+  color: var(--ink);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* ============================================================
+   S-117 — Theme toggle (now docked in the top bar, S-127)
+   + user profile popover
    ============================================================ */
 .theme-toggle {
-  position: fixed;
-  top: var(--space-3);
-  right: var(--space-3);
-  z-index: 70;
   display: flex;
   gap: 2px;
   padding: 2px;

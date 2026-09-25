@@ -1,7 +1,7 @@
 "use client";
 
-// S-117: tiny theme switcher pinned to the top-right corner of every page
-// (replaces the old Settings → Appearance tab). Three icon buttons act as
+// S-117: tiny theme switcher (S-127: now docked at the right end of the
+// top nav bar instead of floating top-right). Three icon buttons act as
 // a radiogroup: system / light / dark. Pure theme logic lives in
 // lib/theme.ts + ThemeProvider; this is presentation only.
 
