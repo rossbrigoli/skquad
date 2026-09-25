@@ -83,11 +83,13 @@ export default function CostsPage() {
       <AppShell>
         <h1 className="page-title">Costs</h1>
         {error ? <div className="notice error">{error}</div> : null}
-        {loading && rows.length === 0 ? (
+        {loading && rows.length === 0 && (
           <EmptyState title="Crunching numbers…" hint="Aggregating metering across your squads." />
-        ) : rows.length === 0 ? (
+        )}
+        {!loading && rows.length === 0 && (
           <EmptyState title="No squads" hint="Create a squad to start tracking spend." />
-        ) : (
+        )}
+        {rows.length > 0 && (
           <>
             <p style={{ color: "var(--ink-muted)", marginTop: 0 }}>
               All squads combined: <strong>{formatMoney(grandTotal)}</strong>

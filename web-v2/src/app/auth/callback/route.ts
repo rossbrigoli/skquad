@@ -48,12 +48,12 @@ export async function GET(request: NextRequest) {
       throw new Error("token response contained no id_token — cannot establish an authenticated session");
     }
     const claims = await verifyIdToken(tokens.id_token, nonce);
-    const name: string | undefined =
-      typeof claims.name === "string"
-        ? claims.name
-        : typeof claims.preferred_username === "string"
-          ? claims.preferred_username
-          : undefined;
+    let name: string | undefined;
+    if (typeof claims.name === "string") {
+      name = claims.name;
+    } else if (typeof claims.preferred_username === "string") {
+      name = claims.preferred_username;
+    }
     const email: string | undefined = typeof claims.email === "string" ? claims.email : undefined;
     // The session must end no later than the credential we actually present
     // upstream, so take the tighter of the OAuth `expires_in` and the ID token's

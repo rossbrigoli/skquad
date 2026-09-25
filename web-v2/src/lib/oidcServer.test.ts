@@ -165,6 +165,6 @@ describe("publicOrigin (redirect-origin leak fix)", () => {
 
   it("returns empty string when nothing usable is configured", () => {
     expect(publicOrigin(req({ host: "localhost:3000" }))).toBe("");
-    expect(publicOrigin(undefined)).toBe("");
+    expect(publicOrigin()).toBe("");
   });
 });

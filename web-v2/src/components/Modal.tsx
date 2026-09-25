@@ -17,32 +17,29 @@ export function Modal({
   footer?: ReactNode;
   danger?: boolean;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    ref.current?.focus();
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    // Native <dialog>: showModal() moves focus into the dialog and traps it;
+    // Escape fires a cancel event (handled below), backdrop click is caught
+    // by the mousedown target check on the dialog element itself.
+    ref.current?.showModal();
+  }, []);
 
   return (
-    <div
+    <dialog
+      ref={ref}
       className="modal-backdrop"
+      aria-label={title}
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div
-        className={`modal-card${danger ? " modal-danger" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        tabIndex={-1}
-        ref={ref}
-      >
+      <div className={`modal-card${danger ? " modal-danger" : ""}`}>
         <div className="modal-head">
           <h2>{title}</h2>
           <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
@@ -52,7 +49,7 @@ export function Modal({
         <div className="modal-body">{children}</div>
         {footer ? <div className="modal-foot">{footer}</div> : null}
       </div>
-    </div>
+    </dialog>
   );
 }
 
