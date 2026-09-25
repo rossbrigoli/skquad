@@ -165,11 +165,6 @@ export default function SettingsPage() {
             Resources
           </button>
           {isAdmin ? (
-            <button type="button" className={activeTab === "ai-models" ? "active" : ""} onClick={() => setTab("ai-models")}>
-              AI Models
-            </button>
-          ) : null}
-          {isAdmin ? (
             <button type="button" className={activeTab === "access" ? "active" : ""} onClick={() => setTab("access")}>
               Access
             </button>
