@@ -108,14 +108,6 @@ func setOverrideEnv(t *testing.T) {
 	t.Setenv("SKQUAD_REAPER_GRACE_SECONDS", "180")
 }
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf(loadErrFormat, err)
-	}
-	assertOverrideCore(t, cfg)
-	assertOverrideGatewayAndMemory(t, cfg)
-}
-
 // assertOverrideCore checks the core/identity/k8s overrides.
 func assertOverrideCore(t *testing.T, cfg *Config) {
 	t.Helper()

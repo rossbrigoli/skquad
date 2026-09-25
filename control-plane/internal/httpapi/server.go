@@ -377,93 +377,112 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Break-glass is checked AHEAD of the AuthMode switch so an operator can
 		// get in regardless of mode and regardless of Dex being reachable.
-		if s.breakGlass != nil && s.breakGlass.Enabled() {
-			tok := bearerToken(r.Header.Get("Authorization"))
-			if breakglass.IsBreakGlassToken(tok) {
-				claims, err := s.breakGlass.VerifyToken(tok, time.Now())
-				if err != nil {
-					writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or expired break-glass token")
-					return
-				}
-				user := &domain.User{
-					ID:            claims.ID,
-					Email:         claims.Email,
-					Name:          "break-glass",
-					Role:          domain.RolePlatformAdmin,
-					OIDCIssuer:    "local",
-					OIDCSubject:   "breakglass",
-					EmailVerified: true,
-				}
-				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, user)))
-				return
-			}
+		if s.breakGlass != nil && s.breakGlass.Enabled() && s.tryBreakGlassAuth(w, r, next) {
+			return
 		}
 		switch s.cfg.AuthMode {
 		case config.AuthDev:
-			u := &domain.User{
-				Email: s.cfg.DevEmail,
-				Name:  s.cfg.DevName,
-				Role:  domain.RolePlatformAdmin,
-			}
-			user, err := s.store.UpsertUser(r.Context(), u)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "internal", "failed to load dev principal")
-				return
-			}
-			if err := s.store.SetUserRole(r.Context(), user.ID, domain.RolePlatformAdmin); err != nil {
-				writeError(w, http.StatusInternalServerError, "internal", "failed to promote dev principal")
-				return
-			}
-			user.Role = domain.RolePlatformAdmin
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, user)))
+			s.serveDevAuth(w, r, next)
 		case config.AuthOIDC:
-			if s.oidcAuth == nil {
-				writeError(w, http.StatusInternalServerError, "internal", "OIDC authentication is not configured")
-				return
-			}
-			profile, err := s.oidcAuth.Authenticate(r.Context(), r.Header.Get("Authorization"))
-			if err != nil {
-				writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
-				return
-			}
-			// Role binding: platform_admin only via a configured IdP group.
-			// Everyone else lands as RoleUser.
-			desiredRole := domain.RoleUser
-			if s.cfg.AdminGroupMatched(profile.Groups) {
-				desiredRole = domain.RolePlatformAdmin
-			}
-			user, err := s.store.UpsertUser(r.Context(), &domain.User{
-				OIDCIssuer:    profile.Issuer,
-				OIDCSubject:   profile.Subject,
-				Email:         profile.Email,
-				EmailVerified: profile.EmailVerified,
-				Name:          profile.Name,
-				Role:          desiredRole,
-			})
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "internal", "failed to load authenticated principal")
-				return
-			}
-			// Group binding is PROMOTION-ONLY by deliberate design.
-			// UpsertUser assigns role on INSERT but never overwrites it, so an
-			// existing row needs this to pick up a newly bound admin group.
-			// Auto-demotion is intentionally NOT performed here: if
-			// SKQUAD_OIDC_ADMIN_GROUPS were ever misconfigured or emptied, a
-			// demote-on-every-request rule would lock every administrator out of
-			// the system with no way back in. Demotion stays an explicit operator
-			// action (store.SetUserRole).
-			if desiredRole == domain.RolePlatformAdmin && user.Role != desiredRole {
-				if err := s.store.SetUserRole(r.Context(), user.ID, desiredRole); err != nil {
-					writeError(w, http.StatusInternalServerError, "internal", "failed to reconcile principal role")
-					return
-				}
-				user.Role = desiredRole
-			}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, user)))
+			s.serveOIDCAuth(w, r, next)
 		default:
 			writeError(w, http.StatusInternalServerError, "internal", "unsupported auth mode")
 		}
 	})
+}
+
+// tryBreakGlassAuth handles a break-glass bearer token when one is present.
+// It returns true when the request was fully handled (allowed or rejected);
+// false means the token is not a break-glass token and normal auth proceeds.
+func (s *Server) tryBreakGlassAuth(w http.ResponseWriter, r *http.Request, next http.Handler) bool {
+	tok := bearerToken(r.Header.Get("Authorization"))
+	if !breakglass.IsBreakGlassToken(tok) {
+		return false
+	}
+	claims, err := s.breakGlass.VerifyToken(tok, time.Now())
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or expired break-glass token")
+		return true
+	}
+	user := &domain.User{
+		ID:            claims.ID,
+		Email:         claims.Email,
+		Name:          "break-glass",
+		Role:          domain.RolePlatformAdmin,
+		OIDCIssuer:    "local",
+		OIDCSubject:   "breakglass",
+		EmailVerified: true,
+	}
+	next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, user)))
+	return true
+}
+
+// serveDevAuth provisions the configured dev principal and serves the request.
+func (s *Server) serveDevAuth(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	u := &domain.User{
+		Email: s.cfg.DevEmail,
+		Name:  s.cfg.DevName,
+		Role:  domain.RolePlatformAdmin,
+	}
+	user, err := s.store.UpsertUser(r.Context(), u)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to load dev principal")
+		return
+	}
+	if err := s.store.SetUserRole(r.Context(), user.ID, domain.RolePlatformAdmin); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to promote dev principal")
+		return
+	}
+	user.Role = domain.RolePlatformAdmin
+	next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, user)))
+}
+
+// serveOIDCAuth authenticates the bearer token against the OIDC provider,
+// reconciles the promotion-only group role binding, and serves the request.
+func (s *Server) serveOIDCAuth(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	if s.oidcAuth == nil {
+		writeError(w, http.StatusInternalServerError, "internal", "OIDC authentication is not configured")
+		return
+	}
+	profile, err := s.oidcAuth.Authenticate(r.Context(), r.Header.Get("Authorization"))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
+		return
+	}
+	// Role binding: platform_admin only via a configured IdP group.
+	// Everyone else lands as RoleUser.
+	desiredRole := domain.RoleUser
+	if s.cfg.AdminGroupMatched(profile.Groups) {
+		desiredRole = domain.RolePlatformAdmin
+	}
+	user, err := s.store.UpsertUser(r.Context(), &domain.User{
+		OIDCIssuer:    profile.Issuer,
+		OIDCSubject:   profile.Subject,
+		Email:         profile.Email,
+		EmailVerified: profile.EmailVerified,
+		Name:          profile.Name,
+		Role:          desiredRole,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to load authenticated principal")
+		return
+	}
+	// Group binding is PROMOTION-ONLY by deliberate design.
+	// UpsertUser assigns role on INSERT but never overwrites it, so an
+	// existing row needs this to pick up a newly bound admin group.
+	// Auto-demotion is intentionally NOT performed here: if
+	// SKQUAD_OIDC_ADMIN_GROUPS were ever misconfigured or emptied, a
+	// demote-on-every-request rule would lock every administrator out of
+	// the system with no way back in. Demotion stays an explicit operator
+	// action (store.SetUserRole).
+	if desiredRole == domain.RolePlatformAdmin && user.Role != desiredRole {
+		if err := s.store.SetUserRole(r.Context(), user.ID, desiredRole); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "failed to reconcile principal role")
+			return
+		}
+		user.Role = desiredRole
+	}
+	next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, user)))
 }
 
 func currentUser(ctx context.Context) *domain.User {
@@ -764,14 +783,7 @@ func (s *Server) syncAgentsWithLLMProvider(ctx context.Context, providerID strin
 			counts["errors"]++
 			continue
 		}
-		hasProvider := false
-		for _, perm := range perms {
-			if perm.ResourceType == domain.ResLLMProvider && perm.ResourceID == providerID {
-				hasProvider = true
-				break
-			}
-		}
-		if !hasProvider {
+		if !permissionsGrantProvider(perms, providerID) {
 			continue
 		}
 		counts["checked"]++
@@ -785,6 +797,17 @@ func (s *Server) syncAgentsWithLLMProvider(ctx context.Context, providerID strin
 		}
 	}
 	return toAnyMap(counts)
+}
+
+// permissionsGrantProvider reports whether any permission grants the given
+// LLM provider resource.
+func permissionsGrantProvider(perms []*domain.AgentPermission, providerID string) bool {
+	for _, perm := range perms {
+		if perm.ResourceType == domain.ResLLMProvider && perm.ResourceID == providerID {
+			return true
+		}
+	}
+	return false
 }
 
 func toAnyMap(in map[string]int) map[string]any {
@@ -1164,27 +1187,16 @@ func (s *Server) deleteSquad(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	identities := make([]*domain.AgentIdentity, 0, len(agents))
-	for _, agent := range agents {
-		identity, err := s.store.GetAgentIdentity(r.Context(), agent.ID)
-		if err != nil {
-			if errors.Is(err, storage.ErrNotFound) {
-				continue
-			}
-			writeStorageError(w, err)
-			return
-		}
-		identities = append(identities, identity)
+	identities, err := s.collectAgentIdentities(r.Context(), agents)
+	if err != nil {
+		writeStorageError(w, err)
+		return
 	}
 	// Revoke live gateway keys before the squad rows disappear so no
 	// untracked key survives the delete.
-	for _, identity := range identities {
-		if identity.GatewayKeyStatus == domain.GatewayKeyActive && identity.GatewayKeyToken != "" {
-			if err := s.llmGateway.RevokeAgentKey(r.Context(), identity.GatewayKeyToken); err != nil {
-				writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to revoke LLM gateway virtual key")
-				return
-			}
-		}
+	if err := s.revokeLiveGatewayKeys(r.Context(), identities); err != nil {
+		writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to revoke LLM gateway virtual key")
+		return
 	}
 	if err := s.store.DeleteSquad(s.pendingUserAuditCtx(r, "squad.delete", "squad", squad.ID, squad.ID, nil), squad.ID); err != nil {
 		writeStorageError(w, err)
@@ -1195,6 +1207,36 @@ func (s *Server) deleteSquad(w http.ResponseWriter, r *http.Request) {
 		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.VirtualKeyRef)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// collectAgentIdentities gathers the identity rows for the given agents,
+// skipping agents that have no identity yet.
+func (s *Server) collectAgentIdentities(ctx context.Context, agents []*domain.Agent) ([]*domain.AgentIdentity, error) {
+	identities := make([]*domain.AgentIdentity, 0, len(agents))
+	for _, agent := range agents {
+		identity, err := s.store.GetAgentIdentity(ctx, agent.ID)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		identities = append(identities, identity)
+	}
+	return identities, nil
+}
+
+// revokeLiveGatewayKeys revokes the active gateway virtual keys held by the
+// given identities.
+func (s *Server) revokeLiveGatewayKeys(ctx context.Context, identities []*domain.AgentIdentity) error {
+	for _, identity := range identities {
+		if identity.GatewayKeyStatus == domain.GatewayKeyActive && identity.GatewayKeyToken != "" {
+			if err := s.llmGateway.RevokeAgentKey(ctx, identity.GatewayKeyToken); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Server) createGrant(w http.ResponseWriter, r *http.Request) {
@@ -2019,24 +2061,7 @@ func (s *Server) syncAgentGatewayKey(ctx context.Context, agent *domain.Agent) (
 
 	models, primary, fallback, bindErr := s.boundModelAllowList(ctx, agent)
 	if bindErr != nil {
-		// An unbound agent must not keep a live key: convergence here means
-		// revoke. Other binding failures (not found / not granted /
-		// deprecated) refuse convergence so the operator sees the precise
-		// error instead of a silently revoked or stale key; WP4's force
-		// cascade owns grant-revocation cleanup.
-		if !errors.Is(bindErr, errModelNotBound) {
-			return "", bindErr
-		}
-		if !hasKey {
-			return "none", nil
-		}
-		if err := s.llmGateway.RevokeAgentKey(ctx, identity.GatewayKeyToken); err != nil {
-			return "", err
-		}
-		if _, err := s.store.SetAgentIdentityGatewayKey(ctx, agent.ID, identity.GatewayKeyToken, domain.GatewayKeyRevoked); err != nil {
-			return "", err
-		}
-		return "revoked", nil
+		return s.convergeUnboundGatewayKey(ctx, agent, identity, hasKey, bindErr)
 	}
 
 	keyReq := GatewayKeyRequest{
@@ -2076,6 +2101,28 @@ func (s *Server) syncAgentGatewayKey(ctx context.Context, agent *domain.Agent) (
 	return "provisioned", nil
 }
 
+// convergeUnboundGatewayKey decides what to do with a gateway key when the
+// agent's model binding failed. An unbound agent must not keep a live key:
+// convergence here means revoke. Other binding failures (not found / not
+// granted / deprecated) refuse convergence so the operator sees the precise
+// error instead of a silently revoked or stale key; WP4's force cascade
+// owns grant-revocation cleanup.
+func (s *Server) convergeUnboundGatewayKey(ctx context.Context, agent *domain.Agent, identity *domain.AgentIdentity, hasKey bool, bindErr error) (string, error) {
+	if !errors.Is(bindErr, errModelNotBound) {
+		return "", bindErr
+	}
+	if !hasKey {
+		return "none", nil
+	}
+	if err := s.llmGateway.RevokeAgentKey(ctx, identity.GatewayKeyToken); err != nil {
+		return "", err
+	}
+	if _, err := s.store.SetAgentIdentityGatewayKey(ctx, agent.ID, identity.GatewayKeyToken, domain.GatewayKeyRevoked); err != nil {
+		return "", err
+	}
+	return "revoked", nil
+}
+
 func (s *Server) listAgentPermissions(w http.ResponseWriter, r *http.Request) {
 	agent, ok := s.loadOwnedAgent(w, r)
 	if !ok {
@@ -2089,20 +2136,16 @@ func (s *Server) listAgentPermissions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, perms)
 }
 
-func (s *Server) setAgentPermissions(w http.ResponseWriter, r *http.Request) {
-	agent, ok := s.loadOwnedAgent(w, r)
-	if !ok {
-		return
-	}
-	var req []struct {
-		ResourceType string `json:"resource_type"`
-		ResourceID   string `json:"resource_id"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
+// agentPermissionRequest is one grant entry in the setAgentPermissions body.
+type agentPermissionRequest struct {
+	ResourceType string `json:"resource_type"`
+	ResourceID   string `json:"resource_id"`
+}
 
-	u := currentUser(r.Context())
+// buildAgentPermissions validates the requested grant entries and builds the
+// deduplicated permission set for the agent. On the first invalid entry it
+// writes the corresponding HTTP error and returns ok=false.
+func (s *Server) buildAgentPermissions(ctx context.Context, w http.ResponseWriter, agent *domain.Agent, req []agentPermissionRequest, u *domain.User) ([]domain.AgentPermission, bool) {
 	perms := make([]domain.AgentPermission, 0, len(req))
 	seen := map[string]bool{}
 	for _, item := range req {
@@ -2112,21 +2155,21 @@ func (s *Server) setAgentPermissions(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(item.ResourceType) == string(domain.ResLLMProvider) {
 			writeError(w, http.StatusBadRequest, "provider_not_grantable",
 				"llm_provider is no longer grantable to agents; grant AI Models to the user instead (Settings \u2192 AI Models)")
-			return
+			return nil, false
 		}
 		typ, ok := resourceTypeFromString(item.ResourceType)
 		if !ok {
 			writeError(w, http.StatusBadRequest, "bad_request", "resource_type is invalid")
-			return
+			return nil, false
 		}
 		resourceID := strings.TrimSpace(item.ResourceID)
 		if resourceID == "" {
 			writeError(w, http.StatusBadRequest, "bad_request", "resource_id is required")
-			return
+			return nil, false
 		}
-		if err := s.ensureRegistryResourceExists(r.Context(), typ, resourceID); err != nil {
+		if err := s.ensureRegistryResourceExists(ctx, typ, resourceID); err != nil {
 			writeStorageError(w, err)
-			return
+			return nil, false
 		}
 		key := string(typ) + ":" + resourceID
 		if seen[key] {
@@ -2139,6 +2182,24 @@ func (s *Server) setAgentPermissions(w http.ResponseWriter, r *http.Request) {
 			ResourceID:   resourceID,
 			GrantedBy:    u.ID,
 		})
+	}
+	return perms, true
+}
+
+func (s *Server) setAgentPermissions(w http.ResponseWriter, r *http.Request) {
+	agent, ok := s.loadOwnedAgent(w, r)
+	if !ok {
+		return
+	}
+	var req []agentPermissionRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	u := currentUser(r.Context())
+	perms, ok := s.buildAgentPermissions(r.Context(), w, agent, req, u)
+	if !ok {
+		return
 	}
 	// ADR-0010 D5: agent permissions no longer decide the LLM allow-list —
 	// the agent's model binding does. This endpoint must NOT touch the virtual
@@ -2741,60 +2802,15 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 		writeStorageError(w, err)
 		return
 	}
-	if target.SquadID != principal.Agent.SquadID {
-		messageAction := requiredMessageAction(messageType)
-		ok, err := s.store.AgentMayMessageSquad(r.Context(), principal.Agent.ID, target.SquadID, messageAction)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		if !ok {
-			s.recordAgentAudit(r, principal.Agent.ID, "message.denied", "agent", target.ID, target.SquadID, nil)
-			writeError(w, http.StatusForbidden, "forbidden", "agent cannot message the target squad")
-			return
-		}
+	if !s.agentMayMessageTarget(w, r, principal, target, messageType) {
+		return
 	}
 	// Delegate and handoff messages materialize into a real task on the
 	// target squad's board: the task is the durable unit of work, the
 	// message becomes its delivered audit record (the target runtime is
 	// woken by the task, never by the message itself).
 	if messageType == domain.MessageDelegate || messageType == domain.MessageHandoff {
-		created, err := s.store.CreateMessage(r.Context(), &domain.Message{
-			FromType:      "agent",
-			FromID:        principal.Agent.ID,
-			ToAgentID:     target.ID,
-			SquadID:       target.SquadID,
-			Type:          messageType,
-			Payload:       messagePayload(req),
-			Status:        domain.MessagePending,
-			CorrelationID: strings.TrimSpace(req.CorrelationID),
-			MaxAttempts:   req.MaxAttempts,
-			ExpiresAt:     messageExpiresAt(req),
-		})
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		task, err := s.materializeDelegatedTask(r.Context(), principal.Agent, target, created)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", "failed to materialize delegated task")
-			return
-		}
-		delegateMeta, _ := json.Marshal(map[string]any{
-			"message_id": created.ID,
-			"task_id":    task.ID,
-			"type":       string(messageType),
-		})
-		created, err = s.store.UpdateMessagePayload(s.pendingAgentAuditCtx(r, principal.Agent.ID, "message.delegate_materialized", "task", task.ID, target.SquadID, delegateMeta), created.ID, withTaskID(created.Payload, task.ID), domain.MessageDelivered)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", "failed to link delegated task to message")
-			return
-		}
-		if err := s.syncAgentStatusFromPendingWork(r.Context(), target.ID); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", msgUpdateTargetAgentState)
-			return
-		}
-		writeJSON(w, http.StatusCreated, created)
+		s.deliverDelegatedMessage(w, r, principal, target, messageType, req)
 		return
 	}
 	created, err := s.store.CreateMessage(s.pendingAgentAuditCtx(r, principal.Agent.ID, "message.send", "message", "", target.SquadID, nil), &domain.Message{
@@ -3083,26 +3099,75 @@ func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPer
 	}, true, nil
 }
 
+// agentMayMessageTarget enforces cross-squad messaging permissions. Same-squad
+// messages are always allowed; cross-squad messages need the required action
+// grant. On denial it records the audit event, writes the HTTP error and
+// returns false.
+func (s *Server) agentMayMessageTarget(w http.ResponseWriter, r *http.Request, principal *agentPrincipal, target *domain.Agent, messageType domain.MessageType) bool {
+	if target.SquadID == principal.Agent.SquadID {
+		return true
+	}
+	messageAction := requiredMessageAction(messageType)
+	ok, err := s.store.AgentMayMessageSquad(r.Context(), principal.Agent.ID, target.SquadID, messageAction)
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	if !ok {
+		s.recordAgentAudit(r, principal.Agent.ID, "message.denied", "agent", target.ID, target.SquadID, nil)
+		writeError(w, http.StatusForbidden, "forbidden", "agent cannot message the target squad")
+		return false
+	}
+	return true
+}
+
+// deliverDelegatedMessage materializes a delegate/handoff message into a real
+// task on the target squad's board and links the message to it as delivered.
+func (s *Server) deliverDelegatedMessage(w http.ResponseWriter, r *http.Request, principal *agentPrincipal, target *domain.Agent, messageType domain.MessageType, req messageRequest) {
+	created, err := s.store.CreateMessage(r.Context(), &domain.Message{
+		FromType:      "agent",
+		FromID:        principal.Agent.ID,
+		ToAgentID:     target.ID,
+		SquadID:       target.SquadID,
+		Type:          messageType,
+		Payload:       messagePayload(req),
+		Status:        domain.MessagePending,
+		CorrelationID: strings.TrimSpace(req.CorrelationID),
+		MaxAttempts:   req.MaxAttempts,
+		ExpiresAt:     messageExpiresAt(req),
+	})
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	task, err := s.materializeDelegatedTask(r.Context(), principal.Agent, target, created)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to materialize delegated task")
+		return
+	}
+	delegateMeta, _ := json.Marshal(map[string]any{
+		"message_id": created.ID,
+		"task_id":    task.ID,
+		"type":       string(messageType),
+	})
+	created, err = s.store.UpdateMessagePayload(s.pendingAgentAuditCtx(r, principal.Agent.ID, "message.delegate_materialized", "task", task.ID, target.SquadID, delegateMeta), created.ID, withTaskID(created.Payload, task.ID), domain.MessageDelivered)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to link delegated task to message")
+		return
+	}
+	if err := s.syncAgentStatusFromPendingWork(r.Context(), target.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to update target agent state")
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
 func (s *Server) claimCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	principal := currentAgent(r.Context())
-	var req struct {
-		StartedAt time.Time `json:"started_at"`
-	}
 	// Lenient decode: the claim body was historically ignored, so unknown
 	// fields and even malformed bodies must not break claiming — they simply
 	// mean "no started_at" (no wake-latency sample).
-	if r.Body != nil && r.ContentLength != 0 {
-		var probe struct {
-			StartedAt string `json:"started_at"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&probe); err == nil && probe.StartedAt != "" {
-			if parsed, err := time.Parse(time.RFC3339, probe.StartedAt); err == nil {
-				req.StartedAt = parsed
-			} else if parsed, err := time.Parse(time.RFC3339Nano, probe.StartedAt); err == nil {
-				req.StartedAt = parsed
-			}
-		}
-	}
+	startedAt := parseClaimStartedAt(r)
 	task, err := s.store.ClaimNextTask(s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.claim", "task", "", principal.Agent.SquadID, nil), principal.Agent.ID, workerIDFromRequest(r, principal.Agent.ID), defaultTaskExecutionLease)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
@@ -3120,7 +3185,7 @@ func (s *Server) claimCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 		return
 	}
-	s.recordWakeLatency(r.Context(), principal.Agent, task.ID, req.StartedAt)
+	s.recordWakeLatency(r.Context(), principal.Agent, task.ID, startedAt)
 	writeJSON(w, http.StatusOK, task)
 }
 
@@ -3181,6 +3246,28 @@ func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	s.setCurrentAgentTaskStatus(w, r, domain.TaskInProgress, domain.AgentBusy, "task.start")
 }
 
+// parseClaimStartedAt leniently extracts a started_at timestamp from the
+// claim request body. Missing bodies, decode failures and unparseable values
+// all yield the zero time (no wake-latency sample).
+func parseClaimStartedAt(r *http.Request) time.Time {
+	if r.Body == nil || r.ContentLength == 0 {
+		return time.Time{}
+	}
+	var probe struct {
+		StartedAt string `json:"started_at"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&probe); err != nil || probe.StartedAt == "" {
+		return time.Time{}
+	}
+	if parsed, err := time.Parse(time.RFC3339, probe.StartedAt); err == nil {
+		return parsed
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, probe.StartedAt); err == nil {
+		return parsed
+	}
+	return time.Time{}
+}
+
 func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Status        domain.TaskStatus `json:"status"`
@@ -3221,32 +3308,39 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 		fmt.Sprintf("Agent %s moved task %q to %s", principal.Agent.Name, updated.Title, req.Status))
 	s.notifyDelegationResult(r.Context(), updated, principal.Agent, string(req.Status), summary)
 	if req.PersistMemory && strings.TrimSpace(req.Summary) != "" {
-		metadata, err := json.Marshal(map[string]any{
-			"kind":         "task_completion",
-			"task_status":  string(req.Status),
-			"execution_id": executionID,
-			"source":       "runtime_completion_summary",
-		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", "failed to prepare memory metadata")
-			return
-		}
-		if _, err := s.store.CreateAgentMemory(r.Context(), &domain.AgentMemory{
-			AgentID:      principal.Agent.ID,
-			SquadID:      updated.SquadID,
-			SourceTaskID: updated.ID,
-			Content:      summary,
-			RawContent:   strings.TrimSpace(req.Summary),
-			TrustLevel:   "raw_model_output",
-			Provenance:   "task_completion",
-			ReviewStatus: "pending_review",
-			Metadata:     metadata,
-		}); err != nil {
-			auditMetadata, _ := json.Marshal(map[string]string{"error": err.Error(), "execution_id": executionID})
-			s.recordAgentAudit(r, principal.Agent.ID, "task.memory_persist_failed", "task", updated.ID, updated.SquadID, auditMetadata)
-		}
+		s.persistCompletionMemory(w, r, principal, updated, summary, strings.TrimSpace(req.Summary), req.Status, executionID)
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// persistCompletionMemory stores the runtime completion summary as raw-model
+// agent memory pending review. A persistence failure is audited but never
+// fails the completion itself.
+func (s *Server) persistCompletionMemory(w http.ResponseWriter, r *http.Request, principal *agentPrincipal, updated *domain.Task, summary, rawSummary string, status domain.TaskStatus, executionID string) {
+	metadata, err := json.Marshal(map[string]any{
+		"kind":         "task_completion",
+		"task_status":  string(status),
+		"execution_id": executionID,
+		"source":       "runtime_completion_summary",
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to prepare memory metadata")
+		return
+	}
+	if _, err := s.store.CreateAgentMemory(r.Context(), &domain.AgentMemory{
+		AgentID:      principal.Agent.ID,
+		SquadID:      updated.SquadID,
+		SourceTaskID: updated.ID,
+		Content:      summary,
+		RawContent:   rawSummary,
+		TrustLevel:   "raw_model_output",
+		Provenance:   "task_completion",
+		ReviewStatus: "pending_review",
+		Metadata:     metadata,
+	}); err != nil {
+		auditMetadata, _ := json.Marshal(map[string]string{"error": err.Error(), "execution_id": executionID})
+		s.recordAgentAudit(r, principal.Agent.ID, "task.memory_persist_failed", "task", updated.ID, updated.SquadID, auditMetadata)
+	}
 }
 
 func (s *Server) reportCurrentAgentTaskWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -3369,26 +3463,12 @@ func (s *Server) currentAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "status is invalid")
 		return
 	}
-	if req.Status == domain.AgentBusy && strings.TrimSpace(req.ExecutionID) != "" {
-		if strings.TrimSpace(req.FencingToken) == "" {
-			writeError(w, http.StatusBadRequest, "bad_request", "fencing_token is required with execution_id")
-			return
-		}
-		if _, err := s.store.HeartbeatTaskExecution(r.Context(), principal.Agent.ID, strings.TrimSpace(req.ExecutionID), strings.TrimSpace(req.FencingToken), defaultTaskExecutionLease); err != nil {
-			writeStorageError(w, err)
-			return
-		}
+	if !s.heartbeatExecutionFence(w, r, principal, req.Status, req.ExecutionID, req.FencingToken) {
+		return
 	}
-	status := req.Status
-	if status == domain.AgentIdle {
-		pending, err := s.agentHasPendingWork(r.Context(), principal.Agent.ID)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		if pending {
-			status = domain.AgentBusy
-		}
+	status, ok := s.resolveHeartbeatStatus(r.Context(), w, principal.Agent.ID, req.Status)
+	if !ok {
+		return
 	}
 	if err := s.setAgentStatusAndMirror(r.Context(), principal.Agent.ID, status); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
@@ -3400,6 +3480,42 @@ func (s *Server) currentAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, agent)
+}
+
+// heartbeatExecutionFence renews the task execution lease when a busy
+// heartbeat carries an execution id. On failure it writes the HTTP error and
+// returns false.
+func (s *Server) heartbeatExecutionFence(w http.ResponseWriter, r *http.Request, principal *agentPrincipal, status domain.AgentStatus, executionID, fencingToken string) bool {
+	if status != domain.AgentBusy || strings.TrimSpace(executionID) == "" {
+		return true
+	}
+	if strings.TrimSpace(fencingToken) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "fencing_token is required with execution_id")
+		return false
+	}
+	if _, err := s.store.HeartbeatTaskExecution(r.Context(), principal.Agent.ID, strings.TrimSpace(executionID), strings.TrimSpace(fencingToken), defaultTaskExecutionLease); err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	return true
+}
+
+// resolveHeartbeatStatus upgrades an idle heartbeat to busy when the agent
+// still has pending work. On storage failure it writes the HTTP error and
+// returns ok=false.
+func (s *Server) resolveHeartbeatStatus(ctx context.Context, w http.ResponseWriter, agentID string, status domain.AgentStatus) (domain.AgentStatus, bool) {
+	if status != domain.AgentIdle {
+		return status, true
+	}
+	pending, err := s.agentHasPendingWork(ctx, agentID)
+	if err != nil {
+		writeStorageError(w, err)
+		return status, false
+	}
+	if pending {
+		return domain.AgentBusy, true
+	}
+	return status, true
 }
 
 func (s *Server) setCurrentAgentTaskStatus(w http.ResponseWriter, r *http.Request, taskStatus domain.TaskStatus, agentStatus domain.AgentStatus, action string) {
@@ -3561,19 +3677,8 @@ func (s *Server) updateTask(w http.ResponseWriter, r *http.Request) {
 	if req.Description != nil {
 		task.Description = *req.Description
 	}
-	if req.AssigneeAgentID != nil {
-		if *req.AssigneeAgentID != "" {
-			agent, err := s.store.GetAgent(r.Context(), *req.AssigneeAgentID)
-			if err != nil {
-				writeStorageError(w, err)
-				return
-			}
-			if agent.SquadID != task.SquadID {
-				writeError(w, http.StatusBadRequest, "bad_request", "assignee_agent_id must belong to this squad")
-				return
-			}
-		}
-		task.AssigneeAgentID = *req.AssigneeAgentID
+	if !s.applyTaskAssigneeChange(r.Context(), w, task, req.AssigneeAgentID) {
+		return
 	}
 
 	updated, err := s.store.UpdateTask(s.pendingUserAuditCtx(r, "task.update", "task", task.ID, task.SquadID, nil), task)
@@ -3586,6 +3691,28 @@ func (s *Server) updateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// applyTaskAssigneeChange validates and applies an assignee change to the
+// task. A non-empty assignee must exist and belong to the task's squad. On
+// failure it writes the HTTP error and returns false.
+func (s *Server) applyTaskAssigneeChange(ctx context.Context, w http.ResponseWriter, task *domain.Task, assigneeAgentID *string) bool {
+	if assigneeAgentID == nil {
+		return true
+	}
+	if *assigneeAgentID != "" {
+		agent, err := s.store.GetAgent(ctx, *assigneeAgentID)
+		if err != nil {
+			writeStorageError(w, err)
+			return false
+		}
+		if agent.SquadID != task.SquadID {
+			writeError(w, http.StatusBadRequest, "bad_request", "assignee_agent_id must belong to this squad")
+			return false
+		}
+	}
+	task.AssigneeAgentID = *assigneeAgentID
+	return true
 }
 
 func (s *Server) moveTask(w http.ResponseWriter, r *http.Request) {
