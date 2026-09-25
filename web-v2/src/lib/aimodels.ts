@@ -340,6 +340,52 @@ export function formatCascadeReport(report: CascadeReport): string {
   return `${op}: ${agents} agent(s) and ${users} user(s) affected${tail}`;
 }
 
+// --- S-125: provider model dropdown helpers -------------------------
+
+export type ProviderModelList = {
+  provider_id: string;
+  models: string[];
+};
+
+// parseProviderModels defensively extracts the model-name list from the
+// control-plane passthrough (GET /registry/llm-providers/{id}/models).
+// Anything malformed degrades to an empty list — the UI then shows the
+// free-text fallback rather than a broken dropdown.
+export function parseProviderModels(body: unknown): string[] {
+  const raw = (body as ProviderModelList | null)?.models;
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const trimmed = item.trim();
+    if (trimmed === "" || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+// filterModelOptions is the combobox filter: case-insensitive substring
+// match; empty query returns the full list.
+export function filterModelOptions(models: string[], query: string): string[] {
+  const q = (query || "").trim().toLowerCase();
+  if (q === "") return models;
+  return models.filter((m) => m.toLowerCase().includes(q));
+}
+
+// modelFieldMode drives the model-name control in the register/edit
+// dialog: no provider yet → disabled; fetch in flight → loading;
+// fetch failed → free-text fallback; otherwise → dropdown.
+export type ModelFieldMode = "none" | "loading" | "fallback" | "dropdown";
+
+export function modelFieldMode(providerSelected: boolean, loading: boolean, error: string): ModelFieldMode {
+  if (!providerSelected) return "none";
+  if (loading) return "loading";
+  if (error !== "") return "fallback";
+  return "dropdown";
+}
+
 // --- Grant editor helpers ----------------------------------------------
 
 export function grantedModelIds(models: AIModel[]): string[] {

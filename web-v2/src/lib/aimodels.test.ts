@@ -3,6 +3,7 @@ import { ApiError } from "./api";
 import {
   buildAIModelPayload,
   emptyAIModelForm,
+  filterModelOptions,
   formFromAIModel,
   formatCascadeReport,
   formatInUseMessage,
@@ -13,7 +14,9 @@ import {
   inUseConflict,
   isDuplicateModel,
   isPlatformAdmin,
+  modelFieldMode,
   modelRowFields,
+  parseProviderModels,
   PRICING_RATE_KEYS,
   withForce,
   type AIModel,
@@ -331,5 +334,58 @@ describe("groupModelsByProvider (S-128)", () => {
     const { groups, orphans } = groupModelsByProvider([], [nestedModel("m-1", "p-x")]);
     expect(groups).toEqual([]);
     expect(orphans.map((m) => m.id)).toEqual(["m-1"]);
+  });
+});
+
+// S-125 — provider model dropdown helpers.
+describe("parseProviderModels", () => {
+  it("extracts a clean, deduped model list", () => {
+    expect(
+      parseProviderModels({
+        provider_id: "p1",
+        models: ["gpt-4o", " gpt-4o-mini ", "gpt-4o", "", 42, null],
+      }),
+    ).toEqual(["gpt-4o", "gpt-4o-mini"]);
+  });
+
+  it("degrades to [] on malformed payloads", () => {
+    expect(parseProviderModels(null)).toEqual([]);
+    expect(parseProviderModels(undefined)).toEqual([]);
+    expect(parseProviderModels({})).toEqual([]);
+    expect(parseProviderModels({ models: "nope" })).toEqual([]);
+  });
+});
+
+describe("filterModelOptions", () => {
+  const models = ["claude-sonnet-4", "gpt-4o", "gpt-4o-mini", "llama3"];
+
+  it("returns everything for an empty query", () => {
+    expect(filterModelOptions(models, "")).toEqual(models);
+    expect(filterModelOptions(models, "   ")).toEqual(models);
+  });
+
+  it("filters case-insensitively by substring", () => {
+    expect(filterModelOptions(models, "GPT")).toEqual(["gpt-4o", "gpt-4o-mini"]);
+    expect(filterModelOptions(models, "mini")).toEqual(["gpt-4o-mini"]);
+    expect(filterModelOptions(models, "nothing-matches")).toEqual([]);
+  });
+});
+
+describe("modelFieldMode", () => {
+  it("disables the field until a provider is selected", () => {
+    expect(modelFieldMode(false, false, "")).toBe("none");
+    expect(modelFieldMode(false, true, "x")).toBe("none");
+  });
+
+  it("prioritises loading over error", () => {
+    expect(modelFieldMode(true, true, "stale error")).toBe("loading");
+  });
+
+  it("falls back to free text when the fetch failed", () => {
+    expect(modelFieldMode(true, false, "boom")).toBe("fallback");
+  });
+
+  it("shows the dropdown on success", () => {
+    expect(modelFieldMode(true, false, "")).toBe("dropdown");
   });
 });

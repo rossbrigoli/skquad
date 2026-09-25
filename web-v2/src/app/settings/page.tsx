@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AuthGate } from "../../components/AuthGate";
 import { AppShell } from "../../components/AppShell";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
@@ -11,6 +11,7 @@ import { useAuth } from "../../lib/auth";
 import { useApi } from "../../lib/useApi";
 import {
   apiDelete,
+  apiGet,
   apiPatch,
   apiPost,
   apiPut,
@@ -21,6 +22,7 @@ import {
 import {
   buildAIModelPayload,
   emptyAIModelForm,
+  filterModelOptions,
   formFromAIModel,
   formatCascadeReport,
   formatInUseMessage,
@@ -30,7 +32,9 @@ import {
   inUseConflict,
   isDuplicateModel,
   isPlatformAdmin,
+  modelFieldMode,
   modelRowFields,
+  parseProviderModels,
   PRICING_RATE_KEYS,
   PRICING_RATE_LABELS,
   withForce,
@@ -597,6 +601,47 @@ function AIModelModal({
   const [values, setValues] = useState<AIModelFormValues>(() => (model ? formFromAIModel(model) : emptyAIModelForm()));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // S-125: live model list from the selected provider's model endpoint.
+  const [providerModels, setProviderModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState("");
+  const [listOpen, setListOpen] = useState(false);
+
+  // Re-query whenever the provider changes. The providerId guard drops
+  // stale responses (fast provider switches must not clobber the new
+  // provider's list). Clearing the provider resets the model name so a
+  // name from another provider can't be submitted by accident.
+  useEffect(() => {
+    const providerId = values.provider_id;
+    if (providerId === "") {
+      setProviderModels([]);
+      setModelsError("");
+      setModelsLoading(false);
+      return;
+    }
+    let active = true;
+    setModelsLoading(true);
+    setModelsError("");
+    setProviderModels([]);
+    void (async () => {
+      try {
+        const body = await apiGet<unknown>(`/registry/llm-providers/${providerId}/models`, token);
+        if (!active) return;
+        setProviderModels(parseProviderModels(body));
+      } catch (err) {
+        if (!active) return;
+        setModelsError(err instanceof Error ? err.message : "model list fetch failed");
+      } finally {
+        if (active) setModelsLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [values.provider_id, token]);
+
+  // (Model name is cleared explicitly in the provider select's onChange —
+  // never implicitly on list load, so an existing edit's value survives.)
 
   function setField<K extends keyof AIModelFormValues>(key: K, value: AIModelFormValues[K]) {
     setValues((v) => ({ ...v, [key]: value }));
@@ -605,6 +650,9 @@ function AIModelModal({
   function setRate(key: (typeof PRICING_RATE_KEYS)[number], raw: string) {
     setValues((v) => ({ ...v, pricing: { ...v.pricing, [key]: raw } }));
   }
+
+  const mode = modelFieldMode(values.provider_id !== "", modelsLoading, modelsError);
+  const visibleModels = filterModelOptions(providerModels, values.model_name);
 
   return (
     <Modal title={model ? `Edit “${model.display_name || model.model_name}”` : "Register AI model"} onClose={onClose}>
@@ -638,7 +686,14 @@ function AIModelModal({
         <div className="field-row">
           <label className="field">
             <span>Provider (credential holder)</span>
-            <select value={values.provider_id} onChange={(e) => setField("provider_id", e.target.value)}>
+            <select
+              value={values.provider_id}
+              onChange={(e) => {
+                setField("provider_id", e.target.value);
+                setField("model_name", "");
+                setListOpen(false);
+              }}
+            >
               <option value="" disabled>
                 Select provider…
               </option>
@@ -649,15 +704,65 @@ function AIModelModal({
               ))}
             </select>
           </label>
-          <label className="field">
+          <div className="field">
             <span>Model name</span>
-            <input
-              value={values.model_name}
-              onChange={(e) => setField("model_name", e.target.value)}
-              placeholder="gpt-6-sol"
-              autoFocus
-            />
-          </label>
+            {mode === "none" ? (
+              <input value="" disabled placeholder="Select a provider first…" />
+            ) : mode === "loading" ? (
+              <input value="" disabled placeholder="Loading models from provider…" />
+            ) : mode === "fallback" ? (
+              <>
+                <input
+                  value={values.model_name}
+                  onChange={(e) => setField("model_name", e.target.value)}
+                  placeholder="gpt-6-sol"
+                  autoFocus
+                />
+                <span className="field-hint">
+                  Couldn&rsquo;t load the provider&rsquo;s model list ({modelsError}) — type the model name manually.
+                </span>
+              </>
+            ) : (
+              <div className="combobox">
+                <input
+                  value={values.model_name}
+                  onChange={(e) => {
+                    setField("model_name", e.target.value);
+                    setListOpen(true);
+                  }}
+                  onFocus={() => setListOpen(true)}
+                  onBlur={() => window.setTimeout(() => setListOpen(false), 120)}
+                  placeholder="Select a model, or type to filter…"
+                  autoFocus
+                  role="combobox"
+                  aria-expanded={listOpen}
+                  aria-label="Model name"
+                />
+                {listOpen ? (
+                  <ul className="combobox-list" role="listbox">
+                    {visibleModels.length === 0 ? (
+                      <li className="combobox-empty">No matching models</li>
+                    ) : (
+                      visibleModels.map((m) => (
+                        <li
+                          key={m}
+                          role="option"
+                          aria-selected={m === values.model_name}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setField("model_name", m);
+                            setListOpen(false);
+                          }}
+                        >
+                          {m}
+                        </li>
+                      ))
+                    )}
+                  </ul>
+                ) : null}
+              </div>
+            )}
+          </div>
         </div>
         <div className="field-row">
           <label className="field">
