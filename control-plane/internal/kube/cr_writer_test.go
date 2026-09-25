@@ -70,12 +70,10 @@ func TestUpsertAgentMapsGeneratedSecretRefs(t *testing.T) {
 		client:       server.Client(),
 	}
 	agent := &domain.Agent{
-		ID:              "agent-1",
-		SquadID:         "squad-1",
-		Role:            "coder",
-		DefaultProvider: "11111111-1111-1111-1111-111111111111",
-		DefaultModel:    "openai/gpt-4o-mini",
-		IdleTimeoutSec:  300,
+		ID:             "agent-1",
+		SquadID:        "squad-1",
+		Role:           "coder",
+		IdleTimeoutSec: 300,
 	}
 	identity := &domain.AgentIdentity{
 		AgentID:       agent.ID,
@@ -102,8 +100,8 @@ func TestUpsertAgentMapsGeneratedSecretRefs(t *testing.T) {
 	if _, present := spec["defaultProviderId"]; present {
 		t.Fatalf("defaultProviderId must be absent from the CR spec after the WP8 cutover")
 	}
-	// No binding resolved → defaultModel is empty; the legacy free-text
-	// default_model must NOT leak into the CR.
+	// WP8 (0014): the legacy free-text default columns are gone from the
+	// domain entirely; with no binding resolved, defaultModel is empty.
 	if got := spec["defaultModel"]; got != "" {
 		t.Fatalf("defaultModel = %v, want empty (binding-derived only)", got)
 	}
@@ -310,8 +308,6 @@ func TestUpsertAgentEmitsModelBindingFields(t *testing.T) {
 		ID:                  "agent-bind",
 		SquadID:             "squad-1",
 		Role:                "coder",
-		DefaultProvider:     "legacy-provider-id",
-		DefaultModel:        "legacy-model",
 		AIModelID:           "ai-primary-uuid",
 		FallbackAIModelID:   "ai-fallback-uuid",
 		AIModelName:         "gpt-6-sol",
@@ -329,7 +325,7 @@ func TestUpsertAgentEmitsModelBindingFields(t *testing.T) {
 	if got := spec["fallbackAiModelId"]; got != "ai-fallback-uuid" {
 		t.Fatalf("fallbackAiModelId = %v, want ai-fallback-uuid", got)
 	}
-	// Resolved binding name wins over the legacy free-text default.
+	// The resolved binding name populates defaultModel.
 	if got := spec["defaultModel"]; got != "gpt-6-sol" {
 		t.Fatalf("defaultModel = %v, want gpt-6-sol", got)
 	}
@@ -360,7 +356,6 @@ func TestUpsertAgentDefaultModelNeverFallsBackToLegacy(t *testing.T) {
 		ID:             "agent-legacy",
 		SquadID:        "squad-1",
 		Role:           "coder",
-		DefaultModel:   "legacy-model",
 		AIModelID:      "ai-unresolved-uuid",
 		IdleTimeoutSec: 300,
 	}
@@ -370,8 +365,9 @@ func TestUpsertAgentDefaultModelNeverFallsBackToLegacy(t *testing.T) {
 
 	spec := gotBody["spec"].(map[string]any)
 	// WP8 step-4 cutover: an unresolved binding leaves defaultModel EMPTY.
-	// The legacy free-text default_model is never a fallback — a stale
-	// binding must surface as a loud runtime error, not silent stale config.
+	// The legacy free-text default_model columns were dropped in 0014 — a
+	// stale binding must surface as a loud runtime error, not silent stale
+	// config.
 	if got := spec["defaultModel"]; got != "" {
 		t.Fatalf("defaultModel = %v, want empty (legacy fallback removed in WP8 step 4)", got)
 	}

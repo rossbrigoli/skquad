@@ -23,8 +23,6 @@ export type Agent = {
   role?: string;
   system_prompt?: string;
   identity_id?: string;
-  default_provider_id?: string;
-  default_model?: string;
   // AI model binding (ADR-0010 D4, WP7). Bound via the agent page's
   // LLM section; PATCH /agents/{id} with "" clears a slot.
   ai_model_id?: string;
@@ -116,9 +114,8 @@ export type LLMProvider = {
   kind: string;
   base_url: string;
   api_key_ref?: string;
-  default_model?: string;
-  models?: unknown;
-  // S-128: provider-level pricing removed — pricing lives only on AIModel.
+  // WP8 (0014): legacy default_model/models removed — model config lives
+  // on AIModel rows (ADR-0010). S-128: pricing lives only on AIModel.
   status: string;
   registered_by?: string;
   created_at?: string;

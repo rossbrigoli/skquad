@@ -37,12 +37,14 @@ func TestSquadAgentTaskFlow(t *testing.T) {
 		"name":                "Architect",
 		"role":                "technical lead",
 		"system_prompt":       "You are a pragmatic architecture lead.",
-		"default_provider_id": "",
-		"default_model":       "openai/gpt-4o-mini",
+		"default_provider_id": "ignored-legacy-field",
+		"default_model":       "ignored-legacy-field",
 	}, http.StatusCreated, &agent)
 	require.NotEmpty(t, agent.ID)
 	require.Equal(t, squad.ID, agent.SquadID)
-	require.Equal(t, "openai/gpt-4o-mini", agent.DefaultModel)
+	// WP8 (0014): legacy default_provider_id/default_model are no longer
+	// accepted; the decoder ignores them.
+	require.Empty(t, agent.AIModelID)
 	require.Equal(t, "You are a pragmatic architecture lead.", agent.SystemPrompt)
 	require.Equal(t, 300, agent.IdleTimeoutSec)
 
@@ -347,24 +349,24 @@ func TestRegistryLLMProviderAndGenericResourceFlow(t *testing.T) {
 		"kind":          "openai-compatible",
 		"base_url":      "http://localhost:8123/v1",
 		"api_key_ref":   "secret/local-llama",
-		"default_model": "ollama/llama3.2",
-		"models":        []string{"ollama/llama3.2"},
+		"default_model": "ignored-legacy-field",
+		"models":        []string{"ignored-legacy-field"},
 	}, http.StatusCreated, &provider)
 	require.NotEmpty(t, provider.ID)
 	require.Equal(t, domain.ResourceActive, provider.Status)
-	require.Equal(t, "ollama/llama3.2", provider.DefaultModel)
+	// WP8 (0014): legacy default_model/models are no longer accepted on
+	// providers; the decoder ignores them.
+	require.Equal(t, "http://localhost:8123/v1", provider.BaseURL)
 
 	var providers []domain.LLMProvider
 	doJSON(t, handler, http.MethodGet, "/api/v1/registry/llm-providers", nil, http.StatusOK, &providers)
 	require.Len(t, providers, 1)
-	require.Equal(t, "ollama/llama3.2", providers[0].DefaultModel)
 
 	var updatedProvider domain.LLMProvider
 	doJSON(t, handler, http.MethodPatch, "/api/v1/registry/llm-providers/"+provider.ID, map[string]any{
-		"default_model": "ollama/qwen2.5-coder",
-		"models":        []string{"ollama/llama3.2", "ollama/qwen2.5-coder"},
+		"base_url": "http://localhost:8124/v1",
 	}, http.StatusOK, &updatedProvider)
-	require.Equal(t, "ollama/qwen2.5-coder", updatedProvider.DefaultModel)
+	require.Equal(t, "http://localhost:8124/v1", updatedProvider.BaseURL)
 
 	var skill domain.RegistryResource
 	doJSON(t, handler, http.MethodPost, "/api/v1/registry/skills", map[string]any{
@@ -843,12 +845,10 @@ func TestAgentIdentityProvisionsLiteLLMVirtualKey(t *testing.T) {
 
 	var provider domain.LLMProvider
 	doJSON(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
-		"name":          "Local Llama",
-		"kind":          "openai",
-		"base_url":      "http://llama.local/v1",
-		"api_key_ref":   "secret/local-llama",
-		"default_model": "openai/local-default",
-		"models":        []string{"openai/local-default", "openai/local-fast"},
+		"name":        "Local Llama",
+		"kind":        "openai",
+		"base_url":    "http://llama.local/v1",
+		"api_key_ref": "secret/local-llama",
 	}, http.StatusCreated, &provider)
 
 	// WP3: the virtual key is compiled from the agent's model binding
@@ -961,12 +961,10 @@ func TestAgentRuntimeResourcesReturnsGrantedActiveResources(t *testing.T) {
 
 	var provider domain.LLMProvider
 	doJSON(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
-		"name":          "Gateway Model",
-		"kind":          "openai-compatible",
-		"base_url":      "http://llm-gateway/v1",
-		"api_key_ref":   "secret/provider-key",
-		"default_model": "gateway/model-a",
-		"models":        []string{"gateway/model-a"},
+		"name":        "Gateway Model",
+		"kind":        "openai-compatible",
+		"base_url":    "http://llm-gateway/v1",
+		"api_key_ref": "secret/provider-key",
 	}, http.StatusCreated, &provider)
 
 	var tool domain.RegistryResource
@@ -1013,7 +1011,10 @@ func TestAgentRuntimeResourcesReturnsGrantedActiveResources(t *testing.T) {
 	require.NotContains(t, resources[0], "api_key_ref")
 	manifest := resources[0]["manifest"].(map[string]any)
 	require.Equal(t, "openai-compatible", manifest["kind"])
-	require.Equal(t, "gateway/model-a", manifest["default_model"])
+	// WP8 (0014): the provider manifest no longer carries legacy
+	// default_model/models.
+	require.NotContains(t, manifest, "default_model")
+	require.NotContains(t, manifest, "models")
 	require.Equal(t, string(domain.ResTool), resources[1]["resource_type"])
 	require.Equal(t, tool.ID, resources[1]["resource_id"])
 	require.NotContains(t, resources[1], "auth_ref")
@@ -2279,11 +2280,9 @@ func TestDeleteLLMProviderInUseWarnsThenForceDeletes(t *testing.T) {
 	}, http.StatusCreated, &agent)
 	var provider domain.LLMProvider
 	doJSON(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
-		"name":          "delete-me-llm",
-		"kind":          "openai",
-		"base_url":      "http://example.invalid",
-		"default_model": "example/model",
-		"models":        []string{"example/model"},
+		"name":     "delete-me-llm",
+		"kind":     "openai",
+		"base_url": "http://example.invalid",
 	}, http.StatusCreated, &provider)
 
 	// The llm_provider grant type is closed at the API (ADR-0010 / S-107);

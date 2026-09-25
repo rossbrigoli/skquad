@@ -73,8 +73,6 @@ type Agent struct {
 	Role            string `json:"role"`
 	SystemPrompt    string `json:"system_prompt,omitempty"`
 	IdentityID      string `json:"identity_id,omitempty"`
-	DefaultProvider string `json:"default_provider_id,omitempty"`
-	DefaultModel    string `json:"default_model,omitempty"`
 	// AIModelID is the bound primary model (ADR-0010 D4). Nullable until the
 	// WP8 backfill makes it required; must be granted to the agent's owner.
 	AIModelID string `json:"ai_model_id,omitempty"`
@@ -390,14 +388,11 @@ type LLMProvider struct {
 	Name         string          `json:"name"`
 	Kind         string          `json:"kind"` // openai, anthropic, ollama, ...
 	BaseURL      string          `json:"base_url"`
-	APIKeyRef    string          `json:"api_key_ref"`
-	DefaultModel string          `json:"default_model,omitempty"`
-	Models       json.RawMessage `json:"models"`
-	// S-128: provider-level Pricing removed from the JSON surface. Pricing
-	// lives exclusively on AIModel (ADR-0010 D8); the legacy
-	// providers.pricing DB column is intentionally left in place (never
-	// edit applied migrations) but is no longer read or written.
-	Status       ResourceStatus  `json:"status"`
+	APIKeyRef    string         `json:"api_key_ref"`
+	// WP8 (0014): legacy default_model / models / pricing fields removed.
+	// Model configuration lives exclusively on ai_models rows bound via
+	// agents.ai_model_id (ADR-0010).
+	Status       ResourceStatus `json:"status"`
 	RegisteredBy string          `json:"registered_by"`
 	CreatedAt    time.Time       `json:"created_at"`
 }
