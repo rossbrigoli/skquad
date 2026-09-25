@@ -25,9 +25,8 @@ const (
 	apiServerName = "skquad-api-server"
 )
 
-func TestSquadReconcilerCreatesNamespace(t *testing.T) {
-	t.Parallel()
-
+func newSquadTestEnv(t *testing.T, objects ...client.Object) (client.Client, *SquadReconciler) {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -35,6 +34,20 @@ func TestSquadReconcilerCreatesNamespace(t *testing.T) {
 	if err := skquadv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objects...).
+		Build()
+	reconciler := &SquadReconciler{
+		Client:                      k8sClient,
+		Scheme:                      scheme,
+		APIServerServiceAccountName: apiServerName,
+	}
+	return k8sClient, reconciler
+}
+
+func TestSquadReconcilerCreatesNamespace(t *testing.T) {
+	t.Parallel()
 
 	squad := &skquadv1.Squad{
 		ObjectMeta: metav1.ObjectMeta{
@@ -49,15 +62,7 @@ func TestSquadReconcilerCreatesNamespace(t *testing.T) {
 		},
 	}
 
-	k8sClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(squad).
-		Build()
-	reconciler := &SquadReconciler{
-		Client:                      k8sClient,
-		Scheme:                      scheme,
-		APIServerServiceAccountName: apiServerName,
-	}
+	k8sClient, reconciler := newSquadTestEnv(t, squad)
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: squad.Name, Namespace: squad.Namespace},
@@ -87,6 +92,30 @@ func TestSquadReconcilerCreatesNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	verifySquadSecretWriterRBAC(t, k8sClient, squad)
+	verifySquadEgressPolicies(t, k8sClient, squad)
+
+	var quota corev1.ResourceQuota
+	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: defaultSquadQuotaName, Namespace: squad.Spec.Namespace}, &quota); err != nil {
+		t.Fatal(err)
+	}
+	if got := quota.Spec.Hard.Pods().String(); got != defaultSquadPodQuota {
+		t.Fatalf("pod quota = %q, want %q", got, defaultSquadPodQuota)
+	}
+
+	var updatedSquad skquadv1.Squad
+	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: squad.Name, Namespace: squad.Namespace}, &updatedSquad); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(&updatedSquad, squadFinalizer) {
+		t.Fatalf("squad finalizers = %#v, want %q", updatedSquad.Finalizers, squadFinalizer)
+	}
+}
+
+// verifySquadSecretWriterRBAC asserts the api secret-writer Role and
+// RoleBinding created in the squad namespace.
+func verifySquadSecretWriterRBAC(t *testing.T, k8sClient client.Client, squad *skquadv1.Squad) {
+	t.Helper()
 	var secretRole rbacv1.Role
 	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: apiSecretWriterRoleName, Namespace: squad.Spec.Namespace}, &secretRole); err != nil {
 		t.Fatal(err)
@@ -104,7 +133,12 @@ func TestSquadReconcilerCreatesNamespace(t *testing.T) {
 	if got := secretBinding.Subjects[0]; got.Name != apiServerName || got.Namespace != squad.Namespace {
 		t.Fatalf("secret writer subject = %#v, want skquad-system/skquad-api-server", got)
 	}
+}
 
+// verifySquadEgressPolicies asserts the default-deny, DNS egress, and
+// platform egress NetworkPolicies created in the squad namespace.
+func verifySquadEgressPolicies(t *testing.T, k8sClient client.Client, squad *skquadv1.Squad) {
+	t.Helper()
 	var policy networkingv1.NetworkPolicy
 	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: defaultDenyPolicyName, Namespace: squad.Spec.Namespace}, &policy); err != nil {
 		t.Fatal(err)
@@ -146,22 +180,6 @@ func TestSquadReconcilerCreatesNamespace(t *testing.T) {
 	}
 	if got := platformPolicy.Spec.Egress[0].Ports[0].Port.StrVal; got != "http" {
 		t.Fatalf("platform egress port = %q, want http", got)
-	}
-
-	var quota corev1.ResourceQuota
-	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: defaultSquadQuotaName, Namespace: squad.Spec.Namespace}, &quota); err != nil {
-		t.Fatal(err)
-	}
-	if got := quota.Spec.Hard.Pods().String(); got != defaultSquadPodQuota {
-		t.Fatalf("pod quota = %q, want %q", got, defaultSquadPodQuota)
-	}
-
-	var updatedSquad skquadv1.Squad
-	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: squad.Name, Namespace: squad.Namespace}, &updatedSquad); err != nil {
-		t.Fatal(err)
-	}
-	if !controllerutil.ContainsFinalizer(&updatedSquad, squadFinalizer) {
-		t.Fatalf("squad finalizers = %#v, want %q", updatedSquad.Finalizers, squadFinalizer)
 	}
 }
 

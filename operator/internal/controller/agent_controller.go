@@ -54,24 +54,14 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if agent.ObjectMeta.DeletionTimestamp.IsZero() {
-		if controllerutil.AddFinalizer(&agent, agentFinalizer) {
-			if err := r.Update(ctx, &agent); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{Requeue: true}, nil
+	if !agent.ObjectMeta.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, &agent)
+	}
+	if controllerutil.AddFinalizer(&agent, agentFinalizer) {
+		if err := r.Update(ctx, &agent); err != nil {
+			return ctrl.Result{}, err
 		}
-	} else {
-		if controllerutil.ContainsFinalizer(&agent, agentFinalizer) {
-			if err := r.cleanupAgent(ctx, &agent); err != nil {
-				return ctrl.Result{}, err
-			}
-			controllerutil.RemoveFinalizer(&agent, agentFinalizer)
-			if err := r.Update(ctx, &agent); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	namespace, err := r.squadNamespaceForAgent(ctx, &agent)
@@ -84,77 +74,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 	replicas := desiredReplicas(&agent, deployment, time.Now)
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
-		replicas = desiredReplicas(&agent, deployment, time.Now)
-		labels := agentLabels(&agent)
-		ensureAgentLabels(&deployment.Labels, &agent)
-		deployment.Spec.Replicas = &replicas
-		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
-		deployment.Spec.Template.ObjectMeta.Labels = labels
-		deployment.Spec.Template.Spec.ServiceAccountName = agentServiceAccountName
-		// The agent runtime never talks to the Kubernetes API; credentials
-		// arrive via projected Secret volumes. Keep the (permissionless) SA
-		// token out of the pod entirely and harden the container.
-		deployment.Spec.Template.Spec.AutomountServiceAccountToken = boolPtr(false)
-		container := corev1.Container{
-			Name:  agentContainerName,
-			Image: agentImage(&agent),
-			Ports: []corev1.ContainerPort{{
-				Name:          "http",
-				ContainerPort: runtimeHTTPPort,
-				Protocol:      corev1.ProtocolTCP,
-			}},
-			Env: []corev1.EnvVar{
-				{Name: "SKQUAD_AGENT_ID", Value: agent.Spec.AgentID},
-				{Name: "SKQUAD_SQUAD_ID", Value: agent.Spec.SquadID},
-				{Name: "SKQUAD_AGENT_ROLE", Value: agent.Spec.Role},
-				{Name: "SKQUAD_AGENT_SYSTEM_PROMPT", Value: agent.Spec.SystemPrompt},
-				// WP8 step-4 cutover: SKQUAD_DEFAULT_PROVIDER_ID is gone — the
-				// legacy provider-uuid env is no longer injected. SKQUAD_DEFAULT_MODEL
-				// now carries ONLY the resolved bound AI Model name (control-plane
-				// CR writer); unbound agents get an empty value and the runtime
-				// fails loudly instead of serving stale legacy config.
-				{Name: "SKQUAD_DEFAULT_MODEL", Value: agent.Spec.DefaultModel},
-				// WP5 (ADR-0010): the binding itself, so the runtime and any
-				// in-pod tooling can see which AI Model the agent is bound to
-				// and which fallback the gateway may serve. SKQUAD_DEFAULT_MODEL
-				// above stays populated from the AI Model's model_name (via the
-				// control-plane CR writer) so the runtime resolves the bound
-				// model without changes.
-				{Name: "SKQUAD_AI_MODEL_ID", Value: agent.Spec.AIModelID},
-				{Name: "SKQUAD_FALLBACK_MODEL_ID", Value: agent.Spec.FallbackAIModelID},
-				{Name: "SKQUAD_IDLE_TIMEOUT", Value: agent.Spec.IdleTimeout},
-				{Name: "SKQUAD_RUNTIME_PORT", Value: fmt.Sprintf("%d", runtimeHTTPPort)},
-				{Name: "SKQUAD_CREDENTIALS_DIR", Value: credentialsMount},
-				{Name: "SKQUAD_AGENT_CREDENTIAL_PATH", Value: credentialsMount + "/agent"},
-				{Name: "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH", Value: credentialsMount + "/llm-gateway"},
-				{Name: "SKQUAD_CONTROL_PLANE_URL", Value: agent.Spec.ControlPlaneURL},
-				{Name: "SKQUAD_LLM_GATEWAY_URL", Value: agent.Spec.LLMGatewayURL},
-				{Name: "SKQUAD_TASK_LOOP_ENABLED", Value: "true"},
-				{Name: "SKQUAD_TASK_POLL_INTERVAL_SECONDS", Value: envOrDefault("SKQUAD_AGENT_TASK_POLL_INTERVAL_SECONDS", "30")},
-				{Name: "SKQUAD_INBOX_POLL_INTERVAL_SECONDS", Value: envOrDefault("SKQUAD_AGENT_INBOX_POLL_INTERVAL_SECONDS", "30")},
-				{Name: "SKQUAD_INBOX_BATCH_SIZE", Value: envOrDefault("SKQUAD_AGENT_INBOX_BATCH_SIZE", "5")},
-				{Name: "SKQUAD_TASK_TIMEOUT_SECONDS", Value: envOrDefault("SKQUAD_AGENT_TASK_TIMEOUT_SECONDS", "900")},
-				{Name: "SKQUAD_MAX_LLM_STEPS", Value: envOrDefault("SKQUAD_AGENT_MAX_LLM_STEPS", "8")},
-				{Name: "SKQUAD_TASK_SUMMARY_MAX_CHARS", Value: envOrDefault("SKQUAD_AGENT_TASK_SUMMARY_MAX_CHARS", "4000")},
-			},
-			LivenessProbe:  httpProbe("/healthz"),
-			ReadinessProbe: httpProbe("/readyz"),
-			Resources:      agentResourceRequirements(),
-			SecurityContext: &corev1.SecurityContext{
-				RunAsNonRoot:             boolPtr(true),
-				AllowPrivilegeEscalation: boolPtr(false),
-				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-				SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-			},
-		}
-		volumes := agentSecretVolumes(&agent)
-		if len(volumes) > 0 {
-			container.VolumeMounts = agentSecretVolumeMounts(&agent)
-			deployment.Spec.Template.Spec.Volumes = volumes
-		} else {
-			deployment.Spec.Template.Spec.Volumes = nil
-		}
-		deployment.Spec.Template.Spec.Containers = []corev1.Container{container}
+		// Recompute inside the closure: CreateOrUpdate fetches the current
+		// Deployment first, and desiredReplicas depends on its current
+		// spec.replicas (idle scale-down logic).
+		replicas = r.applyAgentDeploymentSpec(&agent, deployment)
 		return nil
 	})
 	if err != nil {
@@ -165,6 +88,110 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// mounts applied, pod actually ready) — never from "CR write succeeded".
 	ready, reason, message := r.evaluateAgentReadiness(ctx, &agent, deployment, namespace, replicas)
 
+	return r.updateAgentStatus(ctx, &agent, deployment, ready, reason, message, replicas)
+}
+
+// reconcileDelete handles an Agent that is being deleted: it cleans up the
+// managed resources and removes the finalizer.
+func (r *AgentReconciler) reconcileDelete(ctx context.Context, agent *skquadv1.Agent) (ctrl.Result, error) {
+	if controllerutil.ContainsFinalizer(agent, agentFinalizer) {
+		if err := r.cleanupAgent(ctx, agent); err != nil {
+			return ctrl.Result{}, err
+		}
+		controllerutil.RemoveFinalizer(agent, agentFinalizer)
+		if err := r.Update(ctx, agent); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{}, nil
+}
+
+// applyAgentDeploymentSpec sets the desired Deployment state for the agent
+// and returns the desired replica count computed against the Deployment's
+// current state.
+func (r *AgentReconciler) applyAgentDeploymentSpec(agent *skquadv1.Agent, deployment *appsv1.Deployment) int32 {
+	replicas := desiredReplicas(agent, deployment, time.Now)
+	labels := agentLabels(agent)
+	ensureAgentLabels(&deployment.Labels, agent)
+	deployment.Spec.Replicas = &replicas
+	deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
+	deployment.Spec.Template.ObjectMeta.Labels = labels
+	deployment.Spec.Template.Spec.ServiceAccountName = agentServiceAccountName
+	// The agent runtime never talks to the Kubernetes API; credentials
+	// arrive via projected Secret volumes. Keep the (permissionless) SA
+	// token out of the pod entirely and harden the container.
+	deployment.Spec.Template.Spec.AutomountServiceAccountToken = boolPtr(false)
+	container := corev1.Container{
+		Name:  agentContainerName,
+		Image: agentImage(agent),
+		Ports: []corev1.ContainerPort{{
+			Name:          "http",
+			ContainerPort: runtimeHTTPPort,
+			Protocol:      corev1.ProtocolTCP,
+		}},
+		Env:            agentEnv(agent),
+		LivenessProbe:  httpProbe("/healthz"),
+		ReadinessProbe: httpProbe("/readyz"),
+		Resources:      agentResourceRequirements(),
+		SecurityContext: &corev1.SecurityContext{
+			RunAsNonRoot:             boolPtr(true),
+			AllowPrivilegeEscalation: boolPtr(false),
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+		},
+	}
+	volumes := agentSecretVolumes(agent)
+	if len(volumes) > 0 {
+		container.VolumeMounts = agentSecretVolumeMounts(agent)
+		deployment.Spec.Template.Spec.Volumes = volumes
+	} else {
+		deployment.Spec.Template.Spec.Volumes = nil
+	}
+	deployment.Spec.Template.Spec.Containers = []corev1.Container{container}
+	return replicas
+}
+
+// agentEnv builds the container environment for the agent runtime.
+func agentEnv(agent *skquadv1.Agent) []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "SKQUAD_AGENT_ID", Value: agent.Spec.AgentID},
+		{Name: "SKQUAD_SQUAD_ID", Value: agent.Spec.SquadID},
+		{Name: "SKQUAD_AGENT_ROLE", Value: agent.Spec.Role},
+		{Name: "SKQUAD_AGENT_SYSTEM_PROMPT", Value: agent.Spec.SystemPrompt},
+		// WP8 step-4 cutover: SKQUAD_DEFAULT_PROVIDER_ID is gone — the
+		// legacy provider-uuid env is no longer injected. SKQUAD_DEFAULT_MODEL
+		// now carries ONLY the resolved bound AI Model name (control-plane
+		// CR writer); unbound agents get an empty value and the runtime
+		// fails loudly instead of serving stale legacy config.
+		{Name: "SKQUAD_DEFAULT_MODEL", Value: agent.Spec.DefaultModel},
+		// WP5 (ADR-0010): the binding itself, so the runtime and any
+		// in-pod tooling can see which AI Model the agent is bound to
+		// and which fallback the gateway may serve. SKQUAD_DEFAULT_MODEL
+		// above stays populated from the AI Model's model_name (via the
+		// control-plane CR writer) so the runtime resolves the bound
+		// model without changes.
+		{Name: "SKQUAD_AI_MODEL_ID", Value: agent.Spec.AIModelID},
+		{Name: "SKQUAD_FALLBACK_MODEL_ID", Value: agent.Spec.FallbackAIModelID},
+		{Name: "SKQUAD_IDLE_TIMEOUT", Value: agent.Spec.IdleTimeout},
+		{Name: "SKQUAD_RUNTIME_PORT", Value: fmt.Sprintf("%d", runtimeHTTPPort)},
+		{Name: "SKQUAD_CREDENTIALS_DIR", Value: credentialsMount},
+		{Name: "SKQUAD_AGENT_CREDENTIAL_PATH", Value: credentialsMount + "/agent"},
+		{Name: "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH", Value: credentialsMount + "/llm-gateway"},
+		{Name: "SKQUAD_CONTROL_PLANE_URL", Value: agent.Spec.ControlPlaneURL},
+		{Name: "SKQUAD_LLM_GATEWAY_URL", Value: agent.Spec.LLMGatewayURL},
+		{Name: "SKQUAD_TASK_LOOP_ENABLED", Value: "true"},
+		{Name: "SKQUAD_TASK_POLL_INTERVAL_SECONDS", Value: envOrDefault("SKQUAD_AGENT_TASK_POLL_INTERVAL_SECONDS", "30")},
+		{Name: "SKQUAD_INBOX_POLL_INTERVAL_SECONDS", Value: envOrDefault("SKQUAD_AGENT_INBOX_POLL_INTERVAL_SECONDS", "30")},
+		{Name: "SKQUAD_INBOX_BATCH_SIZE", Value: envOrDefault("SKQUAD_AGENT_INBOX_BATCH_SIZE", "5")},
+		{Name: "SKQUAD_TASK_TIMEOUT_SECONDS", Value: envOrDefault("SKQUAD_AGENT_TASK_TIMEOUT_SECONDS", "900")},
+		{Name: "SKQUAD_MAX_LLM_STEPS", Value: envOrDefault("SKQUAD_AGENT_MAX_LLM_STEPS", "8")},
+		{Name: "SKQUAD_TASK_SUMMARY_MAX_CHARS", Value: envOrDefault("SKQUAD_AGENT_TASK_SUMMARY_MAX_CHARS", "4000")},
+	}
+}
+
+// updateAgentStatus persists the derived readiness state and chooses the
+// next requeue behaviour.
+func (r *AgentReconciler) updateAgentStatus(ctx context.Context, agent *skquadv1.Agent, deployment *appsv1.Deployment, ready bool, reason, message string, replicas int32) (ctrl.Result, error) {
 	agent.Status.ReadyDeployment = deployment.Name
 	agent.Status.Replicas = replicas
 	agent.Status.Ready = ready
@@ -174,7 +201,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		agent.Status.Phase = "Progressing"
 	}
 	agent.Status.Reason = reason
-	updateIdleSince(&agent, time.Now)
+	updateIdleSince(agent, time.Now)
 	agent.Status.UpdatedAt = metav1.Now()
 	conditionStatus := metav1.ConditionFalse
 	if ready {
@@ -187,7 +214,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		Message:            message,
 		ObservedGeneration: agent.Generation,
 	})
-	if err := r.Status().Update(ctx, &agent); err != nil {
+	if err := r.Status().Update(ctx, agent); err != nil {
 		if apierrors.IsConflict(err) {
 			// Lost a status race; re-check shortly instead of stalling.
 			return ctrl.Result{RequeueAfter: readinessRequeue}, nil
@@ -202,7 +229,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// are retried instead of being silently accepted (S-104).
 		return ctrl.Result{RequeueAfter: readinessRequeue}, nil
 	}
-	return idleRequeue(&agent, replicas, time.Now), nil
+	return idleRequeue(agent, replicas, time.Now), nil
 }
 
 // evaluateAgentReadiness derives the agent's Ready condition from real cluster

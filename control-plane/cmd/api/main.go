@@ -30,7 +30,10 @@ func main() {
 	var closeStore func()
 	if cfg.DatabaseURL == "" {
 		store = storage.NewMemoryStore()
-		closeStore = func() {}
+		closeStore = func() {
+			// Intentionally empty: the in-memory store holds no external
+			// resources, so there is nothing to release on shutdown.
+		}
 		slog.Info("using in-memory control-plane store")
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

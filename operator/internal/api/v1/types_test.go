@@ -240,30 +240,36 @@ func TestCRDsAreStructurallyValid(t *testing.T) {
 func TestCRDSingleServedVersion(t *testing.T) {
 	for _, file := range []string{squadsCRDFile, agentsCRDFile} {
 		t.Run(file, func(t *testing.T) {
-			crd := loadCRD(t, file)
-			if len(crd.Spec.Versions) != 1 {
-				t.Fatalf("versions = %d, want exactly 1; a second version requires conversion tests", len(crd.Spec.Versions))
-			}
-			v := crd.Spec.Versions[0]
-			if v.Name != skquadv1.Version {
-				t.Errorf("version name = %q, want %q", v.Name, skquadv1.Version)
-			}
-			if !v.Served {
-				t.Error("version is not served")
-			}
-			if !v.Storage {
-				t.Error("version is not the storage version")
-			}
-			if crd.Spec.Group != skquadv1.Group {
-				t.Errorf("group = %q, want %q", crd.Spec.Group, skquadv1.Group)
-			}
-			if string(crd.Spec.Scope) != "Namespaced" {
-				t.Errorf("scope = %q, want Namespaced", crd.Spec.Scope)
-			}
-			if v.Subresources == nil || v.Subresources.Status == nil {
-				t.Error("status subresource not declared; spec/status split will not be enforced by the API server")
-			}
+			assertSingleServedVersion(t, loadCRD(t, file))
 		})
+	}
+}
+
+// assertSingleServedVersion checks a CRD exposes exactly one served/storage
+// version with the expected group, scope, and status subresource.
+func assertSingleServedVersion(t *testing.T, crd *apiextensionsv1.CustomResourceDefinition) {
+	t.Helper()
+	if len(crd.Spec.Versions) != 1 {
+		t.Fatalf("versions = %d, want exactly 1; a second version requires conversion tests", len(crd.Spec.Versions))
+	}
+	v := crd.Spec.Versions[0]
+	if v.Name != skquadv1.Version {
+		t.Errorf("version name = %q, want %q", v.Name, skquadv1.Version)
+	}
+	if !v.Served {
+		t.Error("version is not served")
+	}
+	if !v.Storage {
+		t.Error("version is not the storage version")
+	}
+	if crd.Spec.Group != skquadv1.Group {
+		t.Errorf("group = %q, want %q", crd.Spec.Group, skquadv1.Group)
+	}
+	if string(crd.Spec.Scope) != "Namespaced" {
+		t.Errorf("scope = %q, want Namespaced", crd.Spec.Scope)
+	}
+	if v.Subresources == nil || v.Subresources.Status == nil {
+		t.Error("status subresource not declared; spec/status split will not be enforced by the API server")
 	}
 }
 
@@ -283,36 +289,42 @@ func TestGoTypesMatchCRDProperties(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.kind, func(t *testing.T) {
-			crd := loadCRD(t, tc.file)
-			if crd.Spec.Names.Kind != tc.kind {
-				t.Fatalf("CRD kind = %q, want %q", crd.Spec.Names.Kind, tc.kind)
-			}
-			schemaProps := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties
-
-			goFields := jsonFieldNames(tc.specType)
-
-			missingInCRD := []string{}
-			for name := range goFields {
-				if _, ok := schemaProps[name]; !ok {
-					missingInCRD = append(missingInCRD, name)
-				}
-			}
-			if len(missingInCRD) > 0 {
-				sort.Strings(missingInCRD)
-				t.Errorf("Go %sSpec fields absent from CRD schema (they will be pruned by the API server): %v", tc.kind, missingInCRD)
-			}
-
-			missingInGo := []string{}
-			for name := range schemaProps {
-				if _, ok := goFields[name]; !ok {
-					missingInGo = append(missingInGo, name)
-				}
-			}
-			if len(missingInGo) > 0 {
-				sort.Strings(missingInGo)
-				t.Errorf("CRD schema properties absent from Go %sSpec (they will be silently dropped): %v", tc.kind, missingInGo)
-			}
+			assertGoSpecMatchesCRD(t, loadCRD(t, tc.file), tc.kind, tc.specType)
 		})
+	}
+}
+
+// assertGoSpecMatchesCRD compares the JSON field names of a Go spec type
+// with the CRD's spec schema properties in both directions.
+func assertGoSpecMatchesCRD(t *testing.T, crd *apiextensionsv1.CustomResourceDefinition, kind string, specType reflect.Type) {
+	t.Helper()
+	if crd.Spec.Names.Kind != kind {
+		t.Fatalf("CRD kind = %q, want %q", crd.Spec.Names.Kind, kind)
+	}
+	schemaProps := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties
+
+	goFields := jsonFieldNames(specType)
+
+	missingInCRD := []string{}
+	for name := range goFields {
+		if _, ok := schemaProps[name]; !ok {
+			missingInCRD = append(missingInCRD, name)
+		}
+	}
+	if len(missingInCRD) > 0 {
+		sort.Strings(missingInCRD)
+		t.Errorf("Go %sSpec fields absent from CRD schema (they will be pruned by the API server): %v", kind, missingInCRD)
+	}
+
+	missingInGo := []string{}
+	for name := range schemaProps {
+		if _, ok := goFields[name]; !ok {
+			missingInGo = append(missingInGo, name)
+		}
+	}
+	if len(missingInGo) > 0 {
+		sort.Strings(missingInGo)
+		t.Errorf("CRD schema properties absent from Go %sSpec (they will be silently dropped): %v", kind, missingInGo)
 	}
 }
 
@@ -445,25 +457,32 @@ func TestCustomResourceValidation(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var obj map[string]interface{}
-			if err := json.Unmarshal([]byte(tc.object), &obj); err != nil {
-				t.Fatalf("unmarshal test object: %v", err)
-			}
-			errs := apiservalidation.ValidateCustomResource(field.NewPath(""), obj, validator)
-			if tc.wantError == "" {
-				if len(errs) > 0 {
-					t.Fatalf("unexpected validation errors: %v", errs.ToAggregate())
-				}
-				return
-			}
-			if len(errs) == 0 {
-				t.Fatalf("expected validation error mentioning %q, got none", tc.wantError)
-			}
-			msg := errs.ToAggregate().Error()
-			if !strings.Contains(msg, tc.wantError) {
-				t.Errorf("expected error to mention %q, got: %s", tc.wantError, msg)
-			}
+			assertCustomResourceValidation(t, validator, tc.object, tc.wantError)
 		})
+	}
+}
+
+// assertCustomResourceValidation validates a JSON object against a CRD
+// schema validator and checks the expected error (or absence of errors).
+func assertCustomResourceValidation(t *testing.T, validator apiservalidation.SchemaValidator, object, wantError string) {
+	t.Helper()
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(object), &obj); err != nil {
+		t.Fatalf("unmarshal test object: %v", err)
+	}
+	errs := apiservalidation.ValidateCustomResource(field.NewPath(""), obj, validator)
+	if wantError == "" {
+		if len(errs) > 0 {
+			t.Fatalf("unexpected validation errors: %v", errs.ToAggregate())
+		}
+		return
+	}
+	if len(errs) == 0 {
+		t.Fatalf("expected validation error mentioning %q, got none", wantError)
+	}
+	msg := errs.ToAggregate().Error()
+	if !strings.Contains(msg, wantError) {
+		t.Errorf("expected error to mention %q, got: %s", wantError, msg)
 	}
 }
 
@@ -639,28 +658,33 @@ func jsonFieldNames(t reflect.Type) map[string]jsonField {
 
 func jsonPathExists(t reflect.Type, segments []string) bool {
 	for i, seg := range segments {
-		for t.Kind() == reflect.Ptr {
-			t = t.Elem()
-		}
-		if t.Kind() != reflect.Struct {
-			return false
-		}
-		found := false
-		for f := 0; f < t.NumField(); f++ {
-			name, _, _ := strings.Cut(t.Field(f).Tag.Get("json"), ",")
-			if name == seg {
-				t = t.Field(f).Type
-				found = true
-				break
-			}
-		}
-		if !found {
+		next, ok := stepJSONPath(t, seg)
+		if !ok {
 			// metadata is inlined from metav1 and always present.
 			if i == 0 && seg == "metadata" {
 				return true
 			}
 			return false
 		}
+		t = next
 	}
 	return true
+}
+
+// stepJSONPath resolves a single JSON path segment against a Go type and
+// returns the referenced field's type.
+func stepJSONPath(t reflect.Type, seg string) (reflect.Type, bool) {
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil, false
+	}
+	for f := 0; f < t.NumField(); f++ {
+		name, _, _ := strings.Cut(t.Field(f).Tag.Get("json"), ",")
+		if name == seg {
+			return t.Field(f).Type, true
+		}
+	}
+	return nil, false
 }

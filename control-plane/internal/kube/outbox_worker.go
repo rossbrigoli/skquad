@@ -90,32 +90,45 @@ func deriveWorkspaceSecrets(ctx context.Context, reader workspaceGrantReader, ag
 		if perm.ResourceType != domain.ResProjectWorkspace {
 			continue
 		}
-		res, err := reader.GetResource(ctx, domain.ResProjectWorkspace, perm.ResourceID)
+		ws, err := workspaceSecretForGrant(ctx, reader, agent.ID, perm)
 		if err != nil {
-			if errors.Is(err, storage.ErrNotFound) {
-				slog.Warn("workspace grant points at missing resource; skipping", "agent", agent.ID, "resource", perm.ResourceID)
-				continue
-			}
-			return nil, fmt.Errorf("derive workspace secrets: resource %s: %w", perm.ResourceID, err)
+			return nil, err
 		}
-		if res.Status != domain.ResourceActive {
-			continue
+		if ws != nil {
+			secrets = append(secrets, *ws)
 		}
-		var manifest struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal(res.Manifest, &manifest); err != nil || manifest.Kind != "git" {
-			continue
-		}
-		secretName := secretNameFromRef(res.AuthRef)
-		if secretName == "" {
-			slog.Warn("workspace resource has no usable auth_ref secret; skipping", "resource", res.ID)
-			continue
-		}
-		secrets = append(secrets, domain.WorkspaceSecret{ResourceID: res.ID, SecretName: secretName})
 	}
 	sort.Slice(secrets, func(i, j int) bool { return secrets[i].ResourceID < secrets[j].ResourceID })
 	return secrets, nil
+}
+
+// workspaceSecretForGrant resolves one workspace grant to its Kubernetes
+// Secret. It returns (nil, nil) when the grant must be skipped (missing,
+// inactive, non-git, or unusable auth ref).
+func workspaceSecretForGrant(ctx context.Context, reader workspaceGrantReader, agentID string, perm *domain.AgentPermission) (*domain.WorkspaceSecret, error) {
+	res, err := reader.GetResource(ctx, domain.ResProjectWorkspace, perm.ResourceID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			slog.Warn("workspace grant points at missing resource; skipping", "agent", agentID, "resource", perm.ResourceID)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("derive workspace secrets: resource %s: %w", perm.ResourceID, err)
+	}
+	if res.Status != domain.ResourceActive {
+		return nil, nil
+	}
+	var manifest struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(res.Manifest, &manifest); err != nil || manifest.Kind != "git" {
+		return nil, nil
+	}
+	secretName := secretNameFromRef(res.AuthRef)
+	if secretName == "" {
+		slog.Warn("workspace resource has no usable auth_ref secret; skipping", "resource", res.ID)
+		return nil, nil
+	}
+	return &domain.WorkspaceSecret{ResourceID: res.ID, SecretName: secretName}, nil
 }
 
 // aiModelResolver resolves bound AI Model ids to their registry rows.

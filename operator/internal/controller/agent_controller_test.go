@@ -28,9 +28,8 @@ const (
 	squadPrefix       = "squad-"
 )
 
-func TestAgentReconcilerCreatesDeployment(t *testing.T) {
-	t.Parallel()
-
+func newAgentTestEnv(t *testing.T, objects ...client.Object) (client.Client, *AgentReconciler) {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -38,6 +37,16 @@ func TestAgentReconcilerCreatesDeployment(t *testing.T) {
 	if err := skquadv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objects...).
+		Build()
+	reconciler := &AgentReconciler{Client: k8sClient, Scheme: scheme}
+	return k8sClient, reconciler
+}
+
+func TestAgentReconcilerCreatesDeployment(t *testing.T) {
+	t.Parallel()
 
 	squad := &skquadv1.Squad{
 		ObjectMeta: metav1.ObjectMeta{Name: "squad-test", Namespace: testNamespace},
@@ -63,11 +72,7 @@ func TestAgentReconcilerCreatesDeployment(t *testing.T) {
 		},
 	}
 
-	k8sClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(squad, agent).
-		Build()
-	reconciler := &AgentReconciler{Client: k8sClient, Scheme: scheme}
+	k8sClient, reconciler := newAgentTestEnv(t, squad, agent)
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace},
@@ -107,6 +112,43 @@ func TestAgentReconcilerCreatesDeployment(t *testing.T) {
 	if container.ReadinessProbe == nil || container.ReadinessProbe.HTTPGet.Path != "/readyz" {
 		t.Fatalf("readiness probe = %#v, want /readyz", container.ReadinessProbe)
 	}
+	verifyAgentRuntimeEnv(t, container, agent)
+	if got := deployment.Spec.Template.Labels[LabelAgentID]; got != agent.Spec.AgentID {
+		t.Fatalf("agent label = %q, want %q", got, agent.Spec.AgentID)
+	}
+	if got := len(deployment.Spec.Template.Spec.Volumes); got != 2 {
+		t.Fatalf("volume count = %d, want 2", got)
+	}
+	if got := deployment.Spec.Template.Spec.Volumes[0].Secret.SecretName; got != agent.Spec.CredentialSecret {
+		t.Fatalf("credential secret = %q, want %q", got, agent.Spec.CredentialSecret)
+	}
+	if got := deployment.Spec.Template.Spec.Volumes[1].Secret.SecretName; got != agent.Spec.VirtualKeySecret {
+		t.Fatalf("virtual key secret = %q, want %q", got, agent.Spec.VirtualKeySecret)
+	}
+	mounts := deployment.Spec.Template.Spec.Containers[0].VolumeMounts
+	if got := len(mounts); got != 2 {
+		t.Fatalf("volume mount count = %d, want 2", got)
+	}
+	if got := mounts[0].MountPath; got != credentialsMount+credentialSubPath {
+		t.Fatalf("credential mount path = %q, want %q", got, credentialsMount+credentialSubPath)
+	}
+	if !mounts[0].ReadOnly || !mounts[1].ReadOnly {
+		t.Fatal("secret mounts must be read-only")
+	}
+
+	var updatedAgent skquadv1.Agent
+	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: agent.Name, Namespace: agent.Namespace}, &updatedAgent); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(&updatedAgent, agentFinalizer) {
+		t.Fatalf("agent finalizers = %#v, want %q", updatedAgent.Finalizers, agentFinalizer)
+	}
+}
+
+// verifyAgentRuntimeEnv asserts the agent runtime environment variables on
+// the reconciled container.
+func verifyAgentRuntimeEnv(t *testing.T, container corev1.Container, agent *skquadv1.Agent) {
+	t.Helper()
 	if got := envValue(container.Env, "SKQUAD_AGENT_CREDENTIAL_PATH"); got != credentialsMount+credentialSubPath {
 		t.Fatalf("credential path env = %q, want %q", got, credentialsMount+credentialSubPath)
 	}
@@ -148,36 +190,6 @@ func TestAgentReconcilerCreatesDeployment(t *testing.T) {
 	}
 	if got := envValue(container.Env, "SKQUAD_TASK_SUMMARY_MAX_CHARS"); got != "4000" {
 		t.Fatalf("summary max chars env = %q, want 4000", got)
-	}
-	if got := deployment.Spec.Template.Labels[LabelAgentID]; got != agent.Spec.AgentID {
-		t.Fatalf("agent label = %q, want %q", got, agent.Spec.AgentID)
-	}
-	if got := len(deployment.Spec.Template.Spec.Volumes); got != 2 {
-		t.Fatalf("volume count = %d, want 2", got)
-	}
-	if got := deployment.Spec.Template.Spec.Volumes[0].Secret.SecretName; got != agent.Spec.CredentialSecret {
-		t.Fatalf("credential secret = %q, want %q", got, agent.Spec.CredentialSecret)
-	}
-	if got := deployment.Spec.Template.Spec.Volumes[1].Secret.SecretName; got != agent.Spec.VirtualKeySecret {
-		t.Fatalf("virtual key secret = %q, want %q", got, agent.Spec.VirtualKeySecret)
-	}
-	mounts := deployment.Spec.Template.Spec.Containers[0].VolumeMounts
-	if got := len(mounts); got != 2 {
-		t.Fatalf("volume mount count = %d, want 2", got)
-	}
-	if got := mounts[0].MountPath; got != credentialsMount+credentialSubPath {
-		t.Fatalf("credential mount path = %q, want %q", got, credentialsMount+credentialSubPath)
-	}
-	if !mounts[0].ReadOnly || !mounts[1].ReadOnly {
-		t.Fatal("secret mounts must be read-only")
-	}
-
-	var updatedAgent skquadv1.Agent
-	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: agent.Name, Namespace: agent.Namespace}, &updatedAgent); err != nil {
-		t.Fatal(err)
-	}
-	if !controllerutil.ContainsFinalizer(&updatedAgent, agentFinalizer) {
-		t.Fatalf("agent finalizers = %#v, want %q", updatedAgent.Finalizers, agentFinalizer)
 	}
 }
 

@@ -125,51 +125,27 @@ func TestVerifyTokenRejectsTampering(t *testing.T) {
 	parts := strings.Split(token, ".")
 
 	t.Run("payload swapped for an admin-escalated copy", func(t *testing.T) {
-		var claims map[string]any
-		raw, err := base64.RawURLEncoding.DecodeString(parts[1])
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		if err := json.Unmarshal(raw, &claims); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		claims["role"] = "root"
-		forged, err := json.Marshal(claims)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		tampered := parts[0] + "." + base64.RawURLEncoding.EncodeToString(forged) + "." + parts[2]
-		if _, err := a.VerifyToken(tampered, now); err == nil {
-			t.Fatal("tampered payload accepted")
-		}
+		assertRejected(t, a, tamperPayload(t, parts, "root"), now, "tampered payload accepted")
 	})
 
 	t.Run("signature garbage", func(t *testing.T) {
 		tampered := parts[0] + "." + parts[1] + "." + base64.RawURLEncoding.EncodeToString([]byte("not-a-mac"))
-		if _, err := a.VerifyToken(tampered, now); err == nil {
-			t.Fatal("bad signature accepted")
-		}
+		assertRejected(t, a, tampered, now, "bad signature accepted")
 	})
 
 	t.Run("alg none", func(t *testing.T) {
 		header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-		if _, err := a.VerifyToken(header+"."+parts[1]+".", now); err == nil {
-			t.Fatal("alg=none accepted")
-		}
+		assertRejected(t, a, header+"."+parts[1]+".", now, "alg=none accepted")
 	})
 
 	t.Run("wrong key", func(t *testing.T) {
 		other := testAuth(t, "passphrase-tamper")
 		other.cfg.JWTKey = []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-		if _, err := other.VerifyToken(token, now); err == nil {
-			t.Fatal("token signed with a different key accepted")
-		}
+		assertRejected(t, other, token, now, "token signed with a different key accepted")
 	})
 
 	t.Run("expired", func(t *testing.T) {
-		if _, err := a.VerifyToken(token, now.Add(2*time.Hour)); err == nil {
-			t.Fatal("expired token accepted")
-		}
+		assertRejected(t, a, token, now.Add(2*time.Hour), "expired token accepted")
 	})
 
 	t.Run("foreign issuer", func(t *testing.T) {
@@ -177,32 +153,60 @@ func TestVerifyTokenRejectsTampering(t *testing.T) {
 			"iss": "https://evil.example.com", "sub": "u", "amr": "breakglass",
 			"exp": now.Add(time.Hour).Unix(), "iat": now.Unix(), "jti": "j",
 		}
-		cb, _ := json.Marshal(claims)
-		hb, _ := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
-		input := base64.RawURLEncoding.EncodeToString(hb) + "." + base64.RawURLEncoding.EncodeToString(cb)
-		mac := hmac.New(sha256.New, []byte(testKey))
-		mac.Write([]byte(input))
-		forged := input + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 		// Same key, wrong issuer: must still be rejected.
-		if _, err := a.VerifyToken(forged, now); err == nil {
-			t.Fatal("foreign-issuer token accepted")
-		}
+		assertRejected(t, a, forgeSignedToken(t, claims), now, "foreign-issuer token accepted")
 	})
 
 	t.Run("missing amr", func(t *testing.T) {
 		claims := map[string]any{
 			"iss": Issuer, "sub": "u", "exp": now.Add(time.Hour).Unix(), "iat": now.Unix(), "jti": "j",
 		}
-		cb, _ := json.Marshal(claims)
-		hb, _ := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
-		input := base64.RawURLEncoding.EncodeToString(hb) + "." + base64.RawURLEncoding.EncodeToString(cb)
-		mac := hmac.New(sha256.New, []byte(testKey))
-		mac.Write([]byte(input))
-		forged := input + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-		if _, err := a.VerifyToken(forged, now); err == nil {
-			t.Fatal("token without amr=breakglass accepted")
-		}
+		assertRejected(t, a, forgeSignedToken(t, claims), now, "token without amr=breakglass accepted")
 	})
+}
+
+// assertRejected verifies that the given token is rejected at the given time.
+func assertRejected(t *testing.T, a *Auth, token string, now time.Time, failMsg string) {
+	t.Helper()
+	if _, err := a.VerifyToken(token, now); err == nil {
+		t.Fatal(failMsg)
+	}
+}
+
+// tamperPayload re-signs the token parts with the payload's role replaced.
+func tamperPayload(t *testing.T, parts []string, role string) string {
+	t.Helper()
+	var claims map[string]any
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	claims["role"] = role
+	forged, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return parts[0] + "." + base64.RawURLEncoding.EncodeToString(forged) + "." + parts[2]
+}
+
+// forgeSignedToken builds an unsigned-payload JWT signed with the test key.
+func forgeSignedToken(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	cb, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal claims: %v", err)
+	}
+	hb, err := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
+	if err != nil {
+		t.Fatalf("marshal header: %v", err)
+	}
+	input := base64.RawURLEncoding.EncodeToString(hb) + "." + base64.RawURLEncoding.EncodeToString(cb)
+	mac := hmac.New(sha256.New, []byte(testKey))
+	mac.Write([]byte(input))
+	return input + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func TestIsBreakGlassToken(t *testing.T) {
