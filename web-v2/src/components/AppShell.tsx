@@ -12,6 +12,7 @@ import type { Agent, Squad } from "../lib/api";
 import type { DashboardPayload } from "../lib/dashboard";
 import { ThemeToggle } from "./ThemeToggle";
 import { UserMenu } from "./UserMenu";
+import { agentIdFromPath, breadcrumbsForPath } from "../lib/breadcrumbs";
 import {
   agentsSectionActive,
   buildGlobalAgentGroups,
@@ -38,6 +39,35 @@ const tailNav = [
 ];
 
 type NavItem = { href: string; label: string };
+
+// S-127: slim top nav bar spanning the content area. Breadcrumbs on the
+// left (derived from the route), theme selector pinned to the right end,
+// replacing the old floating ThemeToggle that overlapped page actions.
+function TopBar({ crumbs }: { readonly crumbs: ReturnType<typeof breadcrumbsForPath> }) {
+  return (
+    <header className="topbar">
+      <nav className="topbar-crumbs" aria-label="Breadcrumb">
+        {crumbs.map((crumb, index) => (
+          <span key={`${crumb.href ?? crumb.label}-${index}`} className="crumb">
+            {index > 0 ? <span className="crumb-sep" aria-hidden="true">/</span> : null}
+            {crumb.href ? (
+              <Link href={crumb.href} className="crumb-link">
+                {crumb.label}
+              </Link>
+            ) : (
+              <span className="crumb-current" aria-current="page">
+                {crumb.label}
+              </span>
+            )}
+          </span>
+        ))}
+      </nav>
+      <div className="topbar-actions">
+        <ThemeToggle />
+      </div>
+    </header>
+  );
+}
 
 function NavSubLink({ pathname, link }: { readonly pathname: string; readonly link: NavItem }) {
   return (
@@ -284,6 +314,18 @@ export function AppShell({
     setGroupToggles((prev) => ({ ...prev, [key]: !currentlyExpanded }));
   };
 
+  // S-127 breadcrumb hints: resolve dynamic [id]/[agentId] segments to
+  // human names from data AppShell already loads; task pages fall back to
+  // a generic "Task" label (task data lives deeper in the page).
+  const squadHint = squadContextId
+    ? (squads.data ?? []).find((squad) => squad.id === squadContextId)?.name
+    : undefined;
+  const agentId = agentIdFromPath(pathname);
+  const agentHint = agentId
+    ? (squadAgents.data ?? []).find((agent) => agent.id === agentId)?.name
+    : undefined;
+  const breadcrumbs = breadcrumbsForPath(pathname, { squadName: squadHint, agentName: agentHint });
+
   const squadSubitems = buildSquadSubitems(squads.data);
   const agentSubitems = squadContextId ? buildSquadAgentSubitems(squadAgents.data) : [];
   const agentGroups = squadContextId ? [] : buildGlobalAgentGroups(globalDashboard.data);
@@ -309,8 +351,6 @@ export function AppShell({
         {menuOpen ? "✕" : "☰"}
       </button>
       <div className="drawer-backdrop" aria-hidden="true" onClick={() => setMenuOpen(false)} />
-      {/* S-117: theme switcher pinned top-right on every page. */}
-      <ThemeToggle />
       <PrimaryRail
         pathname={pathname}
         user={user}
@@ -333,7 +373,10 @@ export function AppShell({
           {secondary}
         </aside>
       ) : null}
-      <main className="content">{children}</main>
+      <div className="content-col">
+        <TopBar crumbs={breadcrumbs} />
+        <main className="content">{children}</main>
+      </div>
     </div>
   );
 }
