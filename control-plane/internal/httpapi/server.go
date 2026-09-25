@@ -283,6 +283,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Patch("/registry/llm-providers/{providerID}", s.updateLLMProvider)
 			r.Post("/registry/llm-providers/{providerID}/deprecate", s.deprecateLLMProvider)
 			r.Delete("/registry/llm-providers/{providerID}", s.deleteLLMProvider)
+			// S-125: live model list from the provider (OpenAI-compatible
+			// passthrough) for the register-model dropdown.
+			r.Get("/registry/llm-providers/{providerID}/models", s.listLLMProviderModels)
 
 			r.Get("/ai-models", s.listAIModels)
 			r.Post("/ai-models", s.createAIModel)
