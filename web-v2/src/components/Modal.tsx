@@ -35,11 +35,15 @@ export function Modal({
         event.preventDefault();
         onClose();
       }}
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
     >
-      <div className={`modal-card${danger ? " modal-danger" : ""}`}>
+      <div
+        role="presentation"
+        className="modal-backdrop-inner"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) onClose();
+        }}
+      >
+        <div className={`modal-card${danger ? " modal-danger" : ""}`}>
         <div className="modal-head">
           <h2>{title}</h2>
           <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
@@ -48,6 +52,7 @@ export function Modal({
         </div>
         <div className="modal-body">{children}</div>
         {footer ? <div className="modal-foot">{footer}</div> : null}
+        </div>
       </div>
     </dialog>
   );

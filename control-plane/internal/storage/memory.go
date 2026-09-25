@@ -1381,7 +1381,7 @@ func (m *MemoryStore) pickOldestInProgressTaskLocked(agentID string, now time.Ti
 	return candidate
 }
 
-// pickTopTodoTaskLocked returns the lowest-positioned todo task assigned to
+// pickTopTodoTaskLocked returns the lowest-positioned queued task assigned to
 // the agent.
 func (m *MemoryStore) pickTopTodoTaskLocked(agentID string) *domain.Task {
 	var candidate *domain.Task
