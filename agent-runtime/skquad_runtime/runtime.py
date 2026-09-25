@@ -20,6 +20,7 @@ from urllib import error, request
 from .workspace import (
     DEFAULT_WORKSPACES_DIR,
     DEFAULT_WORKSPACE_BASE,
+    WorkspaceHandle,
     finalize_task_workspace,
     prepare_task_workspace,
 )
@@ -1007,26 +1008,9 @@ class LiteLLMTaskHandler:
 
         max_steps = max(1, self.max_steps or config.max_llm_steps)
         for _ in range(max_steps):
-            completion_kwargs: dict[str, object] = {
-                "model": model,
-                # See chat handler: bare names fail litellm provider inference.
-                "custom_llm_provider": "openai",
-                "messages": messages,
-                "api_base": config.llm_gateway_url.rstrip("/"),
-                "api_key": virtual_key,
-                # See chat handler: bare `metadata=` never reaches the proxy;
-                # metering rides on extra_body.litellm_metadata (incident 2026-09-24).
-                "extra_body": {
-                    "litellm_metadata": {
-                        "skquad_agent_id": config.agent_id,
-                        "skquad_squad_id": config.squad_id,
-                        "skquad_task_id": task.id,
-                    }
-                },
-            }
-            if tools:
-                completion_kwargs["tools"] = tools
-            response = completion(**completion_kwargs)
+            response = completion(
+                **self._completion_kwargs(model, messages, config, virtual_key, task.id, tools)
+            )
             last_model_used = served_model(response, model)
             if last_model_used != model:
                 # ADR-0010 Risk 3: make fallback usage visible in the logs.
@@ -1048,24 +1032,68 @@ class LiteLLMTaskHandler:
                     summary=trim_text(content, config.task_summary_max_chars),
                     model_used=last_model_used,
                 )
-            for call in tool_calls:
-                result = self.invoke_tool(call, config, plugins)
-                if not result.ok:
-                    return TaskResult(status="blocked", summary=result.content)
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "name": call.name,
-                        "content": result.content,
-                    }
-                )
+            blocked = self._run_tool_calls(tool_calls, config, plugins, messages)
+            if blocked is not None:
+                return blocked
 
         return TaskResult(
             status="in-review",
             summary=trim_text(last_content, config.task_summary_max_chars),
             model_used=last_model_used,
         )
+
+    def _completion_kwargs(
+        self,
+        model: str,
+        messages: list[dict[str, object]],
+        config: BootstrapConfig,
+        virtual_key: str,
+        task_id: str,
+        tools: list[Mapping[str, object]],
+    ) -> dict[str, object]:
+        """One LLM step's kwargs (S3776 extraction from ``handle_task``)."""
+        completion_kwargs: dict[str, object] = {
+            "model": model,
+            # See chat handler: bare names fail litellm provider inference.
+            "custom_llm_provider": "openai",
+            "messages": messages,
+            "api_base": config.llm_gateway_url.rstrip("/"),
+            "api_key": virtual_key,
+            # See chat handler: bare `metadata=` never reaches the proxy;
+            # metering rides on extra_body.litellm_metadata (incident 2026-09-24).
+            "extra_body": {
+                "litellm_metadata": {
+                    "skquad_agent_id": config.agent_id,
+                    "skquad_squad_id": config.squad_id,
+                    "skquad_task_id": task_id,
+                }
+            },
+        }
+        if tools:
+            completion_kwargs["tools"] = tools
+        return completion_kwargs
+
+    def _run_tool_calls(
+        self,
+        tool_calls: list[ToolCall],
+        config: BootstrapConfig,
+        plugins: list[RuntimePlugin],
+        messages: list[dict[str, object]],
+    ) -> TaskResult | None:
+        """Execute one round of tool calls; return a blocked TaskResult or None."""
+        for call in tool_calls:
+            result = self.invoke_tool(call, config, plugins)
+            if not result.ok:
+                return TaskResult(status="blocked", summary=result.content)
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "content": result.content,
+                }
+            )
+        return None
 
     def completion(self) -> Callable[..., object]:
         if self._completion is not None:
@@ -1261,22 +1289,29 @@ def memory_prompt_line(memory: RuntimeMemory) -> str:
     return f"- trust={trust} | review={review} | provenance={provenance} | {source} | {content}"
 
 
+def _plugin_names_for_resource(resource: RuntimeResource) -> set[str]:
+    """Collect plugin names from one resource (S3776 extraction)."""
+    names: set[str] = set()
+    if resource.name:
+        names.add(resource.name)
+    endpoint_prefix = "plugin://"
+    if resource.endpoint.startswith(endpoint_prefix):
+        plugin_name = resource.endpoint[len(endpoint_prefix) :].strip("/")
+        if plugin_name:
+            names.add(plugin_name)
+    for key in ("plugin", "plugin_name", "tool", "tool_name"):
+        value = resource.manifest.get(key)
+        if isinstance(value, str) and value.strip():
+            names.add(value.strip())
+    return names
+
+
 def granted_plugin_names(resources: list[RuntimeResource]) -> set[str]:
     names: set[str] = set()
     for resource in resources:
         if resource.resource_type not in ("skill", "tool"):
             continue
-        if resource.name:
-            names.add(resource.name)
-        endpoint_prefix = "plugin://"
-        if resource.endpoint.startswith(endpoint_prefix):
-            plugin_name = resource.endpoint[len(endpoint_prefix) :].strip("/")
-            if plugin_name:
-                names.add(plugin_name)
-        for key in ("plugin", "plugin_name", "tool", "tool_name"):
-            value = resource.manifest.get(key)
-            if isinstance(value, str) and value.strip():
-                names.add(value.strip())
+        names |= _plugin_names_for_resource(resource)
     return names
 
 
@@ -1446,6 +1481,45 @@ def _prepare_task_workspace(
     )
 
 
+def _report_workspace_best_effort(
+    control_plane: ControlPlaneClient,
+    task: RuntimeTask,
+    workspace: WorkspaceHandle,
+    ws_result: object,
+) -> None:
+    try:
+        control_plane.report_task_workspace(
+            task, workspace.resource_id, ws_result.branch, ws_result.commit_sha  # type: ignore[attr-defined]
+        )
+    except Exception as exc:  # noqa: BLE001 - report is best-effort
+        LOGGER.warning(
+            "workspace report failed",
+            extra={"task_id": task.id, "error": str(exc)},
+        )
+
+
+def _finalize_task_result(
+    control_plane: ControlPlaneClient,
+    task: RuntimeTask,
+    result: TaskResult,
+    config: BootstrapConfig,
+    workspace: WorkspaceHandle | None,
+) -> RuntimeTask:
+    summary = trim_text(result.summary, config.task_summary_max_chars)
+    if result.status == "blocked":
+        return control_plane.block_task(task, summary=summary)
+    if workspace is not None:
+        ws_result = finalize_task_workspace(workspace, f"skquad: {task.title}")
+        if ws_result is not None:
+            _report_workspace_best_effort(control_plane, task, workspace, ws_result)
+    return control_plane.complete_task(
+        task,
+        result.status,
+        summary=summary,
+        persist_memory=bool(summary.strip()),
+    )
+
+
 def run_task_once(
     config: BootstrapConfig,
     handler: TaskHandler,
@@ -1496,28 +1570,7 @@ def run_task_once(
         if state is not None:
             state.task_failed(task.id, f"invalid task status {result.status!r}")
         return final_task
-    summary = trim_text(result.summary, config.task_summary_max_chars)
-    if result.status == "blocked":
-        final_task = control_plane.block_task(task, summary=summary)
-    else:
-        if workspace is not None:
-            ws_result = finalize_task_workspace(workspace, f"skquad: {task.title}")
-            if ws_result is not None:
-                try:
-                    control_plane.report_task_workspace(
-                        task, workspace.resource_id, ws_result.branch, ws_result.commit_sha
-                    )
-                except Exception as exc:  # noqa: BLE001 - report is best-effort
-                    LOGGER.warning(
-                        "workspace report failed",
-                        extra={"task_id": task.id, "error": str(exc)},
-                    )
-        final_task = control_plane.complete_task(
-            task,
-            result.status,
-            summary=summary,
-            persist_memory=bool(summary.strip()),
-        )
+    final_task = _finalize_task_result(control_plane, task, result, config, workspace)
     control_plane.heartbeat("idle")
     duration = monotonic() - started
     LOGGER.info(
@@ -1654,6 +1707,48 @@ def run_inbox_once(
     return result
 
 
+def _run_loop_iteration(
+    config: BootstrapConfig,
+    handler: TaskHandler,
+    message_handler: MessageHandler | None,
+    loop_client: ControlPlaneClient | None,
+    state: RuntimeState | None,
+) -> tuple[bool, ControlPlaneClient | None]:
+    """One loop iteration: drain inbox + run a task.
+
+    Returns ``(did_work, updated_client)`` (S3776 extraction from ``run_task_loop``).
+    """
+    if loop_client is None and bootstrap_status(config).ready:
+        loop_client = ControlPlaneClient.from_bootstrap(config)
+    did_work = False
+    if message_handler is not None:
+        inbox_result = run_inbox_once(config, message_handler, loop_client, state=state)
+        did_work = inbox_result.fetched > 0
+    task = run_task_once(config, handler, loop_client, state=state)
+    did_work = did_work or task is not None
+    return did_work, loop_client
+
+
+def _wait_for_work(
+    loop_client: ControlPlaneClient | None, interval: float, state: RuntimeState | None
+) -> bool:
+    """Long-poll the control plane if it supports waiting.
+
+    Returns True when the wait succeeded (caller may skip sleeping).
+    """
+    wait_for_work = getattr(loop_client, "wait_for_work", None)
+    if not callable(wait_for_work):
+        return False
+    try:
+        wait_for_work(interval)
+        return True
+    except Exception as exc:
+        LOGGER.warning("agent work wait failed; falling back to sleep", exc_info=True)
+        if state is not None:
+            state.loop_failed(str(exc))
+        return False
+
+
 def run_task_loop(
     config: BootstrapConfig,
     handler: TaskHandler,
@@ -1670,29 +1765,17 @@ def run_task_loop(
     loop_client = client
     while not stop_requested(stop_event):
         try:
-            if loop_client is None and bootstrap_status(config).ready:
-                loop_client = ControlPlaneClient.from_bootstrap(config)
-            did_work = False
-            if message_handler is not None:
-                inbox_result = run_inbox_once(config, message_handler, loop_client, state=state)
-                did_work = inbox_result.fetched > 0
-            task = run_task_once(config, handler, loop_client, state=state)
-            did_work = did_work or task is not None
+            did_work, loop_client = _run_loop_iteration(
+                config, handler, message_handler, loop_client, state
+            )
         except Exception as exc:
             LOGGER.exception("agent runtime loop iteration failed")
             if state is not None:
                 state.loop_failed(str(exc))
             sleeper(interval)
             continue
-        wait_for_work = getattr(loop_client, "wait_for_work", None)
-        if not did_work and callable(wait_for_work):
-            try:
-                wait_for_work(interval)
-                continue
-            except Exception as exc:
-                LOGGER.warning("agent work wait failed; falling back to sleep", exc_info=True)
-                if state is not None:
-                    state.loop_failed(str(exc))
+        if not did_work and _wait_for_work(loop_client, interval, state):
+            continue
         sleeper(interval)
 
 
