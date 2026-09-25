@@ -62,7 +62,8 @@ def http_json(url: str, token: str, method: str = "GET", body: dict | None = Non
 def fetch_findings(sonar_url: str, token: str, project: str, types: str) -> list[dict]:
     findings: list[dict] = []
     page = 1
-    while True:
+    # 1000 findings is more than enough for one card (S3516: single exit point)
+    while page <= 10:
         qs = urllib.parse.urlencode(
             {
                 "componentKeys": project,
@@ -76,10 +77,9 @@ def fetch_findings(sonar_url: str, token: str, project: str, types: str) -> list
         data = http_json(f"{sonar_url}/api/issues/search?{qs}", token)
         findings.extend(data.get("issues", []))
         if len(findings) >= data.get("paging", {}).get("total", 0):
-            return findings
+            break
         page += 1
-        if page > 10:  # 1000 findings is more than enough for one card
-            return findings
+    return findings
 
 
 def count_findings(sonar_url: str, token: str, project: str, types: str) -> int:

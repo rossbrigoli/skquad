@@ -25,6 +25,8 @@ spec:
       schedulerName: default-scheduler
       securityContext: {}
       terminationGracePeriodSeconds: 30
+      # S6865: postgres never calls the Kubernetes API — do not mount a SA token.
+      automountServiceAccountToken: false
       containers:
         - name: postgres
           image: {{ .Values.postgres.image | quote }}

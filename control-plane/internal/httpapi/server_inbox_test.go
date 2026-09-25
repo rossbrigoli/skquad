@@ -16,7 +16,7 @@ func TestInboxTaskCompletionNotificationAndRead(t *testing.T) {
 	doJSON(t, handler, http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &owner)
 
 	var empty []domain.InboxMessage
-	doJSON(t, handler, http.MethodGet, "/api/v1/inbox", nil, http.StatusOK, &empty)
+	doJSON(t, handler, http.MethodGet, pathInbox, nil, http.StatusOK, &empty)
 	require.Empty(t, empty)
 
 	var task domain.Task
@@ -34,7 +34,7 @@ func TestInboxTaskCompletionNotificationAndRead(t *testing.T) {
 	}, http.StatusOK, &domain.Task{})
 
 	var inbox []domain.InboxMessage
-	doJSON(t, handler, http.MethodGet, "/api/v1/inbox", nil, http.StatusOK, &inbox)
+	doJSON(t, handler, http.MethodGet, pathInbox, nil, http.StatusOK, &inbox)
 	require.Len(t, inbox, 1)
 	require.Equal(t, domain.InboxTaskCompleted, inbox[0].Kind)
 	require.Equal(t, owner.ID, inbox[0].UserID)
@@ -55,7 +55,7 @@ func TestInboxTaskCompletionNotificationAndRead(t *testing.T) {
 	doJSON(t, handler, http.MethodGet, "/api/v1/inbox?unread=true", nil, http.StatusOK, &unread)
 	require.Empty(t, unread)
 
-	doJSON(t, handler, http.MethodGet, "/api/v1/inbox", nil, http.StatusOK, &inbox)
+	doJSON(t, handler, http.MethodGet, pathInbox, nil, http.StatusOK, &inbox)
 	require.Len(t, inbox, 1)
 	require.True(t, inbox[0].IsRead())
 
@@ -82,7 +82,7 @@ func TestInboxBlockedTaskRequestsAction(t *testing.T) {
 	}, http.StatusOK, &domain.Task{})
 
 	var inbox []domain.InboxMessage
-	doJSON(t, handler, http.MethodGet, "/api/v1/inbox", nil, http.StatusOK, &inbox)
+	doJSON(t, handler, http.MethodGet, pathInbox, nil, http.StatusOK, &inbox)
 	require.Len(t, inbox, 1)
 	require.Equal(t, domain.InboxActionRequired, inbox[0].Kind)
 	require.Contains(t, inbox[0].Message, "need credentials")
@@ -107,6 +107,6 @@ func TestInboxAgentNotifyOwner(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 
 	var inbox []domain.InboxMessage
-	doJSON(t, handler, http.MethodGet, "/api/v1/inbox", nil, http.StatusOK, &inbox)
+	doJSON(t, handler, http.MethodGet, pathInbox, nil, http.StatusOK, &inbox)
 	require.Len(t, inbox, 1)
 }

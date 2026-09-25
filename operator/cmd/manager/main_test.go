@@ -17,9 +17,13 @@ import (
 	skquadv1 "github.com/rossbrigoli/skquad/operator/internal/api/v1"
 )
 
+const (
+	testNamespace = "skquad-operator-test"
+)
+
 func TestFlagDefaults(t *testing.T) {
 	cfg := &config{}
-	fs := flag.NewFlagSet("skquad-operator-test", flag.ContinueOnError)
+	fs := flag.NewFlagSet(testNamespace, flag.ContinueOnError)
 	registerFlags(fs, cfg, newZapOptionsForTest(t))
 
 	if err := fs.Parse(nil); err != nil {
@@ -38,7 +42,7 @@ func TestFlagDefaults(t *testing.T) {
 
 func TestFlagOverrides(t *testing.T) {
 	cfg := &config{}
-	fs := flag.NewFlagSet("skquad-operator-test", flag.ContinueOnError)
+	fs := flag.NewFlagSet(testNamespace, flag.ContinueOnError)
 	registerFlags(fs, cfg, newZapOptionsForTest(t))
 
 	args := []string{
@@ -65,7 +69,7 @@ func TestFlagOverrides(t *testing.T) {
 // and operators cannot turn up verbosity during an incident.
 func TestZapFlagsRegistered(t *testing.T) {
 	cfg := &config{}
-	fs := flag.NewFlagSet("skquad-operator-test", flag.ContinueOnError)
+	fs := flag.NewFlagSet(testNamespace, flag.ContinueOnError)
 	registerFlags(fs, cfg, newZapOptionsForTest(t))
 
 	for _, name := range []string{"zap-log-level", "zap-devel"} {

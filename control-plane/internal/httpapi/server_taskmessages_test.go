@@ -20,7 +20,7 @@ func createBoardTask(t *testing.T, h http.Handler, squadID, title string) domain
 func assignTask(t *testing.T, h http.Handler, taskID, agentID string) domain.Task {
 	t.Helper()
 	var task domain.Task
-	doJSON(t, h, http.MethodPatch, "/api/v1/tasks/"+taskID, map[string]any{"assignee_agent_id": agentID}, http.StatusOK, &task)
+	doJSON(t, h, http.MethodPatch, pathTasksPrefix+taskID, map[string]any{"assignee_agent_id": agentID}, http.StatusOK, &task)
 	return task
 }
 
@@ -33,7 +33,7 @@ func TestTaskMessagesComposerAndThread(t *testing.T) {
 
 	// Composer posts a user message to the assignee with task_id forced in.
 	var sent domain.Message
-	doJSON(t, h, http.MethodPost, "/api/v1/tasks/"+task.ID+"/messages", map[string]any{
+	doJSON(t, h, http.MethodPost, pathTasksPrefix+task.ID+pathMessages, map[string]any{
 		"message": "focus on the summary first",
 	}, http.StatusCreated, &sent)
 	require.Equal(t, f.workerID, sent.ToAgentID)
@@ -46,7 +46,7 @@ func TestTaskMessagesComposerAndThread(t *testing.T) {
 
 	// Thread lists exactly the task-scoped messages.
 	var thread []domain.Message
-	doJSON(t, h, http.MethodGet, "/api/v1/tasks/"+task.ID+"/messages", nil, http.StatusOK, &thread)
+	doJSON(t, h, http.MethodGet, pathTasksPrefix+task.ID+pathMessages, nil, http.StatusOK, &thread)
 	require.Len(t, thread, 1)
 	require.Equal(t, sent.ID, thread[0].ID)
 
@@ -54,11 +54,11 @@ func TestTaskMessagesComposerAndThread(t *testing.T) {
 	other := createBoardTask(t, h, f.squadID, "unrelated work")
 	assignTask(t, h, other.ID, f.workerID)
 	var otherThread []domain.Message
-	doJSON(t, h, http.MethodGet, "/api/v1/tasks/"+other.ID+"/messages", nil, http.StatusOK, &otherThread)
+	doJSON(t, h, http.MethodGet, pathTasksPrefix+other.ID+pathMessages, nil, http.StatusOK, &otherThread)
 	require.Empty(t, otherThread)
 
 	// Empty message rejected.
-	doJSONNoBody(t, h, http.MethodPost, "/api/v1/tasks/"+task.ID+"/messages", map[string]any{"message": "   "}, http.StatusBadRequest)
+	doJSONNoBody(t, h, http.MethodPost, pathTasksPrefix+task.ID+pathMessages, map[string]any{"message": "   "}, http.StatusBadRequest)
 }
 
 func TestTaskMessagesUnassigned(t *testing.T) {
@@ -69,7 +69,7 @@ func TestTaskMessagesUnassigned(t *testing.T) {
 
 	// GET on unassigned task returns an empty thread, not an error.
 	var thread []domain.Message
-	doJSON(t, h, http.MethodGet, "/api/v1/tasks/"+task.ID+"/messages", nil, http.StatusOK, &thread)
+	doJSON(t, h, http.MethodGet, pathTasksPrefix+task.ID+pathMessages, nil, http.StatusOK, &thread)
 	require.Empty(t, thread)
 
 	// POST to an unassigned task is rejected with a clear code.
@@ -78,7 +78,7 @@ func TestTaskMessagesUnassigned(t *testing.T) {
 			Code string `json:"code"`
 		} `json:"error"`
 	}
-	doJSON(t, h, http.MethodPost, "/api/v1/tasks/"+task.ID+"/messages", map[string]any{"message": "hello?"}, http.StatusBadRequest, &errResp)
+	doJSON(t, h, http.MethodPost, pathTasksPrefix+task.ID+pathMessages, map[string]any{"message": "hello?"}, http.StatusBadRequest, &errResp)
 	require.Equal(t, "no_assignee", errResp.Error.Code)
 }
 
@@ -95,7 +95,7 @@ func TestTaskMessagesIncludesAgentThreadMessages(t *testing.T) {
 	})
 
 	var thread []domain.Message
-	doJSON(t, h, http.MethodGet, "/api/v1/tasks/"+task.ID+"/messages", nil, http.StatusOK, &thread)
+	doJSON(t, h, http.MethodGet, pathTasksPrefix+task.ID+pathMessages, nil, http.StatusOK, &thread)
 	require.Len(t, thread, 1)
 	require.Equal(t, f.senderID, thread[0].FromID)
 }

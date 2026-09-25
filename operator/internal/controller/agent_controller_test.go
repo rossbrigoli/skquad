@@ -24,6 +24,8 @@ const (
 	testAgentImageRef = "example.com/skquad/agent:test"
 	agentCredS104     = "agent-cred-s104"
 	agentVKeyS104     = "agent-vkey-s104"
+	credentialSubPath = "/agent"
+	squadPrefix       = "squad-"
 )
 
 func TestAgentReconcilerCreatesDeployment(t *testing.T) {
@@ -38,14 +40,14 @@ func TestAgentReconcilerCreatesDeployment(t *testing.T) {
 	}
 
 	squad := &skquadv1.Squad{
-		ObjectMeta: metav1.ObjectMeta{Name: "squad-test", Namespace: "skquad-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "squad-test", Namespace: testNamespace},
 		Spec: skquadv1.SquadSpec{
 			SquadID:   "11111111-1111-1111-1111-111111111111",
 			Namespace: "squad-runtime-test",
 		},
 	}
 	agent := &skquadv1.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "agent-test", Namespace: "skquad-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "agent-test", Namespace: testNamespace},
 		Spec: skquadv1.AgentSpec{
 			AgentID:          "22222222-2222-2222-2222-222222222222",
 			SquadID:          squad.Spec.SquadID,
@@ -105,8 +107,8 @@ func TestAgentReconcilerCreatesDeployment(t *testing.T) {
 	if container.ReadinessProbe == nil || container.ReadinessProbe.HTTPGet.Path != "/readyz" {
 		t.Fatalf("readiness probe = %#v, want /readyz", container.ReadinessProbe)
 	}
-	if got := envValue(container.Env, "SKQUAD_AGENT_CREDENTIAL_PATH"); got != credentialsMount+"/agent" {
-		t.Fatalf("credential path env = %q, want %q", got, credentialsMount+"/agent")
+	if got := envValue(container.Env, "SKQUAD_AGENT_CREDENTIAL_PATH"); got != credentialsMount+credentialSubPath {
+		t.Fatalf("credential path env = %q, want %q", got, credentialsMount+credentialSubPath)
 	}
 	if got := envValue(container.Env, "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH"); got != credentialsMount+"/llm-gateway" {
 		t.Fatalf("virtual key path env = %q, want %q", got, credentialsMount+"/llm-gateway")
@@ -163,8 +165,8 @@ func TestAgentReconcilerCreatesDeployment(t *testing.T) {
 	if got := len(mounts); got != 2 {
 		t.Fatalf("volume mount count = %d, want 2", got)
 	}
-	if got := mounts[0].MountPath; got != credentialsMount+"/agent" {
-		t.Fatalf("credential mount path = %q, want %q", got, credentialsMount+"/agent")
+	if got := mounts[0].MountPath; got != credentialsMount+credentialSubPath {
+		t.Fatalf("credential mount path = %q, want %q", got, credentialsMount+credentialSubPath)
 	}
 	if !mounts[0].ReadOnly || !mounts[1].ReadOnly {
 		t.Fatal("secret mounts must be read-only")
@@ -191,7 +193,7 @@ func TestAgentReconcilerScalesInactiveAgentToZero(t *testing.T) {
 	}
 
 	agent := &skquadv1.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "agent-zero", Namespace: "skquad-system", Finalizers: []string{agentFinalizer}},
+		ObjectMeta: metav1.ObjectMeta{Name: "agent-zero", Namespace: testNamespace, Finalizers: []string{agentFinalizer}},
 		Spec: skquadv1.AgentSpec{
 			AgentID: "33333333-3333-3333-3333-333333333333",
 			SquadID: "44444444-4444-4444-4444-444444444444",
@@ -211,7 +213,7 @@ func TestAgentReconcilerScalesInactiveAgentToZero(t *testing.T) {
 	}
 
 	var deployment appsv1.Deployment
-	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: agent.Name, Namespace: "squad-" + agent.Spec.SquadID}, &deployment); err != nil {
+	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: agent.Name, Namespace: squadPrefix + agent.Spec.SquadID}, &deployment); err != nil {
 		t.Fatal(err)
 	}
 	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 0 {
@@ -229,7 +231,7 @@ func TestAgentReconcilerWaitsForIdleTimeoutBeforeScaleDown(t *testing.T) {
 	replicas := int32(1)
 	idleSince := metav1.NewTime(time.Now().Add(-1 * time.Minute))
 	agent := &skquadv1.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "agent-idle-wait", Namespace: "skquad-system", Finalizers: []string{agentFinalizer}},
+		ObjectMeta: metav1.ObjectMeta{Name: "agent-idle-wait", Namespace: testNamespace, Finalizers: []string{agentFinalizer}},
 		Spec: skquadv1.AgentSpec{
 			AgentID:     "55555555-5555-5555-5555-555555555555",
 			SquadID:     "66666666-6666-6666-6666-666666666666",
@@ -238,7 +240,7 @@ func TestAgentReconcilerWaitsForIdleTimeoutBeforeScaleDown(t *testing.T) {
 		Status: skquadv1.AgentStatus{IdleSince: idleSince},
 	}
 	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: agent.Name, Namespace: "squad-" + agent.Spec.SquadID},
+		ObjectMeta: metav1.ObjectMeta{Name: agent.Name, Namespace: squadPrefix + agent.Spec.SquadID},
 		Spec:       appsv1.DeploymentSpec{Replicas: &replicas},
 	}
 
@@ -273,7 +275,7 @@ func TestAgentReconcilerScalesDownAfterIdleTimeout(t *testing.T) {
 	scheme := testScheme(t)
 	replicas := int32(1)
 	agent := &skquadv1.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "agent-idle-expired", Namespace: "skquad-system", Finalizers: []string{agentFinalizer}},
+		ObjectMeta: metav1.ObjectMeta{Name: "agent-idle-expired", Namespace: testNamespace, Finalizers: []string{agentFinalizer}},
 		Spec: skquadv1.AgentSpec{
 			AgentID:     "77777777-7777-7777-7777-777777777777",
 			SquadID:     "88888888-8888-8888-8888-888888888888",
@@ -282,7 +284,7 @@ func TestAgentReconcilerScalesDownAfterIdleTimeout(t *testing.T) {
 		Status: skquadv1.AgentStatus{IdleSince: metav1.NewTime(time.Now().Add(-10 * time.Minute))},
 	}
 	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: agent.Name, Namespace: "squad-" + agent.Spec.SquadID},
+		ObjectMeta: metav1.ObjectMeta{Name: agent.Name, Namespace: squadPrefix + agent.Spec.SquadID},
 		Spec:       appsv1.DeploymentSpec{Replicas: &replicas},
 	}
 
@@ -316,7 +318,7 @@ func TestAgentReconcilerFinalizerDeletesDeployment(t *testing.T) {
 
 	scheme := testScheme(t)
 	squad := &skquadv1.Squad{
-		ObjectMeta: metav1.ObjectMeta{Name: "squad-delete-agent", Namespace: "skquad-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "squad-delete-agent", Namespace: testNamespace},
 		Spec: skquadv1.SquadSpec{
 			SquadID:   "99999999-9999-9999-9999-999999999999",
 			Namespace: "squad-agent-delete-test",
@@ -325,7 +327,7 @@ func TestAgentReconcilerFinalizerDeletesDeployment(t *testing.T) {
 	agent := &skquadv1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "agent-delete",
-			Namespace:  "skquad-system",
+			Namespace:  testNamespace,
 			Finalizers: []string{agentFinalizer},
 		},
 		Spec: skquadv1.AgentSpec{
@@ -386,14 +388,14 @@ func TestAgentReconcilerHardensPodSecurity(t *testing.T) {
 
 	scheme := testScheme(t)
 	squad := &skquadv1.Squad{
-		ObjectMeta: metav1.ObjectMeta{Name: "squad-sec", Namespace: "skquad-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "squad-sec", Namespace: testNamespace},
 		Spec: skquadv1.SquadSpec{
 			SquadID:   "88888888-8888-8888-8888-888888888888",
 			Namespace: "squad-sec-ns",
 		},
 	}
 	agent := &skquadv1.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "agent-sec", Namespace: "skquad-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "agent-sec", Namespace: testNamespace},
 		Spec: skquadv1.AgentSpec{
 			AgentID:       "99999999-9999-9999-9999-999999999999",
 			SquadID:       squad.Spec.SquadID,
@@ -444,7 +446,7 @@ func s104Agent(name string, squadID string) *skquadv1.Agent {
 	return &skquadv1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       name,
-			Namespace:  "skquad-system",
+			Namespace:  testNamespace,
 			Finalizers: []string{agentFinalizer},
 			Labels:     map[string]string{LabelAgentID: "aaaaaaaa-1111-1111-1111-111111111111"},
 		},
@@ -486,7 +488,7 @@ func TestAgentReconcilerNotReadyWhenCredentialSecretMissing(t *testing.T) {
 	agent := s104Agent("agent-s104-missing", "bbbbbbbb-2222-2222-2222-222222222222")
 	// Squad exists so namespace resolution works; credential Secret does NOT.
 	squad := &skquadv1.Squad{
-		ObjectMeta: metav1.ObjectMeta{Name: "squad-s104-missing", Namespace: "skquad-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "squad-s104-missing", Namespace: testNamespace},
 		Spec:       skquadv1.SquadSpec{SquadID: agent.Spec.SquadID, Namespace: squadNS},
 	}
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&skquadv1.Agent{}, &skquadv1.Squad{}).WithObjects(squad, agent).Build()
@@ -520,7 +522,7 @@ func TestAgentReconcilerNotReadyUntilPodReportsReady(t *testing.T) {
 	squadNS := "squad-s104-pod"
 	agent := s104Agent("agent-s104-pod", "cccccccc-3333-3333-3333-333333333333")
 	squad := &skquadv1.Squad{
-		ObjectMeta: metav1.ObjectMeta{Name: "squad-s104-pod", Namespace: "skquad-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "squad-s104-pod", Namespace: testNamespace},
 		Spec:       skquadv1.SquadSpec{SquadID: agent.Spec.SquadID, Namespace: squadNS},
 	}
 	k8sClient := fake.NewClientBuilder().
@@ -581,7 +583,7 @@ func TestAgentReconcilerSelfHealsReadyFlagWhenPodRegresses(t *testing.T) {
 	squadNS := "squad-s104-heal"
 	agent := s104Agent("agent-s104-heal", "dddddddd-4444-4444-4444-444444444444")
 	squad := &skquadv1.Squad{
-		ObjectMeta: metav1.ObjectMeta{Name: "squad-s104-heal", Namespace: "skquad-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "squad-s104-heal", Namespace: testNamespace},
 		Spec:       skquadv1.SquadSpec{SquadID: agent.Spec.SquadID, Namespace: squadNS},
 	}
 	replicas := int32(1)
@@ -686,7 +688,7 @@ func TestAgentReconcilerFlagsCredentialNotProvisioned(t *testing.T) {
 	agent.Spec.CredentialSecret = ""
 	agent.Spec.VirtualKeySecret = ""
 	squad := &skquadv1.Squad{
-		ObjectMeta: metav1.ObjectMeta{Name: "squad-s104-noid", Namespace: "skquad-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "squad-s104-noid", Namespace: testNamespace},
 		Spec:       skquadv1.SquadSpec{SquadID: agent.Spec.SquadID, Namespace: "squad-s104-noid"},
 	}
 	k8sClient := fake.NewClientBuilder().
@@ -726,14 +728,14 @@ func TestAgentDeploymentInjectsModelBindingEnv(t *testing.T) {
 	}
 
 	squad := &skquadv1.Squad{
-		ObjectMeta: metav1.ObjectMeta{Name: "squad-bind", Namespace: "skquad-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "squad-bind", Namespace: testNamespace},
 		Spec: skquadv1.SquadSpec{
 			SquadID:   "33333333-3333-3333-3333-333333333333",
 			Namespace: "squad-bind",
 		},
 	}
 	agent := &skquadv1.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "agent-bind", Namespace: "skquad-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "agent-bind", Namespace: testNamespace},
 		Spec: skquadv1.AgentSpec{
 			AgentID:           "44444444-4444-4444-4444-444444444444",
 			SquadID:           squad.Spec.SquadID,

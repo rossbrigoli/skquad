@@ -11,6 +11,13 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
 
+const (
+	claimErrFormat = "claim: %v"
+	reapErrFormat  = "reap: %v"
+	testModel      = "test-model"
+	zeroUUID       = "00000000-0000-0000-0000-000000000000"
+)
+
 // These tests run the Postgres implementation against a real database so that
 // SQL-only semantics — lease fencing, the conditional reaper updates, outbox
 // leasing, vector round-trips — are actually exercised. The in-memory store
@@ -160,9 +167,9 @@ func TestPostgresStoreTaskExecutionLeaseAndFencing(t *testing.T) {
 
 	task := f.newTask(t, store, "claim me")
 
-	claimed, err := store.ClaimNextTask(ctx, f.agent.ID, "worker-1", time.Minute)
+	claimed, err := store.ClaimNextTask(ctx, f.agent.ID, testWorkerID, time.Minute)
 	if err != nil {
-		t.Fatalf("claim: %v", err)
+		t.Fatalf(claimErrFormat, err)
 	}
 	if claimed.ExecutionID == "" || claimed.FencingToken == "" {
 		t.Fatalf("claim returned no execution/fencing token: %+v", claimed)
@@ -260,7 +267,7 @@ func TestPostgresStoreInboxListIncludesReadByDefault(t *testing.T) {
 		t.Fatalf("create inbox message: %v", err)
 	}
 
-	empty, err := store.ListInboxMessages(ctx, "00000000-0000-0000-0000-000000000000", false, 100)
+	empty, err := store.ListInboxMessages(ctx, zeroUUID, false, 100)
 	if err != nil {
 		t.Fatalf("list empty inbox: %v", err)
 	}
@@ -295,15 +302,15 @@ func TestPostgresStoreReapExpiredTaskExecutions(t *testing.T) {
 	ctx := context.Background()
 
 	task := f.newTask(t, store, "orphan me")
-	claimed, err := store.ClaimNextTask(ctx, f.agent.ID, "worker-1", time.Minute)
+	claimed, err := store.ClaimNextTask(ctx, f.agent.ID, testWorkerID, time.Minute)
 	if err != nil {
-		t.Fatalf("claim: %v", err)
+		t.Fatalf(claimErrFormat, err)
 	}
 	lapseExecution(t, store, claimed.ExecutionID)
 
 	reaped, err := store.ReapExpiredTaskExecutions(ctx, time.Now())
 	if err != nil {
-		t.Fatalf("reap: %v", err)
+		t.Fatalf(reapErrFormat, err)
 	}
 	if reaped < 1 {
 		t.Fatalf("reaped = %d, want >= 1", reaped)
@@ -358,7 +365,7 @@ func TestPostgresStoreReapKeepsTaskInProgressWithLiveAttempt(t *testing.T) {
 	ctx := context.Background()
 
 	task := f.newTask(t, store, "reclaimed task")
-	first, err := store.ClaimNextTask(ctx, f.agent.ID, "worker-1", time.Minute)
+	first, err := store.ClaimNextTask(ctx, f.agent.ID, testWorkerID, time.Minute)
 	if err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
@@ -374,7 +381,7 @@ func TestPostgresStoreReapKeepsTaskInProgressWithLiveAttempt(t *testing.T) {
 	}
 
 	if _, err := store.ReapExpiredTaskExecutions(ctx, time.Now()); err != nil {
-		t.Fatalf("reap: %v", err)
+		t.Fatalf(reapErrFormat, err)
 	}
 
 	got, err := store.GetTask(ctx, task.ID)
@@ -398,16 +405,16 @@ func TestPostgresStoreReapSkipsHeartbeatedAndCompletedExecutions(t *testing.T) {
 
 	// Heartbeat that pushes the lease past the cutoff wins over the reaper.
 	heartbeated := f.newTask(t, store, "heartbeat wins")
-	claimed, err := store.ClaimNextTask(ctx, f.agent.ID, "worker-1", time.Minute)
+	claimed, err := store.ClaimNextTask(ctx, f.agent.ID, testWorkerID, time.Minute)
 	if err != nil {
-		t.Fatalf("claim: %v", err)
+		t.Fatalf(claimErrFormat, err)
 	}
 	if _, err := store.HeartbeatTaskExecution(ctx, f.agent.ID, claimed.ExecutionID, claimed.FencingToken, 10*time.Minute); err != nil {
 		t.Fatalf("heartbeat: %v", err)
 	}
 	cutoff := time.Now().Add(2 * time.Minute)
 	if _, err := store.ReapExpiredTaskExecutions(ctx, cutoff); err != nil {
-		t.Fatalf("reap: %v", err)
+		t.Fatalf(reapErrFormat, err)
 	}
 	var status string
 	if err := store.pool.QueryRow(ctx, `SELECT status FROM task_executions WHERE id = $1`, claimed.ExecutionID).Scan(&status); err != nil {
@@ -511,7 +518,7 @@ func TestPostgresStoreAgentMemoryTrustAndEmbeddingRoundTrip(t *testing.T) {
 		SquadID:        f.squad.ID,
 		Content:        "pg completion summary",
 		Embedding:      embedding,
-		EmbeddingModel: "test-model",
+		EmbeddingModel: testModel,
 	})
 	if err != nil {
 		t.Fatalf("create memory: %v", err)
@@ -530,7 +537,7 @@ func TestPostgresStoreAgentMemoryTrustAndEmbeddingRoundTrip(t *testing.T) {
 	if len(listed) != 1 {
 		t.Fatalf("memory count = %d, want 1", len(listed))
 	}
-	if listed[0].EmbeddingModel != "test-model" {
+	if listed[0].EmbeddingModel != testModel {
 		t.Fatalf("embedding model = %q", listed[0].EmbeddingModel)
 	}
 	if len(listed[0].Embedding) != 1536 || listed[0].Embedding[0] != 1 {
@@ -546,7 +553,7 @@ func TestPostgresStoreAgentMemoryTrustAndEmbeddingRoundTrip(t *testing.T) {
 		SquadID:        f.squad.ID,
 		Content:        "newer but farther",
 		Embedding:      far,
-		EmbeddingModel: "test-model",
+		EmbeddingModel: testModel,
 	}); err != nil {
 		t.Fatalf("create second memory: %v", err)
 	}
@@ -648,7 +655,7 @@ func TestPostgresStoreKubernetesOutboxLeaseAndRetry(t *testing.T) {
 	if !seen {
 		t.Fatal("applied intent missing from applied list")
 	}
-	if err := store.MarkKubernetesOutboxApplied(ctx, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrNotFound) {
+	if err := store.MarkKubernetesOutboxApplied(ctx, zeroUUID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("mark applied unknown error = %v, want ErrNotFound", err)
 	}
 }
@@ -716,7 +723,7 @@ func TestPostgresStoreDuplicateSquadNameConflicts(t *testing.T) {
 		t.Fatalf("duplicate squad error = %v, want ErrConflict", err)
 	}
 
-	if _, err := store.GetSquad(ctx, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrNotFound) {
+	if _, err := store.GetSquad(ctx, zeroUUID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("get unknown squad error = %v, want ErrNotFound", err)
 	}
 }

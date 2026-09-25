@@ -18,6 +18,8 @@ spec:
         {{- include "skquad.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: llm-gateway
     spec:
+      # S6865: this pod never calls the Kubernetes API — do not mount a SA token.
+      automountServiceAccountToken: false
       containers:
         - name: llm-gateway
           image: {{ include "skquad.llmGatewayImage" . | quote }}

@@ -22,6 +22,10 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
 
+const (
+	secondsFormat = "%d seconds"
+)
+
 //go:embed migrations/*.sql
 var migrationFS embed.FS
 
@@ -2036,7 +2040,7 @@ func (p *PostgresStore) createTaskExecutionTx(ctx context.Context, tx pgx.Tx, ta
 		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
 		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
 		          started_at, completed_at, updated_at
-	`, taskID, agentID, workerID, fmt.Sprintf("%d seconds", int(leaseFor/time.Second)))
+	`, taskID, agentID, workerID, fmt.Sprintf(secondsFormat, int(leaseFor/time.Second)))
 	return scanTaskExecution(row)
 }
 
@@ -2081,7 +2085,7 @@ func (p *PostgresStore) HeartbeatTaskExecution(ctx context.Context, agentID stri
 		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
 		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
 		          started_at, completed_at, updated_at
-	`, executionID, agentID, fencingToken, fmt.Sprintf("%d seconds", int(leaseFor/time.Second)))
+	`, executionID, agentID, fencingToken, fmt.Sprintf(secondsFormat, int(leaseFor/time.Second)))
 	exec, err := scanTaskExecution(row)
 	if errors.Is(err, ErrNotFound) {
 		return nil, ErrConflict
@@ -2308,7 +2312,7 @@ func (p *PostgresStore) LeaseKubernetesOutbox(ctx context.Context, limit int, le
 		WHERE id IN (SELECT id FROM leased)
 		RETURNING id::text, aggregate_type, aggregate_id::text, operation, payload, status,
 		          attempts, last_error, next_attempt_at, locked_until, created_at, updated_at
-	`, limit, fmt.Sprintf("%d seconds", int(leaseFor/time.Second)))
+	`, limit, fmt.Sprintf(secondsFormat, int(leaseFor/time.Second)))
 	if err != nil {
 		return nil, mapPgErr(err)
 	}
@@ -2343,7 +2347,7 @@ func (p *PostgresStore) MarkKubernetesOutboxFailed(ctx context.Context, id strin
 		    locked_until = NULL,
 		    updated_at = now()
 		WHERE id = $1
-	`, id, lastError, fmt.Sprintf("%d seconds", int(retryAfter/time.Second)))
+	`, id, lastError, fmt.Sprintf(secondsFormat, int(retryAfter/time.Second)))
 	if err != nil {
 		return mapPgErr(err)
 	}

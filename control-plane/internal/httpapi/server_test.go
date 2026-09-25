@@ -24,7 +24,7 @@ func TestSquadAgentTaskFlow(t *testing.T) {
 	handler := New(testConfig(), storage.NewMemoryStore())
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name":    "Core Squad",
 		"mission": "ship the control plane",
 	}, http.StatusCreated, &squad)
@@ -33,7 +33,7 @@ func TestSquadAgentTaskFlow(t *testing.T) {
 	require.NotEmpty(t, squad.Namespace)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name":                "Architect",
 		"role":                "technical lead",
 		"system_prompt":       "You are a pragmatic architecture lead.",
@@ -55,7 +55,7 @@ func TestSquadAgentTaskFlow(t *testing.T) {
 	require.Equal(t, "You review designs and call out risk.", patchedAgent.SystemPrompt)
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Design API slice",
 		"description":       "first vertical slice",
 		"assignee_agent_id": agent.ID,
@@ -65,7 +65,7 @@ func TestSquadAgentTaskFlow(t *testing.T) {
 	require.Equal(t, agent.ID, task.AssigneeAgentID)
 
 	var moved domain.Task
-	doJSON(t, handler, http.MethodPost, "/api/v1/tasks/"+task.ID+"/move", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathTasksPrefix+task.ID+"/move", map[string]any{
 		"status": statusInProgress,
 	}, http.StatusOK, &moved)
 	require.Equal(t, domain.TaskInProgress, moved.Status)
@@ -74,7 +74,7 @@ func TestSquadAgentTaskFlow(t *testing.T) {
 		Board domain.Board  `json:"board"`
 		Tasks []domain.Task `json:"tasks"`
 	}
-	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/board", nil, http.StatusOK, &board)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathBoard, nil, http.StatusOK, &board)
 	require.Equal(t, squad.ID, board.Board.SquadID)
 	require.Len(t, board.Tasks, 1)
 	require.Equal(t, moved.ID, board.Tasks[0].ID)
@@ -86,7 +86,7 @@ func TestValidationErrorEnvelope(t *testing.T) {
 	handler := New(testConfig(), storage.NewMemoryStore())
 
 	var body map[string]map[string]string
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "",
 	}, http.StatusBadRequest, &body)
 	require.Equal(t, "bad_request", body["error"]["code"])
@@ -99,23 +99,23 @@ func TestTaskStatusValidationUsesErrorEnvelope(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Status Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Status Agent",
 	}, http.StatusCreated, &agent)
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Validate status",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &task)
 
 	var body map[string]map[string]string
-	doJSON(t, handler, http.MethodPost, "/api/v1/tasks/"+task.ID+"/move", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathTasksPrefix+task.ID+"/move", map[string]any{
 		"status": "not-real",
 	}, http.StatusBadRequest, &body)
 	require.Equal(t, "bad_request", body["error"]["code"])
@@ -125,13 +125,13 @@ func TestTaskStatusValidationUsesErrorEnvelope(t *testing.T) {
 	doJSON(t, handler, http.MethodPost, pathAgentsPrefix+agent.ID+pathIdentity, nil, http.StatusCreated, &identity)
 	credential := crWriter.credentialTokens[identity.CredentialRef]
 
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/complete", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+pathComplete, map[string]any{
 		"status": "todo",
 	}, http.StatusBadRequest, &body)
 	require.Equal(t, "bad_request", body["error"]["code"])
 	require.Equal(t, "status must be in-review or done", body["error"]["message"])
 
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/heartbeat", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyHeartbeat, map[string]any{
 		"status": "paused",
 	}, http.StatusBadRequest, &body)
 	require.Equal(t, "bad_request", body["error"]["code"])
@@ -224,11 +224,11 @@ func TestAccessGrantAllowsReadButNotWrite(t *testing.T) {
 	})
 
 	var squad domain.Squad
-	doJSONAuth(t, handler, authOwner, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquads, map[string]any{
 		"name": "Shared Squad",
 	}, http.StatusCreated, &squad)
 	var agent domain.Agent
-	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Shared Agent",
 	}, http.StatusCreated, &agent)
 
@@ -239,7 +239,7 @@ func TestAccessGrantAllowsReadButNotWrite(t *testing.T) {
 	doJSONAuth(t, handler, authViewer, http.MethodGet, pathSquadsPrefix+squad.ID, nil, http.StatusForbidden, &denied)
 
 	var grant domain.AccessGrant
-	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquadsPrefix+squad.ID+"/access-grants", map[string]any{
+	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquadsPrefix+squad.ID+pathAccessGrants, map[string]any{
 		"grantee_type": "user",
 		"grantee_id":   viewer.ID,
 		"permissions":  "talk",
@@ -260,7 +260,7 @@ func TestAccessGrantAllowsReadButNotWrite(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 
-	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquadsPrefix+squad.ID+"/access-grants", map[string]any{
+	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquadsPrefix+squad.ID+pathAccessGrants, map[string]any{
 		"grantee_type": "user",
 		"grantee_id":   viewer.ID,
 		"permissions":  "read",
@@ -285,7 +285,7 @@ func TestAccessGrantAllowsReadButNotWrite(t *testing.T) {
 	require.Equal(t, "forbidden", forbidden["error"]["code"])
 
 	var audit []domain.AuditEntry
-	doJSONAuth(t, handler, authOwner, http.MethodGet, pathSquadsPrefix+squad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSONAuth(t, handler, authOwner, http.MethodGet, pathSquadsPrefix+squad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "access.denied")
 }
 
@@ -297,7 +297,7 @@ func TestAccessGrantCreateFailsClosedWhenAuditFails(t *testing.T) {
 	handler := New(testConfig(), store)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Audit Required Squad",
 	}, http.StatusCreated, &squad)
 	viewer, err := base.UpsertUser(context.Background(), &domain.User{
@@ -308,7 +308,7 @@ func TestAccessGrantCreateFailsClosedWhenAuditFails(t *testing.T) {
 	require.NoError(t, err)
 
 	var body map[string]map[string]string
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/access-grants", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAccessGrants, map[string]any{
 		"grantee_type": "user",
 		"grantee_id":   viewer.ID,
 		"permissions":  "read",
@@ -330,7 +330,7 @@ func TestRegistryRequiresPlatformAdminForWrites(t *testing.T) {
 	})
 
 	var body map[string]map[string]string
-	doJSONAuth(t, handler, "Bearer user", http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	doJSONAuth(t, handler, "Bearer user", http.MethodPost, pathProviders, map[string]any{
 		"name":     "OpenAI",
 		"kind":     "openai",
 		"base_url": "https://api.openai.com/v1",
@@ -344,9 +344,9 @@ func TestRegistryLLMProviderAndGenericResourceFlow(t *testing.T) {
 	handler := New(testConfig(), storage.NewMemoryStore())
 
 	var provider domain.LLMProvider
-	doJSON(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathProviders, map[string]any{
 		"name":          "Local Llama",
-		"kind":          "openai-compatible",
+		"kind":          openaiCompatible,
 		"base_url":      localLLMBaseURL,
 		"api_key_ref":   "secret/local-llama",
 		"default_model": legacyFieldValue,
@@ -359,7 +359,7 @@ func TestRegistryLLMProviderAndGenericResourceFlow(t *testing.T) {
 	require.Equal(t, localLLMBaseURL, provider.BaseURL)
 
 	var providers []domain.LLMProvider
-	doJSON(t, handler, http.MethodGet, "/api/v1/registry/llm-providers", nil, http.StatusOK, &providers)
+	doJSON(t, handler, http.MethodGet, pathProviders, nil, http.StatusOK, &providers)
 	require.Len(t, providers, 1)
 
 	var updatedProvider domain.LLMProvider
@@ -369,7 +369,7 @@ func TestRegistryLLMProviderAndGenericResourceFlow(t *testing.T) {
 	require.Equal(t, "http://localhost:8124/v1", updatedProvider.BaseURL)
 
 	var skill domain.RegistryResource
-	doJSON(t, handler, http.MethodPost, "/api/v1/registry/skills", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSkills, map[string]any{
 		"name":        "repo-reader",
 		"description": "Read project files",
 		"manifest": map[string]any{
@@ -380,18 +380,18 @@ func TestRegistryLLMProviderAndGenericResourceFlow(t *testing.T) {
 	require.Equal(t, domain.ResSkill, skill.Type)
 
 	var updated domain.RegistryResource
-	doJSON(t, handler, http.MethodPatch, "/api/v1/registry/skills/"+skill.ID, map[string]any{
+	doJSON(t, handler, http.MethodPatch, pathSkillsPrefix+skill.ID, map[string]any{
 		"description": "Read repository files",
 	}, http.StatusOK, &updated)
 	require.Equal(t, "Read repository files", updated.Description)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/registry/skills/"+skill.ID+pathDeprecate, nil)
+	req := httptest.NewRequest(http.MethodPost, pathSkillsPrefix+skill.ID+pathDeprecate, nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 
 	var deprecated domain.RegistryResource
-	doJSON(t, handler, http.MethodGet, "/api/v1/registry/skills/"+skill.ID, nil, http.StatusOK, &deprecated)
+	doJSON(t, handler, http.MethodGet, pathSkillsPrefix+skill.ID, nil, http.StatusOK, &deprecated)
 	require.Equal(t, domain.ResourceDeprecated, deprecated.Status)
 }
 
@@ -402,12 +402,12 @@ func TestAuditAndMeteringEndpoints(t *testing.T) {
 	handler := New(testConfig(), store)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Measured Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Metered Agent",
 	}, http.StatusCreated, &agent)
 
@@ -423,18 +423,18 @@ func TestAuditAndMeteringEndpoints(t *testing.T) {
 	}))
 
 	var squadUsage domain.MeteringEvent
-	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/metering", nil, http.StatusOK, &squadUsage)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathMetering, nil, http.StatusOK, &squadUsage)
 	require.Equal(t, 120, squadUsage.InputTokens)
 	require.Equal(t, 35, squadUsage.OutputTokens)
 	require.InDelta(t, 0.42, squadUsage.Cost, 0.0001)
 
 	var agentUsage domain.MeteringEvent
-	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID+"/metering", nil, http.StatusOK, &agentUsage)
+	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID+pathMetering, nil, http.StatusOK, &agentUsage)
 	require.Equal(t, 120, agentUsage.InputTokens)
 	require.Equal(t, 35, agentUsage.OutputTokens)
 
 	var audit []domain.AuditEntry
-	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.NotEmpty(t, audit)
 	require.Contains(t, auditActions(audit), "agent.create")
 	require.Contains(t, auditActions(audit), "squad.create")
@@ -449,20 +449,20 @@ func TestGatewayMeteringCallbackRecordsUsageAndAudit(t *testing.T) {
 
 	store := storage.NewMemoryStore()
 	cfg := testConfig()
-	cfg.GatewayCallbackToken = "callback-token"
+	cfg.GatewayCallbackToken = callbackToken
 	handler := New(cfg, store)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Callback Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Callback Agent",
 	}, http.StatusCreated, &agent)
 
-	doGatewayCallback(t, handler, "callback-token", map[string]any{
+	doGatewayCallback(t, handler, callbackToken, map[string]any{
 		"agent_id":      agent.ID,
 		"squad_id":      squad.ID,
 		"model":         "openai/test-model",
@@ -473,13 +473,13 @@ func TestGatewayMeteringCallbackRecordsUsageAndAudit(t *testing.T) {
 	}, http.StatusAccepted)
 
 	var usage domain.MeteringEvent
-	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID+"/metering", nil, http.StatusOK, &usage)
+	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID+pathMetering, nil, http.StatusOK, &usage)
 	require.Equal(t, 10, usage.InputTokens)
 	require.Equal(t, 5, usage.OutputTokens)
 	require.InDelta(t, 0.12, usage.Cost, 0.0001)
 
 	var audit []domain.AuditEntry
-	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "llm.metering.ingest")
 }
 
@@ -487,7 +487,7 @@ func TestGatewayMeteringCallbackRejectsBadToken(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig()
-	cfg.GatewayCallbackToken = "callback-token"
+	cfg.GatewayCallbackToken = callbackToken
 	handler := New(cfg, storage.NewMemoryStore())
 
 	doGatewayCallback(t, handler, "wrong-token", map[string]any{
@@ -501,20 +501,20 @@ func TestGatewayFailureCallbackRecordsAuditOnly(t *testing.T) {
 
 	store := storage.NewMemoryStore()
 	cfg := testConfig()
-	cfg.GatewayCallbackToken = "callback-token"
+	cfg.GatewayCallbackToken = callbackToken
 	handler := New(cfg, store)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Failure Callback Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Failure Callback Agent",
 	}, http.StatusCreated, &agent)
 
-	doGatewayCallback(t, handler, "callback-token", map[string]any{
+	doGatewayCallback(t, handler, callbackToken, map[string]any{
 		"status":   "failure",
 		"agent_id": agent.ID,
 		"squad_id": squad.ID,
@@ -523,11 +523,11 @@ func TestGatewayFailureCallbackRecordsAuditOnly(t *testing.T) {
 	}, http.StatusAccepted)
 
 	var usage domain.MeteringEvent
-	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID+"/metering", nil, http.StatusOK, &usage)
+	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID+pathMetering, nil, http.StatusOK, &usage)
 	require.Equal(t, 0, usage.InputTokens+usage.OutputTokens)
 
 	var audit []domain.AuditEntry
-	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "llm.failure")
 }
 
@@ -540,16 +540,16 @@ func TestGatewayMeteringSnapshotsRatesAndComputesCost(t *testing.T) {
 
 	store := storage.NewMemoryStore()
 	cfg := testConfig()
-	cfg.GatewayCallbackToken = "callback-token"
+	cfg.GatewayCallbackToken = callbackToken
 	handler := New(cfg, store)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Snapshot Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Snapshot Agent",
 	}, http.StatusCreated, &agent)
 
@@ -591,7 +591,7 @@ func TestGatewayMeteringSnapshotsRatesAndComputesCost(t *testing.T) {
 	// A fallback-served turn: the reporter asks for primary but says the
 	// fallback served it, and sends a bogus cost that must be ignored in
 	// favour of the snapshot computation.
-	doGatewayCallback(t, handler, "callback-token", map[string]any{
+	doGatewayCallback(t, handler, callbackToken, map[string]any{
 		"agent_id":      agent.ID,
 		"squad_id":      squad.ID,
 		"model":         "primary-model",
@@ -604,7 +604,7 @@ func TestGatewayMeteringSnapshotsRatesAndComputesCost(t *testing.T) {
 
 	// fallback pricing: 1M*3/1M + 0.5M*7/1M = 3 + 3.5 = 6.5
 	var usage domain.MeteringEvent
-	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID+"/metering", nil, http.StatusOK, &usage)
+	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID+pathMetering, nil, http.StatusOK, &usage)
 	require.InDelta(t, 6.5, usage.Cost, 0.0001)
 
 	// The snapshot must be frozen: changing live pricing afterwards must
@@ -613,7 +613,7 @@ func TestGatewayMeteringSnapshotsRatesAndComputesCost(t *testing.T) {
 	_, err = store.UpdateAIModel(context.Background(), fallback)
 	require.NoError(t, err)
 
-	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID+"/metering", nil, http.StatusOK, &usage)
+	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID+pathMetering, nil, http.StatusOK, &usage)
 	require.InDelta(t, 6.5, usage.Cost, 0.0001)
 
 	// The stored event's rate columns + served model are asserted at the
@@ -629,20 +629,20 @@ func TestGatewayMeteringWithoutResolvableModelKeepsReportedCost(t *testing.T) {
 
 	store := storage.NewMemoryStore()
 	cfg := testConfig()
-	cfg.GatewayCallbackToken = "callback-token"
+	cfg.GatewayCallbackToken = callbackToken
 	handler := New(cfg, store)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Unpriced Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Unpriced Agent",
 	}, http.StatusCreated, &agent)
 
-	doGatewayCallback(t, handler, "callback-token", map[string]any{
+	doGatewayCallback(t, handler, callbackToken, map[string]any{
 		"agent_id":      agent.ID,
 		"squad_id":      squad.ID,
 		"model":         "unknown-model",
@@ -653,7 +653,7 @@ func TestGatewayMeteringWithoutResolvableModelKeepsReportedCost(t *testing.T) {
 	}, http.StatusAccepted)
 
 	var usage domain.MeteringEvent
-	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID+"/metering", nil, http.StatusOK, &usage)
+	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID+pathMetering, nil, http.StatusOK, &usage)
 	require.InDelta(t, 0.12, usage.Cost, 0.0001)
 }
 
@@ -664,7 +664,7 @@ func TestSquadAndAgentMutationsWriteCustomResources(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), store, &fakeCRWriter{})
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Runtime Squad",
 	}, http.StatusCreated, &squad)
 
@@ -674,7 +674,7 @@ func TestSquadAndAgentMutationsWriteCustomResources(t *testing.T) {
 	}, http.StatusOK, &updatedSquad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Runner",
 	}, http.StatusCreated, &agent)
 
@@ -713,19 +713,19 @@ func TestDeleteSquadDeletesAgentsAndCredentials(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), store, crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Cleanup Squad",
 	}, http.StatusCreated, &squad)
 
 	var firstAgent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "First",
 	}, http.StatusCreated, &firstAgent)
 	var firstIdentity domain.AgentIdentity
 	doJSON(t, handler, http.MethodPost, pathAgentsPrefix+firstAgent.ID+pathIdentity, nil, http.StatusCreated, &firstIdentity)
 
 	var secondAgent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Second",
 	}, http.StatusCreated, &secondAgent)
 	var secondIdentity domain.AgentIdentity
@@ -765,12 +765,12 @@ func TestAgentIdentityCreateAndRotate(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Identity Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Identity Agent",
 	}, http.StatusCreated, &agent)
 
@@ -797,7 +797,7 @@ func TestAgentIdentityCreateAndRotate(t *testing.T) {
 	require.NotEmpty(t, crWriter.credentialTokens[rotated.VirtualKeyRef])
 
 	var audit []domain.AuditEntry
-	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "agent_identity.create")
 	require.Contains(t, auditActions(audit), "agent_identity.rotate")
 	require.Empty(t, crWriter.ops)
@@ -834,17 +834,17 @@ func TestAgentIdentityProvisionsLiteLLMVirtualKey(t *testing.T) {
 	handler := NewWithCRWriter(cfg, store, crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Gateway Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Gateway Agent",
 	}, http.StatusCreated, &agent)
 
 	var provider domain.LLMProvider
-	doJSON(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathProviders, map[string]any{
 		"name":        "Local Llama",
 		"kind":        "openai",
 		"base_url":    "http://llama.local/v1",
@@ -884,29 +884,29 @@ func TestAgentPermissionsSetAndList(t *testing.T) {
 	handler := New(testConfig(), storage.NewMemoryStore())
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Permission Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Permissioned Agent",
 	}, http.StatusCreated, &agent)
 
 	var provider domain.LLMProvider
-	doJSON(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathProviders, map[string]any{
 		"name":     "Permission Provider",
-		"kind":     "openai-compatible",
+		"kind":     openaiCompatible,
 		"base_url": localLLMBaseURL,
 	}, http.StatusCreated, &provider)
 
 	var skill domain.RegistryResource
-	doJSON(t, handler, http.MethodPost, "/api/v1/registry/skills", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSkills, map[string]any{
 		"name": "permission-skill",
 	}, http.StatusCreated, &skill)
 
 	var skill2 domain.RegistryResource
-	doJSON(t, handler, http.MethodPost, "/api/v1/registry/skills", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSkills, map[string]any{
 		"name": "permission-skill-two",
 	}, http.StatusCreated, &skill2)
 
@@ -923,7 +923,7 @@ func TestAgentPermissionsSetAndList(t *testing.T) {
 	require.Equal(t, perms, listed)
 
 	var audit []domain.AuditEntry
-	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "agent_permissions.set")
 
 	var body map[string]map[string]string
@@ -946,12 +946,12 @@ func TestAgentRuntimeResourcesReturnsGrantedActiveResources(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), store, crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Runtime Resource Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Runtime Resource Agent",
 	}, http.StatusCreated, &agent)
 
@@ -960,9 +960,9 @@ func TestAgentRuntimeResourcesReturnsGrantedActiveResources(t *testing.T) {
 	credential := crWriter.credentialTokens[identity.CredentialRef]
 
 	var provider domain.LLMProvider
-	doJSON(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathProviders, map[string]any{
 		"name":        "Gateway Model",
-		"kind":        "openai-compatible",
+		"kind":        openaiCompatible,
 		"base_url":    "http://llm-gateway/v1",
 		"api_key_ref": "secret/provider-key",
 	}, http.StatusCreated, &provider)
@@ -979,10 +979,10 @@ func TestAgentRuntimeResourcesReturnsGrantedActiveResources(t *testing.T) {
 	}, http.StatusCreated, &tool)
 
 	var deprecated domain.RegistryResource
-	doJSON(t, handler, http.MethodPost, "/api/v1/registry/skills", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSkills, map[string]any{
 		"name": "old-skill",
 	}, http.StatusCreated, &deprecated)
-	doJSONNoBody(t, handler, http.MethodPost, "/api/v1/registry/skills/"+deprecated.ID+pathDeprecate, nil, http.StatusNoContent)
+	doJSONNoBody(t, handler, http.MethodPost, pathSkillsPrefix+deprecated.ID+pathDeprecate, nil, http.StatusNoContent)
 
 	var perms []domain.AgentPermission
 	doJSON(t, handler, http.MethodPut, pathAgentsPrefix+agent.ID+pathPermissions, []map[string]string{
@@ -1010,7 +1010,7 @@ func TestAgentRuntimeResourcesReturnsGrantedActiveResources(t *testing.T) {
 	require.Equal(t, "http://llm-gateway/v1", resources[0]["endpoint"])
 	require.NotContains(t, resources[0], "api_key_ref")
 	manifest := resources[0]["manifest"].(map[string]any)
-	require.Equal(t, "openai-compatible", manifest["kind"])
+	require.Equal(t, openaiCompatible, manifest["kind"])
 	// WP8 (0014): the provider manifest no longer carries legacy
 	// default_model/models.
 	require.NotContains(t, manifest, "default_model")
@@ -1027,12 +1027,12 @@ func TestAgentRuntimeTaskClaimAndStatusFlow(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Runtime Task Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Runtime Agent",
 	}, http.StatusCreated, &agent)
 
@@ -1042,44 +1042,44 @@ func TestAgentRuntimeTaskClaimAndStatusFlow(t *testing.T) {
 	require.NotEmpty(t, credential)
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Claim me",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &task)
 
 	var listed []domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodGet, "/api/v1/agents/me/tasks", nil, http.StatusOK, &listed)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodGet, pathMyTasks, nil, http.StatusOK, &listed)
 	require.Len(t, listed, 1)
 	require.Equal(t, task.ID, listed[0].ID)
 
 	var claimed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", nil, http.StatusOK, &claimed)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, nil, http.StatusOK, &claimed)
 	require.Equal(t, task.ID, claimed.ID)
 	require.Equal(t, domain.TaskInProgress, claimed.Status)
 	require.NotEmpty(t, claimed.ExecutionID)
 	require.NotEmpty(t, claimed.FencingToken)
 
-	doAgentJSONNoBody(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", nil, http.StatusNoContent)
+	doAgentJSONNoBody(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, nil, http.StatusNoContent)
 
 	var currentAgent domain.Agent
 	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID, nil, http.StatusOK, &currentAgent)
 	require.Equal(t, domain.AgentBusy, currentAgent.Status)
 
 	var completed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/complete", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+pathComplete, map[string]any{
 		"status":        string(domain.TaskDone),
 		"execution_id":  claimed.ExecutionID,
 		"fencing_token": claimed.FencingToken,
 	}, http.StatusOK, &completed)
 	require.Equal(t, domain.TaskDone, completed.Status)
 
-	doAgentJSONNoBody(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", nil, http.StatusNoContent)
+	doAgentJSONNoBody(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, nil, http.StatusNoContent)
 
 	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID, nil, http.StatusOK, &currentAgent)
 	require.Equal(t, domain.AgentIdle, currentAgent.Status)
 
 	var audit []domain.AuditEntry
-	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "task.claim")
 	require.Contains(t, auditActions(audit), "task.complete")
 }
@@ -1091,12 +1091,12 @@ func TestBoardExposesActiveExecutionState(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Board Execution Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Board Execution Agent",
 	}, http.StatusCreated, &agent)
 
@@ -1106,7 +1106,7 @@ func TestBoardExposesActiveExecutionState(t *testing.T) {
 	require.NotEmpty(t, credential)
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Work in flight",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &task)
@@ -1116,7 +1116,7 @@ func TestBoardExposesActiveExecutionState(t *testing.T) {
 			Board domain.Board  `json:"board"`
 			Tasks []domain.Task `json:"tasks"`
 		}
-		doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/board", nil, http.StatusOK, &board)
+		doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathBoard, nil, http.StatusOK, &board)
 		require.Len(t, board.Tasks, 1)
 		return board.Tasks[0]
 	}
@@ -1126,7 +1126,7 @@ func TestBoardExposesActiveExecutionState(t *testing.T) {
 	require.True(t, before.LeaseExpiresAt.IsZero())
 
 	var claimed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", nil, http.StatusOK, &claimed)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, nil, http.StatusOK, &claimed)
 	require.NotEmpty(t, claimed.ExecutionID)
 
 	inFlight := readBoard()
@@ -1135,7 +1135,7 @@ func TestBoardExposesActiveExecutionState(t *testing.T) {
 	require.Empty(t, inFlight.FencingToken, "fencing tokens must not leak to board readers")
 
 	var completed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/complete", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+pathComplete, map[string]any{
 		"status":        string(domain.TaskDone),
 		"execution_id":  claimed.ExecutionID,
 		"fencing_token": claimed.FencingToken,
@@ -1154,12 +1154,12 @@ func TestBoardAfterReaperShowsTaskRequeued(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), store, crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Reaper Board Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Reaper Board Agent",
 	}, http.StatusCreated, &agent)
 
@@ -1169,13 +1169,13 @@ func TestBoardAfterReaperShowsTaskRequeued(t *testing.T) {
 	require.NotEmpty(t, credential)
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Dead worker task",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &task)
 
 	var claimed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", nil, http.StatusOK, &claimed)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, nil, http.StatusOK, &claimed)
 	require.NotEmpty(t, claimed.ExecutionID)
 
 	// The worker dies: reap with a cutoff past the 2-minute claim lease.
@@ -1187,7 +1187,7 @@ func TestBoardAfterReaperShowsTaskRequeued(t *testing.T) {
 		Board domain.Board  `json:"board"`
 		Tasks []domain.Task `json:"tasks"`
 	}
-	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/board", nil, http.StatusOK, &board)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathBoard, nil, http.StatusOK, &board)
 	require.Len(t, board.Tasks, 1)
 	require.Equal(t, domain.TaskTodo, board.Tasks[0].Status, "reaped task must be back in the todo queue")
 	require.Empty(t, board.Tasks[0].ExecutionID, "reaped task must not look in flight")
@@ -1250,12 +1250,12 @@ func TestAgentRuntimeRejectsStaleTaskExecutionFence(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Fenced Task Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Fenced Agent",
 	}, http.StatusCreated, &agent)
 
@@ -1264,16 +1264,16 @@ func TestAgentRuntimeRejectsStaleTaskExecutionFence(t *testing.T) {
 	credential := crWriter.credentialTokens[identity.CredentialRef]
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Reject stale completion",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &task)
 
 	var claimed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", nil, http.StatusOK, &claimed)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, nil, http.StatusOK, &claimed)
 
 	var conflict map[string]map[string]string
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/complete", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+pathComplete, map[string]any{
 		"status":        "done",
 		"execution_id":  claimed.ExecutionID,
 		"fencing_token": "stale-token",
@@ -1281,11 +1281,11 @@ func TestAgentRuntimeRejectsStaleTaskExecutionFence(t *testing.T) {
 	require.Equal(t, "conflict", conflict["error"]["code"])
 
 	var current domain.Task
-	doJSON(t, handler, http.MethodGet, "/api/v1/tasks/"+task.ID, nil, http.StatusOK, &current)
+	doJSON(t, handler, http.MethodGet, pathTasksPrefix+task.ID, nil, http.StatusOK, &current)
 	require.Equal(t, domain.TaskInProgress, current.Status)
 
 	var completed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/complete", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+pathComplete, map[string]any{
 		"status":        "done",
 		"execution_id":  claimed.ExecutionID,
 		"fencing_token": claimed.FencingToken,
@@ -1301,16 +1301,16 @@ func TestAgentRuntimeTaskContextIncludesScopedMemory(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), store, crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Context Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Context Agent",
 	}, http.StatusCreated, &agent)
 	var otherAgent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Other Agent",
 	}, http.StatusCreated, &otherAgent)
 
@@ -1322,7 +1322,7 @@ func TestAgentRuntimeTaskContextIncludesScopedMemory(t *testing.T) {
 	otherCredential := crWriter.credentialTokens[otherIdentity.CredentialRef]
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Assemble context",
 		"description":       "Use scoped memory",
 		"assignee_agent_id": agent.ID,
@@ -1355,7 +1355,7 @@ func TestAgentRuntimeTaskContextIncludesScopedMemory(t *testing.T) {
 		Memory []domain.AgentMemory `json:"memory"`
 		Limits map[string]int       `json:"limits"`
 	}
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodGet, "/api/v1/agents/me/tasks/"+task.ID+"/context?memory_limit=1", nil, http.StatusOK, &payload)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodGet, pathMyTasksPrefix+task.ID+"/context?memory_limit=1", nil, http.StatusOK, &payload)
 
 	require.Equal(t, task.ID, payload.Task.ID)
 	require.Len(t, payload.Memory, 1)
@@ -1363,7 +1363,7 @@ func TestAgentRuntimeTaskContextIncludesScopedMemory(t *testing.T) {
 	require.Equal(t, 1, payload.Limits["memory_limit"])
 
 	var forbidden map[string]map[string]string
-	doAgentJSON(t, handler, otherAgent.ID, otherCredential, http.MethodGet, "/api/v1/agents/me/tasks/"+task.ID+"/context", nil, http.StatusForbidden, &forbidden)
+	doAgentJSON(t, handler, otherAgent.ID, otherCredential, http.MethodGet, pathMyTasksPrefix+task.ID+"/context", nil, http.StatusForbidden, &forbidden)
 	require.Equal(t, "forbidden", forbidden["error"]["code"])
 }
 
@@ -1375,12 +1375,12 @@ func TestAgentRuntimeCompletionCanPersistMemory(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), store, crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Completion Memory Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Completion Agent",
 	}, http.StatusCreated, &agent)
 
@@ -1389,17 +1389,17 @@ func TestAgentRuntimeCompletionCanPersistMemory(t *testing.T) {
 	credential := crWriter.credentialTokens[identity.CredentialRef]
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Persist result",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &task)
 	var claimed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", nil, http.StatusOK, &claimed)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, nil, http.StatusOK, &claimed)
 
 	var completed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/complete", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+pathComplete, map[string]any{
 		"status":         "done",
-		"summary":        "Durable completion summary",
+		"summary":        durableSummary,
 		"persist_memory": true,
 		"execution_id":   claimed.ExecutionID,
 		"fencing_token":  claimed.FencingToken,
@@ -1409,8 +1409,8 @@ func TestAgentRuntimeCompletionCanPersistMemory(t *testing.T) {
 	memories, err := store.ListAgentMemory(context.Background(), agent.ID, squad.ID, nil, 10)
 	require.NoError(t, err)
 	require.Len(t, memories, 1)
-	require.Equal(t, "Durable completion summary", memories[0].Content)
-	require.Equal(t, "Durable completion summary", memories[0].RawContent)
+	require.Equal(t, durableSummary, memories[0].Content)
+	require.Equal(t, durableSummary, memories[0].RawContent)
 	require.Equal(t, "raw_model_output", memories[0].TrustLevel)
 	require.Equal(t, "task_completion", memories[0].Provenance)
 	require.Equal(t, "pending_review", memories[0].ReviewStatus)
@@ -1425,12 +1425,12 @@ func TestAssignedTaskMirrorsAgentBusyAndCompletionMirrorsIdle(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), store, crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Wake Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Wake Agent",
 	}, http.StatusCreated, &agent)
 
@@ -1439,7 +1439,7 @@ func TestAssignedTaskMirrorsAgentBusyAndCompletionMirrorsIdle(t *testing.T) {
 	credential := crWriter.credentialTokens[identity.CredentialRef]
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Wake agent",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &task)
@@ -1447,10 +1447,10 @@ func TestAssignedTaskMirrorsAgentBusyAndCompletionMirrorsIdle(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, domain.AgentBusy, currentAgent.Status)
 	var claimed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", nil, http.StatusOK, &claimed)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, nil, http.StatusOK, &claimed)
 
 	var completed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/complete", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+pathComplete, map[string]any{
 		"status":        string(domain.TaskDone),
 		"execution_id":  claimed.ExecutionID,
 		"fencing_token": claimed.FencingToken,
@@ -1469,12 +1469,12 @@ func TestAgentCompletionStaysBusyWhenMoreAssignedWorkExists(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), store, crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "More Work Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "More Work Agent",
 	}, http.StatusCreated, &agent)
 
@@ -1483,20 +1483,20 @@ func TestAgentCompletionStaysBusyWhenMoreAssignedWorkExists(t *testing.T) {
 	credential := crWriter.credentialTokens[identity.CredentialRef]
 
 	var first domain.Task
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "First task",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &first)
 	var second domain.Task
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Second task",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &second)
 	var claimed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", nil, http.StatusOK, &claimed)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, nil, http.StatusOK, &claimed)
 
 	var completed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+first.ID+"/complete", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+first.ID+pathComplete, map[string]any{
 		"status":        string(domain.TaskDone),
 		"execution_id":  claimed.ExecutionID,
 		"fencing_token": claimed.FencingToken,
@@ -1515,12 +1515,12 @@ func TestAgentRuntimeAuthRejectsInvalidCredential(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Runtime Auth Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Runtime Agent",
 	}, http.StatusCreated, &agent)
 
@@ -1528,14 +1528,14 @@ func TestAgentRuntimeAuthRejectsInvalidCredential(t *testing.T) {
 	doJSON(t, handler, http.MethodPost, pathAgentsPrefix+agent.ID+pathIdentity, nil, http.StatusCreated, &identity)
 
 	var body map[string]map[string]string
-	doAgentJSON(t, handler, agent.ID, "wrong", http.MethodGet, "/api/v1/agents/me/tasks", nil, http.StatusUnauthorized, &body)
+	doAgentJSON(t, handler, agent.ID, "wrong", http.MethodGet, pathMyTasks, nil, http.StatusUnauthorized, &body)
 	require.Equal(t, "unauthorized", body["error"]["code"])
 
-	doAgentJSON(t, handler, agent.ID, identity.CredentialRef, http.MethodGet, "/api/v1/agents/me/tasks", nil, http.StatusUnauthorized, &body)
+	doAgentJSON(t, handler, agent.ID, identity.CredentialRef, http.MethodGet, pathMyTasks, nil, http.StatusUnauthorized, &body)
 	require.Equal(t, "unauthorized", body["error"]["code"])
 
 	var currentAgent domain.Agent
-	doAgentJSON(t, handler, agent.ID, crWriter.credentialTokens[identity.CredentialRef], http.MethodPost, "/api/v1/agents/me/heartbeat", map[string]string{
+	doAgentJSON(t, handler, agent.ID, crWriter.credentialTokens[identity.CredentialRef], http.MethodPost, pathMyHeartbeat, map[string]string{
 		"status": string(domain.AgentError),
 	}, http.StatusOK, &currentAgent)
 	require.Equal(t, domain.AgentError, currentAgent.Status)
@@ -1548,16 +1548,16 @@ func TestAgentMessagingInboxFlow(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Messaging Squad",
 	}, http.StatusCreated, &squad)
 
 	var sender domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Sender",
 	}, http.StatusCreated, &sender)
 	var recipient domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Recipient",
 	}, http.StatusCreated, &recipient)
 
@@ -1569,7 +1569,7 @@ func TestAgentMessagingInboxFlow(t *testing.T) {
 	recipientCredential := crWriter.credentialTokens[recipientIdentity.CredentialRef]
 
 	var sent domain.Message
-	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, "/api/v1/agents/me/messages", map[string]any{
+	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, pathMyMessages, map[string]any{
 		"to_agent_id": recipient.ID,
 		"type":        "consult",
 		"message":     "please review",
@@ -1586,12 +1586,12 @@ func TestAgentMessagingInboxFlow(t *testing.T) {
 	require.Equal(t, domain.AgentBusy, recipientState.Status)
 
 	var inbox []domain.Message
-	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodGet, "/api/v1/agents/me/messages", nil, http.StatusOK, &inbox)
+	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodGet, pathMyMessages, nil, http.StatusOK, &inbox)
 	require.Len(t, inbox, 1)
 	require.Equal(t, sent.ID, inbox[0].ID)
 
 	var acked domain.Message
-	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodPost, "/api/v1/agents/me/messages/"+sent.ID+"/ack", nil, http.StatusOK, &acked)
+	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodPost, pathMyMessagesPrefix+sent.ID+"/ack", nil, http.StatusOK, &acked)
 	require.Equal(t, domain.MessageDelivered, acked.Status)
 	require.False(t, acked.DeliveredAt.IsZero())
 
@@ -1599,7 +1599,7 @@ func TestAgentMessagingInboxFlow(t *testing.T) {
 	require.Equal(t, domain.AgentIdle, recipientState.Status)
 
 	var audit []domain.AuditEntry
-	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "message.send")
 	require.Contains(t, auditActions(audit), "message.ack")
 }
@@ -1611,12 +1611,12 @@ func TestAgentWorkWaitReportsAvailableWork(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Wait Squad",
 	}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Waiting Agent",
 	}, http.StatusCreated, &agent)
 
@@ -1629,7 +1629,7 @@ func TestAgentWorkWaitReportsAvailableWork(t *testing.T) {
 	require.False(t, waitResponse.WorkAvailable)
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Wake runtime",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &task)
@@ -1646,15 +1646,15 @@ func TestAgentMessageFailuresRetryThenDeadLetter(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Message Retry Squad",
 	}, http.StatusCreated, &squad)
 	var sender domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Sender",
 	}, http.StatusCreated, &sender)
 	var recipient domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Recipient",
 	}, http.StatusCreated, &recipient)
 
@@ -1666,7 +1666,7 @@ func TestAgentMessageFailuresRetryThenDeadLetter(t *testing.T) {
 	recipientCredential := crWriter.credentialTokens[recipientIdentity.CredentialRef]
 
 	var sent domain.Message
-	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, "/api/v1/agents/me/messages", map[string]any{
+	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, pathMyMessages, map[string]any{
 		"to_agent_id":  recipient.ID,
 		"type":         "consult",
 		"message":      "unsupported for now",
@@ -1675,15 +1675,15 @@ func TestAgentMessageFailuresRetryThenDeadLetter(t *testing.T) {
 	require.Equal(t, 2, sent.MaxAttempts)
 
 	var failed domain.Message
-	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodPost, "/api/v1/agents/me/messages/"+sent.ID+"/fail", map[string]any{
-		"reason": "unsupported handoff",
+	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodPost, pathMyMessagesPrefix+sent.ID+"/fail", map[string]any{
+		"reason": unsupportedHandoff,
 	}, http.StatusOK, &failed)
 	require.Equal(t, domain.MessagePending, failed.Status)
 	require.Equal(t, 1, failed.Attempts)
 	require.True(t, failed.NextRetryAt.After(time.Now().UTC()))
 
 	var inbox []domain.Message
-	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodGet, "/api/v1/agents/me/messages", nil, http.StatusOK, &inbox)
+	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodGet, pathMyMessages, nil, http.StatusOK, &inbox)
 	require.Empty(t, inbox)
 
 	var recipientState domain.Agent
@@ -1691,18 +1691,18 @@ func TestAgentMessageFailuresRetryThenDeadLetter(t *testing.T) {
 	require.Equal(t, domain.AgentBusy, recipientState.Status)
 
 	var dead domain.Message
-	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodPost, "/api/v1/agents/me/messages/"+sent.ID+"/fail", map[string]any{
-		"reason": "unsupported handoff",
+	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodPost, pathMyMessagesPrefix+sent.ID+"/fail", map[string]any{
+		"reason": unsupportedHandoff,
 	}, http.StatusOK, &dead)
 	require.Equal(t, domain.MessageDead, dead.Status)
 	require.Equal(t, 2, dead.Attempts)
-	require.Contains(t, dead.TerminalReason, "unsupported handoff")
+	require.Contains(t, dead.TerminalReason, unsupportedHandoff)
 
 	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+recipient.ID, nil, http.StatusOK, &recipientState)
 	require.Equal(t, domain.AgentIdle, recipientState.Status)
 
 	var audit []domain.AuditEntry
-	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "message.fail")
 }
 
@@ -1713,15 +1713,15 @@ func TestAgentMessageHistoryIncludesNonPendingMessages(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Message History Squad",
 	}, http.StatusCreated, &squad)
 	var sender domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Sender",
 	}, http.StatusCreated, &sender)
 	var recipient domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Recipient",
 	}, http.StatusCreated, &recipient)
 
@@ -1733,7 +1733,7 @@ func TestAgentMessageHistoryIncludesNonPendingMessages(t *testing.T) {
 	recipientCredential := crWriter.credentialTokens[recipientIdentity.CredentialRef]
 
 	var sent domain.Message
-	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, "/api/v1/agents/me/messages", map[string]any{
+	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, pathMyMessages, map[string]any{
 		"to_agent_id": recipient.ID,
 		"type":        "consult",
 		"message":     "hello recipient",
@@ -1742,11 +1742,11 @@ func TestAgentMessageHistoryIncludesNonPendingMessages(t *testing.T) {
 	// Ack the message so it is no longer pending. The history endpoint must
 	// still return it (it is the full chat history, not just the pending queue).
 	var acked domain.Message
-	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodPost, "/api/v1/agents/me/messages/"+sent.ID+"/ack", nil, http.StatusOK, &acked)
+	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodPost, pathMyMessagesPrefix+sent.ID+"/ack", nil, http.StatusOK, &acked)
 	require.Equal(t, domain.MessageDelivered, acked.Status)
 
 	var pending []domain.Message
-	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodGet, "/api/v1/agents/me/messages", nil, http.StatusOK, &pending)
+	doAgentJSON(t, handler, recipient.ID, recipientCredential, http.MethodGet, pathMyMessages, nil, http.StatusOK, &pending)
 	require.Empty(t, pending)
 
 	var history []domain.Message
@@ -1763,11 +1763,11 @@ func TestExpiredAgentMessagesDoNotKeepAgentBusy(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Message Expiry Squad",
 	}, http.StatusCreated, &squad)
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Agent",
 	}, http.StatusCreated, &agent)
 	var identity domain.AgentIdentity
@@ -1784,11 +1784,11 @@ func TestExpiredAgentMessagesDoNotKeepAgentBusy(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 
 	var inbox []domain.Message
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodGet, "/api/v1/agents/me/messages", nil, http.StatusOK, &inbox)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodGet, pathMyMessages, nil, http.StatusOK, &inbox)
 	require.Empty(t, inbox)
 
 	var updated domain.Agent
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/heartbeat", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyHeartbeat, map[string]any{
 		"status": "idle",
 	}, http.StatusOK, &updated)
 	require.Equal(t, domain.AgentIdle, updated.Status)
@@ -1807,20 +1807,20 @@ func TestAgentCrossSquadMessageRequiresGrant(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
 
 	var sourceSquad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Source Squad",
 	}, http.StatusCreated, &sourceSquad)
 	var targetSquad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Target Squad",
 	}, http.StatusCreated, &targetSquad)
 
 	var sender domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+sourceSquad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+sourceSquad.ID+pathAgents, map[string]any{
 		"name": "Sender",
 	}, http.StatusCreated, &sender)
 	var recipient domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+targetSquad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+targetSquad.ID+pathAgents, map[string]any{
 		"name": "Recipient",
 	}, http.StatusCreated, &recipient)
 
@@ -1829,34 +1829,34 @@ func TestAgentCrossSquadMessageRequiresGrant(t *testing.T) {
 	senderCredential := crWriter.credentialTokens[senderIdentity.CredentialRef]
 
 	var denied map[string]map[string]string
-	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, "/api/v1/agents/me/messages", map[string]any{
+	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, pathMyMessages, map[string]any{
 		"to_agent_id": recipient.ID,
 		"type":        "ping",
 	}, http.StatusForbidden, &denied)
 	require.Equal(t, "forbidden", denied["error"]["code"])
 
 	var grant domain.AccessGrant
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+targetSquad.ID+"/access-grants", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+targetSquad.ID+pathAccessGrants, map[string]any{
 		"grantee_type": "agent",
 		"grantee_id":   sender.ID,
 		"permissions":  "talk",
 	}, http.StatusCreated, &grant)
 
 	var sent domain.Message
-	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, "/api/v1/agents/me/messages", map[string]any{
+	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, pathMyMessages, map[string]any{
 		"to_agent_id": recipient.ID,
 		"type":        "ping",
 	}, http.StatusCreated, &sent)
 	require.Equal(t, targetSquad.ID, sent.SquadID)
 	require.Equal(t, domain.MessagePing, sent.Type)
 
-	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, "/api/v1/agents/me/messages", map[string]any{
+	doAgentJSON(t, handler, sender.ID, senderCredential, http.MethodPost, pathMyMessages, map[string]any{
 		"to_agent_id": recipient.ID,
 		"type":        "delegate",
 	}, http.StatusForbidden, &denied)
 
 	var audit []domain.AuditEntry
-	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+targetSquad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+targetSquad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "message.denied")
 }
 
@@ -1866,11 +1866,11 @@ func TestUserChatCreatesAgentMessage(t *testing.T) {
 	handler := New(testConfig(), storage.NewMemoryStore())
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
 		"name": "Chat Squad",
 	}, http.StatusCreated, &squad)
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "Chat Agent",
 	}, http.StatusCreated, &agent)
 
@@ -1914,7 +1914,7 @@ func doJSONNoBody(t *testing.T, handler http.Handler, method, path string, body 
 	}
 	req := httptest.NewRequest(method, path, bytes.NewReader(payload))
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(headerContentType, jsonContentType)
 	}
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -1927,7 +1927,7 @@ func doGatewayCallback(t *testing.T, handler http.Handler, token string, body an
 	payload, err := json.Marshal(body)
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/gateway/metering", bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerContentType, jsonContentType)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -1946,7 +1946,7 @@ func doJSONAuth(t *testing.T, handler http.Handler, authorization, method, path 
 
 	req := httptest.NewRequest(method, path, bytes.NewReader(payload))
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(headerContentType, jsonContentType)
 	}
 	if authorization != "" {
 		req.Header.Set("Authorization", authorization)
@@ -1982,7 +1982,7 @@ func doAgentRequest(t *testing.T, handler http.Handler, agentID, token, method, 
 	}
 	req := httptest.NewRequest(method, path, bytes.NewReader(payload))
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(headerContentType, jsonContentType)
 	}
 	req.Header.Set("X-Skquad-Agent-ID", agentID)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -2098,7 +2098,7 @@ func TestOIDCGroupRoleBindingGrantsAdmin(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.AuthMode = config.AuthOIDC
-	cfg.OIDCAdminGroups = []string{"ross-private-cloud:platform"}
+	cfg.OIDCAdminGroups = []string{platformAdminGroup}
 
 	handler := NewWithOIDCAuthenticator(cfg, storage.NewMemoryStore(), fakeOIDC{
 		profile: &auth.Profile{
@@ -2107,7 +2107,7 @@ func TestOIDCGroupRoleBindingGrantsAdmin(t *testing.T) {
 			Email:         "rb@example.com",
 			EmailVerified: true,
 			Name:          "RB User",
-			Groups:        []string{"ross-private-cloud:limited", "ross-private-cloud:platform"},
+			Groups:        []string{"ross-private-cloud:limited", platformAdminGroup},
 		},
 	})
 
@@ -2121,7 +2121,7 @@ func TestOIDCGroupRoleBindingKeepsPlainUsersPlain(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.AuthMode = config.AuthOIDC
-	cfg.OIDCAdminGroups = []string{"ross-private-cloud:platform"}
+	cfg.OIDCAdminGroups = []string{platformAdminGroup}
 
 	handler := NewWithOIDCAuthenticator(cfg, storage.NewMemoryStore(), fakeOIDC{
 		profile: &auth.Profile{
@@ -2201,7 +2201,7 @@ func TestOIDCNoAdminGroupsNeverPromotesOrStrips(t *testing.T) {
 		Email:         "nobody@example.com",
 		EmailVerified: true,
 		Name:          "Nobody",
-		Groups:        []string{"ross-private-cloud:platform"},
+		Groups:        []string{platformAdminGroup},
 	}
 
 	var first domain.User
@@ -2225,14 +2225,14 @@ func TestDeleteRegistryResourceInUseWarnsThenForceDeletes(t *testing.T) {
 	handler := New(testConfig(), storage.NewMemoryStore())
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "delete-squad"}, http.StatusCreated, &squad)
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{"name": "delete-squad"}, http.StatusCreated, &squad)
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "worker-one",
 		"role": "worker",
 	}, http.StatusCreated, &agent)
 	var skill domain.RegistryResource
-	doJSON(t, handler, http.MethodPost, "/api/v1/registry/skills", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSkills, map[string]any{
 		"name":     "dangerous-skill",
 		"manifest": map[string]any{"version": "1"},
 	}, http.StatusCreated, &skill)
@@ -2246,7 +2246,7 @@ func TestDeleteRegistryResourceInUseWarnsThenForceDeletes(t *testing.T) {
 		Error string        `json:"error"`
 		Usage []deleteUsage `json:"usage"`
 	}
-	doJSON(t, handler, http.MethodDelete, "/api/v1/registry/skills/"+skill.ID, nil, http.StatusConflict, &conflict)
+	doJSON(t, handler, http.MethodDelete, pathSkillsPrefix+skill.ID, nil, http.StatusConflict, &conflict)
 	require.Equal(t, "in_use", conflict.Error)
 	require.Len(t, conflict.Usage, 1)
 	require.Equal(t, agent.ID, conflict.Usage[0].AgentID)
@@ -2254,11 +2254,11 @@ func TestDeleteRegistryResourceInUseWarnsThenForceDeletes(t *testing.T) {
 	require.Equal(t, squad.ID, conflict.Usage[0].SquadID)
 
 	// Resource still exists after the refused delete.
-	doJSON(t, handler, http.MethodGet, "/api/v1/registry/skills/"+skill.ID, nil, http.StatusOK, &skill)
+	doJSON(t, handler, http.MethodGet, pathSkillsPrefix+skill.ID, nil, http.StatusOK, &skill)
 
 	// Force delete succeeds and revokes the dangling grant.
-	doJSONNoBody(t, handler, http.MethodDelete, "/api/v1/registry/skills/"+skill.ID+forceQuery, nil, http.StatusNoContent)
-	doJSON(t, handler, http.MethodGet, "/api/v1/registry/skills/"+skill.ID, nil, http.StatusNotFound, &map[string]any{})
+	doJSONNoBody(t, handler, http.MethodDelete, pathSkillsPrefix+skill.ID+forceQuery, nil, http.StatusNoContent)
+	doJSON(t, handler, http.MethodGet, pathSkillsPrefix+skill.ID, nil, http.StatusNotFound, &map[string]any{})
 
 	var perms []domain.AgentPermission
 	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID+pathPermissions, nil, http.StatusOK, &perms)
@@ -2272,14 +2272,14 @@ func TestDeleteLLMProviderInUseWarnsThenForceDeletes(t *testing.T) {
 	handler := New(testConfig(), store)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "prov-squad"}, http.StatusCreated, &squad)
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{"name": "prov-squad"}, http.StatusCreated, &squad)
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
 		"name": "llm-worker",
 		"role": "worker",
 	}, http.StatusCreated, &agent)
 	var provider domain.LLMProvider
-	doJSON(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathProviders, map[string]any{
 		"name":     "delete-me-llm",
 		"kind":     "openai",
 		"base_url": "http://example.invalid",
@@ -2305,11 +2305,11 @@ func TestDeleteLLMProviderInUseWarnsThenForceDeletes(t *testing.T) {
 
 	// Unused resources delete without force.
 	var spare domain.RegistryResource
-	doJSON(t, handler, http.MethodPost, "/api/v1/registry/skills", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSkills, map[string]any{
 		"name":     "spare-skill",
 		"manifest": map[string]any{"version": "1"},
 	}, http.StatusCreated, &spare)
-	doJSONNoBody(t, handler, http.MethodDelete, "/api/v1/registry/skills/"+spare.ID, nil, http.StatusNoContent)
+	doJSONNoBody(t, handler, http.MethodDelete, pathSkillsPrefix+spare.ID, nil, http.StatusNoContent)
 
 	doJSONNoBody(t, handler, http.MethodDelete, pathProvidersPrefix+provider.ID+forceQuery, nil, http.StatusNoContent)
 	doJSON(t, handler, http.MethodGet, pathProvidersPrefix+provider.ID, nil, http.StatusNotFound, &map[string]any{})

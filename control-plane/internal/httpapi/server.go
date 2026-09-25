@@ -41,7 +41,17 @@ const (
 	routeRegistryResource = "/registry/{registryType}/{resourceID}"
 
 	// errWrapFormat wraps a sentinel error with a contextual field name.
-	errWrapFormat = "%w: %s"
+	errWrapFormat               = "%w: %s"
+	auditAccessDenied           = "access.denied"
+	msgNotSquadOwner            = "you do not own this squad"
+	msgTaskNotAssigned          = "task is not assigned to this agent"
+	msgTypeInvalid              = "type is invalid"
+	msgUpdateAgentState         = "failed to update agent state"
+	msgUpdateAssignedAgentState = "failed to update assigned agent state"
+	msgUpdateTargetAgentState   = "failed to update target agent state"
+	routeAgent                  = "/agents/{agentID}"
+	routeSquad                  = "/squads/{squadID}"
+	routeTask                   = "/tasks/{taskID}"
 )
 
 // Binding errors (ADR-0010 D4/D5, WP3). These replace the old
@@ -255,9 +265,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 
 			r.Post("/squads", s.createSquad)
 			r.Get("/squads", s.listSquads)
-			r.Get("/squads/{squadID}", s.getSquad)
-			r.Patch("/squads/{squadID}", s.updateSquad)
-			r.Delete("/squads/{squadID}", s.deleteSquad)
+			r.Get(routeSquad, s.getSquad)
+			r.Patch(routeSquad, s.updateSquad)
+			r.Delete(routeSquad, s.deleteSquad)
 			r.Post("/squads/{squadID}/access-grants", s.createGrant)
 			r.Get("/squads/{squadID}/access-grants", s.listGrants)
 			r.Get("/squads/{squadID}/wake-latency", s.listSquadWakeLatency)
@@ -265,9 +275,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 
 			r.Post("/squads/{squadID}/agents", s.createAgent)
 			r.Get("/squads/{squadID}/agents", s.listAgents)
-			r.Get("/agents/{agentID}", s.getAgent)
-			r.Patch("/agents/{agentID}", s.updateAgent)
-			r.Delete("/agents/{agentID}", s.deleteAgent)
+			r.Get(routeAgent, s.getAgent)
+			r.Patch(routeAgent, s.updateAgent)
+			r.Delete(routeAgent, s.deleteAgent)
 			r.Post("/agents/{agentID}/chat", s.createAgentChatMessage)
 			r.Get("/agents/{agentID}/chat", s.listAgentChatMessages)
 			r.Post("/agents/{agentID}/identity", s.createAgentIdentity)
@@ -279,12 +289,12 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/squads/{squadID}/metering", s.getSquadMetering)
 			r.Get("/squads/{squadID}/audit", s.listSquadAudit)
 			r.Post("/squads/{squadID}/board/tasks", s.createTask)
-			r.Get("/tasks/{taskID}", s.getTask)
+			r.Get(routeTask, s.getTask)
 			r.Get("/tasks/{taskID}/messages", s.listTaskMessages)
 			r.Post("/tasks/{taskID}/messages", s.createTaskMessage)
-			r.Patch("/tasks/{taskID}", s.updateTask)
+			r.Patch(routeTask, s.updateTask)
 			r.Post("/tasks/{taskID}/move", s.moveTask)
-			r.Delete("/tasks/{taskID}", s.deleteTask)
+			r.Delete(routeTask, s.deleteTask)
 			r.Get("/agents/{agentID}/metering", s.getAgentMetering)
 
 			r.Post("/registry/llm-providers", s.createLLMProvider)
@@ -2564,7 +2574,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if created.AssigneeAgentID != "" {
 		if err := s.syncAgentStatusFromPendingWork(r.Context(), created.AssigneeAgentID); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", "failed to update assigned agent state")
+			writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
 			return
 		}
 	}
@@ -2624,7 +2634,7 @@ func (s *Server) getCurrentAgentTaskContext(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if task.AssigneeAgentID != principal.Agent.ID {
-		writeError(w, http.StatusForbidden, "forbidden", "task is not assigned to this agent")
+		writeError(w, http.StatusForbidden, "forbidden", msgTaskNotAssigned)
 		return
 	}
 	resources, err := s.currentAgentResources(r.Context(), principal.Agent.ID)
@@ -2723,7 +2733,7 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 		messageType = domain.MessageConsult
 	}
 	if !messageType.Valid() {
-		writeError(w, http.StatusBadRequest, "bad_request", "type is invalid")
+		writeError(w, http.StatusBadRequest, "bad_request", msgTypeInvalid)
 		return
 	}
 	target, err := s.store.GetAgent(r.Context(), targetID)
@@ -2781,7 +2791,7 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if err := s.syncAgentStatusFromPendingWork(r.Context(), target.ID); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", "failed to update target agent state")
+			writeError(w, http.StatusInternalServerError, "internal", msgUpdateTargetAgentState)
 			return
 		}
 		writeJSON(w, http.StatusCreated, created)
@@ -2804,7 +2814,7 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := s.syncAgentStatusFromPendingWork(r.Context(), target.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to update target agent state")
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateTargetAgentState)
 		return
 	}
 	writeJSON(w, http.StatusCreated, created)
@@ -2888,7 +2898,7 @@ func (s *Server) ackCurrentAgentMessage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := s.syncAgentStatusFromPendingWork(r.Context(), principal.Agent.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
@@ -2909,7 +2919,7 @@ func (s *Server) failCurrentAgentMessage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.syncAgentStatusFromPendingWork(r.Context(), principal.Agent.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
@@ -2929,7 +2939,7 @@ func (s *Server) createAgentChatMessage(w http.ResponseWriter, r *http.Request) 
 		messageType = domain.MessageConsult
 	}
 	if !messageType.Valid() {
-		writeError(w, http.StatusBadRequest, "bad_request", "type is invalid")
+		writeError(w, http.StatusBadRequest, "bad_request", msgTypeInvalid)
 		return
 	}
 	u := currentUser(r.Context())
@@ -2950,7 +2960,7 @@ func (s *Server) createAgentChatMessage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := s.syncAgentStatusFromPendingWork(r.Context(), target.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to update target agent state")
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateTargetAgentState)
 		return
 	}
 	writeJSON(w, http.StatusCreated, created)
@@ -3097,7 +3107,7 @@ func (s *Server) claimCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			if err := s.syncAgentStatusFromPendingWork(r.Context(), principal.Agent.ID); err != nil {
-				writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
+				writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -3107,7 +3117,7 @@ func (s *Server) claimCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.setAgentStatusAndMirror(r.Context(), principal.Agent.ID, domain.AgentBusy); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 		return
 	}
 	s.recordWakeLatency(r.Context(), principal.Agent, task.ID, req.StartedAt)
@@ -3204,7 +3214,7 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := s.syncAgentStatusFromPendingWork(r.Context(), principal.Agent.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 		return
 	}
 	s.notifySquadOwner(r.Context(), updated.SquadID, domain.InboxTaskCompleted, principal.Agent.ID, updated.ID,
@@ -3256,7 +3266,7 @@ func (s *Server) reportCurrentAgentTaskWorkspace(w http.ResponseWriter, r *http.
 		return
 	}
 	if task.AssigneeAgentID != principal.Agent.ID {
-		writeError(w, http.StatusForbidden, "forbidden", "task is not assigned to this agent")
+		writeError(w, http.StatusForbidden, "forbidden", msgTaskNotAssigned)
 		return
 	}
 	resID := strings.TrimSpace(req.WorkspaceResourceID)
@@ -3327,7 +3337,7 @@ func (s *Server) blockCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.syncAgentStatusFromPendingWork(r.Context(), principal.Agent.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 		return
 	}
 	blockNote := strings.TrimSpace(req.Summary)
@@ -3381,7 +3391,7 @@ func (s *Server) currentAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.setAgentStatusAndMirror(r.Context(), principal.Agent.ID, status); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 		return
 	}
 	agent, err := s.store.GetAgent(r.Context(), principal.Agent.ID)
@@ -3408,7 +3418,7 @@ func (s *Server) updateCurrentAgentTaskStatus(w http.ResponseWriter, r *http.Req
 		return nil, false
 	}
 	if task.AssigneeAgentID != principal.Agent.ID {
-		writeError(w, http.StatusForbidden, "forbidden", "task is not assigned to this agent")
+		writeError(w, http.StatusForbidden, "forbidden", msgTaskNotAssigned)
 		return nil, false
 	}
 	task.Status = taskStatus
@@ -3419,11 +3429,11 @@ func (s *Server) updateCurrentAgentTaskStatus(w http.ResponseWriter, r *http.Req
 	}
 	if agentStatus == domain.AgentIdle {
 		if err := s.syncAgentStatusFromPendingWork(r.Context(), principal.Agent.ID); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
+			writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 			return nil, false
 		}
 	} else if err := s.setAgentStatusAndMirror(r.Context(), principal.Agent.ID, agentStatus); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent state")
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 		return nil, false
 	}
 	return updated, true
@@ -3499,7 +3509,7 @@ func (s *Server) createTaskMessage(w http.ResponseWriter, r *http.Request) {
 		messageType = domain.MessageConsult
 	}
 	if !messageType.Valid() {
-		writeError(w, http.StatusBadRequest, "bad_request", "type is invalid")
+		writeError(w, http.StatusBadRequest, "bad_request", msgTypeInvalid)
 		return
 	}
 	u := currentUser(r.Context())
@@ -3520,7 +3530,7 @@ func (s *Server) createTaskMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.syncAgentStatusFromPendingWork(r.Context(), task.AssigneeAgentID); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to update target agent state")
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateTargetAgentState)
 		return
 	}
 	writeJSON(w, http.StatusCreated, created)
@@ -3572,7 +3582,7 @@ func (s *Server) updateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.syncAffectedAgentsFromTaskChange(r.Context(), previousAssignee, updated.AssigneeAgentID); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to update assigned agent state")
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
@@ -3601,7 +3611,7 @@ func (s *Server) moveTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.syncAffectedAgentsFromTaskChange(r.Context(), previousAssignee, updated.AssigneeAgentID); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to update assigned agent state")
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
@@ -3618,7 +3628,7 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if task.AssigneeAgentID != "" {
 		if err := s.syncAgentStatusFromPendingWork(r.Context(), task.AssigneeAgentID); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", "failed to update assigned agent state")
+			writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
 			return
 		}
 	}
@@ -3635,7 +3645,7 @@ func (s *Server) loadOwnedOrAdminSquad(w http.ResponseWriter, r *http.Request) (
 	if squad.OwnerID == u.ID || u.Role == domain.RolePlatformAdmin {
 		return squad, true
 	}
-	writeError(w, http.StatusForbidden, "forbidden", "you do not own this squad")
+	writeError(w, http.StatusForbidden, "forbidden", msgNotSquadOwner)
 	return nil, false
 }
 
@@ -3657,7 +3667,7 @@ func (s *Server) loadOwnedSquad(w http.ResponseWriter, r *http.Request) (*domain
 		return nil, false
 	}
 	if squad.OwnerID != currentUser(r.Context()).ID {
-		writeError(w, http.StatusForbidden, "forbidden", "you do not own this squad")
+		writeError(w, http.StatusForbidden, "forbidden", msgNotSquadOwner)
 		return nil, false
 	}
 	return squad, true
@@ -3679,7 +3689,7 @@ func (s *Server) loadAccessibleSquad(w http.ResponseWriter, r *http.Request) (*d
 		return nil, false
 	}
 	if !ok {
-		s.recordUserAudit(r, "access.denied", "squad", squad.ID, squad.ID, nil)
+		s.recordUserAudit(r, auditAccessDenied, "squad", squad.ID, squad.ID, nil)
 		writeError(w, http.StatusForbidden, "forbidden", "you do not have access to this squad")
 		return nil, false
 	}
@@ -3763,10 +3773,10 @@ func (s *Server) ensureSquadActionAccess(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	if ownerOnly {
-		s.recordUserAudit(r, "access.denied", "squad", squad.ID, squad.ID, nil)
-		writeError(w, http.StatusForbidden, "forbidden", "you do not own this squad")
+		s.recordUserAudit(r, auditAccessDenied, "squad", squad.ID, squad.ID, nil)
+		writeError(w, http.StatusForbidden, "forbidden", msgNotSquadOwner)
 	} else {
-		s.recordUserAudit(r, "access.denied", "squad", squad.ID, squad.ID, nil)
+		s.recordUserAudit(r, auditAccessDenied, "squad", squad.ID, squad.ID, nil)
 		writeError(w, http.StatusForbidden, "forbidden", "you do not have access to this squad")
 	}
 	return nil, false
@@ -3782,8 +3792,8 @@ func (s *Server) ensureOwnedOrAdminSquad(w http.ResponseWriter, r *http.Request,
 	if squad.OwnerID == u.ID || u.Role == domain.RolePlatformAdmin {
 		return squad, true
 	}
-	s.recordUserAudit(r, "access.denied", "squad", squad.ID, squad.ID, nil)
-	writeError(w, http.StatusForbidden, "forbidden", "you do not own this squad")
+	s.recordUserAudit(r, auditAccessDenied, "squad", squad.ID, squad.ID, nil)
+	writeError(w, http.StatusForbidden, "forbidden", msgNotSquadOwner)
 	return nil, false
 }
 

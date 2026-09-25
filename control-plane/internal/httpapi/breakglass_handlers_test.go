@@ -86,13 +86,13 @@ func bgGet(t *testing.T, h http.Handler, path, remoteAddr string, headers map[st
 func TestBreakGlassDisabledIsNotFound(t *testing.T) {
 	handler := NewWithOIDCAuthenticator(bgConfig(false), storage.NewMemoryStore(), fakeOIDC{})
 
-	rec := bgPost(t, handler, "/api/v1/auth/breakglass/login",
-		map[string]string{"username": bgUser, "password": bgPassword}, "192.168.68.5:1234", nil)
+	rec := bgPost(t, handler, pathBreakglassLogin,
+		map[string]string{"username": bgUser, "password": bgPassword}, remoteAddrLAN, nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("disabled login status = %d, want 404 (must not be advertised)", rec.Code)
 	}
 
-	rec = bgGet(t, handler, "/api/v1/auth/breakglass/status", "192.168.68.5:1234", nil)
+	rec = bgGet(t, handler, "/api/v1/auth/breakglass/status", remoteAddrLAN, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status endpoint = %d, want 200", rec.Code)
 	}
@@ -111,7 +111,7 @@ func TestBreakGlassRejectsCloudflareFrontedRequest(t *testing.T) {
 	// Even with a LAN-looking X-Forwarded-For, the CF-Ray header proves the
 	// request came through the public tunnel. Credentials are correct: it must
 	// still be refused.
-	rec := bgPost(t, handler, "/api/v1/auth/breakglass/login",
+	rec := bgPost(t, handler, pathBreakglassLogin,
 		map[string]string{"username": bgUser, "password": bgPassword},
 		"10.42.0.7:40000",
 		map[string]string{
@@ -130,7 +130,7 @@ func TestBreakGlassRejectsCloudflareFrontedRequest(t *testing.T) {
 func TestBreakGlassRejectsNonAllowlistedSource(t *testing.T) {
 	handler := NewWithOIDCAuthenticator(bgConfig(true), storage.NewMemoryStore(), fakeOIDC{})
 
-	rec := bgPost(t, handler, "/api/v1/auth/breakglass/login",
+	rec := bgPost(t, handler, pathBreakglassLogin,
 		map[string]string{"username": bgUser, "password": bgPassword},
 		"203.0.113.77:44444", nil)
 	if rec.Code != http.StatusForbidden {
@@ -141,9 +141,9 @@ func TestBreakGlassRejectsNonAllowlistedSource(t *testing.T) {
 func TestBreakGlassRejectsBadCredentials(t *testing.T) {
 	handler := NewWithOIDCAuthenticator(bgConfig(true), storage.NewMemoryStore(), fakeOIDC{})
 
-	rec := bgPost(t, handler, "/api/v1/auth/breakglass/login",
+	rec := bgPost(t, handler, pathBreakglassLogin,
 		map[string]string{"username": bgUser, "password": "wrong-password-entirely"},
-		"192.168.68.5:1234", nil)
+		remoteAddrLAN, nil)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("bad credentials = %d, want 401", rec.Code)
 	}
@@ -158,9 +158,9 @@ func TestBreakGlassLoginIssuesWorkingAdminToken(t *testing.T) {
 	// verified locally and never touched Dex.
 	handler := NewWithOIDCAuthenticator(bgConfig(true), store, fakeOIDC{err: errors.New("dex unreachable")})
 
-	rec := bgPost(t, handler, "/api/v1/auth/breakglass/login",
+	rec := bgPost(t, handler, pathBreakglassLogin,
 		map[string]string{"username": bgUser, "password": bgPassword},
-		"100.64.9.9:5555", nil)
+		remoteAddrCGNAT, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("login = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -183,8 +183,8 @@ func TestBreakGlassLoginIssuesWorkingAdminToken(t *testing.T) {
 	}
 
 	// The token authenticates against a human-authenticated endpoint in OIDC mode.
-	me := bgGet(t, handler, "/api/v1/auth/me", "100.64.9.9:5555",
-		map[string]string{"Authorization": "Bearer " + out.Token})
+	me := bgGet(t, handler, "/api/v1/auth/me", remoteAddrCGNAT,
+		map[string]string{"Authorization": bearerPrefix + out.Token})
 	if me.Code != http.StatusOK {
 		t.Fatalf("auth/me with break-glass token = %d, want 200; body=%s", me.Code, me.Body.String())
 	}
@@ -202,7 +202,7 @@ func TestBreakGlassLoginIssuesWorkingAdminToken(t *testing.T) {
 		"kind":        "openai",
 		"base_url":    "https://api.example.com/v1",
 		"api_key_ref": "k8s://secret/bg-key",
-	}, "100.64.9.9:5555", map[string]string{"Authorization": "Bearer " + out.Token})
+	}, remoteAddrCGNAT, map[string]string{"Authorization": bearerPrefix + out.Token})
 	if dep.Code != http.StatusCreated && dep.Code != http.StatusOK {
 		t.Fatalf("admin mutation with break-glass token = %d, want 200/201; body=%s", dep.Code, dep.Body.String())
 	}
@@ -210,7 +210,7 @@ func TestBreakGlassLoginIssuesWorkingAdminToken(t *testing.T) {
 
 func TestBreakGlassTokenFromAnotherKeyRejected(t *testing.T) {
 	handler := NewWithOIDCAuthenticator(bgConfig(true), storage.NewMemoryStore(), fakeOIDC{})
-	rec := bgPost(t, handler, "/api/v1/auth/breakglass/login",
+	rec := bgPost(t, handler, pathBreakglassLogin,
 		map[string]string{"username": bgUser, "password": bgPassword}, "192.168.68.5:1", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("login = %d, want 200", rec.Code)
@@ -225,7 +225,7 @@ func TestBreakGlassTokenFromAnotherKeyRejected(t *testing.T) {
 	other := NewWithOIDCAuthenticator(otherCfg, storage.NewMemoryStore(), fakeOIDC{})
 
 	me := bgGet(t, other, "/api/v1/auth/me", "192.168.68.5:1",
-		map[string]string{"Authorization": "Bearer " + token})
+		map[string]string{"Authorization": bearerPrefix + token})
 	if me.Code != http.StatusUnauthorized {
 		t.Fatalf("cross-key token = %d, want 401", me.Code)
 	}
@@ -237,13 +237,13 @@ func TestBreakGlassRateLimitsBruteForce(t *testing.T) {
 	// MaxAttempts is 3; the 4th attempt from the same IP is refused even before
 	// credentials are checked.
 	for i := 1; i <= 3; i++ {
-		rec := bgPost(t, handler, "/api/v1/auth/breakglass/login",
+		rec := bgPost(t, handler, pathBreakglassLogin,
 			map[string]string{"username": bgUser, "password": "wrong"}, "192.168.68.99:2", nil)
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("attempt %d = %d, want 401", i, rec.Code)
 		}
 	}
-	rec := bgPost(t, handler, "/api/v1/auth/breakglass/login",
+	rec := bgPost(t, handler, pathBreakglassLogin,
 		map[string]string{"username": bgUser, "password": bgPassword}, "192.168.68.99:2", nil)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("4th attempt = %d, want 429 (correct password must not bypass the limit)", rec.Code)

@@ -21,6 +21,10 @@ import (
 	skquadv1 "github.com/rossbrigoli/skquad/operator/internal/api/v1"
 )
 
+const (
+	apiServerName = "skquad-api-server"
+)
+
 func TestSquadReconcilerCreatesNamespace(t *testing.T) {
 	t.Parallel()
 
@@ -35,7 +39,7 @@ func TestSquadReconcilerCreatesNamespace(t *testing.T) {
 	squad := &skquadv1.Squad{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "squad-test",
-			Namespace: "skquad-system",
+			Namespace: testNamespace,
 		},
 		Spec: skquadv1.SquadSpec{
 			SquadID:   "11111111-1111-1111-1111-111111111111",
@@ -52,7 +56,7 @@ func TestSquadReconcilerCreatesNamespace(t *testing.T) {
 	reconciler := &SquadReconciler{
 		Client:                      k8sClient,
 		Scheme:                      scheme,
-		APIServerServiceAccountName: "skquad-api-server",
+		APIServerServiceAccountName: apiServerName,
 	}
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
@@ -97,7 +101,7 @@ func TestSquadReconcilerCreatesNamespace(t *testing.T) {
 	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: apiSecretWriterBinding, Namespace: squad.Spec.Namespace}, &secretBinding); err != nil {
 		t.Fatal(err)
 	}
-	if got := secretBinding.Subjects[0]; got.Name != "skquad-api-server" || got.Namespace != squad.Namespace {
+	if got := secretBinding.Subjects[0]; got.Name != apiServerName || got.Namespace != squad.Namespace {
 		t.Fatalf("secret writer subject = %#v, want skquad-system/skquad-api-server", got)
 	}
 
@@ -175,7 +179,7 @@ func TestSquadReconcilerFinalizerDeletesManagedResources(t *testing.T) {
 	squad := &skquadv1.Squad{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "squad-delete",
-			Namespace:  "skquad-system",
+			Namespace:  testNamespace,
 			Finalizers: []string{squadFinalizer},
 		},
 		Spec: skquadv1.SquadSpec{
@@ -267,7 +271,7 @@ func squadWithEgress(t *testing.T, operatingModel string) *skquadv1.Squad {
 	squad := &skquadv1.Squad{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "squad-egress-test",
-			Namespace: "skquad-system",
+			Namespace: testNamespace,
 		},
 		Spec: skquadv1.SquadSpec{
 			SquadID:   "33333333-3333-3333-3333-333333333333",
@@ -307,7 +311,7 @@ func TestSquadReconcilerGrantedEgressPolicy(t *testing.T) {
 		`{"cidr":"93.184.215.208/29","except":["93.184.215.216/31"],"ports":[443],"description":"git host"},`+
 		`{"cidr":"140.82.112.0/20"}]}}`)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(squad).Build()
-	reconciler := &SquadReconciler{Client: k8sClient, Scheme: scheme, APIServerServiceAccountName: "skquad-api-server"}
+	reconciler := &SquadReconciler{Client: k8sClient, Scheme: scheme, APIServerServiceAccountName: apiServerName}
 	reconcileSquadTwice(t, reconciler, squad)
 
 	var policy networkingv1.NetworkPolicy
@@ -365,7 +369,7 @@ func TestSquadReconcilerRemovesStaleGrantedEgress(t *testing.T) {
 		},
 	}
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(squad, stale).Build()
-	reconciler := &SquadReconciler{Client: k8sClient, Scheme: scheme, APIServerServiceAccountName: "skquad-api-server"}
+	reconciler := &SquadReconciler{Client: k8sClient, Scheme: scheme, APIServerServiceAccountName: apiServerName}
 	reconcileSquadTwice(t, reconciler, squad)
 
 	var policy networkingv1.NetworkPolicy
@@ -396,7 +400,7 @@ func TestSquadReconcilerInvalidGrantedEgressFailsClosed(t *testing.T) {
 		squad.Name = "squad-egress-bad-" + name
 		squad.Spec.Namespace = "squad-egress-bad-ns"
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(squad).Build()
-		reconciler := &SquadReconciler{Client: k8sClient, Scheme: scheme, APIServerServiceAccountName: "skquad-api-server"}
+		reconciler := &SquadReconciler{Client: k8sClient, Scheme: scheme, APIServerServiceAccountName: apiServerName}
 		req := ctrl.Request{NamespacedName: types.NamespacedName{Name: squad.Name, Namespace: squad.Namespace}}
 		if _, err := reconciler.Reconcile(context.Background(), req); err == nil {
 			// first reconcile only adds the finalizer; second must fail

@@ -21,7 +21,7 @@ func wakeFixture(t *testing.T, handler http.Handler, store storage.Store, crWrit
 		"name": squadName,
 	}, http.StatusCreated, &squad)
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
 		"name": agentName,
 	}, http.StatusCreated, &agent)
 	var identity domain.AgentIdentity
@@ -45,7 +45,7 @@ func wakeFixture(t *testing.T, handler http.Handler, store storage.Store, crWrit
 func wakeAssignTask(t *testing.T, handler http.Handler, squadID, agentID, title string) domain.Task {
 	t.Helper()
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squadID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squadID+"/board/tasks", map[string]any{
 		"title":             title,
 		"assignee_agent_id": agentID,
 	}, http.StatusCreated, &task)
@@ -62,7 +62,7 @@ func TestWakeLatencyColdStartRecordedOnClaim(t *testing.T) {
 
 	startedAt := time.Now().UTC()
 	var claimed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, map[string]any{
 		"started_at": startedAt.Format(time.RFC3339Nano),
 	}, http.StatusOK, &claimed)
 
@@ -92,7 +92,7 @@ func TestWakeLatencyWarmStartNotCold(t *testing.T) {
 	// Container existed an hour before the wake was even requested.
 	startedAt := time.Now().UTC().Add(-time.Hour)
 	var claimed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, map[string]any{
 		"started_at": startedAt.Format(time.RFC3339Nano),
 	}, http.StatusOK, &claimed)
 
@@ -117,7 +117,7 @@ func TestWakeLatencyDedupesPerContainerStart(t *testing.T) {
 
 	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	var first domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, map[string]any{
 		"started_at": startedAt,
 	}, http.StatusOK, &first)
 	// Complete the first task so the second claim succeeds on the same container.
@@ -127,7 +127,7 @@ func TestWakeLatencyDedupesPerContainerStart(t *testing.T) {
 		"fencing_token": first.FencingToken,
 	}, http.StatusOK, &domain.Task{})
 	var second domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, map[string]any{
 		"started_at": startedAt,
 	}, http.StatusOK, &second)
 
@@ -146,7 +146,7 @@ func TestWakeLatencySkippedWithoutStartedAtOrAppliedUpsert(t *testing.T) {
 	var squad domain.Squad
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "Wake Skip Squad"}, http.StatusCreated, &squad)
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{"name": "Skip Agent"}, http.StatusCreated, &agent)
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{"name": "Skip Agent"}, http.StatusCreated, &agent)
 	var identity domain.AgentIdentity
 	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+agent.ID+"/identity", nil, http.StatusCreated, &identity)
 	credential := crWriter.credentialTokens[identity.CredentialRef]
@@ -154,7 +154,7 @@ func TestWakeLatencySkippedWithoutStartedAtOrAppliedUpsert(t *testing.T) {
 
 	// No started_at → nothing recorded.
 	var claimed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", nil, http.StatusOK, &claimed)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, nil, http.StatusOK, &claimed)
 	events, err := store.ListWakeLatency(context.Background(), squad.ID, time.Time{}, 10)
 	require.NoError(t, err)
 	require.Empty(t, events)
@@ -167,7 +167,7 @@ func TestWakeLatencySkippedWithoutStartedAtOrAppliedUpsert(t *testing.T) {
 		"fencing_token": claimed.FencingToken,
 	}, http.StatusOK, &complete)
 	wakeAssignTask(t, handler, squad.ID, agent.ID, "second skipped wake task")
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, map[string]any{
 		"started_at": time.Now().UTC().Format(time.RFC3339Nano),
 	}, http.StatusOK, &claimed)
 	events, err = store.ListWakeLatency(context.Background(), squad.ID, time.Time{}, 10)
@@ -184,7 +184,7 @@ func TestWakeLatencySummaryEndpoint(t *testing.T) {
 	wakeAssignTask(t, handler, squad.ID, agent.ID, "api wake task")
 
 	var claimed domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksClaim, map[string]any{
 		"started_at": time.Now().UTC().Format(time.RFC3339Nano),
 	}, http.StatusOK, &claimed)
 
@@ -205,7 +205,7 @@ func TestWakeLatencySummaryEndpoint(t *testing.T) {
 			SloMet          bool    `json:"slo_met"`
 		} `json:"summary"`
 	}
-	doJSON(t, handler, http.MethodGet, "/api/v1/squads/"+squad.ID+"/wake-latency", nil, http.StatusOK, &resp)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/wake-latency", nil, http.StatusOK, &resp)
 	require.Len(t, resp.Events, 1)
 	require.Equal(t, 1, resp.Summary.Count)
 	require.Equal(t, 1, resp.Summary.ColdStarts)
@@ -214,7 +214,7 @@ func TestWakeLatencySummaryEndpoint(t *testing.T) {
 	require.LessOrEqual(t, resp.Summary.P95E2EMs, resp.Summary.MaxE2EMs)
 
 	// Invalid since → 400.
-	doJSONNoBody(t, handler, http.MethodGet, "/api/v1/squads/"+squad.ID+"/wake-latency?since=yesterday", nil, http.StatusBadRequest)
+	doJSONNoBody(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/wake-latency?since=yesterday", nil, http.StatusBadRequest)
 
 	// since in the future → empty but valid.
 	var emptyResp struct {
@@ -224,7 +224,7 @@ func TestWakeLatencySummaryEndpoint(t *testing.T) {
 			SloMet bool `json:"slo_met"`
 		} `json:"summary"`
 	}
-	doJSON(t, handler, http.MethodGet, "/api/v1/squads/"+squad.ID+"/wake-latency?since="+time.Now().UTC().Add(time.Hour).Format(time.RFC3339), nil, http.StatusOK, &emptyResp)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+"/wake-latency?since="+time.Now().UTC().Add(time.Hour).Format(time.RFC3339), nil, http.StatusOK, &emptyResp)
 	require.Empty(t, emptyResp.Events)
 	require.Equal(t, 0, emptyResp.Summary.Count)
 	require.False(t, emptyResp.Summary.SloMet)
