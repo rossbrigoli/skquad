@@ -771,12 +771,22 @@ button.nav-group-parent {
 dialog.modal-backdrop {
   margin: 0;
   border: 0;
-  padding: var(--space-6) var(--space-4);
+  padding: 0;
   width: 100%;
   height: 100%;
   max-width: none;
   max-height: none;
   color: inherit;
+}
+
+.modal-backdrop-inner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: var(--space-6) var(--space-4);
+  overflow-y: auto;
 }
 
 dialog.modal-backdrop::backdrop {

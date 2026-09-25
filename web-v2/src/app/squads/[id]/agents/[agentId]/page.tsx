@@ -80,13 +80,13 @@ function TaskListSection({
   squadId,
   status,
   leaseLabel,
-}: {
+}: Readonly<{
   title: string;
   tasks: Task[];
   squadId: string;
   status: "running" | "stalled";
   leaseLabel: string;
-}) {
+}>) {
   if (tasks.length === 0) {
     return null;
   }
@@ -117,12 +117,12 @@ function GrantedResourcesSection({
   agentId,
   onGrantClick,
   onRevoke,
-}: {
+}: Readonly<{
   grants: AgentPermission[];
   agentId: string;
   onGrantClick: () => void;
   onRevoke: (next: { resource_type: string; resource_id: string }[]) => Promise<void>;
-}) {
+}>) {
   return (
     <section style={{ marginTop: "var(--space-5)" }}>
       <div className="section-head">
@@ -176,12 +176,12 @@ function RuntimeIdentitySection({
   busy,
   error,
   onAction,
-}: {
+}: Readonly<{
   hasIdentity: boolean;
   busy: boolean;
   error: string;
   onAction: () => Promise<void>;
-}) {
+}>) {
   return (
     <section style={{ marginTop: "var(--space-5)" }}>
       <div className="section-head">
