@@ -2750,18 +2750,25 @@ func (p *PostgresStore) WaitForAgentWork(ctx context.Context, agentID string, ti
 	for {
 		notification, err := conn.Conn().WaitForNotification(waitCtx)
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-				if ctx.Err() != nil {
-					return false, ctx.Err()
-				}
-				return false, nil
-			}
-			return false, mapPgErr(err)
+			return classifyAgentWorkWaitError(err, ctx)
 		}
 		if notification.Channel == agentWorkNotifyChannel && notification.Payload == agentID {
 			return true, nil
 		}
 	}
+}
+
+// classifyAgentWorkWaitError maps a WaitForNotification error to the
+// WaitForAgentWork result: wait deadline/cancellation is a normal "no work
+// arrived" outcome, anything else is a real failure.
+func classifyAgentWorkWaitError(err error, ctx context.Context) (bool, error) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		return false, nil
+	}
+	return false, mapPgErr(err)
 }
 
 func (p *PostgresStore) hasReadyWork(ctx context.Context, agentID string) (bool, error) {

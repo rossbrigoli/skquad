@@ -178,15 +178,7 @@ func TestPostgresStoreTaskExecutionLeaseAndFencing(t *testing.T) {
 		t.Fatalf("claimed task status = %q, want in-progress", claimed.Status)
 	}
 
-	// An agent with a live lease must not be handed a second task.
-	if _, err := store.ClaimNextTask(ctx, f.agent.ID, "worker-2", time.Minute); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("second claim error = %v, want ErrNotFound", err)
-	}
-
-	// Heartbeat with the wrong fencing token is rejected as a conflict.
-	if _, err := store.HeartbeatTaskExecution(ctx, f.agent.ID, claimed.ExecutionID, "not-the-token", time.Minute); !errors.Is(err, ErrConflict) {
-		t.Fatalf("stale-token heartbeat error = %v, want ErrConflict", err)
-	}
+	assertFencingRejections(t, store, ctx, f.agent.ID, task, claimed)
 
 	// A valid heartbeat extends the lease.
 	before := claimed.LeaseExpiresAt
@@ -211,33 +203,7 @@ func TestPostgresStoreTaskExecutionLeaseAndFencing(t *testing.T) {
 		t.Fatalf("completed task status = %q, want done", completed.Status)
 	}
 
-	rows, err := store.pool.Query(ctx, `
-		SELECT status, coalesce(result_status, ''), result_summary, completed_at IS NOT NULL
-		FROM task_executions WHERE id = $1`, claimed.ExecutionID)
-	if err != nil {
-		t.Fatalf("query execution: %v", err)
-	}
-	defer rows.Close()
-	var (
-		status   string
-		result   string
-		summary  string
-		finished bool
-		rowCount int
-	)
-	for rows.Next() {
-		rowCount++
-		if err := rows.Scan(&status, &result, &summary, &finished); err != nil {
-			t.Fatalf("scan execution: %v", err)
-		}
-	}
-	rows.Close()
-	if rowCount != 1 {
-		t.Fatalf("execution rows = %d, want 1", rowCount)
-	}
-	if status != string(domain.TaskExecutionCompleted) || result != string(domain.TaskDone) || summary != "all good" || !finished {
-		t.Fatalf("execution row = %q/%q/%q finished=%v", status, result, summary, finished)
-	}
+	assertTaskExecutionRowDone(t, store, ctx, claimed.ExecutionID, "all good")
 
 	// The completed attempt must no longer be reported as active on the board.
 	active, err := store.ListBoardTaskExecutions(ctx, f.board.ID)
@@ -725,5 +691,57 @@ func TestPostgresStoreDuplicateSquadNameConflicts(t *testing.T) {
 
 	if _, err := store.GetSquad(ctx, zeroUUID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("get unknown squad error = %v, want ErrNotFound", err)
+	}
+}
+
+// assertFencingRejections checks that a live-lease agent cannot claim a
+// second task and that stale fencing tokens are rejected for heartbeat and
+// completion.
+func assertFencingRejections(t *testing.T, store *PostgresStore, ctx context.Context, agentID string, task *domain.Task, claimed *domain.Task) {
+	t.Helper()
+	// An agent with a live lease must not be handed a second task.
+	if _, err := store.ClaimNextTask(ctx, agentID, "worker-2", time.Minute); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second claim error = %v, want ErrNotFound", err)
+	}
+	// Heartbeat with the wrong fencing token is rejected as a conflict.
+	if _, err := store.HeartbeatTaskExecution(ctx, agentID, claimed.ExecutionID, "not-the-token", time.Minute); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale-token heartbeat error = %v, want ErrConflict", err)
+	}
+	// Completing with a stale token must not touch the task.
+	if _, err := store.CompleteTaskExecution(ctx, agentID, task.ID, claimed.ExecutionID, "not-the-token", domain.TaskDone, "nope"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale-token complete error = %v, want ErrConflict", err)
+	}
+}
+
+// assertTaskExecutionRowDone verifies the persisted task_executions row for
+// a completed attempt.
+func assertTaskExecutionRowDone(t *testing.T, store *PostgresStore, ctx context.Context, executionID, wantSummary string) {
+	t.Helper()
+	rows, err := store.pool.Query(ctx, `
+		SELECT status, coalesce(result_status, ''), result_summary, completed_at IS NOT NULL
+		FROM task_executions WHERE id = $1`, executionID)
+	if err != nil {
+		t.Fatalf("query execution: %v", err)
+	}
+	defer rows.Close()
+	var (
+		status   string
+		result   string
+		summary  string
+		finished bool
+		rowCount int
+	)
+	for rows.Next() {
+		rowCount++
+		if err := rows.Scan(&status, &result, &summary, &finished); err != nil {
+			t.Fatalf("scan execution: %v", err)
+		}
+	}
+	rows.Close()
+	if rowCount != 1 {
+		t.Fatalf("execution rows = %d, want 1", rowCount)
+	}
+	if status != string(domain.TaskExecutionCompleted) || result != string(domain.TaskDone) || summary != wantSummary || !finished {
+		t.Fatalf("execution row = %q/%q/%q finished=%v", status, result, summary, finished)
 	}
 }

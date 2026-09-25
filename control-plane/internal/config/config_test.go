@@ -74,7 +74,19 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadOverrides(t *testing.T) {
 	clearEnv(t)
+	setOverrideEnv(t)
 
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	assertOverrideCore(t, cfg)
+	assertOverrideGatewayAndMemory(t, cfg)
+}
+
+// setOverrideEnv sets every SKQUAD_* environment variable that Load honours.
+func setOverrideEnv(t *testing.T) {
+	t.Helper()
 	t.Setenv("SKQUAD_ADDR", ":9999")
 	t.Setenv("SKQUAD_AUTH_MODE", "oidc")
 	t.Setenv("SKQUAD_OIDC_ISSUER", "https://idp.example.test/realms/skquad")
@@ -94,11 +106,19 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("SKQUAD_DEFAULT_IDLE_TIMEOUT", "90s")
 	t.Setenv("SKQUAD_REAPER_INTERVAL_SECONDS", "45")
 	t.Setenv("SKQUAD_REAPER_GRACE_SECONDS", "180")
+}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf(loadErrFormat, err)
 	}
+	assertOverrideCore(t, cfg)
+	assertOverrideGatewayAndMemory(t, cfg)
+}
+
+// assertOverrideCore checks the core/identity/k8s overrides.
+func assertOverrideCore(t *testing.T, cfg *Config) {
+	t.Helper()
 	if cfg.Addr != ":9999" || cfg.AuthMode != AuthOIDC {
 		t.Fatalf("addr/auth = %q/%q", cfg.Addr, cfg.AuthMode)
 	}
@@ -114,6 +134,12 @@ func TestLoadOverrides(t *testing.T) {
 	if cfg.AgentImage != "registry.example.test/agent:1.2.3" || cfg.ControlPlaneURL != "https://api.skquad.test" {
 		t.Fatalf("agent/control-plane = %q/%q", cfg.AgentImage, cfg.ControlPlaneURL)
 	}
+}
+
+// assertOverrideGatewayAndMemory checks the gateway, memory, and reaper
+// overrides.
+func assertOverrideGatewayAndMemory(t *testing.T, cfg *Config) {
+	t.Helper()
 	if cfg.LiteLLMAdminURL != "https://admin.skquad.test" {
 		t.Fatalf("LiteLLMAdminURL = %q, want explicit admin URL", cfg.LiteLLMAdminURL)
 	}

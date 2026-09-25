@@ -81,17 +81,7 @@ func TestPostgresSetAgentPermissionsEnqueuesAgentUpsert(t *testing.T) {
 	ctx := context.Background()
 
 	// Drain the fixture-created events for this agent.
-	events, err := store.ListKubernetesOutbox(ctx, domain.KubernetesOutboxPending, 500)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range events {
-		if e.AggregateID == fx.agent.ID && e.Operation == domain.KubernetesOpUpsertAgent {
-			if err := store.MarkKubernetesOutboxApplied(ctx, e.ID); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
+	drainAgentUpserts(t, store, ctx, fx.agent.ID)
 
 	ws, err := store.CreateResource(ctx, &domain.RegistryResource{
 		Type:         domain.ResProjectWorkspace,
@@ -111,29 +101,53 @@ func TestPostgresSetAgentPermissionsEnqueuesAgentUpsert(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events, err = store.ListKubernetesOutbox(ctx, domain.KubernetesOutboxPending, 500)
+	assertPendingAgentUpsert(t, store, ctx, fx.agent.ID)
+
+	// Unknown agent must report NotFound (parity with MemoryStore).
+	if err := store.SetAgentPermissions(ctx, "00000000-0000-0000-0000-000000000000", nil); err != ErrNotFound {
+		t.Fatalf("missing agent err = %v, want ErrNotFound", err)
+	}
+}
+
+// drainAgentUpserts marks every pending upsert_agent event for the given
+// agent as applied so later assertions only see newly enqueued events.
+func drainAgentUpserts(t *testing.T, store *PostgresStore, ctx context.Context, agentID string) {
+	t.Helper()
+	events, err := store.ListKubernetesOutbox(ctx, domain.KubernetesOutboxPending, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if e.AggregateID == agentID && e.Operation == domain.KubernetesOpUpsertAgent {
+			if err := store.MarkKubernetesOutboxApplied(ctx, e.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+// assertPendingAgentUpsert asserts a pending upsert_agent outbox event
+// exists for the given agent and its payload references that agent.
+func assertPendingAgentUpsert(t *testing.T, store *PostgresStore, ctx context.Context, agentID string) {
+	t.Helper()
+	events, err := store.ListKubernetesOutbox(ctx, domain.KubernetesOutboxPending, 500)
 	if err != nil {
 		t.Fatal(err)
 	}
 	found := false
 	for _, e := range events {
-		if e.AggregateID == fx.agent.ID && e.Operation == domain.KubernetesOpUpsertAgent {
+		if e.AggregateID == agentID && e.Operation == domain.KubernetesOpUpsertAgent {
 			found = true
 			var payload domain.KubernetesOutboxPayload
 			if err := json.Unmarshal(e.Payload, &payload); err != nil {
 				t.Fatal(err)
 			}
-			if payload.Agent == nil || payload.Agent.ID != fx.agent.ID {
-				t.Fatalf("payload agent = %+v, want %s", payload.Agent, fx.agent.ID)
+			if payload.Agent == nil || payload.Agent.ID != agentID {
+				t.Fatalf("payload agent = %+v, want %s", payload.Agent, agentID)
 			}
 		}
 	}
 	if !found {
 		t.Fatal("expected pending upsert_agent outbox event after SetAgentPermissions")
-	}
-
-	// Unknown agent must report NotFound (parity with MemoryStore).
-	if err := store.SetAgentPermissions(ctx, "00000000-0000-0000-0000-000000000000", nil); err != ErrNotFound {
-		t.Fatalf("missing agent err = %v, want ErrNotFound", err)
 	}
 }

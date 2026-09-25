@@ -301,16 +301,29 @@ func (m *MemoryStore) DeleteSquad(ctx context.Context, id string) error {
 	m.enqueueSquadOutboxLocked(domain.KubernetesOpDeleteSquad, squad)
 	delete(m.squads, id)
 	if boardID, ok := m.boardsBySquad[id]; ok {
-		delete(m.boards, boardID)
-		delete(m.boardsBySquad, id)
-		for taskID, task := range m.tasks {
-			if task.BoardID == boardID {
-				delete(m.tasks, taskID)
-			}
+		m.deleteSquadBoardLocked(boardID, id)
+	}
+	m.deleteSquadAgentsLocked(id)
+	m.deleteSquadGrantsLocked(id)
+	m.drainPendingAuditsLocked(ctx, id)
+	return nil
+}
+
+// deleteSquadBoardLocked removes the squad's board and all of its tasks.
+func (m *MemoryStore) deleteSquadBoardLocked(boardID, squadID string) {
+	delete(m.boards, boardID)
+	delete(m.boardsBySquad, squadID)
+	for taskID, task := range m.tasks {
+		if task.BoardID == boardID {
+			delete(m.tasks, taskID)
 		}
 	}
+}
+
+// deleteSquadAgentsLocked removes the squad's agents and their identities.
+func (m *MemoryStore) deleteSquadAgentsLocked(squadID string) {
 	for agentID, agent := range m.agents {
-		if agent.SquadID == id {
+		if agent.SquadID == squadID {
 			if identityID, ok := m.identityAgent[agentID]; ok {
 				delete(m.identities, identityID)
 				delete(m.identityAgent, agentID)
@@ -318,13 +331,15 @@ func (m *MemoryStore) DeleteSquad(ctx context.Context, id string) error {
 			delete(m.agents, agentID)
 		}
 	}
+}
+
+// deleteSquadGrantsLocked removes permission grants scoped to the squad.
+func (m *MemoryStore) deleteSquadGrantsLocked(squadID string) {
 	for grantID, grant := range m.grants {
-		if grant.SquadID == id {
+		if grant.SquadID == squadID {
 			delete(m.grants, grantID)
 		}
 	}
-	m.drainPendingAuditsLocked(ctx, id)
-	return nil
 }
 
 func (m *MemoryStore) ListSquads(_ context.Context, ownerID string) ([]*domain.Squad, error) {
@@ -1310,27 +1325,12 @@ func (m *MemoryStore) ClaimNextTask(ctx context.Context, agentID string, workerI
 	if workerID == "" {
 		workerID = agentID
 	}
-	for _, exec := range m.taskExecs {
-		if exec.AgentID == agentID && exec.Status == domain.TaskExecutionActive && exec.LeaseExpiresAt.After(now) {
-			return nil, ErrNotFound
-		}
+	if m.hasActiveExecutionForAgentLocked(agentID, now) {
+		return nil, ErrNotFound
 	}
-	var candidate *domain.Task
-	for _, task := range m.tasks {
-		if task.AssigneeAgentID == agentID && task.Status == domain.TaskInProgress && !m.taskHasActiveExecutionLocked(task.ID, now) {
-			if candidate == nil || task.UpdatedAt.Before(candidate.UpdatedAt) {
-				candidate = task
-			}
-		}
-	}
+	candidate := m.pickOldestInProgressTaskLocked(agentID, now)
 	if candidate == nil {
-		for _, task := range m.tasks {
-			if task.AssigneeAgentID == agentID && task.Status == domain.TaskTodo {
-				if candidate == nil || task.Position < candidate.Position {
-					candidate = task
-				}
-			}
-		}
+		candidate = m.pickTopTodoTaskLocked(agentID)
 	}
 	if candidate == nil {
 		return nil, ErrNotFound
@@ -1354,6 +1354,45 @@ func (m *MemoryStore) ClaimNextTask(ctx context.Context, agentID string, workerI
 	m.taskExecs[exec.ID] = exec
 	m.drainPendingAuditsLocked(ctx, candidate.ID)
 	return taskWithExecution(candidate, exec), nil
+}
+
+// hasActiveExecutionForAgentLocked reports whether the agent currently holds
+// any live (unexpired) task execution lease.
+func (m *MemoryStore) hasActiveExecutionForAgentLocked(agentID string, now time.Time) bool {
+	for _, exec := range m.taskExecs {
+		if exec.AgentID == agentID && exec.Status == domain.TaskExecutionActive && exec.LeaseExpiresAt.After(now) {
+			return true
+		}
+	}
+	return false
+}
+
+// pickOldestInProgressTaskLocked returns the least-recently-updated
+// in-progress task assigned to the agent that has no active execution.
+func (m *MemoryStore) pickOldestInProgressTaskLocked(agentID string, now time.Time) *domain.Task {
+	var candidate *domain.Task
+	for _, task := range m.tasks {
+		if task.AssigneeAgentID == agentID && task.Status == domain.TaskInProgress && !m.taskHasActiveExecutionLocked(task.ID, now) {
+			if candidate == nil || task.UpdatedAt.Before(candidate.UpdatedAt) {
+				candidate = task
+			}
+		}
+	}
+	return candidate
+}
+
+// pickTopTodoTaskLocked returns the lowest-positioned todo task assigned to
+// the agent.
+func (m *MemoryStore) pickTopTodoTaskLocked(agentID string) *domain.Task {
+	var candidate *domain.Task
+	for _, task := range m.tasks {
+		if task.AssigneeAgentID == agentID && task.Status == domain.TaskTodo {
+			if candidate == nil || task.Position < candidate.Position {
+				candidate = task
+			}
+		}
+	}
+	return candidate
 }
 
 func (m *MemoryStore) HeartbeatTaskExecution(_ context.Context, agentID string, executionID string, fencingToken string, leaseFor time.Duration) (*domain.TaskExecution, error) {
@@ -1514,23 +1553,7 @@ func (m *MemoryStore) ListAgentMemory(_ context.Context, agentID string, squadID
 		}
 	}
 	if len(queryEmbedding) > 0 {
-		slices.SortFunc(out, func(a, b *domain.AgentMemory) int {
-			aScore, aOK := cosineSimilarity(a.Embedding, queryEmbedding)
-			bScore, bOK := cosineSimilarity(b.Embedding, queryEmbedding)
-			if aOK != bOK {
-				if aOK {
-					return -1
-				}
-				return 1
-			}
-			if aOK && bOK && aScore != bScore {
-				if aScore > bScore {
-					return -1
-				}
-				return 1
-			}
-			return compareMemoryRecency(a, b)
-		})
+		slices.SortFunc(out, memoryVectorComparator(queryEmbedding))
 	} else {
 		slices.SortFunc(out, compareMemoryRecency)
 	}
@@ -1538,6 +1561,29 @@ func (m *MemoryStore) ListAgentMemory(_ context.Context, agentID string, squadID
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+// memoryVectorComparator orders memories by cosine similarity to the query
+// embedding (valid matches first, higher score first), falling back to
+// recency for ties and invalid vectors.
+func memoryVectorComparator(queryEmbedding []float64) func(a, b *domain.AgentMemory) int {
+	return func(a, b *domain.AgentMemory) int {
+		aScore, aOK := cosineSimilarity(a.Embedding, queryEmbedding)
+		bScore, bOK := cosineSimilarity(b.Embedding, queryEmbedding)
+		if aOK != bOK {
+			if aOK {
+				return -1
+			}
+			return 1
+		}
+		if aOK && bOK && aScore != bScore {
+			if aScore > bScore {
+				return -1
+			}
+			return 1
+		}
+		return compareMemoryRecency(a, b)
+	}
 }
 
 func applyMemoryDefaults(memory *domain.AgentMemory) {
