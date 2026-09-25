@@ -44,7 +44,7 @@ export type DashboardResource = {
 };
 
 export type DashboardPayload = {
-  scope: "all" | "personal" | string;
+  scope: string;
   squads: DashboardSquad[];
   providers: DashboardProvider[];
   resources: DashboardResource[];
@@ -57,7 +57,7 @@ export function taskCount(squad: DashboardSquad, status: string): number {
 // providerChip maps a provider to a chip. Lifecycle beats liveness: a
 // deprecated provider renders "inactive", never a scary red offline.
 export function providerChip(provider: DashboardProvider): { label: string; className: string } {
-  if ((provider.status || "").toLowerCase() !== "active") {
+  if ((provider.status ?? "").toLowerCase() !== "active") {
     return { label: "inactive", className: "chip chip-paused" };
   }
   return provider.online
@@ -66,7 +66,7 @@ export function providerChip(provider: DashboardProvider): { label: string; clas
 }
 
 export function resourceChip(status: string): { label: string; className: string } {
-  const normalized = (status || "").toLowerCase();
+  const normalized = (status ?? "").toLowerCase();
   if (normalized === "active") {
     return { label: "active", className: "chip chip-done" };
   }

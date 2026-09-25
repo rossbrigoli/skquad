@@ -63,8 +63,8 @@ const GRANTABLE_TYPES: { type: ResourceType; path: string; label: string }[] = [
 
 export default function AgentProfilePage() {
   const params = useParams<{ id: string; agentId: string }>();
-  const squadId = String(params?.id || "");
-  const agentId = String(params?.agentId || "");
+  const squadId = String(params?.id ?? "");
+  const agentId = String(params?.agentId ?? "");
   const router = useRouter();
   const { token } = useAuth();
 
@@ -75,9 +75,6 @@ export default function AgentProfilePage() {
   const perms = useApi<AgentPermission[]>(`/agents/${agentId}/permissions`, 60000);
   const audit = useApi<AuditEntry[]>(`/squads/${squadId}/audit?limit=50`, 30000);
   const chat = useApi<Message[]>(`/agents/${agentId}/chat`, 10000);
-  // WP7 (S-112): the caller's granted+active AI Models for the LLM tab pickers.
-  const myModels = useApi<AIModel[]>("/models/me", 60000);
-
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [granting, setGranting] = useState(false);
@@ -199,11 +196,11 @@ export default function AgentProfilePage() {
           </div>
           {agent ? (
             <LlmBindingSection
-              key={`${agent.id}:${agent.ai_model_id || ""}:${agent.fallback_ai_model_id || ""}`}
+              key={`${agent.id}:${agent.ai_model_id ?? ""}:${agent.fallback_ai_model_id ?? ""}`}
               agentId={agentId}
               token={token}
-              primaryId={agent.ai_model_id || ""}
-              fallbackId={agent.fallback_ai_model_id || ""}
+              primaryId={agent.ai_model_id ?? ""}
+              fallbackId={agent.fallback_ai_model_id ?? ""}
               onSaved={() => agents.refresh()}
             />
           ) : (
@@ -428,7 +425,7 @@ function ChatThread({
             return (
               <div key={msg.id} className={`chat-row ${fromUser ? "mine" : "theirs"}`}>
                 <div className={`chat-avatar ${fromUser ? "me" : "agent"}`} aria-hidden="true">
-                  {fromUser ? initials(user?.name || "You") : initials(agentName)}
+                  {fromUser ? initials(user?.name ?? "You") : initials(agentName)}
                 </div>
                 <div className="chat-bubble">
                   <div className="chat-head">
@@ -440,7 +437,7 @@ function ChatThread({
                   {toolCalls.length > 0 ? (
                     <div className="chat-tools">
                       {toolCalls.map((call, idx) => (
-                        <details key={idx} className={`chat-tool${call.ok ? "" : " failed"}`}>
+                        <details key={`${call.name}-${idx}`} className={`chat-tool${call.ok ? "" : " failed"}`}>
                           <summary className="chat-tool-summary">
                             <span className="chat-tool-name">🔧 {call.name}</span>
                             {summarizeToolArgs(call.arguments) ? (
@@ -462,17 +459,17 @@ function ChatThread({
           })
         )}
       </div>
-      <div className="chat-context-bar" role="status" aria-live="polite">
+      <output className="chat-context-bar" aria-live="polite">
         {contextTokens === null
           ? "context: — tokens (waiting for the agent's first reply)"
           : `context ≈ ${formatContextTokens(contextTokens)} tokens · last agent turn`}
-      </div>
+      </output>
       {error ? <div className="notice error" style={{ margin: "var(--space-2) var(--space-3) 0" }}>{error}</div> : null}
       <form
         className="chat-composer"
         onSubmit={(e) => {
           e.preventDefault();
-          void send();
+          send();
         }}
       >
         <textarea
@@ -486,7 +483,7 @@ function ChatThread({
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              void send();
+              send();
             }
           }}
         />
@@ -533,11 +530,11 @@ function LlmBindingSection({
   fallbackId,
   onSaved,
 }: {
-  agentId: string;
-  token: string;
-  primaryId: string;
-  fallbackId: string;
-  onSaved: () => void;
+  readonly agentId: string;
+  readonly token: string;
+  readonly primaryId: string;
+  readonly fallbackId: string;
+  readonly onSaved: () => void;
 }) {
   const myModels = useApi<AIModel[]>("/models/me", 60000);
   const [primary, setPrimary] = useState(primaryId);
@@ -546,7 +543,7 @@ function LlmBindingSection({
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
 
-  const models = myModels.data || [];
+  const models = myModels.data ?? [];
   const primaryOpts = withCurrentOption(selectableModels(models), models, primary);
   const fallbackOpts = fallbackChoices(models, primary);
   const primaryModel = findModelById(models, primary);
@@ -643,7 +640,9 @@ function LlmBindingSection({
           type="button"
           className="btn btn-sm btn-primary"
           disabled={busy || primary === ""}
-          onClick={() => void save()}
+          onClick={() => {
+            save();
+          }}
         >
           {busy ? "Saving…" : "Save binding"}
         </button>

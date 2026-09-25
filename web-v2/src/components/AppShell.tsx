@@ -37,14 +37,229 @@ const tailNav = [
   { href: "/settings", label: "Settings" },
 ];
 
+type NavItem = { href: string; label: string };
+
+function NavSubLink({ pathname, link }: { readonly pathname: string; readonly link: NavItem }) {
+  return (
+    <Link
+      href={link.href}
+      className={isSubitemActive(pathname, link.href) ? "nav-item nav-subitem active" : "nav-item nav-subitem"}
+    >
+      {link.label}
+    </Link>
+  );
+}
+
+function SquadsNavGroup({
+  pathname,
+  active,
+  expanded,
+  items,
+  loading,
+  onToggle,
+}: {
+  readonly pathname: string;
+  readonly active: boolean;
+  readonly expanded: boolean;
+  readonly items: NavItem[];
+  readonly loading: boolean;
+  readonly onToggle: () => void;
+}) {
+  return (
+    <div className="nav-group">
+      <div className={active ? "nav-item nav-group-parent active" : "nav-item nav-group-parent"}>
+        <Link href="/squads" className="nav-group-link">
+          Squads
+        </Link>
+        <button
+          type="button"
+          className="nav-group-chevron"
+          aria-label={expanded ? "Collapse squads" : "Expand squads"}
+          aria-expanded={expanded}
+          onClick={onToggle}
+        >
+          {expanded ? "▾" : "▸"}
+        </button>
+      </div>
+      {expanded ? (
+        <div className="nav-sub" aria-label="Squads">
+          {items.map((link) => (
+            <NavSubLink key={link.href} pathname={pathname} link={link} />
+          ))}
+          {items.length === 0 ? (
+            <div className="nav-sub-empty">{loading ? "loading…" : "no squads yet"}</div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AgentNavItems({
+  pathname,
+  squadContextId,
+  agentSubitems,
+  agentGroups,
+}: {
+  readonly pathname: string;
+  readonly squadContextId: string;
+  readonly agentSubitems: NavItem[];
+  readonly agentGroups: ReturnType<typeof buildGlobalAgentGroups>;
+}) {
+  if (squadContextId) {
+    return agentSubitems.map((link) => <NavSubLink key={link.href} pathname={pathname} link={link} />);
+  }
+  return agentGroups.map((group) => (
+    <div key={group.squadId} className="nav-subgroup">
+      <div className="nav-subgroup-label">{group.squadName}</div>
+      {group.items.map((link) => (
+        <NavSubLink key={link.href} pathname={pathname} link={link} />
+      ))}
+    </div>
+  ));
+}
+
+function AgentsNavGroup({
+  pathname,
+  active,
+  expanded,
+  squadContextId,
+  agentSubitems,
+  agentGroups,
+  loading,
+  onToggle,
+}: {
+  readonly pathname: string;
+  readonly active: boolean;
+  readonly expanded: boolean;
+  readonly squadContextId: string;
+  readonly agentSubitems: NavItem[];
+  readonly agentGroups: ReturnType<typeof buildGlobalAgentGroups>;
+  readonly loading: boolean;
+  readonly onToggle: () => void;
+}) {
+  return (
+    <div className="nav-group">
+      <button
+        type="button"
+        className={active ? "nav-item nav-group-parent active" : "nav-item nav-group-parent"}
+        aria-label={expanded ? "Collapse agents" : "Expand agents"}
+        aria-expanded={expanded}
+        onClick={onToggle}
+      >
+        <span className="nav-group-link">Agents</span>
+        <span className="nav-group-chevron" aria-hidden="true">
+          {expanded ? "▾" : "▸"}
+        </span>
+      </button>
+      {expanded ? (
+        <div className="nav-sub" aria-label="Agents">
+          <AgentNavItems
+            pathname={pathname}
+            squadContextId={squadContextId}
+            agentSubitems={agentSubitems}
+            agentGroups={agentGroups}
+          />
+          {agentSubitems.length === 0 && agentGroups.length === 0 ? (
+            <div className="nav-sub-empty">{loading ? "loading…" : "no agents yet"}</div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PrimaryRail({
+  pathname,
+  user,
+  logout,
+  inboxBadge,
+  squadsActive,
+  squadsExpanded,
+  squadSubitems,
+  squadsLoading,
+  agentsActive,
+  agentsExpanded,
+  squadContextId,
+  agentSubitems,
+  agentGroups,
+  agentsLoading,
+  onToggleGroup,
+}: {
+  readonly pathname: string;
+  readonly user: ReturnType<typeof useAuth>["user"];
+  readonly logout: ReturnType<typeof useAuth>["logout"];
+  readonly inboxBadge: number;
+  readonly squadsActive: boolean;
+  readonly squadsExpanded: boolean;
+  readonly squadSubitems: NavItem[];
+  readonly squadsLoading: boolean;
+  readonly agentsActive: boolean;
+  readonly agentsExpanded: boolean;
+  readonly squadContextId: string;
+  readonly agentSubitems: NavItem[];
+  readonly agentGroups: ReturnType<typeof buildGlobalAgentGroups>;
+  readonly agentsLoading: boolean;
+  readonly onToggleGroup: (key: string, currentlyExpanded: boolean) => void;
+}) {
+  return (
+    <nav className="rail rail-primary" aria-label="Primary navigation">
+      <Link href="/dashboard" className="rail-brand" aria-label="Skquad dashboard">
+        <Image src="/skquad-logo-64.png" width={28} height={28} alt="" className="rail-brand-logo" priority />
+        skquad
+      </Link>
+      {simpleNav.map((item) => (
+        <Link
+          key={item.href}
+          href={item.href}
+          className={pathname.startsWith(item.href) ? "nav-item active" : "nav-item"}
+        >
+          {item.label}
+          {item.href === "/inbox" && inboxBadge > 0 ? <span className="nav-badge">{inboxBadge}</span> : null}
+        </Link>
+      ))}
+      <SquadsNavGroup
+        pathname={pathname}
+        active={squadsActive}
+        expanded={squadsExpanded}
+        items={squadSubitems}
+        loading={squadsLoading}
+        onToggle={() => onToggleGroup("squads", squadsExpanded)}
+      />
+      <AgentsNavGroup
+        pathname={pathname}
+        active={agentsActive}
+        expanded={agentsExpanded}
+        squadContextId={squadContextId}
+        agentSubitems={agentSubitems}
+        agentGroups={agentGroups}
+        loading={agentsLoading}
+        onToggle={() => onToggleGroup("agents", agentsExpanded)}
+      />
+      {tailNav.map((item) => (
+        <Link
+          key={item.href}
+          href={item.href}
+          className={pathname.startsWith(item.href) ? "nav-item active" : "nav-item"}
+        >
+          {item.label}
+        </Link>
+      ))}
+      <div className="rail-footer">
+        <UserMenu user={user} onSignOut={logout} />
+      </div>
+    </nav>
+  );
+}
+
 // Two-rail shell: persistent primary nav + optional contextual secondary rail
 // (Paperclip pattern). Pages pass `secondary` for squad/agent/task context.
 export function AppShell({
   children,
   secondary,
 }: {
-  children: ReactNode;
-  secondary?: ReactNode;
+  readonly children: ReactNode;
+  readonly secondary?: ReactNode;
 }) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
@@ -60,7 +275,7 @@ export function AppShell({
   const squadAgents = useApi<Agent[]>(squadContextId ? `/squads/${squadContextId}/agents` : "");
   const globalDashboard = useApi<DashboardPayload>(squadContextId ? "" : "/dashboard");
 
-  const squadsActive = (pathname || "").startsWith("/squads");
+  const squadsActive = (pathname ?? "").startsWith("/squads");
   const agentsActive = agentsSectionActive(pathname);
   const squadsExpanded = effectiveExpanded(groupToggles.squads, squadsActive);
   const agentsExpanded = effectiveExpanded(groupToggles.agents, agentsActive);
@@ -70,9 +285,7 @@ export function AppShell({
   };
 
   const squadSubitems = buildSquadSubitems(squads.data);
-  const agentSubitems = squadContextId
-    ? buildSquadAgentSubitems(squadAgents.data)
-    : [];
+  const agentSubitems = squadContextId ? buildSquadAgentSubitems(squadAgents.data) : [];
   const agentGroups = squadContextId ? [] : buildGlobalAgentGroups(globalDashboard.data);
   const agentsLoading = squadContextId ? squadAgents.loading : globalDashboard.loading;
 
@@ -83,16 +296,6 @@ export function AppShell({
     setLastPath(pathname);
     if (menuOpen) setMenuOpen(false);
   }
-
-  const renderSublink = (link: { href: string; label: string }) => (
-    <Link
-      key={link.href}
-      href={link.href}
-      className={isSubitemActive(pathname, link.href) ? "nav-item nav-subitem active" : "nav-item nav-subitem"}
-    >
-      {link.label}
-    </Link>
-  );
 
   return (
     <div className={`${secondary ? "shell with-secondary" : "shell"}${menuOpen ? " drawer-open" : ""}`}>
@@ -108,100 +311,23 @@ export function AppShell({
       <div className="drawer-backdrop" aria-hidden="true" onClick={() => setMenuOpen(false)} />
       {/* S-117: theme switcher pinned top-right on every page. */}
       <ThemeToggle />
-      <nav className="rail rail-primary" aria-label="Primary navigation">
-        <Link href="/dashboard" className="rail-brand" aria-label="Skquad dashboard">
-          {/* S-123: brand mark from docs/images/logo/skquad-logo.png (transparent,
-              vivid orange — reads on both light and dark themes, so no per-theme
-              variant swap is needed). Pre-resized 64px source shown at 28px. */}
-          <Image
-            src="/skquad-logo-64.png"
-            width={28}
-            height={28}
-            alt=""
-            className="rail-brand-logo"
-            priority
-          />
-          skquad
-        </Link>
-        {simpleNav.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            className={pathname.startsWith(item.href) ? "nav-item active" : "nav-item"}
-          >
-            {item.label}
-            {item.href === "/inbox" && inboxBadge > 0 ? <span className="nav-badge">{inboxBadge}</span> : null}
-          </Link>
-        ))}
-        <div className="nav-group">
-          <div className={squadsActive ? "nav-item nav-group-parent active" : "nav-item nav-group-parent"}>
-            <Link href="/squads" className="nav-group-link">
-              Squads
-            </Link>
-            <button
-              type="button"
-              className="nav-group-chevron"
-              aria-label={squadsExpanded ? "Collapse squads" : "Expand squads"}
-              aria-expanded={squadsExpanded}
-              onClick={() => toggleGroup("squads", squadsExpanded)}
-            >
-              {squadsExpanded ? "▾" : "▸"}
-            </button>
-          </div>
-          {squadsExpanded ? (
-            <div className="nav-sub" aria-label="Squads">
-              {squadSubitems.map(renderSublink)}
-              {!squadSubitems.length ? (
-                <div className="nav-sub-empty">{squads.loading ? "loading…" : "no squads yet"}</div>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-        <div className="nav-group">
-          <button
-            type="button"
-            className={agentsActive ? "nav-item nav-group-parent active" : "nav-item nav-group-parent"}
-            aria-label={agentsExpanded ? "Collapse agents" : "Expand agents"}
-            aria-expanded={agentsExpanded}
-            onClick={() => toggleGroup("agents", agentsExpanded)}
-          >
-            <span className="nav-group-link">Agents</span>
-            <span className="nav-group-chevron" aria-hidden="true">
-              {agentsExpanded ? "▾" : "▸"}
-            </span>
-          </button>
-          {agentsExpanded ? (
-            <div className="nav-sub" aria-label="Agents">
-              {squadContextId ? (
-                agentSubitems.map(renderSublink)
-              ) : (
-                agentGroups.map((group) => (
-                  <div key={group.squadId} className="nav-subgroup">
-                    <div className="nav-subgroup-label">{group.squadName}</div>
-                    {group.items.map(renderSublink)}
-                  </div>
-                ))
-              )}
-              {!agentSubitems.length && !agentGroups.length ? (
-                <div className="nav-sub-empty">{agentsLoading ? "loading…" : "no agents yet"}</div>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-        {tailNav.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            className={pathname.startsWith(item.href) ? "nav-item active" : "nav-item"}
-          >
-            {item.label}
-          </Link>
-        ))}
-        <div className="rail-footer">
-          {/* S-117: name opens the profile popover (avatar, role, sign out). */}
-          <UserMenu user={user} onSignOut={logout} />
-        </div>
-      </nav>
+      <PrimaryRail
+        pathname={pathname}
+        user={user}
+        logout={logout}
+        inboxBadge={inboxBadge}
+        squadsActive={squadsActive}
+        squadsExpanded={squadsExpanded}
+        squadSubitems={squadSubitems}
+        squadsLoading={squads.loading}
+        agentsActive={agentsActive}
+        agentsExpanded={agentsExpanded}
+        squadContextId={squadContextId}
+        agentSubitems={agentSubitems}
+        agentGroups={agentGroups}
+        agentsLoading={agentsLoading}
+        onToggleGroup={toggleGroup}
+      />
       {secondary ? (
         <aside className="rail rail-secondary" aria-label="Contextual navigation">
           {secondary}

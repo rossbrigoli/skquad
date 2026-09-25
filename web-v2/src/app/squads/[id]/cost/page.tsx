@@ -11,7 +11,7 @@ import type { MeteringSummary } from "../../../../lib/api";
 
 export default function SquadCostPage() {
   const params = useParams<{ id: string }>();
-  const squadId = String(params?.id || "");
+  const squadId = String(params?.id ?? "");
   const metering = useApi<MeteringSummary>(`/squads/${squadId}/metering`, 30000);
 
   return (

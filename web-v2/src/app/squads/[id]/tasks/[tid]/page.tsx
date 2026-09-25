@@ -27,8 +27,8 @@ const MOVE_TARGETS: { status: string; label: string }[] = [
 
 export default function TaskDetailPage() {
   const params = useParams<{ id: string; tid: string }>();
-  const squadId = String(params?.id || "");
-  const taskId = String(params?.tid || "");
+  const squadId = String(params?.id ?? "");
+  const taskId = String(params?.tid ?? "");
   const router = useRouter();
   const { token, authed } = useAuth();
 
@@ -163,7 +163,7 @@ export default function TaskDetailPage() {
               <span className="muted">Reassign:</span>
               <select
                 className="btn"
-                value={current.assignee_agent_id || ""}
+                value={current.assignee_agent_id ?? ""}
                 disabled={busy}
                 onChange={(e) => void reassign(e.target.value)}
               >
@@ -284,8 +284,8 @@ function TaskEditForm({
   onCancel: () => void;
   onSaved: () => void;
 }) {
-  const [title, setTitle] = useState(task.title || "");
-  const [description, setDescription] = useState(task.description || "");
+  const [title, setTitle] = useState(task.title ?? "");
+  const [description, setDescription] = useState(task.description ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 

@@ -32,6 +32,16 @@ import (
 const (
 	maxAgentMemoryContentChars = 4000
 	defaultTaskExecutionLease  = 2 * time.Minute
+
+	// Route path templates reused across chi route registrations (S-126:
+	// S1192 duplicated literal). Kept as constants so the three HTTP verbs
+	// for each resource share a single source of truth.
+	routeLLMProvider      = "/registry/llm-providers/{providerID}"
+	routeAIModel          = "/ai-models/{modelID}"
+	routeRegistryResource = "/registry/{registryType}/{resourceID}"
+
+	// errWrapFormat wraps a sentinel error with a contextual field name.
+	errWrapFormat = "%w: %s"
 )
 
 // Binding errors (ADR-0010 D4/D5, WP3). These replace the old
@@ -279,20 +289,20 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 
 			r.Post("/registry/llm-providers", s.createLLMProvider)
 			r.Get("/registry/llm-providers", s.listLLMProviders)
-			r.Get("/registry/llm-providers/{providerID}", s.getLLMProvider)
-			r.Patch("/registry/llm-providers/{providerID}", s.updateLLMProvider)
+			r.Get(routeLLMProvider, s.getLLMProvider)
+			r.Patch(routeLLMProvider, s.updateLLMProvider)
 			r.Post("/registry/llm-providers/{providerID}/deprecate", s.deprecateLLMProvider)
-			r.Delete("/registry/llm-providers/{providerID}", s.deleteLLMProvider)
+			r.Delete(routeLLMProvider, s.deleteLLMProvider)
 			// S-125: live model list from the provider (OpenAI-compatible
 			// passthrough) for the register-model dropdown.
 			r.Get("/registry/llm-providers/{providerID}/models", s.listLLMProviderModels)
 
 			r.Get("/ai-models", s.listAIModels)
 			r.Post("/ai-models", s.createAIModel)
-			r.Get("/ai-models/{modelID}", s.getAIModel)
-			r.Patch("/ai-models/{modelID}", s.updateAIModel)
+			r.Get(routeAIModel, s.getAIModel)
+			r.Patch(routeAIModel, s.updateAIModel)
 			r.Post("/ai-models/{modelID}/deprecate", s.deprecateAIModel)
-			r.Delete("/ai-models/{modelID}", s.deleteAIModel)
+			r.Delete(routeAIModel, s.deleteAIModel)
 
 			r.Get("/users", s.listUsers)
 			r.Get("/users/{userID}/models", s.listUserModels)
@@ -305,10 +315,10 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 
 			r.Post("/registry/{registryType}", s.createRegistryResource)
 			r.Get("/registry/{registryType}", s.listRegistryResources)
-			r.Get("/registry/{registryType}/{resourceID}", s.getRegistryResource)
-			r.Patch("/registry/{registryType}/{resourceID}", s.updateRegistryResource)
+			r.Get(routeRegistryResource, s.getRegistryResource)
+			r.Patch(routeRegistryResource, s.updateRegistryResource)
 			r.Post("/registry/{registryType}/{resourceID}/deprecate", s.deprecateRegistryResource)
-			r.Delete("/registry/{registryType}/{resourceID}", s.deleteRegistryResource)
+			r.Delete(routeRegistryResource, s.deleteRegistryResource)
 
 			r.Get("/metering/summary", s.getMeteringSummary)
 			r.Get("/audit", s.listAudit)
@@ -1444,39 +1454,33 @@ func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, agent)
 }
 
-func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
-	agent, ok := s.loadOwnedAgent(w, r)
-	if !ok {
-		return
-	}
-	var req struct {
-		Name           *string          `json:"name"`
-		Role           *string          `json:"role"`
-		SystemPrompt   *string          `json:"system_prompt"`
-		Permissions    *json.RawMessage `json:"permissions"`
-		IdleTimeoutSec *int             `json:"idle_timeout_sec"`
-		// WP8 (0014): legacy "default_provider_id"/"default_model"
-		// accepted-and-discarded (see agent create).
-		LegacyDefaultProviderID json.RawMessage `json:"default_provider_id,omitempty"`
-		LegacyDefaultModel      json.RawMessage `json:"default_model,omitempty"`
-		// AI model binding (ADR-0010 D4). Pointer semantics: nil = leave
-		// unchanged, "" = clear the slot, id = bind. A successful binding
-		// change converges the agent's virtual key immediately (D5).
-		AIModelID         *string `json:"ai_model_id"`
-		FallbackAIModelID *string `json:"fallback_ai_model_id"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	// Captured before any mutation so a post-gateway persist failure can
-	// roll the virtual key back to the pre-request binding.
-	prevPrimary, prevFallback := agent.AIModelID, agent.FallbackAIModelID
-	bindingTouched := false
+// updateAgentRequest is the PATCH body for an agent (WP8 / 0014: legacy
+// default_provider_id / default_model accepted-and-discarded, see agent
+// create).
+type updateAgentRequest struct {
+	Name                    *string          `json:"name"`
+	Role                    *string          `json:"role"`
+	SystemPrompt            *string          `json:"system_prompt"`
+	Permissions             *json.RawMessage `json:"permissions"`
+	IdleTimeoutSec          *int             `json:"idle_timeout_sec"`
+	LegacyDefaultProviderID json.RawMessage  `json:"default_provider_id,omitempty"`
+	LegacyDefaultModel      json.RawMessage  `json:"default_model,omitempty"`
+	// AI model binding (ADR-0010 D4). Pointer semantics: nil = leave
+	// unchanged, "" = clear the slot, id = bind. A successful binding
+	// change converges the agent's virtual key immediately (D5).
+	AIModelID         *string `json:"ai_model_id"`
+	FallbackAIModelID *string `json:"fallback_ai_model_id"`
+}
+
+// applyAgentScalarUpdates copies the non-binding scalar fields from the
+// request onto the agent, returning a validation error (HTTP 400 message)
+// when one is invalid. Extracted from updateAgent for cognitive
+// complexity (S-126 / S3776).
+func applyAgentScalarUpdates(agent *domain.Agent, req updateAgentRequest) error {
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name == "" {
-			writeError(w, http.StatusBadRequest, "bad_request", "name must not be empty")
-			return
+			return errors.New("name must not be empty")
 		}
 		agent.Name = name
 	}
@@ -1491,66 +1495,109 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.IdleTimeoutSec != nil {
 		if *req.IdleTimeoutSec <= 0 {
-			writeError(w, http.StatusBadRequest, "bad_request", "idle_timeout_sec must be positive")
-			return
+			return errors.New("idle_timeout_sec must be positive")
 		}
 		agent.IdleTimeoutSec = *req.IdleTimeoutSec
 	}
+	return nil
+}
+
+// applyAgentModelBinding validates and applies the requested primary /
+// fallback model change to agent, converging the gateway virtual key
+// before returning true. On any failure it writes the HTTP error response
+// and returns false. Extracted from updateAgent for cognitive complexity
+// (S-126 / S3776).
+func (s *Server) applyAgentModelBinding(w http.ResponseWriter, r *http.Request, agent *domain.Agent, req updateAgentRequest) bool {
+	newPrimary := agent.AIModelID
+	if req.AIModelID != nil {
+		newPrimary = strings.TrimSpace(*req.AIModelID)
+	}
+	newFallback := agent.FallbackAIModelID
+	if req.FallbackAIModelID != nil {
+		newFallback = strings.TrimSpace(*req.FallbackAIModelID)
+	}
+	if newPrimary == "" && newFallback != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "cannot keep a fallback model without a primary model")
+		return false
+	}
+	if newFallback != "" && newFallback == newPrimary {
+		// The store enforces this too (ErrConflict); surface it as a
+		// clean 400 instead of leaking the constraint error.
+		writeError(w, http.StatusBadRequest, "fallback_same_as_primary", "fallback_ai_model_id must differ from ai_model_id")
+		return false
+	}
+	if !s.validateAgentBindingModels(w, r, agent.SquadID, newPrimary, newFallback) {
+		return false
+	}
+	return s.convergeAgentBinding(w, r, agent, newPrimary, newFallback)
+}
+
+func (s *Server) validateAgentBindingModels(w http.ResponseWriter, r *http.Request, squadID, newPrimary, newFallback string) bool {
+	squad, err := s.store.GetSquad(r.Context(), squadID)
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	granted, err := s.ownerGrantedModelIDs(r.Context(), squad.OwnerID)
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	type bindingSlot struct {
+		id    string
+		field string
+	}
+	for _, slot := range []bindingSlot{{newPrimary, "ai_model_id"}, {newFallback, "fallback_ai_model_id"}} {
+		if slot.id == "" {
+			continue
+		}
+		if _, err := s.resolveBindingModel(r.Context(), slot.id, slot.field, granted); err != nil {
+			writeBindingError(w, err)
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) convergeAgentBinding(w http.ResponseWriter, r *http.Request, agent *domain.Agent, newPrimary, newFallback string) bool {
+	// Converge the virtual key BEFORE persisting so a gateway failure
+	// aborts the mutation with the previous binding intact (same
+	// ordering discipline the permission-set path used).
+	prevPrimary, prevFallback := agent.AIModelID, agent.FallbackAIModelID
+	agent.AIModelID, agent.FallbackAIModelID = newPrimary, newFallback
+	if _, err := s.syncAgentGatewayKey(r.Context(), agent); err != nil {
+		agent.AIModelID, agent.FallbackAIModelID = prevPrimary, prevFallback
+		if writeBindingError(w, err) {
+			return false
+		}
+		writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to converge LLM gateway virtual key")
+		return false
+	}
+	return true
+}
+
+func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
+	agent, ok := s.loadOwnedAgent(w, r)
+	if !ok {
+		return
+	}
+	var req updateAgentRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// Captured before any mutation so a post-gateway persist failure can
+	// roll the virtual key back to the pre-request binding.
+	prevPrimary, prevFallback := agent.AIModelID, agent.FallbackAIModelID
+	if err := applyAgentScalarUpdates(agent, req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	bindingTouched := false
 	if req.AIModelID != nil || req.FallbackAIModelID != nil {
-		newPrimary := agent.AIModelID
-		if req.AIModelID != nil {
-			newPrimary = strings.TrimSpace(*req.AIModelID)
-		}
-		newFallback := agent.FallbackAIModelID
-		if req.FallbackAIModelID != nil {
-			newFallback = strings.TrimSpace(*req.FallbackAIModelID)
-		}
-		if newPrimary == "" && newFallback != "" {
-			writeError(w, http.StatusBadRequest, "bad_request", "cannot keep a fallback model without a primary model")
+		if !s.applyAgentModelBinding(w, r, agent, req) {
 			return
 		}
-		if newFallback != "" && newFallback == newPrimary {
-			// The store enforces this too (ErrConflict); surface it as a
-			// clean 400 instead of leaking the constraint error.
-			writeError(w, http.StatusBadRequest, "fallback_same_as_primary", "fallback_ai_model_id must differ from ai_model_id")
-			return
-		}
-		squad, err := s.store.GetSquad(r.Context(), agent.SquadID)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		granted, err := s.ownerGrantedModelIDs(r.Context(), squad.OwnerID)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		if newPrimary != "" {
-			if _, err := s.resolveBindingModel(r.Context(), newPrimary, "ai_model_id", granted); err != nil {
-				writeBindingError(w, err)
-				return
-			}
-		}
-		if newFallback != "" {
-			if _, err := s.resolveBindingModel(r.Context(), newFallback, "fallback_ai_model_id", granted); err != nil {
-				writeBindingError(w, err)
-				return
-			}
-		}
-		// Converge the virtual key BEFORE persisting so a gateway failure
-		// aborts the mutation with the previous binding intact (same
-		// ordering discipline the permission-set path used).
-		prevPrimary, prevFallback = agent.AIModelID, agent.FallbackAIModelID
-		agent.AIModelID, agent.FallbackAIModelID = newPrimary, newFallback
 		bindingTouched = true
-		if _, err := s.syncAgentGatewayKey(r.Context(), agent); err != nil {
-			agent.AIModelID, agent.FallbackAIModelID = prevPrimary, prevFallback
-			if writeBindingError(w, err) {
-				return
-			}
-			writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to converge LLM gateway virtual key")
-			return
-		}
 	}
 
 	updated, err := s.store.UpdateAgent(s.pendingUserAuditCtx(r, "agent.update", "agent", agent.ID, agent.SquadID, nil), agent)
@@ -1886,16 +1933,16 @@ func (s *Server) ownerGrantedModelIDs(ctx context.Context, userID string) (map[s
 func (s *Server) resolveBindingModel(ctx context.Context, modelID, field string, granted map[string]bool) (*domain.AIModel, error) {
 	model, err := s.store.GetAIModel(ctx, modelID)
 	if errors.Is(err, storage.ErrNotFound) {
-		return nil, fmt.Errorf("%w: %s", errModelNotFound, field)
+		return nil, fmt.Errorf(errWrapFormat, errModelNotFound, field)
 	}
 	if err != nil {
 		return nil, err
 	}
 	if !granted[modelID] {
-		return nil, fmt.Errorf("%w: %s", errModelNotGranted, field)
+		return nil, fmt.Errorf(errWrapFormat, errModelNotGranted, field)
 	}
 	if model.Status != domain.ResourceActive {
-		return nil, fmt.Errorf("%w: %s", errModelDeprecated, field)
+		return nil, fmt.Errorf(errWrapFormat, errModelDeprecated, field)
 	}
 	return model, nil
 }
@@ -2232,6 +2279,80 @@ type gatewayMeteringRequest struct {
 	Alert string `json:"alert"`
 }
 
+// validateGatewayMeteringRequest normalises and validates the required
+// fields of a gateway metering callback. On failure it writes the HTTP
+// error and returns false. Extracted from ingestGatewayMetering for
+// cognitive complexity (S-126 / S3776).
+func validateGatewayMeteringRequest(w http.ResponseWriter, req *gatewayMeteringRequest) bool {
+	req.Status = strings.TrimSpace(req.Status)
+	if req.Status == "" {
+		req.Status = "success"
+	}
+	if req.Status != "success" && req.Status != "failure" {
+		writeError(w, http.StatusBadRequest, "bad_request", "status must be success or failure")
+		return false
+	}
+	if req.AgentID == "" || req.SquadID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "agent_id and squad_id are required")
+		return false
+	}
+	return true
+}
+
+// recordGatewayFailureAudit records the failure audit event plus, when
+// the gateway raised an alert, the dedicated upstream-auth alert event
+// (ADR-0010 D7: fall back AND alert so a dead key never runs silently on
+// fallback). Extracted from ingestGatewayMetering (S-126 / S3776).
+func (s *Server) recordGatewayFailureAudit(ctx context.Context, req gatewayMeteringRequest, metadata []byte) {
+	_ = s.recordSystemAudit(ctx, "llm.failure", "agent", req.AgentID, req.SquadID, metadata)
+	if req.Alert == "" {
+		return
+	}
+	// Loud alert per ADR-0010 D7: the gateway fell back past an
+	// upstream auth failure. Dedicated audit action so it is
+	// greppable independently of ordinary LLM failures.
+	alertMeta, _ := json.Marshal(map[string]any{"alert": req.Alert, "error": trimRunes(req.Error, 512), "model": req.Model})
+	_ = s.recordSystemAudit(ctx, "llm.upstream_auth_alert", "agent", req.AgentID, req.SquadID, alertMeta)
+}
+
+// meteringPricingSnapshot is the event-time pricing resolved for a
+// metering event. When Snapshot is false the reporter-supplied cost is
+// kept and no rates are recorded, so the gap stays visible rather than
+// fabricated (WP5 / ADR-0010 D8 + Risk 3).
+type meteringPricingSnapshot struct {
+	Cost                 float64
+	RateInputPer1M       *float64
+	RateCachedInputPer1M *float64
+	RateCacheWritePer1M  *float64
+	RateOutputPer1M      *float64
+	Snapshot             bool
+}
+
+// resolveMeteringPricing snapshots the pricing of the model that served
+// the call. Extracted from ingestGatewayMetering for cognitive
+// complexity (S-126 / S3776).
+func (s *Server) resolveMeteringPricing(ctx context.Context, agent *domain.Agent, modelUsed string, req gatewayMeteringRequest) meteringPricingSnapshot {
+	snap := meteringPricingSnapshot{Cost: req.Cost}
+	if modelUsed == "" {
+		return snap
+	}
+	model, ok := s.resolveMeteringModel(ctx, agent, modelUsed)
+	if !ok {
+		return snap
+	}
+	pricing, err := domain.ParseModelPricing(model.Pricing)
+	if err != nil || pricing == nil {
+		return snap
+	}
+	snap.Cost = pricing.CostFor(req.InputTokens, req.OutputTokens)
+	snap.RateInputPer1M = &pricing.InputPer1M
+	snap.RateCachedInputPer1M = &pricing.CachedInputPer1M
+	snap.RateCacheWritePer1M = &pricing.CacheWritePer1M
+	snap.RateOutputPer1M = &pricing.OutputPer1M
+	snap.Snapshot = true
+	return snap
+}
+
 func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 	if !s.requireGatewayCallback(w, r) {
 		return
@@ -2240,16 +2361,7 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	req.Status = strings.TrimSpace(req.Status)
-	if req.Status == "" {
-		req.Status = "success"
-	}
-	if req.Status != "success" && req.Status != "failure" {
-		writeError(w, http.StatusBadRequest, "bad_request", "status must be success or failure")
-		return
-	}
-	if req.AgentID == "" || req.SquadID == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "agent_id and squad_id are required")
+	if !validateGatewayMeteringRequest(w, &req) {
 		return
 	}
 	agent, err := s.store.GetAgent(r.Context(), req.AgentID)
@@ -2274,14 +2386,7 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 		"error":         trimRunes(req.Error, 512),
 	})
 	if req.Status == "failure" {
-		_ = s.recordSystemAudit(r.Context(), "llm.failure", "agent", req.AgentID, req.SquadID, metadata)
-		if req.Alert != "" {
-			// Loud alert per ADR-0010 D7: the gateway fell back past an
-			// upstream auth failure. Dedicated audit action so it is
-			// greppable independently of ordinary LLM failures.
-			alertMeta, _ := json.Marshal(map[string]any{"alert": req.Alert, "error": trimRunes(req.Error, 512), "model": req.Model})
-			_ = s.recordSystemAudit(r.Context(), "llm.upstream_auth_alert", "agent", req.AgentID, req.SquadID, alertMeta)
-		}
+		s.recordGatewayFailureAudit(r.Context(), req, metadata)
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -2305,23 +2410,7 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 	if modelUsed == "" {
 		modelUsed = strings.TrimSpace(req.Model)
 	}
-	cost := req.Cost
-	var (
-		rateIn, rateCached, rateWrite, rateOut *float64
-		snapshot                               bool
-	)
-	if modelUsed != "" {
-		if model, ok := s.resolveMeteringModel(r.Context(), agent, modelUsed); ok {
-			if pricing, err := domain.ParseModelPricing(model.Pricing); err == nil && pricing != nil {
-				cost = pricing.CostFor(req.InputTokens, req.OutputTokens)
-				rateIn = &pricing.InputPer1M
-				rateCached = &pricing.CachedInputPer1M
-				rateWrite = &pricing.CacheWritePer1M
-				rateOut = &pricing.OutputPer1M
-				snapshot = true
-			}
-		}
-	}
+	snap := s.resolveMeteringPricing(r.Context(), agent, modelUsed, req)
 
 	if err := s.store.RecordMetering(r.Context(), &domain.MeteringEvent{
 		AgentID:              req.AgentID,
@@ -2332,14 +2421,14 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 		ModelUsed:            modelUsed,
 		InputTokens:          req.InputTokens,
 		OutputTokens:         req.OutputTokens,
-		Cost:                 cost,
+		Cost:                 snap.Cost,
 		Currency:             req.Currency,
 		Timestamp:            req.Timestamp,
-		RateInputPer1M:       rateIn,
-		RateCachedInputPer1M: rateCached,
-		RateCacheWritePer1M:  rateWrite,
-		RateOutputPer1M:      rateOut,
-		RateSnapshot:         snapshot,
+		RateInputPer1M:       snap.RateInputPer1M,
+		RateCachedInputPer1M: snap.RateCachedInputPer1M,
+		RateCacheWritePer1M:  snap.RateCacheWritePer1M,
+		RateOutputPer1M:      snap.RateOutputPer1M,
+		RateSnapshot:         snap.Snapshot,
 	}); err != nil {
 		writeStorageError(w, err)
 		return
@@ -2354,15 +2443,11 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 // provisioned with. Returns ok=false when nothing matches so the caller
 // records no rate snapshot instead of guessing.
 func (s *Server) resolveMeteringModel(ctx context.Context, agent *domain.Agent, modelUsed string) (*domain.AIModel, bool) {
-	if id := strings.TrimSpace(agent.AIModelID); id != "" {
-		if model, err := s.store.GetAIModel(ctx, id); err == nil && model.ModelName == modelUsed {
-			return model, true
-		}
+	if model, ok := s.meteringModelByBinding(ctx, agent.AIModelID, modelUsed); ok {
+		return model, true
 	}
-	if id := strings.TrimSpace(agent.FallbackAIModelID); id != "" {
-		if model, err := s.store.GetAIModel(ctx, id); err == nil && model.ModelName == modelUsed {
-			return model, true
-		}
+	if model, ok := s.meteringModelByBinding(ctx, agent.FallbackAIModelID, modelUsed); ok {
+		return model, true
 	}
 	models, err := s.store.ListAIModels(ctx, "")
 	if err != nil {
@@ -2383,6 +2468,22 @@ func (s *Server) resolveMeteringModel(ctx context.Context, agent *domain.Agent, 
 	// Prefer an active match; a deprecated model still prices honestly for
 	// historical turns over recording nothing.
 	return fallbackMatch, fallbackMatch != nil
+}
+
+// meteringModelByBinding resolves a bound model id (primary or fallback
+// slot) to its AI Model row when the id is set and its model_name matches
+// the served model. Extracted from resolveMeteringModel for cognitive
+// complexity (S-126 / S3776).
+func (s *Server) meteringModelByBinding(ctx context.Context, boundID, modelUsed string) (*domain.AIModel, bool) {
+	id := strings.TrimSpace(boundID)
+	if id == "" {
+		return nil, false
+	}
+	model, err := s.store.GetAIModel(ctx, id)
+	if err != nil || model.ModelName != modelUsed {
+		return nil, false
+	}
+	return model, true
 }
 
 func (s *Server) listSquadAudit(w http.ResponseWriter, r *http.Request) {

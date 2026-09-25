@@ -29,6 +29,12 @@ const (
 	credentialsMount   = "/var/run/skquad/credentials" // #nosec G101 -- mount path, not a credential
 	workspacesMount    = "/var/run/skquad/workspaces"
 	runtimeHTTPPort    = int32(8080)
+	// Volume names for the credential / virtual-key Secret mounts
+	// (S-126 / S1192: single source of truth).
+	volumeAgentCredential = "agent-credential" // #nosec G101 -- Kubernetes volume name, not a credential value.
+	volumeAgentVirtualKey = "agent-virtual-key"
+	// LabelAgentID links a Deployment back to its Agent identity.
+	LabelAgentID = "skquad.io/agent-id"
 	// readinessRequeue keeps the operator re-checking an agent whose pod is
 	// not ready yet (S-104). Without it a DesiredActive agent that never
 	// becomes ready is never revisited.
@@ -214,33 +220,58 @@ func (r *AgentReconciler) evaluateAgentReadiness(ctx context.Context, agent *skq
 		return false, "CredentialNotProvisioned", fmt.Sprintf("agent %s/%s has no credential secret reference; provision its identity", agent.Namespace, agent.Name)
 	}
 	if agent.Spec.CredentialSecret != "" {
-		var secret corev1.Secret
-		if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: agent.Spec.CredentialSecret}, &secret); err != nil {
-			if apierrors.IsNotFound(err) {
-				return false, "CredentialSecretMissing", fmt.Sprintf("credential secret %s/%s has not been created yet", namespace, agent.Spec.CredentialSecret)
-			}
-			return false, "ReadinessCheckFailed", err.Error()
+		check := secretMountCheck{
+			secretName:    agent.Spec.CredentialSecret,
+			volumeName:    volumeAgentCredential,
+			label:         "credential",
+			missingReason: "CredentialSecretMissing",
+			mountReason:   "CredentialMountMissing",
 		}
-		if !deploymentHasVolume(deployment, "agent-credential") || !containerHasVolumeMount(deployment, "agent-credential") {
-			return false, "CredentialMountMissing", fmt.Sprintf("deployment %s/%s does not mount credential secret %s", namespace, deployment.Name, agent.Spec.CredentialSecret)
+		if ok, reason, msg := r.checkSecretAndMount(ctx, deployment, namespace, check); !ok {
+			return false, reason, msg
 		}
 	}
 	if agent.Spec.VirtualKeySecret != "" {
-		var secret corev1.Secret
-		if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: agent.Spec.VirtualKeySecret}, &secret); err != nil {
-			if apierrors.IsNotFound(err) {
-				return false, "VirtualKeySecretMissing", fmt.Sprintf("virtual-key secret %s/%s has not been created yet", namespace, agent.Spec.VirtualKeySecret)
-			}
-			return false, "ReadinessCheckFailed", err.Error()
+		check := secretMountCheck{
+			secretName:    agent.Spec.VirtualKeySecret,
+			volumeName:    volumeAgentVirtualKey,
+			label:         "virtual-key",
+			missingReason: "VirtualKeySecretMissing",
+			mountReason:   "VirtualKeyMountMissing",
 		}
-		if !deploymentHasVolume(deployment, "agent-virtual-key") || !containerHasVolumeMount(deployment, "agent-virtual-key") {
-			return false, "VirtualKeyMountMissing", fmt.Sprintf("deployment %s/%s does not mount virtual-key secret %s", namespace, deployment.Name, agent.Spec.VirtualKeySecret)
+		if ok, reason, msg := r.checkSecretAndMount(ctx, deployment, namespace, check); !ok {
+			return false, reason, msg
 		}
 	}
 	if deployment.Status.ReadyReplicas < replicas {
 		return false, "PodNotReady", fmt.Sprintf("deployment %s/%s: %d/%d replicas ready, %d unavailable", namespace, deployment.Name, deployment.Status.ReadyReplicas, replicas, deployment.Status.UnavailableReplicas)
 	}
 	return true, "DeploymentReady", fmt.Sprintf("Deployment %s/%s is ready", namespace, deployment.Name)
+}
+
+type secretMountCheck struct {
+	secretName    string
+	volumeName    string
+	label         string
+	missingReason string
+	mountReason   string
+}
+
+// checkSecretAndMount verifies one credential-class Secret exists and the
+// Deployment actually mounts it (volume + container mount). Extracted
+// from evaluateAgentReadiness for cognitive complexity (S-126 / S3776).
+func (r *AgentReconciler) checkSecretAndMount(ctx context.Context, deployment *appsv1.Deployment, namespace string, check secretMountCheck) (bool, string, string) {
+	var secret corev1.Secret
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: check.secretName}, &secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, check.missingReason, fmt.Sprintf("%s secret %s/%s has not been created yet", check.label, namespace, check.secretName)
+		}
+		return false, "ReadinessCheckFailed", err.Error()
+	}
+	if !deploymentHasVolume(deployment, check.volumeName) || !containerHasVolumeMount(deployment, check.volumeName) {
+		return false, check.mountReason, fmt.Sprintf("deployment %s/%s does not mount %s secret %s", namespace, deployment.Name, check.label, check.secretName)
+	}
+	return true, "", ""
 }
 
 func deploymentHasVolume(deployment *appsv1.Deployment, name string) bool {
@@ -321,12 +352,12 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // mapDeploymentToAgent maps a Deployment status/spec change to the owning
 // Agent CR by the skquad.io/agent-id label the control plane sets on both.
 func (r *AgentReconciler) mapDeploymentToAgent(ctx context.Context, obj client.Object) []reconcile.Request {
-	agentID := obj.GetLabels()["skquad.io/agent-id"]
+	agentID := obj.GetLabels()[LabelAgentID]
 	if agentID == "" {
 		return nil
 	}
 	var agents skquadv1.AgentList
-	if err := r.List(ctx, &agents, client.MatchingLabels{"skquad.io/agent-id": agentID}); err != nil {
+	if err := r.List(ctx, &agents, client.MatchingLabels{LabelAgentID: agentID}); err != nil {
 		return nil
 	}
 	requests := make([]reconcile.Request, 0, len(agents.Items))
@@ -356,7 +387,7 @@ func agentLabels(agent *skquadv1.Agent) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/managed-by": managedBy,
 		"app.kubernetes.io/name":       "skquad-agent",
-		"skquad.io/agent-id":           agent.Spec.AgentID,
+		LabelAgentID:                   agent.Spec.AgentID,
 		"skquad.io/squad-id":           agent.Spec.SquadID,
 	}
 }
@@ -452,7 +483,7 @@ func agentSecretVolumes(agent *skquadv1.Agent) []corev1.Volume {
 	var volumes []corev1.Volume
 	if agent.Spec.CredentialSecret != "" {
 		volumes = append(volumes, corev1.Volume{
-			Name: "agent-credential",
+			Name: volumeAgentCredential,
 			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
 				SecretName: agent.Spec.CredentialSecret,
 			}},
@@ -460,7 +491,7 @@ func agentSecretVolumes(agent *skquadv1.Agent) []corev1.Volume {
 	}
 	if agent.Spec.VirtualKeySecret != "" {
 		volumes = append(volumes, corev1.Volume{
-			Name: "agent-virtual-key",
+			Name: volumeAgentVirtualKey,
 			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
 				SecretName: agent.Spec.VirtualKeySecret,
 			}},
@@ -484,14 +515,14 @@ func agentSecretVolumeMounts(agent *skquadv1.Agent) []corev1.VolumeMount {
 	var mounts []corev1.VolumeMount
 	if agent.Spec.CredentialSecret != "" {
 		mounts = append(mounts, corev1.VolumeMount{
-			Name:      "agent-credential",
+			Name:      volumeAgentCredential,
 			MountPath: credentialsMount + "/agent",
 			ReadOnly:  true,
 		})
 	}
 	if agent.Spec.VirtualKeySecret != "" {
 		mounts = append(mounts, corev1.VolumeMount{
-			Name:      "agent-virtual-key",
+			Name:      volumeAgentVirtualKey,
 			MountPath: credentialsMount + "/llm-gateway",
 			ReadOnly:  true,
 		})

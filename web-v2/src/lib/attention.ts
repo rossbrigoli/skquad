@@ -46,7 +46,7 @@ export type AttentionInput = {
 };
 
 function isAgentError(agent: Agent): boolean {
-  const status = (agent.status || "").toLowerCase();
+  const status = (agent.status ?? "").toLowerCase();
   return status === "error" || status === "failed";
 }
 

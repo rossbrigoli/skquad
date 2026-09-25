@@ -19,7 +19,7 @@ func createProviderWithBase(t *testing.T, handler http.Handler, name, baseURL, a
 	var provider struct {
 		ID string `json:"id"`
 	}
-	doJSONAuth(t, handler, "Bearer admin", http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
 		"name":        name,
 		"kind":        "openai",
 		"base_url":    baseURL,
@@ -57,7 +57,7 @@ func TestListProviderModelsSuccess(t *testing.T) {
 		ProviderID string   `json:"provider_id"`
 		Models     []string `json:"models"`
 	}
-	doJSONAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/registry/llm-providers/"+id+"/models", nil, http.StatusOK, &out)
+	doJSONAuth(t, handler, authAdmin, http.MethodGet, pathProvidersPrefix+id+pathModels, nil, http.StatusOK, &out)
 	require.Equal(t, id, out.ProviderID)
 	require.Equal(t, []string{"alpha-model", "zeta-model"}, out.Models)
 	require.Equal(t, "Bearer sk-test-123", gotAuth, "credential must be sent upstream")
@@ -72,7 +72,7 @@ func TestListProviderModelsAuthError(t *testing.T) {
 	handler, _ := newAIModelHarness(t)
 	id := createProviderWithBase(t, handler, "upstream-401", upstream.URL+"/v1", "bad-key")
 
-	rec := doRawAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/registry/llm-providers/"+id+"/models")
+	rec := doRawAuth(t, handler, authAdmin, http.MethodGet, pathProvidersPrefix+id+pathModels)
 	require.Equal(t, http.StatusBadGateway, rec.Code, rec.Body.String())
 	require.Contains(t, rec.Body.String(), `"provider_auth"`)
 }
@@ -93,7 +93,7 @@ func TestListProviderModelsTimeout(t *testing.T) {
 	handler, _ := newAIModelHarness(t)
 	id := createProviderWithBase(t, handler, "upstream-slow", upstream.URL+"/v1", "key")
 
-	rec := doRawAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/registry/llm-providers/"+id+"/models")
+	rec := doRawAuth(t, handler, authAdmin, http.MethodGet, pathProvidersPrefix+id+pathModels)
 	require.Equal(t, http.StatusGatewayTimeout, rec.Code, rec.Body.String())
 	require.Contains(t, rec.Body.String(), `"provider_timeout"`)
 }
@@ -102,13 +102,13 @@ func TestListProviderModelsRequiresAdmin(t *testing.T) {
 	handler, _ := newAIModelHarness(t)
 	id := createProviderWithBase(t, handler, "upstream-admin", "http://models.invalid/v1", "key")
 
-	rec := doRawAuth(t, handler, "Bearer alice", http.MethodGet, "/api/v1/registry/llm-providers/"+id+"/models")
+	rec := doRawAuth(t, handler, authAlice, http.MethodGet, pathProvidersPrefix+id+pathModels)
 	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
 }
 
 func TestListProviderModelsUnknownProvider(t *testing.T) {
 	handler, _ := newAIModelHarness(t)
-	rec := doRawAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/registry/llm-providers/does-not-exist/models")
+	rec := doRawAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/registry/llm-providers/does-not-exist/models")
 	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 }
 

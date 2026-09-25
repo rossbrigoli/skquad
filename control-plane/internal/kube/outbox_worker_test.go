@@ -10,6 +10,12 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/storage"
 )
 
+const (
+	primaryModelID  = "primary-id"
+	fallbackModelID = "fallback-id"
+	agentOneID      = "agent-1"
+)
+
 func TestProcessOutboxOnceAppliesQueuedSquadAndAgentEvents(t *testing.T) {
 	t.Parallel()
 
@@ -177,10 +183,10 @@ func TestDeriveBindingModelNamesResolvesPrimaryAndFallback(t *testing.T) {
 	t.Parallel()
 
 	resolver := &fakeAIModelResolver{models: map[string]*domain.AIModel{
-		"primary-id":  {ID: "primary-id", ModelName: "gpt-6-sol"},
-		"fallback-id": {ID: "fallback-id", ModelName: "halogen/qwen3.8-flash-next"},
+		primaryModelID:  {ID: primaryModelID, ModelName: "gpt-6-sol"},
+		fallbackModelID: {ID: fallbackModelID, ModelName: "halogen/qwen3.8-flash-next"},
 	}}
-	agent := &domain.Agent{ID: "agent-1", AIModelID: "primary-id", FallbackAIModelID: "fallback-id"}
+	agent := &domain.Agent{ID: agentOneID, AIModelID: primaryModelID, FallbackAIModelID: fallbackModelID}
 
 	deriveBindingModelNames(context.Background(), resolver, agent)
 
@@ -196,7 +202,7 @@ func TestDeriveBindingModelNamesUnresolvedLeavesNamesEmpty(t *testing.T) {
 	t.Parallel()
 
 	resolver := &fakeAIModelResolver{models: map[string]*domain.AIModel{}}
-	agent := &domain.Agent{ID: "agent-1", AIModelID: "gone-primary", FallbackAIModelID: "gone-fallback"}
+	agent := &domain.Agent{ID: agentOneID, AIModelID: "gone-primary", FallbackAIModelID: "gone-fallback"}
 
 	// Must not error: an unresolvable binding degrades to empty names so
 	// the CR writer falls back to the legacy default_model.
@@ -211,7 +217,7 @@ func TestDeriveBindingModelNamesNoBindingIsNoop(t *testing.T) {
 	t.Parallel()
 
 	resolver := &fakeAIModelResolver{err: errors.New("resolver must not be called")}
-	agent := &domain.Agent{ID: "agent-1"}
+	agent := &domain.Agent{ID: agentOneID}
 
 	deriveBindingModelNames(context.Background(), resolver, agent)
 

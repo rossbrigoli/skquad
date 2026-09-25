@@ -26,7 +26,7 @@ function boundModelName(models: AIModel[] | null | undefined, aiModelId: string 
 
 export default function SquadAgentsPage() {
   const params = useParams<{ id: string }>();
-  const squadId = String(params?.id || "");
+  const squadId = String(params?.id ?? "");
   const { token } = useAuth();
   const agents = useApi<Agent[]>(`/squads/${squadId}/agents`, 15000);
   const myModels = useApi<AIModel[]>("/models/me", 60000);
@@ -62,7 +62,7 @@ export default function SquadAgentsPage() {
                 key={agent.id}
                 href={`/squads/${squadId}/agents/${agent.id}`}
                 title={agent.name}
-                meta={`${agent.role || "no role"} · ${boundModelName(myModels.data, agent.ai_model_id)}`}
+                meta={`${agent.role ?? "no role"} · ${boundModelName(myModels.data, agent.ai_model_id)}`}
                 side={<StatusChip status={agentStatus(agent)} />}
               />
             ))}

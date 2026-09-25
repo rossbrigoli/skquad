@@ -15,6 +15,10 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
 
+const (
+	runtimeImageRef = "example.com/skquad/agent-runtime:test"
+)
+
 func TestSecretNameFromRef(t *testing.T) {
 	t.Parallel()
 
@@ -65,7 +69,7 @@ func TestUpsertAgentMapsGeneratedSecretRefs(t *testing.T) {
 		baseURL:      server.URL,
 		namespace:    "skquad-system",
 		groupVersion: "skquad.io/v1",
-		agentImage:   "example.com/skquad/agent-runtime:test",
+		agentImage:   runtimeImageRef,
 		token:        "test-token",
 		client:       server.Client(),
 	}
@@ -123,7 +127,7 @@ func TestUpsertAgentEmitsWorkspaceSecrets(t *testing.T) {
 		baseURL:      server.URL,
 		namespace:    "skquad-system",
 		groupVersion: "skquad.io/v1",
-		agentImage:   "example.com/skquad/agent-runtime:test",
+		agentImage:   runtimeImageRef,
 		token:        "test-token",
 		client:       server.Client(),
 	}
@@ -299,7 +303,7 @@ func TestUpsertAgentEmitsModelBindingFields(t *testing.T) {
 		baseURL:      server.URL,
 		namespace:    "skquad-system",
 		groupVersion: "skquad.io/v1",
-		agentImage:   "example.com/skquad/agent-runtime:test",
+		agentImage:   runtimeImageRef,
 		token:        "test-token",
 		client:       server.Client(),
 	}
@@ -347,7 +351,7 @@ func TestUpsertAgentDefaultModelNeverFallsBackToLegacy(t *testing.T) {
 		baseURL:      server.URL,
 		namespace:    "skquad-system",
 		groupVersion: "skquad.io/v1",
-		agentImage:   "example.com/skquad/agent-runtime:test",
+		agentImage:   runtimeImageRef,
 		token:        "test-token",
 		client:       server.Client(),
 	}

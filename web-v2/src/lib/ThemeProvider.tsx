@@ -38,14 +38,14 @@ function applyTheme(resolved: ResolvedTheme): void {
   el.style.colorScheme = resolved;
 }
 
-export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [mode, setModeState] = useState<ThemeMode>("system");
+export function ThemeProvider({ children }: { readonly children: ReactNode }) {
+  const [mode, setMode] = useState<ThemeMode>("system");
   const [sysDark, setSysDark] = useState<boolean>(false);
 
   // Hydrate from localStorage after mount; the pre-paint inline script has
   // already set the attribute so there is no flash.
   useEffect(() => {
-    setModeState(readStoredTheme());
+    setMode(readStoredTheme());
     setSysDark(systemPrefersDark());
   }, []);
 
@@ -63,15 +63,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     applyTheme(resolved);
   }, [resolved]);
 
-  const setMode = useCallback((next: ThemeMode) => {
-    setModeState(next);
+  const chooseMode = useCallback((next: ThemeMode) => {
+    setMode(next);
     storeTheme(next);
     applyTheme(resolveTheme(next, systemPrefersDark()));
   }, []);
 
   const value = useMemo(
-    () => ({ mode, resolved, setMode }),
-    [mode, resolved, setMode],
+    () => ({ mode, resolved, setMode: chooseMode }),
+    [mode, resolved, chooseMode],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

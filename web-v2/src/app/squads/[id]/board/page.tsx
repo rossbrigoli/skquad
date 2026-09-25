@@ -23,7 +23,7 @@ import {
 
 export default function SquadBoardPage() {
   const params = useParams<{ id: string }>();
-  const squadId = String(params?.id || "");
+  const squadId = String(params?.id ?? "");
   const { token } = useAuth();
   const squads = useApi<Squad[]>("/squads");
   const board = useApi<BoardPayload>(`/squads/${squadId}/board`, 15000);

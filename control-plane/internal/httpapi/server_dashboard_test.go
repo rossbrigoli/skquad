@@ -24,13 +24,13 @@ func dashboardFixture(t *testing.T, handler http.Handler, bearer, squadName stri
 	var squad domain.Squad
 	doJSONAuth(t, handler, bearer, http.MethodPost, "/api/v1/squads", map[string]any{"name": squadName}, http.StatusCreated, &squad)
 	var agent domain.Agent
-	doJSONAuth(t, handler, bearer, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{
+	doJSONAuth(t, handler, bearer, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{
 		"name": squadName + " agent",
 		"role": "worker",
 	}, http.StatusCreated, &agent)
 	for _, status := range statuses {
 		var task domain.Task
-		doJSONAuth(t, handler, bearer, http.MethodPost, "/api/v1/squads/"+squad.ID+"/board/tasks", map[string]any{
+		doJSONAuth(t, handler, bearer, http.MethodPost, pathSquadsPrefix+squad.ID+"/board/tasks", map[string]any{
 			"title":             squadName + " task " + status,
 			"assignee_agent_id": agent.ID,
 		}, http.StatusCreated, &task)
@@ -51,7 +51,9 @@ func TestDashboardAdminSeesAllWithAggregates(t *testing.T) {
 	t.Cleanup(live.Close)
 
 	// Dead provider: closed listener → connection refused → offline.
-	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Never reached: the listener is closed below before any request lands.
+	}))
 	deadURL := dead.URL
 	dead.Close()
 
@@ -62,7 +64,7 @@ func TestDashboardAdminSeesAllWithAggregates(t *testing.T) {
 	store := storage.NewMemoryStore()
 	handler := New(testConfig(), store)
 
-	squadA, agentA := dashboardFixture(t, handler, "", "Alpha Squad", []string{"todo", "in-progress", "in-progress"}, 1000, 200)
+	squadA, agentA := dashboardFixture(t, handler, "", "Alpha Squad", []string{"todo", statusInProgress, statusInProgress}, 1000, 200)
 	dashboardFixture(t, handler, "", "Beta Squad", []string{"todo"}, 0, 0)
 
 	// Metering: squad A total includes agent A's usage.
@@ -74,14 +76,14 @@ func TestDashboardAdminSeesAllWithAggregates(t *testing.T) {
 		"name": "Live Provider", "kind": "openai", "base_url": live.URL,
 	}, http.StatusCreated)
 	doJSONNoBody(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
-		"name": "Dead Provider", "kind": "openai", "base_url": deadURL,
+		"name": deadProviderName, "kind": "openai", "base_url": deadURL,
 	}, http.StatusCreated)
 	doJSONNoBody(t, handler, http.MethodPost, "/api/v1/registry/skills", map[string]any{
 		"name": "Deploy Skill", "description": "ships things",
 	}, http.StatusCreated)
 
 	var payload DashboardPayload
-	doJSON(t, handler, http.MethodGet, "/api/v1/dashboard", nil, http.StatusOK, &payload)
+	doJSON(t, handler, http.MethodGet, pathDashboard, nil, http.StatusOK, &payload)
 
 	require.Equal(t, "all", payload.Scope)
 	require.Len(t, payload.Squads, 2)
@@ -92,7 +94,7 @@ func TestDashboardAdminSeesAllWithAggregates(t *testing.T) {
 	}
 	alpha := byName["Alpha Squad"]
 	require.Equal(t, 1, alpha.TaskCounts["todo"])
-	require.Equal(t, 2, alpha.TaskCounts["in-progress"])
+	require.Equal(t, 2, alpha.TaskCounts[statusInProgress])
 	require.NotNil(t, alpha.Cost)
 	require.Equal(t, 1000, alpha.Cost.InputTokens)
 	require.Equal(t, 200, alpha.Cost.OutputTokens)
@@ -113,8 +115,8 @@ func TestDashboardAdminSeesAllWithAggregates(t *testing.T) {
 		provByName[p.Name] = p
 	}
 	require.True(t, provByName["Live Provider"].Online)
-	require.False(t, provByName["Dead Provider"].Online)
-	require.Equal(t, "unreachable", provByName["Dead Provider"].Error)
+	require.False(t, provByName[deadProviderName].Online)
+	require.Equal(t, "unreachable", provByName[deadProviderName].Error)
 
 	require.Len(t, payload.Resources, 1)
 	require.Equal(t, "Deploy Skill", payload.Resources[0].Name)
@@ -127,39 +129,39 @@ func TestDashboardPersonalScopeOwnedGrantedAndExcluded(t *testing.T) {
 	cfg := testConfig()
 	cfg.AuthMode = config.AuthOIDC
 	handler := NewWithOIDCAuthenticator(cfg, storage.NewMemoryStore(), headerOIDC{
-		"Bearer owner":    {Issuer: "https://issuer.example.com", Subject: "own-1", Email: "owner@example.com", EmailVerified: true, Name: "Owner"},
-		"Bearer viewer":   {Issuer: "https://issuer.example.com", Subject: "view-1", Email: "viewer@example.com", EmailVerified: true, Name: "Viewer"},
-		"Bearer stranger": {Issuer: "https://issuer.example.com", Subject: "str-1", Email: "stranger@example.com", EmailVerified: true, Name: "Stranger"},
+		authOwner:         {Issuer: testIssuer, Subject: "own-1", Email: "owner@example.com", EmailVerified: true, Name: "Owner"},
+		authViewer:        {Issuer: testIssuer, Subject: "view-1", Email: "viewer@example.com", EmailVerified: true, Name: "Viewer"},
+		"Bearer stranger": {Issuer: testIssuer, Subject: "str-1", Email: "stranger@example.com", EmailVerified: true, Name: "Stranger"},
 	})
 
-	ownedSquad, _ := dashboardFixture(t, handler, "Bearer owner", "Owned Squad", []string{"todo", "in-progress"}, 0, 0)
+	ownedSquad, _ := dashboardFixture(t, handler, authOwner, "Owned Squad", []string{"todo", statusInProgress}, 0, 0)
 
 	// Viewer without a grant sees nothing.
 	var viewerPayload DashboardPayload
-	doJSONAuth(t, handler, "Bearer viewer", http.MethodGet, "/api/v1/dashboard", nil, http.StatusOK, &viewerPayload)
+	doJSONAuth(t, handler, authViewer, http.MethodGet, pathDashboard, nil, http.StatusOK, &viewerPayload)
 	require.Equal(t, "personal", viewerPayload.Scope)
 	require.Empty(t, viewerPayload.Squads)
 
 	// Grant "read" → the squad surfaces on the viewer's dashboard.
 	grantBody, err := json.Marshal(map[string]any{
-		"grantee_type": "user", "grantee_id": mustUserID(t, handler, "Bearer viewer"), "permissions": "read",
+		"grantee_type": "user", "grantee_id": mustUserID(t, handler, authViewer), "permissions": "read",
 	})
 	require.NoError(t, err)
-	grantReq := httptest.NewRequest(http.MethodPost, "/api/v1/squads/"+ownedSquad.ID+"/access-grants", bytes.NewReader(grantBody))
+	grantReq := httptest.NewRequest(http.MethodPost, pathSquadsPrefix+ownedSquad.ID+"/access-grants", bytes.NewReader(grantBody))
 	grantReq.Header.Set("Content-Type", "application/json")
-	grantReq.Header.Set("Authorization", "Bearer owner")
+	grantReq.Header.Set("Authorization", authOwner)
 	grantRec := httptest.NewRecorder()
 	handler.ServeHTTP(grantRec, grantReq)
 	require.Equal(t, http.StatusCreated, grantRec.Code, grantRec.Body.String())
 
-	doJSONAuth(t, handler, "Bearer viewer", http.MethodGet, "/api/v1/dashboard", nil, http.StatusOK, &viewerPayload)
+	doJSONAuth(t, handler, authViewer, http.MethodGet, pathDashboard, nil, http.StatusOK, &viewerPayload)
 	require.Len(t, viewerPayload.Squads, 1)
 	require.Equal(t, ownedSquad.ID, viewerPayload.Squads[0].ID)
-	require.Equal(t, 1, viewerPayload.Squads[0].TaskCounts["in-progress"])
+	require.Equal(t, 1, viewerPayload.Squads[0].TaskCounts[statusInProgress])
 
 	// The stranger never gets the squad, even after the grant to someone else.
 	var strangerPayload DashboardPayload
-	doJSONAuth(t, handler, "Bearer stranger", http.MethodGet, "/api/v1/dashboard", nil, http.StatusOK, &strangerPayload)
+	doJSONAuth(t, handler, "Bearer stranger", http.MethodGet, pathDashboard, nil, http.StatusOK, &strangerPayload)
 	require.Empty(t, strangerPayload.Squads)
 }
 
@@ -171,14 +173,14 @@ func TestDashboardUnauthenticated(t *testing.T) {
 	handler := NewWithOIDCAuthenticator(cfg, storage.NewMemoryStore(), fakeOIDC{err: auth.ErrUnauthorized})
 
 	var body map[string]map[string]string
-	doJSON(t, handler, http.MethodGet, "/api/v1/dashboard", nil, http.StatusUnauthorized, &body)
+	doJSON(t, handler, http.MethodGet, pathDashboard, nil, http.StatusUnauthorized, &body)
 	require.Equal(t, "unauthorized", body["error"]["code"])
 }
 
 func mustUserID(t *testing.T, handler http.Handler, bearer string) string {
 	t.Helper()
 	var u domain.User
-	doJSONAuth(t, handler, bearer, http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &u)
+	doJSONAuth(t, handler, bearer, http.MethodGet, pathAuthMe, nil, http.StatusOK, &u)
 	require.NotEmpty(t, u.ID)
 	return u.ID
 }

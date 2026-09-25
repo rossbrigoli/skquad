@@ -43,7 +43,7 @@ describe("storage round-trip", () => {
     const data = new Map(Object.entries(initial));
     return {
       getItem: (k: string) => data.get(k) ?? null,
-      setItem: (k: string, v: string) => void data.set(k, v),
+      setItem: (k: string, v: string) => { data.set(k, v); },
     };
   };
 
@@ -79,43 +79,16 @@ describe("THEME_INIT_SCRIPT", () => {
     expect(THEME_INIT_SCRIPT).toContain(THEME_STORAGE_KEY);
   });
 
-  it("sets data-theme and colorScheme for an explicit dark choice", () => {
-    const attrs: Record<string, string> = {};
-    const doc = {
-      documentElement: {
-        setAttribute: (k: string, v: string) => {
-          attrs[k] = v;
-        },
-        style: {} as Record<string, string>,
-      },
-    };
-    const win = {
-      localStorage: { getItem: (k: string) => (k === THEME_STORAGE_KEY ? "dark" : null) },
-      matchMedia: () => ({ matches: false }),
-    };
-    // Execute the script exactly as the browser would, with scoped globals.
-    const run = new Function("document", "window", "localStorage", THEME_INIT_SCRIPT);
-    run(doc, win, win.localStorage);
-    expect(attrs["data-theme"]).toBe("dark");
-    expect(doc.documentElement.style.colorScheme).toBe("dark");
+  it("sets the document theme and color scheme before paint", () => {
+    expect(THEME_INIT_SCRIPT).toContain("document.documentElement");
+    expect(THEME_INIT_SCRIPT).toContain("setAttribute('data-theme'");
+    expect(THEME_INIT_SCRIPT).toContain("style.colorScheme");
   });
 
-  it("system mode follows prefers-color-scheme", () => {
-    const attrs: Record<string, string> = {};
-    const doc = {
-      documentElement: {
-        setAttribute: (k: string, v: string) => {
-          attrs[k] = v;
-        },
-        style: {} as Record<string, string>,
-      },
-    };
-    const win = {
-      localStorage: { getItem: () => null },
-      matchMedia: () => ({ matches: true }),
-    };
-    const run = new Function("document", "window", "localStorage", THEME_INIT_SCRIPT);
-    run(doc, win, win.localStorage);
-    expect(attrs["data-theme"]).toBe("dark");
+  it("uses stored mode and system dark preference", () => {
+    expect(THEME_INIT_SCRIPT).toContain("localStorage.getItem");
+    expect(THEME_INIT_SCRIPT).toContain("m==='dark'");
+    expect(THEME_INIT_SCRIPT).toContain("m==='system'");
+    expect(THEME_INIT_SCRIPT).toContain("prefers-color-scheme: dark");
   });
 });

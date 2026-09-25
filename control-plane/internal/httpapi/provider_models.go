@@ -67,11 +67,7 @@ func fetchProviderModels(ctx context.Context, client *http.Client, baseURL, apiK
 	// this request (same trust model as the LiteLLM admin client).
 	resp, err := client.Do(req)
 	if err != nil {
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, context.DeadlineExceeded
-		}
-		return nil, errors.New("provider is unreachable")
+		return nil, mapProviderTransportError(err)
 	}
 	defer resp.Body.Close()
 	// 1 MiB cap: a model list is small; anything larger is junk and must
@@ -80,12 +76,40 @@ func fetchProviderModels(ctx context.Context, client *http.Client, baseURL, apiK
 	if err != nil {
 		return nil, errors.New("could not read provider model-list response")
 	}
+	if err := providerModelsStatusError(resp); err != nil {
+		return nil, err
+	}
+	return parseProviderModelIDs(body)
+}
+
+// mapProviderTransportError translates a transport failure from the
+// provider call into the sentinel the handler maps. Extracted from
+// fetchProviderModels for cognitive complexity (S-126 / S3776).
+func mapProviderTransportError(err error) error {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return context.DeadlineExceeded
+	}
+	return errors.New("provider is unreachable")
+}
+
+// providerModelsStatusError maps non-2xx provider responses to the
+// sentinel errors the handler distinguishes (auth rejection vs generic).
+// Extracted from fetchProviderModels (S-126 / S3776).
+func providerModelsStatusError(resp *http.Response) error {
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return nil, errProviderAuth
+		return errProviderAuth
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
-		return nil, errors.New("provider returned " + resp.Status)
+		return errors.New("provider returned " + resp.Status)
 	}
+	return nil
+}
+
+// parseProviderModelIDs parses the OpenAI-format model list and returns
+// the sorted, deduped ids. Extracted from fetchProviderModels
+// (S-126 / S3776).
+func parseProviderModelIDs(body []byte) ([]string, error) {
 	var out struct {
 		Data []struct {
 			ID string `json:"id"`

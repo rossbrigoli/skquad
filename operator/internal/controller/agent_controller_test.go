@@ -20,6 +20,12 @@ import (
 	skquadv1 "github.com/rossbrigoli/skquad/operator/internal/api/v1"
 )
 
+const (
+	testAgentImageRef = "example.com/skquad/agent:test"
+	agentCredS104     = "agent-cred-s104"
+	agentVKeyS104     = "agent-vkey-s104"
+)
+
 func TestAgentReconcilerCreatesDeployment(t *testing.T) {
 	t.Parallel()
 
@@ -41,17 +47,17 @@ func TestAgentReconcilerCreatesDeployment(t *testing.T) {
 	agent := &skquadv1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "agent-test", Namespace: "skquad-system"},
 		Spec: skquadv1.AgentSpec{
-			AgentID:       "22222222-2222-2222-2222-222222222222",
-			SquadID:     squad.Spec.SquadID,
-			Role:        "worker",
-			DefaultModel: "openai/gpt-4o-mini",
-			Image:             "example.com/skquad/agent:test",
-			CredentialSecret:  "agent-credential",
-			VirtualKeySecret:  "agent-virtual-key",
-			ControlPlaneURL:   "http://skquad-api-server.skquad-system.svc.cluster.local:8080",
-			LLMGatewayURL:     "http://skquad-llm-gateway.skquad-system.svc.cluster.local:4000",
-			IdleTimeout:       "300s",
-			DesiredActive:     true,
+			AgentID:          "22222222-2222-2222-2222-222222222222",
+			SquadID:          squad.Spec.SquadID,
+			Role:             "worker",
+			DefaultModel:     "openai/gpt-4o-mini",
+			Image:            testAgentImageRef,
+			CredentialSecret: "agent-credential",
+			VirtualKeySecret: "agent-virtual-key",
+			ControlPlaneURL:  "http://skquad-api-server.skquad-system.svc.cluster.local:8080",
+			LLMGatewayURL:    "http://skquad-llm-gateway.skquad-system.svc.cluster.local:4000",
+			IdleTimeout:      "300s",
+			DesiredActive:    true,
 		},
 	}
 
@@ -141,7 +147,7 @@ func TestAgentReconcilerCreatesDeployment(t *testing.T) {
 	if got := envValue(container.Env, "SKQUAD_TASK_SUMMARY_MAX_CHARS"); got != "4000" {
 		t.Fatalf("summary max chars env = %q, want 4000", got)
 	}
-	if got := deployment.Spec.Template.Labels["skquad.io/agent-id"]; got != agent.Spec.AgentID {
+	if got := deployment.Spec.Template.Labels[LabelAgentID]; got != agent.Spec.AgentID {
 		t.Fatalf("agent label = %q, want %q", got, agent.Spec.AgentID)
 	}
 	if got := len(deployment.Spec.Template.Spec.Volumes); got != 2 {
@@ -391,7 +397,7 @@ func TestAgentReconcilerHardensPodSecurity(t *testing.T) {
 		Spec: skquadv1.AgentSpec{
 			AgentID:       "99999999-9999-9999-9999-999999999999",
 			SquadID:       squad.Spec.SquadID,
-			Image:         "example.com/skquad/agent:test",
+			Image:         testAgentImageRef,
 			IdleTimeout:   "300s",
 			DesiredActive: true,
 		},
@@ -440,15 +446,15 @@ func s104Agent(name string, squadID string) *skquadv1.Agent {
 			Name:       name,
 			Namespace:  "skquad-system",
 			Finalizers: []string{agentFinalizer},
-			Labels:     map[string]string{"skquad.io/agent-id": "aaaaaaaa-1111-1111-1111-111111111111"},
+			Labels:     map[string]string{LabelAgentID: "aaaaaaaa-1111-1111-1111-111111111111"},
 		},
 		Spec: skquadv1.AgentSpec{
 			AgentID:          "aaaaaaaa-1111-1111-1111-111111111111",
 			SquadID:          squadID,
 			Role:             "worker",
-			Image:            "example.com/skquad/agent:test",
-			CredentialSecret: "agent-cred-s104",
-			VirtualKeySecret: "agent-vkey-s104",
+			Image:            testAgentImageRef,
+			CredentialSecret: agentCredS104,
+			VirtualKeySecret: agentVKeyS104,
 			IdleTimeout:      "300s",
 			DesiredActive:    true,
 		},
@@ -520,7 +526,7 @@ func TestAgentReconcilerNotReadyUntilPodReportsReady(t *testing.T) {
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&skquadv1.Agent{}, &skquadv1.Squad{}).
-		WithObjects(squad, agent, s104Secret(squadNS, "agent-cred-s104"), s104Secret(squadNS, "agent-vkey-s104")).
+		WithObjects(squad, agent, s104Secret(squadNS, agentCredS104), s104Secret(squadNS, agentVKeyS104)).
 		Build()
 	reconciler := &AgentReconciler{Client: k8sClient, Scheme: scheme}
 
@@ -583,7 +589,7 @@ func TestAgentReconcilerSelfHealsReadyFlagWhenPodRegresses(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      agent.Name,
 			Namespace: squadNS,
-			Labels:    map[string]string{"skquad.io/agent-id": agent.Spec.AgentID},
+			Labels:    map[string]string{LabelAgentID: agent.Spec.AgentID},
 		},
 		Spec:   appsv1.DeploymentSpec{Replicas: &replicas},
 		Status: appsv1.DeploymentStatus{ReadyReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1},
@@ -591,7 +597,7 @@ func TestAgentReconcilerSelfHealsReadyFlagWhenPodRegresses(t *testing.T) {
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&skquadv1.Agent{}, &skquadv1.Squad{}).
-		WithObjects(squad, agent, deployment, s104Secret(squadNS, "agent-cred-s104"), s104Secret(squadNS, "agent-vkey-s104")).
+		WithObjects(squad, agent, deployment, s104Secret(squadNS, agentCredS104), s104Secret(squadNS, agentVKeyS104)).
 		Build()
 	reconciler := &AgentReconciler{Client: k8sClient, Scheme: scheme}
 
@@ -654,7 +660,7 @@ func TestMapDeploymentToAgent(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "agent-s104-map",
 			Namespace: "squad-eeeeeeee-5555-5555-5555-555555555555",
-			Labels:    map[string]string{"skquad.io/agent-id": agent.Spec.AgentID},
+			Labels:    map[string]string{LabelAgentID: agent.Spec.AgentID},
 		},
 	}
 	requests := reconciler.mapDeploymentToAgent(context.Background(), dep)
@@ -729,13 +735,13 @@ func TestAgentDeploymentInjectsModelBindingEnv(t *testing.T) {
 	agent := &skquadv1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "agent-bind", Namespace: "skquad-system"},
 		Spec: skquadv1.AgentSpec{
-			AgentID:       "44444444-4444-4444-4444-444444444444",
-			SquadID:     squad.Spec.SquadID,
-			Role:        "worker",
-			DefaultModel: "gpt-6-sol",
+			AgentID:           "44444444-4444-4444-4444-444444444444",
+			SquadID:           squad.Spec.SquadID,
+			Role:              "worker",
+			DefaultModel:      "gpt-6-sol",
 			AIModelID:         "ai-primary-uuid",
 			FallbackAIModelID: "ai-fallback-uuid",
-			Image:             "example.com/skquad/agent:test",
+			Image:             testAgentImageRef,
 			CredentialSecret:  "agent-credential",
 			VirtualKeySecret:  "agent-virtual-key",
 			ControlPlaneURL:   "http://skquad-api-server.skquad-system.svc.cluster.local:8080",

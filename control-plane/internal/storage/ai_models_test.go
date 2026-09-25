@@ -12,6 +12,12 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
 
+const (
+	emailSuffix       = "@example.test"
+	deleteModelErrFmt = "delete model: %v"
+	createAgentErrFmt = "create agent: %v"
+)
+
 // WP1 (ADR-0010, S-106): ai_models + user_model_grants + agent binding.
 
 func seedAIModelFixture(t *testing.T, store Store) (*domain.User, *domain.Squad, *domain.LLMProvider, *domain.AIModel) {
@@ -21,7 +27,7 @@ func seedAIModelFixture(t *testing.T, store Store) (*domain.User, *domain.Squad,
 
 	user, err := store.UpsertUser(ctx, &domain.User{
 		OIDCSubject: "subj-" + tag,
-		Email:       "ai-" + tag + "@example.test",
+		Email:       "ai-" + tag + emailSuffix,
 		Name:        "AI Test User",
 		Role:        domain.RoleUser,
 	})
@@ -85,7 +91,17 @@ func TestMemoryAIModelRoundTrip(t *testing.T) {
 	if got.RegisteredBy != user.ID {
 		t.Fatalf("registered_by = %q, want %q", got.RegisteredBy, user.ID)
 	}
+}
 
+func TestMemoryAIModelUpdatePersists(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	_, _, _, model := seedAIModelFixture(t, store)
+
+	got, err := store.GetAIModel(ctx, model.ID)
+	if err != nil {
+		t.Fatalf("get ai model: %v", err)
+	}
 	got.DisplayName = "Renamed Model"
 	got.ContextWindow = 200000
 	updated, err := store.UpdateAIModel(ctx, got)
@@ -98,6 +114,12 @@ func TestMemoryAIModelRoundTrip(t *testing.T) {
 	if updated.CreatedAt.IsZero() || !updated.UpdatedAt.After(updated.CreatedAt.Add(-time.Second)) {
 		t.Fatalf("timestamps wrong: created=%v updated=%v", updated.CreatedAt, updated.UpdatedAt)
 	}
+}
+
+func TestMemoryAIModelDeprecateAndDelete(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	_, _, _, model := seedAIModelFixture(t, store)
 
 	if err := store.DeprecateAIModel(ctx, model.ID); err != nil {
 		t.Fatalf("deprecate: %v", err)
@@ -193,7 +215,7 @@ func TestMemoryProviderDeleteRestrictedByAIModels(t *testing.T) {
 	}
 
 	if err := store.DeleteAIModel(ctx, model.ID); err != nil {
-		t.Fatalf("delete model: %v", err)
+		t.Fatalf(deleteModelErrFmt, err)
 	}
 	if err := store.DeleteLLMProvider(ctx, provider.ID); err != nil {
 		t.Fatalf("provider delete after models removed: %v", err)
@@ -292,13 +314,14 @@ func TestMemoryUserModelGrantUniqueAndRevoke(t *testing.T) {
 	}
 }
 
-func TestMemoryListUsersGrantedModel(t *testing.T) {
-	store := NewMemoryStore()
-	ctx := context.Background()
-	user, _, _, model := seedAIModelFixture(t, store)
-
+// grantTwoUsers seeds a second user and a second model, grants `model` to
+// both users and the second model to `user`. Extracted from
+// TestMemoryListUsersGrantedModel for cognitive complexity
+// (S-126 / S3776).
+func grantTwoUsers(t *testing.T, store *MemoryStore, ctx context.Context, user *domain.User, model *domain.AIModel) (*domain.User, *domain.AIModel) {
+	t.Helper()
 	other, err := store.UpsertUser(ctx, &domain.User{
-		OIDCSubject: "other-" + model.ModelName, Email: "other-" + model.ModelName + "@example.test",
+		OIDCSubject: "other-" + model.ModelName, Email: "other-" + model.ModelName + emailSuffix,
 	})
 	if err != nil {
 		t.Fatalf("upsert other user: %v", err)
@@ -309,7 +332,6 @@ func TestMemoryListUsersGrantedModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create second model: %v", err)
 	}
-
 	for _, uid := range []string{user.ID, other.ID} {
 		if _, err := store.GrantModelToUser(ctx, &domain.UserModelGrant{
 			GranteeUserID: uid, AIModelID: model.ID, GrantedBy: user.ID,
@@ -322,6 +344,14 @@ func TestMemoryListUsersGrantedModel(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("grant second model: %v", err)
 	}
+	return other, otherModel
+}
+
+func TestMemoryListUsersGrantedModel(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	user, _, _, model := seedAIModelFixture(t, store)
+	other, _ := grantTwoUsers(t, store, ctx, user, model)
 
 	holders, err := store.ListUsersGrantedModel(ctx, model.ID)
 	if err != nil {
@@ -343,7 +373,7 @@ func TestMemoryListUsersGrantedModel(t *testing.T) {
 
 	// Deleting the model cascades its grants (FK ON DELETE CASCADE).
 	if err := store.DeleteAIModel(ctx, model.ID); err != nil {
-		t.Fatalf("delete model: %v", err)
+		t.Fatalf(deleteModelErrFmt, err)
 	}
 	holders, err = store.ListUsersGrantedModel(ctx, model.ID)
 	if err != nil {
@@ -373,7 +403,7 @@ func TestMemoryAgentModelBindingRoundTrip(t *testing.T) {
 		FallbackAIModelID: fallback.ID,
 	})
 	if err != nil {
-		t.Fatalf("create agent: %v", err)
+		t.Fatalf(createAgentErrFmt, err)
 	}
 	if agent.AIModelID != model.ID || agent.FallbackAIModelID != fallback.ID {
 		t.Fatalf("create did not echo binding: %+v", agent)
@@ -427,7 +457,7 @@ func TestMemoryAgentEqualPrimaryFallbackRejected(t *testing.T) {
 		AIModelID: model.ID,
 	})
 	if err != nil {
-		t.Fatalf("create agent: %v", err)
+		t.Fatalf(createAgentErrFmt, err)
 	}
 	agent.FallbackAIModelID = model.ID
 	if _, err := store.UpdateAgent(ctx, agent); !errors.Is(err, ErrConflict) {
@@ -528,7 +558,7 @@ func TestPostgresProviderDeleteRestrictedByAIModels(t *testing.T) {
 		t.Fatalf("provider delete restricted err = %v, want ErrConflict", err)
 	}
 	if err := store.DeleteAIModel(ctx, model.ID); err != nil {
-		t.Fatalf("delete model: %v", err)
+		t.Fatalf(deleteModelErrFmt, err)
 	}
 	if err := store.DeleteLLMProvider(ctx, provider.ID); err != nil {
 		t.Fatalf("provider delete after model removed: %v", err)
@@ -540,7 +570,7 @@ func TestPostgresUserModelGrants(t *testing.T) {
 	ctx := context.Background()
 	user, _, _, model := seedAIModelFixture(t, store)
 	other, err := store.UpsertUser(ctx, &domain.User{
-		OIDCSubject: "pg-other-" + model.ModelName, Email: "pg-other-" + model.ModelName + "@example.test",
+		OIDCSubject: "pg-other-" + model.ModelName, Email: "pg-other-" + model.ModelName + emailSuffix,
 	})
 	if err != nil {
 		t.Fatalf("upsert other: %v", err)
@@ -622,7 +652,7 @@ func TestPostgresAgentModelBindingRoundTrip(t *testing.T) {
 		FallbackAIModelID: fallback.ID,
 	})
 	if err != nil {
-		t.Fatalf("create agent: %v", err)
+		t.Fatalf(createAgentErrFmt, err)
 	}
 	got, err := store.GetAgent(ctx, agent.ID)
 	if err != nil {
@@ -681,6 +711,15 @@ func TestPostgresAgentEqualPrimaryFallbackRejected(t *testing.T) {
 	}
 }
 
+// pgDelete runs one cleanup DELETE, logging (not failing) on error.
+// Extracted from pgcleanup for cognitive complexity (S-126 / S3776).
+func pgDelete(t *testing.T, store *PostgresStore, ctx context.Context, query string, id any, label string) {
+	t.Helper()
+	if _, err := store.pool.Exec(ctx, query, id); err != nil {
+		t.Logf("cleanup %s %v: %v", label, id, err)
+	}
+}
+
 // pgcleanup removes the fixture rows (grants, model, provider, squad, user).
 func pgcleanup(t *testing.T, store *PostgresStore, user *domain.User, provider *domain.LLMProvider, model *domain.AIModel) func() {
 	return func() {
@@ -688,26 +727,16 @@ func pgcleanup(t *testing.T, store *PostgresStore, user *domain.User, provider *
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if model != nil {
-			if _, err := store.pool.Exec(ctx, `DELETE FROM user_model_grants WHERE ai_model_id = $1`, model.ID); err != nil {
-				t.Logf("cleanup grants for model %s: %v", model.ID, err)
-			}
-			if _, err := store.pool.Exec(ctx, `DELETE FROM ai_models WHERE id = $1`, model.ID); err != nil {
-				t.Logf("cleanup model %s: %v", model.ID, err)
-			}
+			pgDelete(t, store, ctx, `DELETE FROM user_model_grants WHERE ai_model_id = $1`, model.ID, "grants for model")
+			pgDelete(t, store, ctx, `DELETE FROM ai_models WHERE id = $1`, model.ID, "model")
 		}
 		if provider != nil {
-			if _, err := store.pool.Exec(ctx, `DELETE FROM providers WHERE id = $1`, provider.ID); err != nil {
-				t.Logf("cleanup provider %s: %v", provider.ID, err)
-			}
+			pgDelete(t, store, ctx, `DELETE FROM providers WHERE id = $1`, provider.ID, "provider")
 		}
 		if user != nil {
 			// Squads reference the owner; drop them before the user.
-			if _, err := store.pool.Exec(ctx, `DELETE FROM squads WHERE owner_id = $1`, user.ID); err != nil {
-				t.Logf("cleanup squads for %s: %v", user.ID, err)
-			}
-			if _, err := store.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID); err != nil {
-				t.Logf("cleanup user %s: %v", user.ID, err)
-			}
+			pgDelete(t, store, ctx, `DELETE FROM squads WHERE owner_id = $1`, user.ID, "squads for")
+			pgDelete(t, store, ctx, `DELETE FROM users WHERE id = $1`, user.ID, "user")
 		}
 	}
 }

@@ -14,13 +14,13 @@ import (
 // delegationFixture creates a squad with two agents (sender + worker) and
 // returns credentials so tests can drive the delegate/handoff loop.
 type delegationFixture struct {
-	handler   http.Handler
-	store     *storage.MemoryStore
-	squadID   string
-	senderID  string
-	workerID  string
-	senderCred  string
-	workerCred  string
+	handler    http.Handler
+	store      *storage.MemoryStore
+	squadID    string
+	senderID   string
+	workerID   string
+	senderCred string
+	workerCred string
 }
 
 func newDelegationFixture(t *testing.T) *delegationFixture {
@@ -84,10 +84,10 @@ func (f *delegationFixture) complete(t *testing.T, task domain.Task, summary str
 	doAgentJSONNoBody(t, f.handler, f.workerID, f.workerCred, http.MethodPost,
 		"/api/v1/agents/me/tasks/"+task.ID+"/complete",
 		map[string]any{
-			"execution_id": task.ExecutionID,
+			"execution_id":  task.ExecutionID,
 			"fencing_token": task.FencingToken,
-			"status":       "done",
-			"summary":      summary,
+			"status":        "done",
+			"summary":       summary,
 		}, http.StatusOK)
 }
 

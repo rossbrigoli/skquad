@@ -280,7 +280,7 @@ describe("role gating", () => {
     expect(isPlatformAdmin("platform_admin")).toBe(true);
     expect(isPlatformAdmin("user")).toBe(false);
     expect(isPlatformAdmin("")).toBe(false);
-    expect(isPlatformAdmin(undefined)).toBe(false);
+    expect(isPlatformAdmin()).toBe(false);
     expect(isPlatformAdmin(null)).toBe(false);
   });
 });

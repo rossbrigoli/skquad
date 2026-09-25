@@ -42,7 +42,7 @@ describe("displayRole", () => {
   it("defaults empty/missing roles to member", () => {
     expect(displayRole("")).toBe("member");
     expect(displayRole(null)).toBe("member");
-    expect(displayRole(undefined)).toBe("member");
+    expect(displayRole()).toBe("member");
     expect(displayRole("   ")).toBe("member");
   });
 });

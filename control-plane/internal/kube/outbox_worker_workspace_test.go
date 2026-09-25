@@ -40,7 +40,7 @@ func TestProcessOutboxOnceDerivesWorkspaceSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	squad, err := store.CreateSquad(ctx, &domain.Squad{
-		Name:      "WS Squad", OwnerID: user.ID, Namespace: "squad-ws",
+		Name: "WS Squad", OwnerID: user.ID, Namespace: "squad-ws",
 	})
 	if err != nil {
 		t.Fatal(err)

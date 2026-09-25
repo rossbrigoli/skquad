@@ -98,21 +98,34 @@ func (s *Server) modelBoundAgents(ctx context.Context, modelID, ownerUserID stri
 		if agent.AIModelID != modelID && agent.FallbackAIModelID != modelID {
 			continue
 		}
-		if ownerUserID != "" {
-			squad, err := s.store.GetSquad(ctx, agent.SquadID)
-			if err != nil {
-				if errors.Is(err, storage.ErrNotFound) {
-					continue
-				}
-				return nil, err
-			}
-			if squad.OwnerID != ownerUserID {
-				continue
-			}
+		keep, err := s.passesModelOwnerFilter(ctx, agent, ownerUserID)
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			continue
 		}
 		out = append(out, agent)
 	}
 	return out, nil
+}
+
+// passesModelOwnerFilter reports whether the agent passes the ownerUserID
+// authorisation boundary (all agents pass when ownerUserID is empty).
+// Extracted from modelBoundAgents for cognitive complexity
+// (S-126 / S3776).
+func (s *Server) passesModelOwnerFilter(ctx context.Context, agent *domain.Agent, ownerUserID string) (bool, error) {
+	if ownerUserID == "" {
+		return true, nil
+	}
+	squad, err := s.store.GetSquad(ctx, agent.SquadID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return squad.OwnerID == ownerUserID, nil
 }
 
 // cascadeUsage builds the S-103-compatible usage list for the 409
