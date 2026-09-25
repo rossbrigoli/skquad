@@ -93,6 +93,55 @@ func (c *liteLLMGatewayClient) ProvisionAgentKey(ctx context.Context, req Gatewa
 	return out.Key, out.Token, nil
 }
 
+// FindKeyByAlias returns the token (sha256 hash) of the gateway virtual key
+// carrying the given alias, or found=false when no such key exists.
+//
+// This exists so provisioning can be made idempotent against LiteLLM's
+// unique-key-alias constraint (S-129): when the control plane's identity
+// row has lost the token (status "none") but the gateway still holds the
+// agent's key, the sync path adopts the existing key instead of failing
+// /key/generate with "alias already exists".
+func (c *liteLLMGatewayClient) FindKeyByAlias(ctx context.Context, alias string) (string, bool, error) {
+	if strings.TrimSpace(alias) == "" {
+		return "", false, nil
+	}
+	q := url.Values{}
+	q.Set("key_alias", alias)
+	q.Set("return_full_object", "true")
+	// #nosec G704 -- c.baseURL is validated admin-supplied config, not user input
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/key/list?"+q.Encode(), nil)
+	if err != nil {
+		return "", false, fmt.Errorf("litellm: build key list request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
+
+	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
+	// path; no user-controlled component reaches this request.
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return "", false, fmt.Errorf("litellm: list keys: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", false, fmt.Errorf("litellm: list keys: %s: %s", resp.Status, gatewayResponseSnippet(resp.Body))
+	}
+	var out struct {
+		Keys []struct {
+			Token    string `json:"token"`
+			KeyAlias string `json:"key_alias"`
+		} `json:"keys"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", false, fmt.Errorf("litellm: decode key list: %w", err)
+	}
+	for _, k := range out.Keys {
+		if k.KeyAlias == alias && strings.TrimSpace(k.Token) != "" {
+			return k.Token, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 // UpdateAgentKey rotates the model allow-list and fallback/router
 // configuration of an existing virtual key, identified by its token (the
 // sha256 hash LiteLLM returned at generation).
