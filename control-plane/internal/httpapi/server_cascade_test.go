@@ -58,7 +58,7 @@ func newCascadeFixture(t *testing.T) *cascadeFixture {
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "Cascade Squad"}, http.StatusCreated, &squad)
 	mkAgent := func(name string) *domain.Agent {
 		var agent domain.Agent
-		doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{"name": name}, http.StatusCreated, &agent)
+		doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{"name": name}, http.StatusCreated, &agent)
 		return &agent
 	}
 	fb := mkAgent("Fallback Agent")
@@ -68,12 +68,12 @@ func newCascadeFixture(t *testing.T) *cascadeFixture {
 	provider := createTestProvider(t, handler, "cascade-prov")
 	modelOne := createTestAIModel(t, handler, provider.ID, modelOneName)
 	modelTwo := createTestAIModel(t, handler, provider.ID, modelTwoName)
-	doJSON(t, handler, http.MethodPut, "/api/v1/users/"+squad.OwnerID+"/models",
+	doJSON(t, handler, http.MethodPut, pathUsersPrefix+squad.OwnerID+pathModels,
 		map[string]any{"model_ids": []string{modelOne.ID, modelTwo.ID}}, http.StatusOK, &[]domain.AIModel{})
 
 	patch := func(agent *domain.Agent, primary, fallback string) {
 		var updated domain.Agent
-		doJSON(t, handler, http.MethodPatch, "/api/v1/agents/"+agent.ID, map[string]any{
+		doJSON(t, handler, http.MethodPatch, pathAgentsPrefix+agent.ID, map[string]any{
 			"ai_model_id":          primary,
 			"fallback_ai_model_id": fallback,
 		}, http.StatusOK, &updated)
@@ -86,7 +86,7 @@ func newCascadeFixture(t *testing.T) *cascadeFixture {
 
 	identity := func(agent *domain.Agent) {
 		var id domain.AgentIdentity
-		doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+agent.ID+"/identity", nil, http.StatusCreated, &id)
+		doJSON(t, handler, http.MethodPost, pathAgentsPrefix+agent.ID+pathIdentity, nil, http.StatusCreated, &id)
 		require.Equal(t, domain.GatewayKeyActive, id.GatewayKeyStatus)
 	}
 	identity(fb)
@@ -138,7 +138,7 @@ func TestRevokeBoundModelReturns409WithSlots(t *testing.T) {
 			Slot      string `json:"slot"`
 		} `json:"usage"`
 	}
-	doJSON(t, f.handler, http.MethodDelete, "/api/v1/users/"+f.ownerID+"/models/"+f.modelTwo.ID, nil, http.StatusConflict, &conflict)
+	doJSON(t, f.handler, http.MethodDelete, pathUsersPrefix+f.ownerID+pathModelsSlash+f.modelTwo.ID, nil, http.StatusConflict, &conflict)
 	require.Equal(t, "in_use", conflict.Error)
 	require.NotEmpty(t, conflict.Message)
 	require.Len(t, conflict.Usage, 2)
@@ -166,7 +166,7 @@ func TestForceRevokeClearsSlotsConvergesKeysAndAudits(t *testing.T) {
 	f := newCascadeFixture(t)
 
 	var report cascadeReport
-	doJSON(t, f.handler, http.MethodDelete, "/api/v1/users/"+f.ownerID+"/models/"+f.modelTwo.ID+"?force=true", nil, http.StatusOK, &report)
+	doJSON(t, f.handler, http.MethodDelete, pathUsersPrefix+f.ownerID+pathModelsSlash+f.modelTwo.ID+forceQuery, nil, http.StatusOK, &report)
 	require.Equal(t, "revoke", report.Operation)
 	require.Equal(t, f.modelTwo.ID, report.ModelID)
 	require.Equal(t, 2, report.AffectedAgents)
@@ -201,7 +201,7 @@ func TestForceRevokeClearsSlotsConvergesKeysAndAudits(t *testing.T) {
 	// Audit: the revoke itself, per-key convergence, and the cascade summary.
 	audit := f.auditActions(t)
 	require.Contains(t, audit, "aimodel.grant.revoke")
-	require.Contains(t, audit, "aimodel.cascade.key_converged")
+	require.Contains(t, audit, cascadeKeyConvergedAction)
 	require.Contains(t, audit, "aimodel.cascade.revoke")
 
 	// Owner notified (inbox).
@@ -216,7 +216,7 @@ func TestRevokeFallbackOnlyKeyShrinksAgentKeepsPrimary(t *testing.T) {
 	require.True(t, f.gateway.canCall(token, modelOneName))
 	require.True(t, f.gateway.canCall(token, modelTwoName))
 
-	doJSON(t, f.handler, http.MethodDelete, "/api/v1/users/"+f.ownerID+"/models/"+f.modelTwo.ID+"?force=true", nil, http.StatusOK, &cascadeReport{})
+	doJSON(t, f.handler, http.MethodDelete, pathUsersPrefix+f.ownerID+pathModelsSlash+f.modelTwo.ID+forceQuery, nil, http.StatusOK, &cascadeReport{})
 
 	// The key shrank: fallback model no longer callable, primary still is.
 	require.False(t, f.gateway.canCall(token, modelTwoName), "revoked fallback must leave the key")
@@ -244,7 +244,7 @@ func TestRevokePrimaryNoFallbackKeyRevoked(t *testing.T) {
 	token := f.token(t, f.agentSolo.ID)
 	require.True(t, f.gateway.canCall(token, modelTwoName))
 
-	doJSON(t, f.handler, http.MethodDelete, "/api/v1/users/"+f.ownerID+"/models/"+f.modelTwo.ID+"?force=true", nil, http.StatusOK, &cascadeReport{})
+	doJSON(t, f.handler, http.MethodDelete, pathUsersPrefix+f.ownerID+pathModelsSlash+f.modelTwo.ID+forceQuery, nil, http.StatusOK, &cascadeReport{})
 
 	require.False(t, f.gateway.canCall(token, modelTwoName), "agent left without a primary must not keep a live key")
 	identity, err := f.store.GetAgentIdentity(context.Background(), f.agentSolo.ID)
@@ -259,7 +259,7 @@ func TestRevokeUngrantedReturns404(t *testing.T) {
 	// from the model-itself-missing 404).
 	unheld := createTestAIModel(t, f.handler, f.modelOne.ProviderID, "cascade/unheld")
 	var body map[string]map[string]string
-	doJSONAuth(t, f.handler, "Bearer admin", http.MethodDelete, "/api/v1/users/"+f.ownerID+"/models/"+unheld.ID, nil, http.StatusNotFound, &body)
+	doJSONAuth(t, f.handler, authAdmin, http.MethodDelete, pathUsersPrefix+f.ownerID+pathModelsSlash+unheld.ID, nil, http.StatusNotFound, &body)
 	require.Equal(t, "grant_not_found", body["error"]["code"])
 }
 
@@ -273,7 +273,7 @@ func TestDeprecateConvergesAllBoundAgentsAndReportsCounts(t *testing.T) {
 	soloToken := f.token(t, f.agentSolo.ID)
 
 	var report cascadeReport
-	doJSON(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelTwo.ID+"/deprecate", nil, http.StatusOK, &report)
+	doJSON(t, f.handler, http.MethodPost, pathAIModelItem+f.modelTwo.ID+pathDeprecate, nil, http.StatusOK, &report)
 	require.Equal(t, "deprecate", report.Operation)
 	require.Equal(t, 2, report.AffectedAgents, "both agents bound to modelTwo")
 	require.Equal(t, []string{f.ownerID}, report.AffectedUsers)
@@ -295,7 +295,7 @@ func TestDeprecateConvergesAllBoundAgentsAndReportsCounts(t *testing.T) {
 
 	audit := f.auditActions(t)
 	require.Contains(t, audit, "aimodel.deprecate")
-	require.Contains(t, audit, "aimodel.cascade.key_converged")
+	require.Contains(t, audit, cascadeKeyConvergedAction)
 	require.Contains(t, audit, "aimodel.cascade.deprecate")
 }
 
@@ -303,7 +303,7 @@ func TestDeprecateUnboundModelReportsZeroCounts(t *testing.T) {
 	f := newCascadeFixture(t)
 	spare := createTestAIModel(t, f.handler, f.modelOne.ProviderID, "cascade/spare")
 	var report cascadeReport
-	doJSON(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+spare.ID+"/deprecate", nil, http.StatusOK, &report)
+	doJSON(t, f.handler, http.MethodPost, pathAIModelItem+spare.ID+pathDeprecate, nil, http.StatusOK, &report)
 	require.Equal(t, 0, report.AffectedAgents)
 	require.Empty(t, report.AffectedUsers)
 	require.Empty(t, report.Failures)
@@ -320,7 +320,7 @@ func TestForceDeleteConvergesKeysNotJustUnbinds(t *testing.T) {
 	soloToken := f.token(t, f.agentSolo.ID)
 
 	// Delete modelOne: agentFB (primary) and agentOther (primary) bound.
-	doJSONNoBody(t, f.handler, http.MethodDelete, "/api/v1/ai-models/"+f.modelOne.ID+"?force=true", nil, http.StatusNoContent)
+	doJSONNoBody(t, f.handler, http.MethodDelete, pathAIModelItem+f.modelOne.ID+forceQuery, nil, http.StatusNoContent)
 
 	// WP2 only unbound; WP4 must ALSO converge the keys.
 	require.False(t, f.gateway.canCall(fbToken, modelOneName), "force-delete must converge the key, not just unbind")
@@ -332,7 +332,7 @@ func TestForceDeleteConvergesKeysNotJustUnbinds(t *testing.T) {
 
 	audit := f.auditActions(t)
 	require.Contains(t, audit, "aimodel.delete")
-	require.Contains(t, audit, "aimodel.cascade.key_converged")
+	require.Contains(t, audit, cascadeKeyConvergedAction)
 }
 
 func TestForceDeleteBlockedByConvergenceFailure(t *testing.T) {
@@ -342,7 +342,7 @@ func TestForceDeleteBlockedByConvergenceFailure(t *testing.T) {
 	f.gateway.mu.Unlock()
 
 	var body map[string]any
-	doJSON(t, f.handler, http.MethodDelete, "/api/v1/ai-models/"+f.modelOne.ID+"?force=true", nil, http.StatusBadGateway, &body)
+	doJSON(t, f.handler, http.MethodDelete, pathAIModelItem+f.modelOne.ID+forceQuery, nil, http.StatusBadGateway, &body)
 	require.Equal(t, "convergence_failed", body["error"])
 	require.NotEmpty(t, body["failures"])
 
@@ -358,7 +358,7 @@ func TestForceDeleteBlockedByConvergenceFailure(t *testing.T) {
 func TestSetUserModelsRemovalGuardedAndForceCascades(t *testing.T) {
 	f := newCascadeFixture(t)
 	soloToken := f.token(t, f.agentSolo.ID)
-	path := "/api/v1/users/" + f.ownerID + "/models"
+	path := pathUsersPrefix + f.ownerID + pathModels
 
 	// Removing modelTwo from the set while agents bind it → 409 in_use.
 	var conflict struct {
@@ -371,7 +371,7 @@ func TestSetUserModelsRemovalGuardedAndForceCascades(t *testing.T) {
 
 	// With force: grant set applied AND keys converged.
 	var granted []domain.AIModel
-	doJSON(t, f.handler, http.MethodPut, path+"?force=true", map[string]any{"model_ids": []string{f.modelOne.ID}}, http.StatusOK, &granted)
+	doJSON(t, f.handler, http.MethodPut, path+forceQuery, map[string]any{"model_ids": []string{f.modelOne.ID}}, http.StatusOK, &granted)
 	require.Equal(t, []string{f.modelOne.ID}, modelIDs(granted))
 	require.False(t, f.gateway.canCall(soloToken, modelTwoName), "forced grant removal must converge the live key")
 	require.True(t, f.gateway.canCall(f.token(t, f.agentFB.ID), modelOneName), "unrelated bindings untouched")
@@ -388,7 +388,7 @@ func TestCascadePartialFailureSurfacedOthersProcessed(t *testing.T) {
 	f.gateway.mu.Unlock()
 
 	var report cascadeReport
-	doJSON(t, f.handler, http.MethodDelete, "/api/v1/users/"+f.ownerID+"/models/"+f.modelTwo.ID+"?force=true", nil, http.StatusOK, &report)
+	doJSON(t, f.handler, http.MethodDelete, pathUsersPrefix+f.ownerID+pathModelsSlash+f.modelTwo.ID+forceQuery, nil, http.StatusOK, &report)
 
 	// The failure is surfaced, not swallowed.
 	require.Len(t, report.Failures, 1)
@@ -446,13 +446,13 @@ func TestNoLiveKeyCanCallRevokedModel(t *testing.T) {
 	require.True(t, f.gateway.canCall(tokens[f.agentSolo.ID], modelTwoName))
 
 	// 1. Forced grant revoke.
-	doJSON(t, f.handler, http.MethodDelete, "/api/v1/users/"+f.ownerID+"/models/"+f.modelTwo.ID+"?force=true", nil, http.StatusOK, &cascadeReport{})
+	doJSON(t, f.handler, http.MethodDelete, pathUsersPrefix+f.ownerID+pathModelsSlash+f.modelTwo.ID+forceQuery, nil, http.StatusOK, &cascadeReport{})
 	for _, id := range agents {
 		require.False(t, f.gateway.canCall(tokens[id], modelTwoName), "live key of agent %s can still call revoked model", id)
 	}
 
 	// 2. Deprecation of the remaining model.
-	doJSON(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelOne.ID+"/deprecate", nil, http.StatusOK, &cascadeReport{})
+	doJSON(t, f.handler, http.MethodPost, pathAIModelItem+f.modelOne.ID+pathDeprecate, nil, http.StatusOK, &cascadeReport{})
 	for _, id := range agents {
 		require.False(t, f.gateway.canCall(tokens[id], modelOneName), "live key of agent %s can still call deprecated model", id)
 	}

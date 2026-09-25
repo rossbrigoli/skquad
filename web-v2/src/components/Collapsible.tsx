@@ -18,11 +18,11 @@ export function Collapsible({
   children,
   initialOpen,
 }: {
-  id: string;
-  title: ReactNode;
-  children: ReactNode;
+  readonly id: string;
+  readonly title: ReactNode;
+  readonly children: ReactNode;
   /** Override the collapsed default (rare; session state still wins once set). */
-  initialOpen?: boolean;
+  readonly initialOpen?: boolean;
 }) {
   const reactId = useId();
   const contentId = `collapsible-${id}-${reactId}`;

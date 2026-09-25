@@ -379,6 +379,13 @@ jobs:
   security-sonar:
     name: Security — SonarQube
     if: vars.SECURITY_RUNNER_READY == 'true'
+    needs:
+      - control-plane
+      - operator
+      - agent-runtime
+      - llm-gateway
+      - web
+      - web-v2
     runs-on: [self-hosted, skquad]
     timeout-minutes: 45
     env:
@@ -405,6 +412,30 @@ jobs:
           curl -sSLo /tmp/sonar.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-8.1.0.6389-linux-x64.zip
           mkdir -p .sonar-scanner
           unzip -q /tmp/sonar.zip -d .sonar-scanner
+      - uses: actions/download-artifact@v7
+        with:
+          name: coverage-control-plane
+          path: control-plane
+      - uses: actions/download-artifact@v7
+        with:
+          name: coverage-operator
+          path: operator
+      - uses: actions/download-artifact@v7
+        with:
+          name: coverage-agent-runtime
+          path: agent-runtime
+      - uses: actions/download-artifact@v7
+        with:
+          name: coverage-llm-gateway
+          path: llm-gateway
+      - uses: actions/download-artifact@v7
+        with:
+          name: coverage-web
+          path: web/coverage
+      - uses: actions/download-artifact@v7
+        with:
+          name: coverage-web-v2
+          path: web-v2/coverage
       - name: Run SonarQube analysis
         env:
           SONAR_SCANNER_OPTS: "-Xmx1g"

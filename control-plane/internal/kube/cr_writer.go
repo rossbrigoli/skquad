@@ -112,13 +112,13 @@ func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identit
 		// Unbound agents get an empty model and surface at the runtime as
 		// "SKQUAD_DEFAULT_MODEL is required" instead of silently serving a
 		// stale free-text value. The legacy defaultProviderId field is gone.
-		"defaultModel":          strings.TrimSpace(agent.AIModelName),
-		"aiModelId":             agent.AIModelID,
-		"fallbackAiModelId":     agent.FallbackAIModelID,
-		"image":                 w.agentImage,
-		"permissions":           rawJSON(agent.Permissions, []any{}),
-		"idleTimeout":           fmt.Sprintf("%ds", agent.IdleTimeoutSec),
-		"desiredActive":         agent.Status == domain.AgentBusy,
+		"defaultModel":      strings.TrimSpace(agent.AIModelName),
+		"aiModelId":         agent.AIModelID,
+		"fallbackAiModelId": agent.FallbackAIModelID,
+		"image":             w.agentImage,
+		"permissions":       rawJSON(agent.Permissions, []any{}),
+		"idleTimeout":       fmt.Sprintf("%ds", agent.IdleTimeoutSec),
+		"desiredActive":     agent.Status == domain.AgentBusy,
 	}
 	if w.controlPlaneURL != "" {
 		spec["controlPlaneUrl"] = w.controlPlaneURL

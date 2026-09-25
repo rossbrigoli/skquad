@@ -197,7 +197,7 @@ describe("buildBindingPayload", () => {
       ai_model_id: "m-primary",
       fallback_ai_model_id: "",
     });
-    expect(buildBindingPayload("m-primary", undefined)).toEqual({
+    expect(buildBindingPayload("m-primary")).toEqual({
       ai_model_id: "m-primary",
       fallback_ai_model_id: "",
     });

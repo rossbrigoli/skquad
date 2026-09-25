@@ -21,13 +21,13 @@ export function agentHref(squadId: string, agentId: string): string {
 // squad (e.g. /squads/abc/board → "abc"), or "" for /squads itself and
 // every non-squad route.
 export function squadIdFromPath(pathname: string): string {
-  const match = /^\/squads\/([^/]+)/.exec(pathname || "");
+  const match = /^\/squads\/([^/]+)/.exec(pathname ?? "");
   return match ? match[1] : "";
 }
 
 // agentsSectionActive is true on /squads/<id>/agents and agent detail pages.
 export function agentsSectionActive(pathname: string): boolean {
-  return /^\/squads\/[^/]+\/agents(\/|$)/.test(pathname || "");
+  return /^\/squads\/[^/]+\/agents(\/|$)/.test(pathname ?? "");
 }
 
 export function buildSquadSubitems(squads: Squad[] | null | undefined): MenuLink[] {
@@ -61,7 +61,7 @@ export function buildGlobalAgentGroups(dashboard: DashboardPayload | null | unde
 
 // isSubitemActive: selected-state highlighting for a sub-item link.
 export function isSubitemActive(pathname: string, href: string): boolean {
-  const clean = pathname || "";
+  const clean = pathname ?? "";
   return clean === href || clean.startsWith(`${href}/`);
 }
 

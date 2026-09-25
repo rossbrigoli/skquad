@@ -13,13 +13,13 @@ export function UserMenu({
   user,
   onSignOut,
 }: {
-  user: ApiUser | null;
-  onSignOut: () => void;
+  readonly user: ApiUser | null;
+  readonly onSignOut: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const popoverRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -56,7 +56,7 @@ export function UserMenu({
   return (
     <div className="user-menu" ref={rootRef}>
       {open ? (
-        <div className="user-popover" ref={popoverRef} role="dialog" aria-label="User profile" tabIndex={-1}>
+        <dialog open className="user-popover" ref={popoverRef} aria-label="User profile" tabIndex={-1}>
           <div className="user-popover-header">
             {/* Avatar placeholder — initials until real avatars exist. */}
             <span className="avatar-placeholder" aria-hidden="true">
@@ -73,7 +73,7 @@ export function UserMenu({
           <button type="button" className="btn user-signout" onClick={onSignOut}>
             Sign out
           </button>
-        </div>
+        </dialog>
       ) : null}
       <button
         ref={buttonRef}

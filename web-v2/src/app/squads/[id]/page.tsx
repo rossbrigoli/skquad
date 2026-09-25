@@ -22,7 +22,7 @@ import type { Agent, BoardPayload, MeteringSummary, Squad, AuditEntry } from "..
 
 export default function SquadCockpitPage() {
   const params = useParams<{ id: string }>();
-  const squadId = String(params?.id || "");
+  const squadId = String(params?.id ?? "");
   const router = useRouter();
   const { token } = useAuth();
   const squads = useApi<Squad[]>("/squads");
@@ -40,9 +40,9 @@ export default function SquadCockpitPage() {
   const stalled = tasks.filter((task) => leaseState(task) === "stalled");
   const blocked = tasks.filter((task) => task.status === "blocked");
   const done = tasks.filter((task) => task.status === "done");
-  const busyAgents = agentItems.filter((agent) => (agent.status || "") === "busy");
+  const busyAgents = agentItems.filter((agent) => (agent.status ?? "") === "busy");
   const errorAgents = agentItems.filter((agent) => {
-    const s = (agent.status || "").toLowerCase();
+    const s = (agent.status ?? "").toLowerCase();
     return s === "error" || s === "failed";
   });
 
@@ -220,8 +220,8 @@ function SquadEditModal({
   onSaved: () => void;
   token: string;
 }) {
-  const [name, setName] = useState(squad.name || "");
-  const [mission, setMission] = useState(squad.mission || "");
+  const [name, setName] = useState(squad.name ?? "");
+  const [mission, setMission] = useState(squad.mission ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 

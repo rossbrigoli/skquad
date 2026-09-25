@@ -28,9 +28,9 @@ export function AgentFormModal({
   onSubmit: (values: AgentFormValues) => Promise<void>;
   onClose: () => void;
 }) {
-  const [name, setName] = useState(initial?.name || "");
-  const [role, setRole] = useState(initial?.role || "");
-  const [systemPrompt, setSystemPrompt] = useState(initial?.system_prompt || "");
+  const [name, setName] = useState(initial?.name ?? "");
+  const [role, setRole] = useState(initial?.role ?? "");
+  const [systemPrompt, setSystemPrompt] = useState(initial?.system_prompt ?? "");
   const [idleTimeout, setIdleTimeout] = useState(String(initial?.idle_timeout_sec ?? 300));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");

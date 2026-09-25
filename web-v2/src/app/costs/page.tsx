@@ -17,6 +17,20 @@ type SquadCost = {
 
 const POLL_MS = 60_000;
 
+// fetchCostRow loads one squad's total + per-agent metering. Extracted
+// from the load effect to keep nesting within limits (S-126 / S2004).
+async function fetchCostRow(squad: Squad, token: string) {
+  const total = await apiGet<MeteringSummary>(`/squads/${squad.id}/metering`, token).catch(() => null);
+  const agents = (await apiGet<Agent[]>(`/squads/${squad.id}/agents`, token).catch(() => [] as Agent[])) ?? [];
+  const agentCosts = await Promise.all(
+    agents.map(async (agent) => ({
+      agent,
+      cost: await apiGet<MeteringSummary>(`/agents/${agent.id}/metering`, token).catch(() => null),
+    })),
+  );
+  return { squad, total, agents: agentCosts };
+}
+
 export default function CostsPage() {
   const { token, authed } = useAuth();
   const [rows, setRows] = useState<SquadCost[]>([]);
@@ -36,17 +50,7 @@ export default function CostsPage() {
         // guard so .map never sees null (S-121 crash class).
         const squads = (await apiGet<Squad[]>("/squads", token)) ?? [];
         const perSquad = await Promise.all(
-          squads.map(async (squad) => {
-            const total = await apiGet<MeteringSummary>(`/squads/${squad.id}/metering`, token).catch(() => null);
-            const agents = (await apiGet<Agent[]>(`/squads/${squad.id}/agents`, token).catch(() => [] as Agent[])) ?? [];
-            const agentCosts = await Promise.all(
-              agents.map(async (agent) => ({
-                agent,
-                cost: await apiGet<MeteringSummary>(`/agents/${agent.id}/metering`, token).catch(() => null),
-              })),
-            );
-            return { squad, total, agents: agentCosts };
-          }),
+          squads.map((squad) => fetchCostRow(squad, token)),
         );
         if (active) {
           setRows(perSquad);

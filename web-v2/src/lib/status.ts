@@ -55,7 +55,7 @@ export function taskStatus(task: Task): StatusKey {
 }
 
 export function agentStatus(agent: Agent): StatusKey {
-  const status = (agent.status || "").toLowerCase();
+  const status = (agent.status ?? "").toLowerCase();
   if (status === "error" || status === "failed") return "error";
   if (status === "paused") return "paused";
   if (status === "busy") return "running";

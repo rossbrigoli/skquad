@@ -177,17 +177,7 @@ func applyOutboxEvent(ctx context.Context, store storage.KubernetesOutboxStore, 
 		if payload.Agent == nil {
 			return fmt.Errorf("outbox event %s missing agent payload", event.ID)
 		}
-		if reader, ok := store.(workspaceGrantReader); ok {
-			secrets, err := deriveWorkspaceSecrets(ctx, reader, payload.Agent)
-			if err != nil {
-				return err
-			}
-			payload.Agent.WorkspaceSecrets = secrets
-		}
-		if resolver, ok := store.(aiModelResolver); ok {
-			deriveBindingModelNames(ctx, resolver, payload.Agent)
-		}
-		return writer.UpsertAgent(ctx, payload.Agent, payload.Identity)
+		return upsertAgentFromOutbox(ctx, store, writer, &payload)
 	case domain.KubernetesOpDeleteAgent:
 		if payload.Agent == nil {
 			return fmt.Errorf("outbox event %s missing agent payload", event.ID)
@@ -196,6 +186,23 @@ func applyOutboxEvent(ctx context.Context, store storage.KubernetesOutboxStore, 
 	default:
 		return fmt.Errorf("unknown kubernetes outbox operation %q", event.Operation)
 	}
+}
+
+// upsertAgentFromOutbox enriches the agent payload with workspace grant
+// secrets and bound model names before writing the CR. Extracted from
+// applyOutboxEvent for cognitive complexity (S-126 / S3776).
+func upsertAgentFromOutbox(ctx context.Context, store storage.KubernetesOutboxStore, writer outboxWriter, payload *domain.KubernetesOutboxPayload) error {
+	if reader, ok := store.(workspaceGrantReader); ok {
+		secrets, err := deriveWorkspaceSecrets(ctx, reader, payload.Agent)
+		if err != nil {
+			return err
+		}
+		payload.Agent.WorkspaceSecrets = secrets
+	}
+	if resolver, ok := store.(aiModelResolver); ok {
+		deriveBindingModelNames(ctx, resolver, payload.Agent)
+	}
+	return writer.UpsertAgent(ctx, payload.Agent, payload.Identity)
 }
 
 func retryDelay(attempts int) time.Duration {

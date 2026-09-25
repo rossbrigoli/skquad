@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { apiGet, setApiBaseOverride, type ApiUser } from "./api";
 
 // Token (dev) mode: bearer token pasted/kept in localStorage.
@@ -76,7 +76,7 @@ export function TokenProvider({ children }: { children: ReactNode }) {
 
       // Token (dev) mode — read localStorage post-hydration to avoid SSR mismatch.
       if (!cancelled) {
-        setTokenState(window.localStorage.getItem(TOKEN_KEY) || "");
+        setTokenState(window.localStorage.getItem(TOKEN_KEY) ?? "");
       }
     })();
     return () => {
@@ -111,7 +111,7 @@ export function TokenProvider({ children }: { children: ReactNode }) {
         if (!cancelled) setLoading(false);
       }
     };
-    void run();
+    run().catch(() => undefined);
     return () => {
       cancelled = true;
     };
@@ -136,11 +136,14 @@ export function TokenProvider({ children }: { children: ReactNode }) {
 
   const authed = mode === "oidc" ? !!user : !!token;
 
-  return (
-    <AuthContext.Provider value={{ token, user, loading, error, mode, authed, setToken, logout }}>
-      {children}
-    </AuthContext.Provider>
+  // Memoize the context value so consumers do not re-render on every
+  // provider render (S-126 / S6481).
+  const value = useMemo<AuthValue>(
+    () => ({ token, user, loading, error, mode, authed, setToken, logout }),
+    [token, user, loading, error, mode, authed, setToken, logout],
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthValue {

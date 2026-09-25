@@ -5,7 +5,7 @@ function memStore(initial: Record<string, string> = {}) {
   const map = new Map(Object.entries(initial));
   return {
     getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => void map.set(k, v),
+    setItem: (k: string, v: string) => { map.set(k, v); },
     _map: map,
   };
 }

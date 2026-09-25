@@ -9,8 +9,8 @@ export async function GET(request: NextRequest) {
   }
   return NextResponse.json({
     authenticated: true,
-    name: session.name || "",
-    email: session.email || "",
+    name: session.name ?? "",
+    email: session.email ?? "",
     expiry: session.expiry,
     can_refresh: Boolean(session.refresh_token),
   });

@@ -88,7 +88,7 @@ export async function POST(request: Request) {
     id_token: body.token,
     expiry: Math.floor(expiresAt / 1000),
     name: body.user?.name || "break-glass",
-    email: body.user?.email || "",
+    email: body.user?.email ?? "",
   };
 
   const res = NextResponse.json({ ok: true, user: body.user ?? null });

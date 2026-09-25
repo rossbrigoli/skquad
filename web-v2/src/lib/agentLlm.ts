@@ -34,7 +34,7 @@ export function selectableModels(models: AIModel[]): AIModel[] {
 // list minus the currently-selected primary (a model may not be its own
 // fallback — the backend rejects that with 400 fallback_same_as_primary).
 export function fallbackChoices(models: AIModel[], primaryId: string): AIModel[] {
-  return selectableModels(models).filter((m) => m.id !== (primaryId || ""));
+  return selectableModels(models).filter((m) => m.id !== (primaryId ?? ""));
 }
 
 export function findModelById(models: AIModel[], id: string | undefined | null): AIModel | undefined {
@@ -53,7 +53,7 @@ export function withCurrentOption(
   allModels: AIModel[],
   currentId: string | undefined | null,
 ): { models: AIModel[]; staleCurrent: boolean } {
-  const id = currentId || "";
+  const id = currentId ?? "";
   if (id === "") return { models: options, staleCurrent: false };
   if (options.some((m) => m.id === id)) return { models: options, staleCurrent: false };
   const current = findModelById(allModels, id);
@@ -152,11 +152,11 @@ export function buildBindingPayload(
   primaryId: string,
   fallbackId?: string | null,
 ): AgentBindingPatch {
-  const primary = (primaryId || "").trim();
+  const primary = (primaryId ?? "").trim();
   if (primary === "") {
     throw new Error("ai_model_id is required");
   }
-  const fallback = (fallbackId || "").trim();
+  const fallback = (fallbackId ?? "").trim();
   if (fallback !== "" && fallback === primary) {
     throw new Error("fallback_ai_model_id must differ from ai_model_id");
   }

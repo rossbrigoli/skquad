@@ -7,7 +7,7 @@ export function formatCost(summary: MeteringSummary | null): string {
   if (!summary) {
     return "-";
   }
-  return formatMoney(summary.cost ?? 0, summary.currency || "USD");
+  return formatMoney(summary.cost ?? 0, normalizedCurrency(summary.currency));
 }
 
 // formatMoney renders a currency amount. Four decimals cover ordinary spend,
@@ -25,11 +25,21 @@ export function formatMoney(amount: number, currency = "USD"): string {
   return `${currency} ${trimZeros(amount.toPrecision(2))}`;
 }
 
+function normalizedCurrency(currency?: string): string {
+  const trimmed = currency?.trim() ?? "";
+  return trimmed === "" ? "USD" : trimmed;
+}
+
 function trimZeros(value: string): string {
   if (!value.includes(".")) {
     return value;
   }
-  return value.replace(/0+$/, "").replace(/\.$/, ".0");
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "0") {
+    end -= 1;
+  }
+  const trimmed = value.slice(0, end);
+  return trimmed.endsWith(".") ? `${trimmed}0` : trimmed;
 }
 
 export function formatTokens(summary: MeteringSummary | null): string {

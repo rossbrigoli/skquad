@@ -43,13 +43,7 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
       try {
         const squads = (await apiGet<Squad[]>("/squads", token)) ?? [];
         const perSquad = await Promise.all(
-          squads.map(async (squad) => {
-            const [board, agents] = await Promise.all([
-              apiGet<BoardPayload>(`/squads/${squad.id}/board`, token).catch(() => null),
-              apiGet<Agent[]>(`/squads/${squad.id}/agents`, token).catch(() => [] as Agent[]).then((a) => a ?? []),
-            ]);
-            return { squadId: squad.id, tasks: board?.tasks || [], agents: agents || [] };
-          }),
+          squads.map((squad) => fetchAttentionScope(squad, token)),
         );
         const inbox = await apiGet<InboxMessage[]>("/inbox?unread=true", token);
         if (!active || cancelledRef.current) {
@@ -113,6 +107,17 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
   );
 
   return <AttentionContext.Provider value={value}>{children}</AttentionContext.Provider>;
+}
+
+// fetchAttentionScope loads one squad's board tasks and agents for the
+// attention engine. Extracted from the load effect to keep nesting within
+// limits (S-126 / S2004).
+async function fetchAttentionScope(squad: Squad, token: string) {
+  const [board, agents] = await Promise.all([
+    apiGet<BoardPayload>(`/squads/${squad.id}/board`, token).catch(() => null),
+    apiGet<Agent[]>(`/squads/${squad.id}/agents`, token).catch(() => [] as Agent[]).then((a) => a ?? []),
+  ]);
+  return { squadId: squad.id, tasks: board?.tasks ?? [], agents: agents ?? [] };
 }
 
 export function useAttention(): AttentionValue {

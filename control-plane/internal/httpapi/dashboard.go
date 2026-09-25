@@ -112,23 +112,6 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ownerNames := map[string]string{}
-	ownerName := func(ownerID string) string {
-		if ownerID == "" {
-			return ""
-		}
-		if name, ok := ownerNames[ownerID]; ok {
-			return name
-		}
-		name := ""
-		if owner, err := s.store.GetUser(r.Context(), ownerID); err == nil && owner != nil {
-			name = owner.Name
-			if name == "" {
-				name = owner.Email
-			}
-		}
-		ownerNames[ownerID] = name
-		return name
-	}
 
 	payload := DashboardPayload{Scope: "personal"}
 	if isAdmin {
@@ -137,48 +120,10 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 	payload.Squads = make([]DashboardSquad, 0, len(squads))
 
 	for _, squad := range squads {
-		entry := DashboardSquad{
-			ID:         squad.ID,
-			Name:       squad.Name,
-			Status:     string(squad.Status),
-			OwnerID:    squad.OwnerID,
-			OwnerName:  ownerName(squad.OwnerID),
-			TaskCounts: map[string]int{},
-			Agents:     []DashboardAgent{},
-		}
-
-		if board, err := s.store.GetBoard(r.Context(), squad.ID); err == nil && board != nil {
-			tasks, err := s.store.ListTasks(r.Context(), board.ID, "")
-			if err != nil {
-				writeStorageError(w, err)
-				return
-			}
-			for _, t := range tasks {
-				entry.TaskCounts[string(t.Status)]++
-			}
-		}
-
-		if usage, err := s.store.SumMetering(r.Context(), squad.ID, ""); err == nil && usage != nil {
-			entry.Cost = costFromMetering(usage)
-		}
-
-		agents, err := s.store.ListAgents(r.Context(), squad.ID)
+		entry, err := s.dashboardSquadEntry(r.Context(), squad, ownerNames)
 		if err != nil {
 			writeStorageError(w, err)
 			return
-		}
-		for _, agent := range agents {
-			da := DashboardAgent{
-				ID:      agent.ID,
-				SquadID: agent.SquadID,
-				Name:    agent.Name,
-				Role:    agent.Role,
-				Status:  agent.Status,
-			}
-			if usage, err := s.store.SumMetering(r.Context(), "", agent.ID); err == nil && usage != nil {
-				da.Cost = costFromMetering(usage)
-			}
-			entry.Agents = append(entry.Agents, da)
 		}
 		payload.Squads = append(payload.Squads, entry)
 	}
@@ -190,15 +135,97 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	payload.Providers = s.probeProviders(r, providers)
 
-	payload.Resources = []DashboardResource{}
-	for _, typ := range dashboardResourceTypes {
-		resources, err := s.store.ListResources(r.Context(), typ)
+	resources, err := s.dashboardResources(r.Context())
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	payload.Resources = resources
+
+	writeJSON(w, http.StatusOK, payload)
+}
+
+// dashboardOwnerName resolves a display name for a squad owner, caching
+// lookups per request. Extracted from getDashboard for cognitive
+// complexity (S-126 / S3776).
+func (s *Server) dashboardOwnerName(ctx context.Context, cache map[string]string, ownerID string) string {
+	if ownerID == "" {
+		return ""
+	}
+	if name, ok := cache[ownerID]; ok {
+		return name
+	}
+	name := ""
+	if owner, err := s.store.GetUser(ctx, ownerID); err == nil && owner != nil {
+		name = owner.Name
+		if name == "" {
+			name = owner.Email
+		}
+	}
+	cache[ownerID] = name
+	return name
+}
+
+// dashboardSquadEntry builds the dashboard row for one squad: task status
+// counts, cost aggregate, and its agents with per-agent cost. Extracted
+// from getDashboard for cognitive complexity (S-126 / S3776).
+func (s *Server) dashboardSquadEntry(ctx context.Context, squad *domain.Squad, ownerNames map[string]string) (DashboardSquad, error) {
+	entry := DashboardSquad{
+		ID:         squad.ID,
+		Name:       squad.Name,
+		Status:     string(squad.Status),
+		OwnerID:    squad.OwnerID,
+		OwnerName:  s.dashboardOwnerName(ctx, ownerNames, squad.OwnerID),
+		TaskCounts: map[string]int{},
+		Agents:     []DashboardAgent{},
+	}
+
+	if board, err := s.store.GetBoard(ctx, squad.ID); err == nil && board != nil {
+		tasks, err := s.store.ListTasks(ctx, board.ID, "")
 		if err != nil {
-			writeStorageError(w, err)
-			return
+			return entry, err
+		}
+		for _, t := range tasks {
+			entry.TaskCounts[string(t.Status)]++
+		}
+	}
+
+	if usage, err := s.store.SumMetering(ctx, squad.ID, ""); err == nil && usage != nil {
+		entry.Cost = costFromMetering(usage)
+	}
+
+	agents, err := s.store.ListAgents(ctx, squad.ID)
+	if err != nil {
+		return entry, err
+	}
+	for _, agent := range agents {
+		da := DashboardAgent{
+			ID:      agent.ID,
+			SquadID: agent.SquadID,
+			Name:    agent.Name,
+			Role:    agent.Role,
+			Status:  agent.Status,
+		}
+		if usage, err := s.store.SumMetering(ctx, "", agent.ID); err == nil && usage != nil {
+			da.Cost = costFromMetering(usage)
+		}
+		entry.Agents = append(entry.Agents, da)
+	}
+	return entry, nil
+}
+
+// dashboardResources collects the generic registry resources surfaced in
+// the resources overview. Extracted from getDashboard for cognitive
+// complexity (S-126 / S3776).
+func (s *Server) dashboardResources(ctx context.Context) ([]DashboardResource, error) {
+	out := []DashboardResource{}
+	for _, typ := range dashboardResourceTypes {
+		resources, err := s.store.ListResources(ctx, typ)
+		if err != nil {
+			return nil, err
 		}
 		for _, res := range resources {
-			payload.Resources = append(payload.Resources, DashboardResource{
+			out = append(out, DashboardResource{
 				ID:     res.ID,
 				Type:   res.Type,
 				Name:   res.Name,
@@ -206,8 +233,7 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-
-	writeJSON(w, http.StatusOK, payload)
+	return out, nil
 }
 
 // dashboardSquads resolves the squads visible to the caller: everything for

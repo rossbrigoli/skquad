@@ -94,11 +94,11 @@ func TestPostgresSetAgentPermissionsEnqueuesAgentUpsert(t *testing.T) {
 	}
 
 	ws, err := store.CreateResource(ctx, &domain.RegistryResource{
-		Type:     domain.ResProjectWorkspace,
-		Name:     "parity-repo-" + fx.agent.ID[:8],
-		Manifest: []byte(`{"kind":"git","default_branch":"main"}`),
-		AuthRef:  "k8s://squad-ws/ws-parity-token",
-		Status:   domain.ResourceActive,
+		Type:         domain.ResProjectWorkspace,
+		Name:         "parity-repo-" + fx.agent.ID[:8],
+		Manifest:     []byte(`{"kind":"git","default_branch":"main"}`),
+		AuthRef:      "k8s://squad-ws/ws-parity-token",
+		Status:       domain.ResourceActive,
 		RegisteredBy: fx.user.ID,
 	})
 	if err != nil {

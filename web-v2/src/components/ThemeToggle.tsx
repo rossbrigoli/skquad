@@ -41,18 +41,21 @@ export function ThemeToggle() {
   return (
     <div className="theme-toggle" role="radiogroup" aria-label="Theme">
       {OPTIONS.map((opt) => (
-        <button
+        <label
           key={opt.value}
-          type="button"
-          role="radio"
-          aria-checked={mode === opt.value}
-          aria-label={opt.label}
-          title={opt.label}
           className={`theme-toggle-btn${mode === opt.value ? " active" : ""}`}
-          onClick={() => setMode(opt.value)}
+          title={opt.label}
         >
+          <input
+            type="radio"
+            name="theme-toggle"
+            value={opt.value}
+            checked={mode === opt.value}
+            aria-label={opt.label}
+            onChange={() => setMode(opt.value)}
+          />
           {opt.icon}
-        </button>
+        </label>
       ))}
     </div>
   );

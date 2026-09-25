@@ -738,97 +738,19 @@ class LLMMessageHandler:
         return ControlPlaneClient.from_bootstrap(config)
 
     def handle_message(self, message: RuntimeMessage, config: BootstrapConfig) -> MessageResult:
-        if message.from_type != "user":
-            if message.message_type in ("delegate", "handoff"):
-                return MessageResult(
-                    ok=False,
-                    summary=f"message type {message.message_type!r} requires a specialized handler",
-                )
-            return MessageResult(
-                ok=True,
-                summary=f"acked {message.from_type} message ({message.message_type})",
-            )
+        early_result = self._non_user_result(message)
+        if early_result is not None:
+            return early_result
 
-        virtual_key = read_secret_value(config.virtual_key_path)
-        if virtual_key is None:
-            return MessageResult(ok=False, summary="LLM gateway virtual key is not loaded")
-        if not config.llm_gateway_url:
-            return MessageResult(ok=False, summary="SKQUAD_LLM_GATEWAY_URL is required")
-        model = self.model or config.default_model
-        if not model:
-            return MessageResult(ok=False, summary="SKQUAD_DEFAULT_MODEL is required")
+        ready, virtual_key, model = self._chat_prerequisites(message, config)
+        if ready is not None:
+            return ready
 
-        user_text = str(message.payload.get("message", "") or "").strip()
-        if not user_text:
-            return MessageResult(ok=False, summary="user chat message had no text")
-
-        chat_messages = self._build_chat_messages(message, config)
-        completion = self._completion or self._default_completion()
-        tools = self.tool_schemas()
-        tool_calls_log: list[dict[str, object]] = []
-        max_steps = max(1, self.max_tool_steps or DEFAULT_CHAT_TOOL_STEPS)
-        response: object = None
-        for step in range(max_steps):
-            completion_kwargs: dict[str, object] = {
-                "model": model,
-                # The gateway is OpenAI-compatible by architecture. litellm's
-                # provider inference rejects bare model names
-                # ("LLM Provider NOT provided", incident 2026-09-24), so the
-                # provider is declared explicitly instead of prefixing the
-                # model string — keeps metering/model names canonical.
-                "custom_llm_provider": "openai",
-                "messages": chat_messages,
-                "api_base": config.llm_gateway_url.rstrip("/"),
-                "api_key": virtual_key,
-                # litellm 1.102.1 silently drops the bare `metadata=` kwarg on
-                # the OpenAI-SDK→proxy path (incident 2026-09-24: metering never
-                # recorded). The wire field the proxy honours is `litellm_metadata`
-                # in extra_body; the gateway callback reads it back as
-                # litellm_params.metadata.
-                "extra_body": {
-                    "litellm_metadata": {
-                        "skquad_agent_id": config.agent_id,
-                        "skquad_squad_id": config.squad_id,
-                        "skquad_message_id": message.id,
-                    }
-                },
-            }
-            if tools:
-                completion_kwargs["tools"] = tools
-            try:
-                response = completion(**completion_kwargs)
-            except Exception as exc:
-                return MessageResult(ok=False, summary=f"LLM call failed: {exc}")
-            assistant = first_message(response)
-            calls = parse_tool_calls(assistant)
-            if not calls:
-                break
-            if step == max_steps - 1:
-                return MessageResult(
-                    ok=False,
-                    summary=f"chat tool-call budget exhausted after {max_steps} steps",
-                )
-            chat_messages.append(
-                assistant_message(str(message_value(assistant, "content") or ""), calls)
-            )
-            for call in calls:
-                result = invoke_plugin_tool(call, config, self.plugins)
-                tool_calls_log.append(
-                    {
-                        "name": call.name,
-                        "arguments": call.arguments,
-                        "ok": result.ok,
-                        "result": trim_text(result.content, CHAT_TOOL_RESULT_MAX_CHARS),
-                    }
-                )
-                chat_messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "name": call.name,
-                        "content": result.content,
-                    }
-                )
+        ready, response, tool_calls_log = self._complete_with_tools(
+            message, config, virtual_key, model
+        )
+        if ready is not None:
+            return ready
 
         model_used = served_model(response, model)
         if model_used != model:
@@ -840,6 +762,143 @@ class LLMMessageHandler:
                 config.agent_id,
             )
 
+        return self._post_chat_reply(message, config, response, tool_calls_log, model_used)
+
+    def _non_user_result(self, message: RuntimeMessage) -> MessageResult | None:
+        if message.from_type == "user":
+            return None
+        if message.message_type in ("delegate", "handoff"):
+            return MessageResult(
+                ok=False,
+                summary=f"message type {message.message_type!r} requires a specialized handler",
+            )
+        return MessageResult(
+            ok=True,
+            summary=f"acked {message.from_type} message ({message.message_type})",
+        )
+
+    def _chat_prerequisites(
+        self, message: RuntimeMessage, config: BootstrapConfig
+    ) -> tuple[MessageResult | None, str, str]:
+        virtual_key = read_secret_value(config.virtual_key_path)
+        if virtual_key is None:
+            return MessageResult(ok=False, summary="LLM gateway virtual key is not loaded"), "", ""
+        if not config.llm_gateway_url:
+            return MessageResult(ok=False, summary="SKQUAD_LLM_GATEWAY_URL is required"), "", ""
+        model = self.model or config.default_model
+        if not model:
+            return MessageResult(ok=False, summary="SKQUAD_DEFAULT_MODEL is required"), "", ""
+        user_text = str(message.payload.get("message", "") or "").strip()
+        if not user_text:
+            return MessageResult(ok=False, summary="user chat message had no text"), "", ""
+        return None, virtual_key, model
+
+    def _completion_kwargs(
+        self,
+        message: RuntimeMessage,
+        config: BootstrapConfig,
+        chat_messages: list[dict[str, object]],
+        virtual_key: str,
+        model: str,
+    ) -> dict[str, object]:
+        return {
+            "model": model,
+            # The gateway is OpenAI-compatible by architecture. litellm's
+            # provider inference rejects bare model names
+            # ("LLM Provider NOT provided", incident 2026-09-24), so the
+            # provider is declared explicitly instead of prefixing the
+            # model string — keeps metering/model names canonical.
+            "custom_llm_provider": "openai",
+            "messages": chat_messages,
+            "api_base": config.llm_gateway_url.rstrip("/"),
+            "api_key": virtual_key,
+            # litellm 1.102.1 silently drops the bare `metadata=` kwarg on
+            # the OpenAI-SDK→proxy path (incident 2026-09-24: metering never
+            # recorded). The wire field the proxy honours is `litellm_metadata`
+            # in extra_body; the gateway callback reads it back as
+            # litellm_params.metadata.
+            "extra_body": {
+                "litellm_metadata": {
+                    "skquad_agent_id": config.agent_id,
+                    "skquad_squad_id": config.squad_id,
+                    "skquad_message_id": message.id,
+                }
+            },
+        }
+
+    def _complete_with_tools(
+        self, message: RuntimeMessage, config: BootstrapConfig, virtual_key: str, model: str
+    ) -> tuple[MessageResult | None, object, list[dict[str, object]]]:
+        chat_messages = self._build_chat_messages(message, config)
+        completion = self._completion or self._default_completion()
+        tools = self.tool_schemas()
+        tool_calls_log: list[dict[str, object]] = []
+        max_steps = max(1, self.max_tool_steps or DEFAULT_CHAT_TOOL_STEPS)
+        response: object = None
+        for step in range(max_steps):
+            completion_kwargs = self._completion_kwargs(
+                message, config, chat_messages, virtual_key, model
+            )
+            if tools:
+                completion_kwargs["tools"] = tools
+            try:
+                response = completion(**completion_kwargs)
+            except Exception as exc:
+                return MessageResult(ok=False, summary=f"LLM call failed: {exc}"), response, tool_calls_log
+            assistant = first_message(response)
+            calls = parse_tool_calls(assistant)
+            if not calls:
+                return None, response, tool_calls_log
+            if step == max_steps - 1:
+                return (
+                    MessageResult(
+                        ok=False,
+                        summary=f"chat tool-call budget exhausted after {max_steps} steps",
+                    ),
+                    response,
+                    tool_calls_log,
+                )
+            self._append_tool_results(chat_messages, assistant, calls, config, tool_calls_log)
+        return None, response, tool_calls_log
+
+    def _append_tool_results(
+        self,
+        chat_messages: list[dict[str, object]],
+        assistant: object,
+        calls: list[ToolCall],
+        config: BootstrapConfig,
+        tool_calls_log: list[dict[str, object]],
+    ) -> None:
+        chat_messages.append(
+            assistant_message(str(message_value(assistant, "content") or ""), calls)
+        )
+        for call in calls:
+            result = invoke_plugin_tool(call, config, self.plugins)
+            tool_calls_log.append(
+                {
+                    "name": call.name,
+                    "arguments": call.arguments,
+                    "ok": result.ok,
+                    "result": trim_text(result.content, CHAT_TOOL_RESULT_MAX_CHARS),
+                }
+            )
+            chat_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "content": result.content,
+                }
+            )
+
+    def _post_chat_reply(
+        self,
+        message: RuntimeMessage,
+        config: BootstrapConfig,
+        response: object,
+        tool_calls_log: list[dict[str, object]],
+        model_used: str,
+    ) -> MessageResult:
         reply_text = str(message_value(first_message(response), "content") or "").strip()
         if not reply_text:
             return MessageResult(ok=False, summary="LLM returned an empty reply")

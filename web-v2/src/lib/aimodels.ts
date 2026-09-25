@@ -91,7 +91,7 @@ export type AdminUser = {
 export const PLATFORM_ADMIN_ROLE = "platform_admin";
 
 export function isPlatformAdmin(role?: string | null): boolean {
-  return (role || "") === PLATFORM_ADMIN_ROLE;
+  return (role ?? "") === PLATFORM_ADMIN_ROLE;
 }
 
 // --- Form state --------------------------------------------------------
@@ -134,9 +134,9 @@ export function formFromAIModel(m: AIModel): AIModelFormValues {
     pricing[key] = raw === undefined || raw === null ? "" : String(raw);
   }
   return {
-    provider_id: m.provider_id || "",
-    model_name: m.model_name || "",
-    display_name: m.display_name || "",
+    provider_id: m.provider_id ?? "",
+    model_name: m.model_name ?? "",
+    display_name: m.display_name ?? "",
     context_window: m.context_window ? String(m.context_window) : "",
     supports_tools: !!m.supports_tools,
     pricing,
@@ -147,7 +147,7 @@ export function formFromAIModel(m: AIModel): AIModelFormValues {
 }
 
 function parseRate(key: PricingRateKey, raw: string): number {
-  const trimmed = (raw || "").trim();
+  const trimmed = (raw ?? "").trim();
   if (trimmed === "") {
     throw new Error(`${key} is required in pricing`);
   }
@@ -162,7 +162,7 @@ function parseRate(key: PricingRateKey, raw: string): number {
 }
 
 function parseNonNegativeInt(field: string, raw: string, allowEmpty: boolean): number | undefined {
-  const trimmed = (raw || "").trim();
+  const trimmed = (raw ?? "").trim();
   if (trimmed === "") {
     if (allowEmpty) return undefined;
     throw new Error(`${field} is required`);
@@ -181,9 +181,9 @@ function parseNonNegativeInt(field: string, raw: string, allowEmpty: boolean): n
 // display_name is omitted when blank so the backend default (= model_name)
 // applies; PATCH rejects an empty display_name outright.
 export function buildAIModelPayload(v: AIModelFormValues): Record<string, unknown> {
-  const providerId = (v.provider_id || "").trim();
+  const providerId = (v.provider_id ?? "").trim();
   if (providerId === "") throw new Error("provider_id is required");
-  const modelName = (v.model_name || "").trim();
+  const modelName = (v.model_name ?? "").trim();
   if (modelName === "") throw new Error("model_name is required");
 
   const contextWindow = parseNonNegativeInt("context_window", v.context_window, true) ?? 0;
@@ -202,7 +202,7 @@ export function buildAIModelPayload(v: AIModelFormValues): Record<string, unknow
     supports_tools: !!v.supports_tools,
     pricing,
   };
-  const displayName = (v.display_name || "").trim();
+  const displayName = (v.display_name ?? "").trim();
   if (displayName !== "") {
     payload.display_name = displayName;
   }
@@ -291,7 +291,7 @@ export function groupModelsByProvider(
 export function modelRowFields(m: AIModel, providerName?: string): AIModelRow {
   return {
     title: m.display_name || m.model_name,
-    subtitle: `${m.model_name} · ${providerName || "unknown provider"}`,
+    subtitle: `${m.model_name} · ${providerName ?? "unknown provider"}`,
     contextWindow:
       m.context_window > 0 ? `${m.context_window.toLocaleString("en-US")} tokens` : "unknown",
     tools: m.supports_tools ? "tools ✓" : "no tools",
@@ -369,7 +369,7 @@ export function parseProviderModels(body: unknown): string[] {
 // filterModelOptions is the combobox filter: case-insensitive substring
 // match; empty query returns the full list.
 export function filterModelOptions(models: string[], query: string): string[] {
-  const q = (query || "").trim().toLowerCase();
+  const q = (query ?? "").trim().toLowerCase();
   if (q === "") return models;
   return models.filter((m) => m.toLowerCase().includes(q));
 }

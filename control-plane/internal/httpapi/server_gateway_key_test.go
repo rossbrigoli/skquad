@@ -76,45 +76,60 @@ func (g *recordingGateway) handler() http.Handler {
 		defer g.mu.Unlock()
 		switch r.URL.Path {
 		case "/key/generate":
-			if g.failGenerate {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			g.seq++
-			token := "tok-" + string(rune('a'+g.seq))
-			if g.live == nil {
-				g.live = map[string][]string{}
-			}
-			g.live[token] = gatewayModelsField(body)
-			g.generated = append(g.generated, body)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"key":   "sk-generated-" + string(rune('a'+g.seq)),
-				"token": token,
-			})
+			g.handleGenerate(w, body)
 		case "/key/update":
-			if g.failUpdate {
-				w.WriteHeader(http.StatusBadGateway)
-				return
-			}
-			if token, ok := body["key"].(string); ok && g.live != nil {
-				g.live[token] = gatewayModelsField(body)
-			}
-			g.updated = append(g.updated, body)
-			_ = json.NewEncoder(w).Encode(map[string]any{"updated": true})
+			g.handleUpdate(w, body)
 		case "/key/delete":
-			if g.failDelete {
-				w.WriteHeader(http.StatusBadGateway)
-				return
-			}
-			if token, ok := body["key"].(string); ok && g.live != nil {
-				delete(g.live, token)
-			}
-			g.deleted = append(g.deleted, body["key"].(string))
-			_ = json.NewEncoder(w).Encode(map[string]any{"deleted": true})
+			g.handleDelete(w, body)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})
+}
+
+// handleGenerate records a /key/generate call (S-126 / S3776 split).
+func (g *recordingGateway) handleGenerate(w http.ResponseWriter, body map[string]any) {
+	if g.failGenerate {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	g.seq++
+	token := "tok-" + string(rune('a'+g.seq))
+	if g.live == nil {
+		g.live = map[string][]string{}
+	}
+	g.live[token] = gatewayModelsField(body)
+	g.generated = append(g.generated, body)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"key":   "sk-generated-" + string(rune('a'+g.seq)),
+		"token": token,
+	})
+}
+
+// handleUpdate records a /key/update call (S-126 / S3776 split).
+func (g *recordingGateway) handleUpdate(w http.ResponseWriter, body map[string]any) {
+	if g.failUpdate {
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
+	if token, ok := body["key"].(string); ok && g.live != nil {
+		g.live[token] = gatewayModelsField(body)
+	}
+	g.updated = append(g.updated, body)
+	_ = json.NewEncoder(w).Encode(map[string]any{"updated": true})
+}
+
+// handleDelete records a /key/delete call (S-126 / S3776 split).
+func (g *recordingGateway) handleDelete(w http.ResponseWriter, body map[string]any) {
+	if g.failDelete {
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
+	if token, ok := body["key"].(string); ok && g.live != nil {
+		delete(g.live, token)
+	}
+	g.deleted = append(g.deleted, body["key"].(string))
+	_ = json.NewEncoder(w).Encode(map[string]any{"deleted": true})
 }
 
 func (g *recordingGateway) counts() (gen, upd int, del []string) {
@@ -125,8 +140,8 @@ func (g *recordingGateway) counts() (gen, upd int, del []string) {
 
 // gatewayFixture wires a server to a recording gateway and returns the pieces
 // needed to drive binding-based key-lifecycle scenarios: one squad (owned by
-// the dev admin), one agent, and two granted AI models named "openai/one"
-// and "openai/two" plus a third model ("openai/three") that is deliberately
+// the dev admin), one agent, and two granted AI models named modelOne
+// and modelTwo plus a third model ("openai/three") that is deliberately
 // NOT granted to the owner.
 type gatewayFixture struct {
 	handler      http.Handler
@@ -155,14 +170,14 @@ func newGatewayFixture(t *testing.T) *gatewayFixture {
 	var squad domain.Squad
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "Key Squad"}, http.StatusCreated, &squad)
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{"name": "Key Agent"}, http.StatusCreated, &agent)
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+"/agents", map[string]any{"name": "Key Agent"}, http.StatusCreated, &agent)
 	provider := createTestProvider(t, handler, "gw-provider")
-	modelA := createTestAIModel(t, handler, provider.ID, "openai/one")
-	modelB := createTestAIModel(t, handler, provider.ID, "openai/two")
+	modelA := createTestAIModel(t, handler, provider.ID, modelOne)
+	modelB := createTestAIModel(t, handler, provider.ID, modelTwo)
 	modelNoGrant := createTestAIModel(t, handler, provider.ID, "openai/three")
 
 	// Grant A and B (but NOT modelNoGrant) to the squad owner.
-	doJSON(t, handler, http.MethodPut, "/api/v1/users/"+squad.OwnerID+"/models",
+	doJSON(t, handler, http.MethodPut, pathUsersPrefix+squad.OwnerID+pathModels,
 		map[string]any{"model_ids": []string{modelA.ID, modelB.ID}}, http.StatusOK, &[]domain.AIModel{})
 
 	return &gatewayFixture{
@@ -183,7 +198,7 @@ func newGatewayFixture(t *testing.T) *gatewayFixture {
 func (f *gatewayFixture) bind(t *testing.T, primary, fallback string) domain.Agent {
 	t.Helper()
 	var agent domain.Agent
-	doJSON(t, f.handler, http.MethodPatch, "/api/v1/agents/"+f.agentID, map[string]any{
+	doJSON(t, f.handler, http.MethodPatch, pathAgentsPrefix+f.agentID, map[string]any{
 		"ai_model_id":          primary,
 		"fallback_ai_model_id": fallback,
 	}, http.StatusOK, &agent)
@@ -213,7 +228,7 @@ func (f *gatewayFixture) identity(t *testing.T) *domain.AgentIdentity {
 func (f *gatewayFixture) createIdentity(t *testing.T) {
 	t.Helper()
 	var identity domain.AgentIdentity
-	doJSON(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil, http.StatusCreated, &identity)
+	doJSON(t, f.handler, http.MethodPost, pathAgentsPrefix+f.agentID+pathIdentity, nil, http.StatusCreated, &identity)
 	require.NotEmpty(t, identity.ID)
 }
 
@@ -265,11 +280,11 @@ func TestBoundKeyContainsPrimaryAndFallback(t *testing.T) {
 	// primary and the fallback. If it only contained the primary, the
 	// fallback would fail authorisation at the gateway during a primary
 	// outage — the exact moment it is needed.
-	require.ElementsMatch(t, []any{"openai/one", "openai/two"}, keyReq["models"])
+	require.ElementsMatch(t, []any{modelOne, modelTwo}, keyReq["models"])
 
 	// The gateway (not the runtime) owns the failover: the key carries a
 	// primary→fallback router mapping.
-	require.Equal(t, []any{map[string]any{"openai/one": []any{"openai/two"}}}, fallbacksOf(t, keyReq))
+	require.Equal(t, []any{map[string]any{modelOne: []any{modelTwo}}}, fallbacksOf(t, keyReq))
 
 	// D7 failure-class policy travels with the key.
 	rs := keyReq["router_settings"].(map[string]any)
@@ -287,7 +302,7 @@ func TestBoundKeyWithoutFallbackHasNoFallbackMapping(t *testing.T) {
 
 	_, _, _ = f.gateway.counts()
 	keyReq := f.gateway.generated[0]
-	require.ElementsMatch(t, []any{"openai/one"}, keyReq["models"])
+	require.ElementsMatch(t, []any{modelOne}, keyReq["models"])
 	require.Empty(t, fallbacksOf(t, keyReq))
 }
 
@@ -297,7 +312,7 @@ func TestBoundKeyWithoutFallbackHasNoFallbackMapping(t *testing.T) {
 
 func TestUnboundAgentIdentityRejected(t *testing.T) {
 	f := newGatewayFixture(t)
-	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
+	requireErrorCode(t, f.handler, http.MethodPost, pathAgentsPrefix+f.agentID+pathIdentity, nil,
 		http.StatusConflict, "model_not_bound")
 }
 
@@ -306,35 +321,35 @@ func TestNotGrantedToOwnerRejectedOnProvision(t *testing.T) {
 	// Seed past the PATCH validation so the provisioning path itself is
 	// what rejects the ungranted binding.
 	f.seedBinding(t, f.modelNoGrant.ID, "")
-	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
+	requireErrorCode(t, f.handler, http.MethodPost, pathAgentsPrefix+f.agentID+pathIdentity, nil,
 		http.StatusForbidden, "model_not_granted")
 }
 
 func TestUngrantedFallbackRejectedOnProvision(t *testing.T) {
 	f := newGatewayFixture(t)
 	f.seedBinding(t, f.modelA.ID, f.modelNoGrant.ID)
-	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
+	requireErrorCode(t, f.handler, http.MethodPost, pathAgentsPrefix+f.agentID+pathIdentity, nil,
 		http.StatusForbidden, "model_not_granted")
 }
 
 func TestDeprecatedModelRejectedOnProvision(t *testing.T) {
 	f := newGatewayFixture(t)
 	f.bind(t, f.modelA.ID, f.modelB.ID)
-	doAdminNoBody(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelB.ID+"/deprecate", http.StatusOK) // WP4: 200 + cascade report
+	doAdminNoBody(t, f.handler, http.MethodPost, pathAIModelItem+f.modelB.ID+pathDeprecate, http.StatusOK) // WP4: 200 + cascade report
 	// WP4's deprecate cascade cleared the fallback binding; re-seed it
 	// out-of-band so provisioning-time rejection of a deprecated binding
 	// (WP3) is still what fails here.
 	f.seedBinding(t, f.modelA.ID, f.modelB.ID)
-	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
+	requireErrorCode(t, f.handler, http.MethodPost, pathAgentsPrefix+f.agentID+pathIdentity, nil,
 		http.StatusConflict, "model_deprecated")
 }
 
 func TestDeprecatedFallbackRejectedOnProvision(t *testing.T) {
 	f := newGatewayFixture(t)
 	f.bind(t, f.modelA.ID, f.modelB.ID)
-	doAdminNoBody(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelA.ID+"/deprecate", http.StatusOK) // WP4: 200 + cascade report
+	doAdminNoBody(t, f.handler, http.MethodPost, pathAIModelItem+f.modelA.ID+pathDeprecate, http.StatusOK) // WP4: 200 + cascade report
 	f.seedBinding(t, f.modelA.ID, f.modelB.ID)
-	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
+	requireErrorCode(t, f.handler, http.MethodPost, pathAgentsPrefix+f.agentID+pathIdentity, nil,
 		http.StatusConflict, "model_deprecated")
 }
 
@@ -344,7 +359,7 @@ func TestGatewayFailureStillSurfacesAsBadGateway(t *testing.T) {
 	f.gateway.mu.Lock()
 	f.gateway.failGenerate = true
 	f.gateway.mu.Unlock()
-	requireErrorCode(t, f.handler, http.MethodPost, "/api/v1/agents/"+f.agentID+"/identity", nil,
+	requireErrorCode(t, f.handler, http.MethodPost, pathAgentsPrefix+f.agentID+pathIdentity, nil,
 		http.StatusBadGateway, "llm_gateway_unavailable")
 }
 
@@ -367,13 +382,13 @@ func TestPatchBindingPersistsAndConvergesKey(t *testing.T) {
 	require.Equal(t, 1, upd, "binding change must converge the live key")
 	require.Empty(t, del)
 	require.Equal(t, token, f.gateway.updated[0]["key"])
-	require.ElementsMatch(t, []any{"openai/one", "openai/two"}, f.gateway.updated[0]["models"])
-	require.Equal(t, []any{map[string]any{"openai/one": []any{"openai/two"}}}, fallbacksOf(t, f.gateway.updated[0]))
+	require.ElementsMatch(t, []any{modelOne, modelTwo}, f.gateway.updated[0]["models"])
+	require.Equal(t, []any{map[string]any{modelOne: []any{modelTwo}}}, fallbacksOf(t, f.gateway.updated[0]))
 }
 
 func TestPatchFallbackEqualsPrimaryRejected(t *testing.T) {
 	f := newGatewayFixture(t)
-	requireErrorCode(t, f.handler, http.MethodPatch, "/api/v1/agents/"+f.agentID, map[string]any{
+	requireErrorCode(t, f.handler, http.MethodPatch, pathAgentsPrefix+f.agentID, map[string]any{
 		"ai_model_id":          f.modelA.ID,
 		"fallback_ai_model_id": f.modelA.ID,
 	}, http.StatusBadRequest, "fallback_same_as_primary")
@@ -381,14 +396,14 @@ func TestPatchFallbackEqualsPrimaryRejected(t *testing.T) {
 
 func TestPatchUngrantedModelRejected(t *testing.T) {
 	f := newGatewayFixture(t)
-	requireErrorCode(t, f.handler, http.MethodPatch, "/api/v1/agents/"+f.agentID, map[string]any{
+	requireErrorCode(t, f.handler, http.MethodPatch, pathAgentsPrefix+f.agentID, map[string]any{
 		"ai_model_id": f.modelNoGrant.ID,
 	}, http.StatusForbidden, "model_not_granted")
 }
 
 func TestPatchUnknownModelRejected(t *testing.T) {
 	f := newGatewayFixture(t)
-	requireErrorCode(t, f.handler, http.MethodPatch, "/api/v1/agents/"+f.agentID, map[string]any{
+	requireErrorCode(t, f.handler, http.MethodPatch, pathAgentsPrefix+f.agentID, map[string]any{
 		"ai_model_id": "00000000-0000-4000-8000-000000000000",
 	}, http.StatusBadRequest, "model_not_found")
 }
@@ -396,15 +411,15 @@ func TestPatchUnknownModelRejected(t *testing.T) {
 func TestPatchDeprecatedModelRejected(t *testing.T) {
 	f := newGatewayFixture(t)
 	f.bind(t, f.modelA.ID, "")
-	doAdminNoBody(t, f.handler, http.MethodPost, "/api/v1/ai-models/"+f.modelB.ID+"/deprecate", http.StatusOK) // WP4: 200 + cascade report
-	requireErrorCode(t, f.handler, http.MethodPatch, "/api/v1/agents/"+f.agentID, map[string]any{
+	doAdminNoBody(t, f.handler, http.MethodPost, pathAIModelItem+f.modelB.ID+pathDeprecate, http.StatusOK) // WP4: 200 + cascade report
+	requireErrorCode(t, f.handler, http.MethodPatch, pathAgentsPrefix+f.agentID, map[string]any{
 		"fallback_ai_model_id": f.modelB.ID,
 	}, http.StatusConflict, "model_deprecated")
 }
 
 func TestPatchFallbackWithoutPrimaryRejected(t *testing.T) {
 	f := newGatewayFixture(t)
-	requireErrorCode(t, f.handler, http.MethodPatch, "/api/v1/agents/"+f.agentID, map[string]any{
+	requireErrorCode(t, f.handler, http.MethodPatch, pathAgentsPrefix+f.agentID, map[string]any{
 		"ai_model_id":          "",
 		"fallback_ai_model_id": f.modelB.ID,
 	}, http.StatusBadRequest, "bad_request")
@@ -420,7 +435,7 @@ func TestPatchClearFallbackShrinksAllowList(t *testing.T) {
 
 	_, upd, _ := f.gateway.counts()
 	require.Equal(t, 1, upd)
-	require.ElementsMatch(t, []any{"openai/one"}, f.gateway.updated[0]["models"])
+	require.ElementsMatch(t, []any{modelOne}, f.gateway.updated[0]["models"])
 	require.Empty(t, fallbacksOf(t, f.gateway.updated[0]), "cleared fallback must clear the router fallbacks mapping")
 }
 
@@ -428,7 +443,7 @@ func TestGetAgentReturnsBindingFields(t *testing.T) {
 	f := newGatewayFixture(t)
 	f.bind(t, f.modelA.ID, f.modelB.ID)
 	var agent domain.Agent
-	doJSON(t, f.handler, http.MethodGet, "/api/v1/agents/"+f.agentID, nil, http.StatusOK, &agent)
+	doJSON(t, f.handler, http.MethodGet, pathAgentsPrefix+f.agentID, nil, http.StatusOK, &agent)
 	require.Equal(t, f.modelA.ID, agent.AIModelID)
 	require.Equal(t, f.modelB.ID, agent.FallbackAIModelID)
 }
@@ -446,8 +461,8 @@ func TestSyncPrimaryChangeUpdatesKey(t *testing.T) {
 	_, upd, del := f.gateway.counts()
 	require.Equal(t, 1, upd)
 	require.Empty(t, del)
-	require.ElementsMatch(t, []any{"openai/two", "openai/one"}, f.gateway.updated[0]["models"])
-	require.Equal(t, []any{map[string]any{"openai/two": []any{"openai/one"}}}, fallbacksOf(t, f.gateway.updated[0]))
+	require.ElementsMatch(t, []any{modelTwo, modelOne}, f.gateway.updated[0]["models"])
+	require.Equal(t, []any{map[string]any{modelTwo: []any{modelOne}}}, fallbacksOf(t, f.gateway.updated[0]))
 }
 
 func TestSyncUnbindRevokesKey(t *testing.T) {
@@ -563,7 +578,7 @@ func TestDeleteAgentRevokesGatewayKey(t *testing.T) {
 	f.createIdentity(t)
 	token := f.identity(t).GatewayKeyToken
 
-	doJSONNoBody(t, f.handler, http.MethodDelete, "/api/v1/agents/"+f.agentID, nil, http.StatusNoContent)
+	doJSONNoBody(t, f.handler, http.MethodDelete, pathAgentsPrefix+f.agentID, nil, http.StatusNoContent)
 
 	_, _, del := f.gateway.counts()
 	require.Equal(t, []string{token}, del)
@@ -575,7 +590,7 @@ func TestDeleteSquadRevokesGatewayKeys(t *testing.T) {
 	f.createIdentity(t)
 	token := f.identity(t).GatewayKeyToken
 
-	doJSONNoBody(t, f.handler, http.MethodDelete, "/api/v1/squads/"+f.squadID, nil, http.StatusNoContent)
+	doJSONNoBody(t, f.handler, http.MethodDelete, pathSquadsPrefix+f.squadID, nil, http.StatusNoContent)
 
 	_, _, del := f.gateway.counts()
 	require.Equal(t, []string{token}, del)

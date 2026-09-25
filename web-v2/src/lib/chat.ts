@@ -13,7 +13,7 @@ export type ChatToolCall = {
 /** Chronological order (oldest first); the chat box anchors the newest at the
  *  bottom via CSS so new messages push up like ChatGPT/Telegram. */
 export function sortChatMessages(messages: Message[]): Message[] {
-  return [...messages].sort((a, b) => (a.created_at || "").localeCompare(b.created_at || ""));
+  return [...messages].sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
 }
 
 /** Parse `payload.tool_calls` (emitted by the agent runtime since S-122)
@@ -53,7 +53,24 @@ export function chatContextTokens(messages: Message[]): number | null {
 
 export function truncateText(value: string, max: number): string {
   if (max <= 0 || value.length <= max) return value;
-  return value.slice(0, max).replace(/\s+$/, "") + "…";
+  return value.slice(0, max).trimEnd() + "…";
+}
+
+function collapseWhitespace(value: string): string {
+  let out = "";
+  let inWhitespace = true;
+  for (const char of value) {
+    if (char.trim() === "") {
+      inWhitespace = true;
+      continue;
+    }
+    if (out !== "" && inWhitespace) {
+      out += " ";
+    }
+    out += char;
+    inWhitespace = false;
+  }
+  return out;
 }
 
 /** One-line summary of tool arguments for the collapsed row. */
@@ -69,7 +86,7 @@ export function summarizeToolArgs(args: unknown, max = 90): string {
     }
   }
   if (!text || text === "{}" || text === "null") return "";
-  return truncateText(text.replace(/\s+/g, " ").trim(), max);
+  return truncateText(collapseWhitespace(text), max);
 }
 
 /** Pretty-printed, bounded JSON for the expanded tool-call detail. */

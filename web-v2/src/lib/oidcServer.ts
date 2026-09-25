@@ -40,10 +40,10 @@ export function oidcEnabled(): boolean {
 
 export function oidcConfig(): OidcConfig {
   const cfg = {
-    issuer: (process.env.SKQUAD_OIDC_ISSUER || "").replace(/\/$/, ""),
-    clientId: process.env.SKQUAD_OIDC_CLIENT_ID || "",
-    clientSecret: process.env.SKQUAD_OIDC_CLIENT_SECRET || "",
-    redirectUrl: process.env.SKQUAD_OIDC_REDIRECT_URL || "",
+    issuer: (process.env.SKQUAD_OIDC_ISSUER ?? "").replace(/\/$/, ""),
+    clientId: process.env.SKQUAD_OIDC_CLIENT_ID ?? "",
+    clientSecret: process.env.SKQUAD_OIDC_CLIENT_SECRET ?? "",
+    redirectUrl: process.env.SKQUAD_OIDC_REDIRECT_URL ?? "",
     scopes: process.env.SKQUAD_OIDC_SCOPES || "openid profile email offline_access",
   };
   if (!cfg.issuer || !cfg.clientId || !cfg.clientSecret || !cfg.redirectUrl) {
@@ -194,10 +194,10 @@ export const NONCE_COOKIE = "skquad_oidc_nonce";
  * dying after the first proxied call, because the proxy re-writes the cookie.
  */
 export function requestIsHttps(req?: Request): boolean {
-  const forwarded = (req?.headers?.get("x-forwarded-proto") || "").split(",")[0].trim();
+  const forwarded = (req?.headers?.get("x-forwarded-proto") ?? "").split(",")[0].trim();
   if (forwarded) return forwarded === "https";
   try {
-    return new URL(req?.url || "").protocol === "https:";
+    return new URL(req?.url ?? "").protocol === "https:";
   } catch {
     return false;
   }
@@ -249,7 +249,7 @@ export function sessionValid(s: Session | null): boolean {
 //   4. the OIDC redirect URL's own origin
 //   5. give up -> relative Location (browser resolves it against the current URL)
 export function publicOrigin(req?: Request): string {
-  const env = (process.env.SKQUAD_PUBLIC_BASE_URL || "").replace(/\/$/, "");
+  const env = (process.env.SKQUAD_PUBLIC_BASE_URL ?? "").replace(/\/$/, "");
   if (env) return env;
 
   if (req) {

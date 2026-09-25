@@ -22,7 +22,6 @@ import {
 import {
   buildAIModelPayload,
   emptyAIModelForm,
-  filterModelOptions,
   formFromAIModel,
   formatCascadeReport,
   formatInUseMessage,
@@ -47,6 +46,44 @@ import {
 
 type DeleteUsage = { agent_id: string; agent_name: string; squad_id: string };
 
+// resolveSettingsTab maps the requested tab onto a tab the caller may see:
+// admins never get the standalone providers tab (it is merged into
+// "ai-models"), non-admins never get the admin-only tabs. Extracted from
+// SettingsPage for cognitive complexity (S-126 / S3776).
+function resolveSettingsTab(tab: Tab, isAdmin: boolean): Tab {
+  if (isAdmin) {
+    return tab === "providers" ? "ai-models" : tab;
+  }
+  return tab === "ai-models" || tab === "access" ? "providers" : tab;
+}
+
+// TabButton: one settings tab button (S-126 / S3358: keeps the ternary
+// class logic out of the JSX tree).
+function TabButton({ active, label, onClick }: { readonly active: boolean; readonly label: string; readonly onClick: () => void }) {
+  return (
+    <button type="button" className={active ? "active" : ""} onClick={onClick}>
+      {label}
+    </button>
+  );
+}
+
+// statusChipFor maps a lifecycle status to the StatusChip variant.
+// Extracted from the settings rows (S-126 / S3358).
+function statusChipFor(status: string): "idle" | "paused" | "error" {
+  if (status === "active") return "idle";
+  if (status === "deprecated") return "paused";
+  return "error";
+}
+
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
+}
+
+function duplicateModelMessage(err: unknown): string {
+  const detail = err instanceof Error ? err.message : "";
+  return `Duplicate model: ${detail}`;
+}
+
 // DeleteResourceButton (S-103): tries a plain delete; if the API reports
 // the resource is granted to agents (409), warns with the usage list and
 // offers a force delete that also revokes those grants.
@@ -55,9 +92,9 @@ function DeleteResourceButton({
   name,
   onDeleted,
 }: {
-  path: string;
-  name: string;
-  onDeleted: () => void;
+  readonly path: string;
+  readonly name: string;
+  readonly onDeleted: () => void;
 }) {
   const { token } = useAuth();
   const [usage, setUsage] = useState<DeleteUsage[] | null>(null);
@@ -89,7 +126,9 @@ function DeleteResourceButton({
         type="button"
         className="btn btn-sm btn-danger"
         disabled={busy}
-        onClick={() => void attempt(false)}
+        onClick={() => {
+              attempt(false);
+            }}
       >
         Delete
       </button>
@@ -143,13 +182,7 @@ export default function SettingsPage() {
   // tab. Admins never get the standalone providers tab (it maps to the
   // merged hierarchy view); non-admins keep the read-only providers
   // list and never see the merged tab.
-  const activeTab: Tab = isAdmin
-    ? tab === "providers"
-      ? "ai-models"
-      : tab
-    : tab === "ai-models" || tab === "access"
-      ? "providers"
-      : tab;
+  const activeTab: Tab = resolveSettingsTab(tab, isAdmin);
 
   return (
     <AuthGate>
@@ -157,21 +190,13 @@ export default function SettingsPage() {
         <h1 className="page-title">Settings</h1>
         <div className="tabs">
           {isAdmin ? (
-            <button type="button" className={activeTab === "ai-models" ? "active" : ""} onClick={() => setTab("ai-models")}>
-              AI Models
-            </button>
+            <TabButton active={activeTab === "ai-models"} label="AI Models" onClick={() => setTab("ai-models")} />
           ) : (
-            <button type="button" className={activeTab === "providers" ? "active" : ""} onClick={() => setTab("providers")}>
-              LLM providers
-            </button>
+            <TabButton active={activeTab === "providers"} label="LLM providers" onClick={() => setTab("providers")} />
           )}
-          <button type="button" className={activeTab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>
-            Resources
-          </button>
+          <TabButton active={activeTab === "resources"} label="Resources" onClick={() => setTab("resources")} />
           {isAdmin ? (
-            <button type="button" className={activeTab === "access" ? "active" : ""} onClick={() => setTab("access")}>
-              Access
-            </button>
+            <TabButton active={activeTab === "access"} label="Access" onClick={() => setTab("access")} />
           ) : null}
         </div>
 
@@ -191,12 +216,17 @@ export default function SettingsPage() {
   );
 }
 
-function ProvidersTab({ isAdmin }: { isAdmin: boolean }) {
+function ProvidersTab({ isAdmin }: { readonly isAdmin: boolean }) {
   const { token } = useAuth();
   const providers = useApi<LLMProvider[]>("/registry/llm-providers", 60000);
   const [editing, setEditing] = useState<LLMProvider | null>(null);
   const [creating, setCreating] = useState(false);
   const items = providers.data || [];
+
+  async function deprecateProvider(providerID: string) {
+    await apiPost(`/registry/llm-providers/${providerID}/deprecate`, token, {});
+    await providers.refresh();
+  }
 
   return (
     <section>
@@ -220,7 +250,7 @@ function ProvidersTab({ isAdmin }: { isAdmin: boolean }) {
                 <span className="entity-meta">{p.kind} · {p.base_url}</span>
               </div>
               <div className="entity-side">
-                <StatusChip status={p.status === "active" ? "idle" : p.status === "deprecated" ? "paused" : "error"} />
+                <StatusChip status={statusChipFor(p.status)} />
                 {isAdmin ? (
                   <button type="button" className="btn btn-sm" onClick={() => setEditing(p)}>
                     Edit
@@ -230,9 +260,8 @@ function ProvidersTab({ isAdmin }: { isAdmin: boolean }) {
                   <button
                     type="button"
                     className="btn btn-sm btn-danger"
-                    onClick={async () => {
-                      await apiPost(`/registry/llm-providers/${p.id}/deprecate`, token, {});
-                      await providers.refresh();
+                    onClick={() => {
+                      deprecateProvider(p.id);
                     }}
                   >
                     Deprecate
@@ -242,7 +271,9 @@ function ProvidersTab({ isAdmin }: { isAdmin: boolean }) {
                   <DeleteResourceButton
                     path={`/registry/llm-providers/${p.id}`}
                     name={p.name}
-                    onDeleted={() => void providers.refresh()}
+                    onDeleted={() => {
+                      providers.refresh();
+                    }}
                   />
                 ) : null}
               </div>
@@ -268,7 +299,7 @@ function ProvidersTab({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-function ResourcesTab({ isAdmin }: { isAdmin: boolean }) {
+function ResourcesTab({ isAdmin }: { readonly isAdmin: boolean }) {
   const [typeIdx, setTypeIdx] = useState(0);
   const active = RESOURCE_TABS[typeIdx];
   const resources = useApi<RegistryResource[]>(`/registry/${active.key}`, 60000);
@@ -313,7 +344,7 @@ function ResourcesTab({ isAdmin }: { isAdmin: boolean }) {
                 <span className="entity-meta">{r.description || r.endpoint || "—"}</span>
               </div>
               <div className="entity-side">
-                <StatusChip status={r.status === "active" ? "idle" : r.status === "deprecated" ? "paused" : "error"} />
+                <StatusChip status={statusChipFor(r.status)} />
                 {isAdmin ? (
                   <button type="button" className="btn btn-sm" onClick={() => setEditing(r)}>
                     Edit
@@ -323,7 +354,9 @@ function ResourcesTab({ isAdmin }: { isAdmin: boolean }) {
                   <DeleteResourceButton
                     path={`/registry/${active.key}/${r.id}`}
                     name={r.name}
-                    onDeleted={() => void resources.refresh()}
+                    onDeleted={() => {
+              resources.refresh();
+            }}
                   />
                 ) : null}
               </div>
@@ -358,6 +391,57 @@ function ResourcesTab({ isAdmin }: { isAdmin: boolean }) {
 // pricing + grant unit; the UI now matches). Create/edit/deprecate/delete
 // flows for both levels are preserved from the former ProvidersTab and
 // AIModelsTab (S-111).
+// ProviderGroupHeader renders the credential-holder header row in the
+// merged AI Models hierarchy (S-126 / S3776: extracted from
+// ModelHierarchyTab).
+function ProviderGroupHeader({
+  provider,
+  onEdit,
+  onDeleted,
+}: {
+  readonly provider: LLMProvider;
+  readonly onEdit: () => void;
+  readonly onDeleted: () => void;
+}) {
+  const { token } = useAuth();
+
+  async function deprecateProvider() {
+    await apiPost(`/registry/llm-providers/${provider.id}/deprecate`, token, {});
+    onDeleted();
+  }
+
+  return (
+    <div className="entity-row provider-header-row">
+      <div className="entity-main">
+        <span className="entity-title">{provider.name}</span>
+        <span className="entity-meta">{provider.kind} · {provider.base_url}</span>
+      </div>
+      <div className="entity-side">
+        <StatusChip status={statusChipFor(provider.status)} />
+        <button type="button" className="btn btn-sm" onClick={onEdit}>
+          Edit
+        </button>
+        {provider.status === "active" ? (
+          <button
+            type="button"
+            className="btn btn-sm btn-danger"
+            onClick={() => {
+              deprecateProvider();
+            }}
+          >
+            Deprecate
+          </button>
+        ) : null}
+        <DeleteResourceButton
+          path={`/registry/llm-providers/${provider.id}`}
+          name={provider.name}
+          onDeleted={onDeleted}
+        />
+      </div>
+    </div>
+  );
+}
+
 function ModelHierarchyTab() {
   const { token } = useAuth();
   const providers = useApi<LLMProvider[]>("/registry/llm-providers", 60000);
@@ -375,7 +459,7 @@ function ModelHierarchyTab() {
     try {
       const rep = await apiPost<CascadeReport>(`/ai-models/${model.id}/deprecate`, token, {});
       setReport(formatCascadeReport(rep));
-      await models.refresh();
+      models.refresh();
     } catch (err) {
       setReport(`Deprecate failed: ${err instanceof Error ? err.message : "unknown error"}`);
     }
@@ -399,16 +483,20 @@ function ModelHierarchyTab() {
           </span>
         </div>
         <div className="entity-side">
-          <StatusChip status={m.status === "active" ? "idle" : m.status === "deprecated" ? "paused" : "error"} />
+          <StatusChip status={statusChipFor(m.status)} />
           <button type="button" className="btn btn-sm" onClick={() => setEditingModel(m)}>
             Edit
           </button>
           {m.status === "active" ? (
-            <button type="button" className="btn btn-sm btn-danger" onClick={() => void deprecate(m)}>
+            <button type="button" className="btn btn-sm btn-danger" onClick={() => {
+              deprecate(m);
+            }}>
               Deprecate
             </button>
           ) : null}
-          <DeleteAIModelButton model={m} onDeleted={() => void models.refresh()} />
+          <DeleteAIModelButton model={m} onDeleted={() => {
+              models.refresh();
+            }} />
         </div>
       </div>
     );
@@ -428,12 +516,12 @@ function ModelHierarchyTab() {
         </div>
       </div>
       {report ? (
-        <div className="notice" role="status" style={{ marginBottom: "var(--space-4)" }}>
+        <output className="notice" aria-live="polite" style={{ display: "block", marginBottom: "var(--space-4)" }}>
           {report}
           <button type="button" className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => setReport("")}>
             Dismiss
           </button>
-        </div>
+        </output>
       ) : null}
       {providers.error ? <div className="notice error">{providers.error}</div> : null}
       {models.error ? <div className="notice error">{models.error}</div> : null}
@@ -447,37 +535,13 @@ function ModelHierarchyTab() {
         <div className="entity-list">
           {groups.map(({ provider, models: providerModels }) => (
             <div key={provider.id} className="provider-group">
-              <div className="entity-row provider-header-row">
-                <div className="entity-main">
-                  <span className="entity-title">{provider.name}</span>
-                  <span className="entity-meta">{provider.kind} · {provider.base_url}</span>
-                </div>
-                <div className="entity-side">
-                  <StatusChip
-                    status={provider.status === "active" ? "idle" : provider.status === "deprecated" ? "paused" : "error"}
-                  />
-                  <button type="button" className="btn btn-sm" onClick={() => setEditingProvider(provider)}>
-                    Edit
-                  </button>
-                  {provider.status === "active" ? (
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-danger"
-                      onClick={async () => {
-                        await apiPost(`/registry/llm-providers/${provider.id}/deprecate`, token, {});
-                        await providers.refresh();
-                      }}
-                    >
-                      Deprecate
-                    </button>
-                  ) : null}
-                  <DeleteResourceButton
-                    path={`/registry/llm-providers/${provider.id}`}
-                    name={provider.name}
-                    onDeleted={() => void providers.refresh()}
-                  />
-                </div>
-              </div>
+              <ProviderGroupHeader
+                provider={provider}
+                onEdit={() => setEditingProvider(provider)}
+                onDeleted={() => {
+                  providers.refresh();
+                }}
+              />
               <div className="provider-models">
                 {providerModels.length === 0 ? (
                   <div className="provider-empty">No models registered under this provider yet.</div>
@@ -536,7 +600,7 @@ function ModelHierarchyTab() {
 // DeleteAIModelButton mirrors DeleteResourceButton (S-103): plain delete
 // first; on 409 in_use the shared ConfirmDialog lists affected users and
 // agents (with slot) and the explicit second click retries with force.
-function DeleteAIModelButton({ model, onDeleted }: { model: AIModel; onDeleted: () => void }) {
+function DeleteAIModelButton({ model, onDeleted }: { readonly model: AIModel; readonly onDeleted: () => void }) {
   const { token } = useAuth();
   const [usage, setUsage] = useState<ModelUsageEntry[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -563,7 +627,9 @@ function DeleteAIModelButton({ model, onDeleted }: { model: AIModel; onDeleted: 
 
   return (
     <>
-      <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => void attempt(false)}>
+      <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => {
+        attempt(false);
+      }}>
         Delete
       </button>
       {error ? (
@@ -592,10 +658,10 @@ function AIModelModal({
   onClose,
   onSaved,
 }: {
-  model: AIModel | null;
-  providers: LLMProvider[];
-  onClose: () => void;
-  onSaved: () => void;
+  readonly model: AIModel | null;
+  readonly providers: LLMProvider[];
+  readonly onClose: () => void;
+  readonly onSaved: () => void;
 }) {
   const { token } = useAuth();
   const [values, setValues] = useState<AIModelFormValues>(() => (model ? formFromAIModel(model) : emptyAIModelForm()));
@@ -605,7 +671,6 @@ function AIModelModal({
   const [providerModels, setProviderModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState("");
-  const [listOpen, setListOpen] = useState(false);
 
   // Re-query whenever the provider changes. The providerId guard drops
   // stale responses (fast provider switches must not clobber the new
@@ -623,7 +688,7 @@ function AIModelModal({
     setModelsLoading(true);
     setModelsError("");
     setProviderModels([]);
-    void (async () => {
+    const loadProviderModels = async () => {
       try {
         const body = await apiGet<unknown>(`/registry/llm-providers/${providerId}/models`, token);
         if (!active) return;
@@ -634,7 +699,9 @@ function AIModelModal({
       } finally {
         if (active) setModelsLoading(false);
       }
-    })();
+    };
+    // Fire-and-forget: the effect cannot await; staleness is guarded by `active`.
+    loadProviderModels();
     return () => {
       active = false;
     };
@@ -652,7 +719,47 @@ function AIModelModal({
   }
 
   const mode = modelFieldMode(values.provider_id !== "", modelsLoading, modelsError);
-  const visibleModels = filterModelOptions(providerModels, values.model_name);
+  const modelListId = `provider-models-${values.provider_id || "none"}`;
+
+  function modelNameControl() {
+    if (mode === "none") {
+      return <input value="" disabled placeholder="Select a provider first…" />;
+    }
+    if (mode === "loading") {
+      return <input value="" disabled placeholder="Loading models from provider…" />;
+    }
+    if (mode === "fallback") {
+      return (
+        <>
+          <input
+            value={values.model_name}
+            onChange={(e) => setField("model_name", e.target.value)}
+            placeholder="gpt-6-sol"
+            autoFocus
+          />
+          <span className="field-hint">
+            Couldn&rsquo;t load the provider&rsquo;s model list ({modelsError}) — type the model name manually.
+          </span>
+        </>
+      );
+    }
+    return (
+      <>
+        <input
+          value={values.model_name}
+          onChange={(e) => setField("model_name", e.target.value)}
+          placeholder="Select a model, or type to filter…"
+          autoFocus
+          list={modelListId}
+        />
+        <datalist id={modelListId}>
+          {providerModels.map((m) => (
+            <option key={m} value={m} />
+          ))}
+        </datalist>
+      </>
+    );
+  }
 
   return (
     <Modal title={model ? `Edit “${model.display_name || model.model_name}”` : "Register AI model"} onClose={onClose}>
@@ -678,7 +785,7 @@ function AIModelModal({
             // payload builder) surface verbatim — e.g.
             // "cached_input_per_1m in pricing must be numeric".
             const dup = isDuplicateModel(err);
-            setError(dup ? `Duplicate model: ${err instanceof Error ? err.message : ""}` : err instanceof Error ? err.message : "save failed");
+            setError(dup ? duplicateModelMessage(err) : errorMessage(err, "save failed"));
             setBusy(false);
           }
         }}
@@ -691,7 +798,6 @@ function AIModelModal({
               onChange={(e) => {
                 setField("provider_id", e.target.value);
                 setField("model_name", "");
-                setListOpen(false);
               }}
             >
               <option value="" disabled>
@@ -706,62 +812,7 @@ function AIModelModal({
           </label>
           <div className="field">
             <span>Model name</span>
-            {mode === "none" ? (
-              <input value="" disabled placeholder="Select a provider first…" />
-            ) : mode === "loading" ? (
-              <input value="" disabled placeholder="Loading models from provider…" />
-            ) : mode === "fallback" ? (
-              <>
-                <input
-                  value={values.model_name}
-                  onChange={(e) => setField("model_name", e.target.value)}
-                  placeholder="gpt-6-sol"
-                  autoFocus
-                />
-                <span className="field-hint">
-                  Couldn&rsquo;t load the provider&rsquo;s model list ({modelsError}) — type the model name manually.
-                </span>
-              </>
-            ) : (
-              <div className="combobox">
-                <input
-                  value={values.model_name}
-                  onChange={(e) => {
-                    setField("model_name", e.target.value);
-                    setListOpen(true);
-                  }}
-                  onFocus={() => setListOpen(true)}
-                  onBlur={() => window.setTimeout(() => setListOpen(false), 120)}
-                  placeholder="Select a model, or type to filter…"
-                  autoFocus
-                  role="combobox"
-                  aria-expanded={listOpen}
-                  aria-label="Model name"
-                />
-                {listOpen ? (
-                  <ul className="combobox-list" role="listbox">
-                    {visibleModels.length === 0 ? (
-                      <li className="combobox-empty">No matching models</li>
-                    ) : (
-                      visibleModels.map((m) => (
-                        <li
-                          key={m}
-                          role="option"
-                          aria-selected={m === values.model_name}
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            setField("model_name", m);
-                            setListOpen(false);
-                          }}
-                        >
-                          {m}
-                        </li>
-                      ))
-                    )}
-                  </ul>
-                ) : null}
-              </div>
-            )}
+            {modelNameControl()}
           </div>
         </div>
         <div className="field-row">
@@ -875,7 +926,7 @@ function AccessTab() {
   );
 }
 
-function GrantEditor({ user }: { user: AdminUser }) {
+function GrantEditor({ user }: { readonly user: AdminUser }) {
   const { token } = useAuth();
   const allModels = useApi<AIModel[]>("/ai-models?status=active", 60000);
   const granted = useApi<AIModel[]>(`/users/${user.id}/models`, 0);
@@ -905,7 +956,7 @@ function GrantEditor({ user }: { user: AdminUser }) {
       setUsage(null);
       setDesired(null);
       setSavedNote("Grants saved and virtual keys converged.");
-      await granted.refresh();
+      granted.refresh();
     } catch (err) {
       const conflict = inUseConflict(err);
       if (conflict && !force) {
@@ -928,7 +979,7 @@ function GrantEditor({ user }: { user: AdminUser }) {
       </div>
       {granted.error ? <div className="notice error">{granted.error}</div> : null}
       {allModels.error ? <div className="notice error">{allModels.error}</div> : null}
-      {savedNote ? <div className="notice" role="status">{savedNote}</div> : null}
+      {savedNote ? <output className="notice" aria-live="polite">{savedNote}</output> : null}
       {error ? <div className="notice error" role="alert">{error}</div> : null}
       {models.length === 0 && !allModels.loading ? (
         <EmptyState title="No active AI models" hint="Register models under AI Models first." />
@@ -957,7 +1008,9 @@ function GrantEditor({ user }: { user: AdminUser }) {
           type="button"
           className="btn btn-primary"
           disabled={!dirty || busy || granted.loading}
-          onClick={() => void save(false)}
+          onClick={() => {
+              save(false);
+            }}
         >
           Save grants
         </button>
@@ -995,15 +1048,15 @@ function ProviderModal({
   onClose,
   onSaved,
 }: {
-  provider: LLMProvider | null;
-  onClose: () => void;
-  onSaved: () => void;
+  readonly provider: LLMProvider | null;
+  readonly onClose: () => void;
+  readonly onSaved: () => void;
 }) {
   const { token } = useAuth();
-  const [name, setName] = useState(provider?.name || "");
+  const [name, setName] = useState(provider?.name ?? "");
   const [kind, setKind] = useState(provider?.kind || "openai");
-  const [baseUrl, setBaseUrl] = useState(provider?.base_url || "");
-  const [apiKeyRef, setApiKeyRef] = useState(provider?.api_key_ref || "");
+  const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? "");
+  const [apiKeyRef, setApiKeyRef] = useState(provider?.api_key_ref ?? "");
   // WP8 (0014): default_model / models inputs removed from the provider
   // form — model configuration lives on the AI Models underneath.
   // S-128: no provider-level pricing — rates belong on the AI Models.
@@ -1071,16 +1124,16 @@ function ResourceModal({
   onClose,
   onSaved,
 }: {
-  resourceType: string;
-  resource: RegistryResource | null;
-  onClose: () => void;
-  onSaved: () => void;
+  readonly resourceType: string;
+  readonly resource: RegistryResource | null;
+  readonly onClose: () => void;
+  readonly onSaved: () => void;
 }) {
   const { token } = useAuth();
-  const [name, setName] = useState(resource?.name || "");
-  const [description, setDescription] = useState(resource?.description || "");
-  const [endpoint, setEndpoint] = useState(resource?.endpoint || "");
-  const [authRef, setAuthRef] = useState(resource?.auth_ref || "");
+  const [name, setName] = useState(resource?.name ?? "");
+  const [description, setDescription] = useState(resource?.description ?? "");
+  const [endpoint, setEndpoint] = useState(resource?.endpoint ?? "");
+  const [authRef, setAuthRef] = useState(resource?.auth_ref ?? "");
   const [manifest, setManifest] = useState(resource?.manifest ? JSON.stringify(resource.manifest, null, 2) : "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");

@@ -211,6 +211,80 @@ func (s *Server) getAIModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, model)
 }
 
+// updateAIModelRequest is the PATCH body for an AI Model.
+type updateAIModelRequest struct {
+	ProviderID                 *string          `json:"provider_id"`
+	DisplayName                *string          `json:"display_name"`
+	ModelName                  *string          `json:"model_name"`
+	ContextWindow              *int             `json:"context_window"`
+	SupportsTools              *bool            `json:"supports_tools"`
+	Pricing                    *json.RawMessage `json:"pricing"`
+	LongContextThresholdTokens *int             `json:"long_context_threshold_tokens"`
+}
+
+// applyAIModelScalarFields validates and applies the non-pricing fields of
+// an updateAIModel request. On invalid input it writes the HTTP error and
+// returns false. Extracted for cognitive complexity (S-126 / S3776).
+func (s *Server) applyAIModelScalarFields(w http.ResponseWriter, r *http.Request, model *domain.AIModel, req updateAIModelRequest) bool {
+	if req.ProviderID != nil {
+		providerID := strings.TrimSpace(*req.ProviderID)
+		if !validateRequired(w, "provider_id", providerID) {
+			return false
+		}
+		if !s.ensureAIModelProviderExists(w, r, providerID) {
+			return false
+		}
+		model.ProviderID = providerID
+	}
+	if req.ModelName != nil {
+		modelName := strings.TrimSpace(*req.ModelName)
+		if !validateRequired(w, "model_name", modelName) {
+			return false
+		}
+		model.ModelName = modelName
+	}
+	if req.DisplayName != nil {
+		displayName := strings.TrimSpace(*req.DisplayName)
+		if !validateRequired(w, "display_name", displayName) {
+			return false
+		}
+		model.DisplayName = displayName
+	}
+	if req.ContextWindow != nil {
+		if *req.ContextWindow < 0 {
+			writeError(w, http.StatusBadRequest, "bad_request", "context_window must be non-negative")
+			return false
+		}
+		model.ContextWindow = *req.ContextWindow
+	}
+	if req.SupportsTools != nil {
+		model.SupportsTools = *req.SupportsTools
+	}
+	return true
+}
+
+// applyAIModelPricingFields validates and applies the pricing-related
+// fields of an updateAIModel request. On invalid input it writes the
+// HTTP error and returns false. Extracted for cognitive complexity
+// (S-126 / S3776).
+func applyAIModelPricingFields(w http.ResponseWriter, model *domain.AIModel, req updateAIModelRequest) bool {
+	if req.Pricing != nil {
+		if msg, ok := validateAIModelPricing(*req.Pricing); !ok {
+			writeError(w, http.StatusBadRequest, "bad_request", msg)
+			return false
+		}
+		model.Pricing = *req.Pricing
+	}
+	if req.LongContextThresholdTokens != nil {
+		if msg, ok := validateLongContextThreshold(req.LongContextThresholdTokens); !ok {
+			writeError(w, http.StatusBadRequest, "bad_request", msg)
+			return false
+		}
+		model.LongContextThresholdTokens = *req.LongContextThresholdTokens
+	}
+	return true
+}
+
 func (s *Server) updateAIModel(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
@@ -220,65 +294,15 @@ func (s *Server) updateAIModel(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	var req struct {
-		ProviderID                 *string          `json:"provider_id"`
-		DisplayName                *string          `json:"display_name"`
-		ModelName                  *string          `json:"model_name"`
-		ContextWindow              *int             `json:"context_window"`
-		SupportsTools              *bool            `json:"supports_tools"`
-		Pricing                    *json.RawMessage `json:"pricing"`
-		LongContextThresholdTokens *int             `json:"long_context_threshold_tokens"`
-	}
+	var req updateAIModelRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.ProviderID != nil {
-		providerID := strings.TrimSpace(*req.ProviderID)
-		if !validateRequired(w, "provider_id", providerID) {
-			return
-		}
-		if !s.ensureAIModelProviderExists(w, r, providerID) {
-			return
-		}
-		model.ProviderID = providerID
+	if !s.applyAIModelScalarFields(w, r, model, req) {
+		return
 	}
-	if req.ModelName != nil {
-		modelName := strings.TrimSpace(*req.ModelName)
-		if !validateRequired(w, "model_name", modelName) {
-			return
-		}
-		model.ModelName = modelName
-	}
-	if req.DisplayName != nil {
-		displayName := strings.TrimSpace(*req.DisplayName)
-		if !validateRequired(w, "display_name", displayName) {
-			return
-		}
-		model.DisplayName = displayName
-	}
-	if req.ContextWindow != nil {
-		if *req.ContextWindow < 0 {
-			writeError(w, http.StatusBadRequest, "bad_request", "context_window must be non-negative")
-			return
-		}
-		model.ContextWindow = *req.ContextWindow
-	}
-	if req.SupportsTools != nil {
-		model.SupportsTools = *req.SupportsTools
-	}
-	if req.Pricing != nil {
-		if msg, ok := validateAIModelPricing(*req.Pricing); !ok {
-			writeError(w, http.StatusBadRequest, "bad_request", msg)
-			return
-		}
-		model.Pricing = *req.Pricing
-	}
-	if req.LongContextThresholdTokens != nil {
-		if msg, ok := validateLongContextThreshold(req.LongContextThresholdTokens); !ok {
-			writeError(w, http.StatusBadRequest, "bad_request", msg)
-			return
-		}
-		model.LongContextThresholdTokens = *req.LongContextThresholdTokens
+	if !applyAIModelPricingFields(w, model, req) {
+		return
 	}
 	if dup, err := s.isDuplicateAIModelName(r.Context(), model.ProviderID, model.ModelName, model.ID); err != nil {
 		writeStorageError(w, err)
@@ -349,15 +373,27 @@ func (s *Server) aiModelUsage(ctx context.Context, modelID string) ([]aiModelUsa
 		entry := aiModelUsageEntry{AgentID: agent.ID, AgentName: agent.Name, SquadID: agent.SquadID, Slot: agentBoundSlot(agent, modelID)}
 		// Owner identification is best-effort: the agent binding is the
 		// load-bearing signal even if the owner lookup fails.
-		if squad, err := s.store.GetSquad(ctx, agent.SquadID); err == nil {
-			if owner, err := s.store.GetUser(ctx, squad.OwnerID); err == nil {
-				entry.UserID = owner.ID
-				entry.UserEmail = owner.Email
-			}
+		if ownerID, ownerEmail, ok := s.squadOwnerOf(ctx, agent.SquadID); ok {
+			entry.UserID = ownerID
+			entry.UserEmail = ownerEmail
 		}
 		usage = append(usage, entry)
 	}
 	return usage, nil
+}
+
+// squadOwnerOf resolves the owner user of a squad for usage reporting.
+// Extracted from aiModelUsage for cognitive complexity (S-126 / S3776).
+func (s *Server) squadOwnerOf(ctx context.Context, squadID string) (userID, email string, ok bool) {
+	squad, err := s.store.GetSquad(ctx, squadID)
+	if err != nil {
+		return "", "", false
+	}
+	owner, err := s.store.GetUser(ctx, squad.OwnerID)
+	if err != nil {
+		return "", "", false
+	}
+	return owner.ID, owner.Email, true
 }
 
 // deleteAIModel hard-deletes a model with the S-103 in-use warning shape.
@@ -387,49 +423,55 @@ func (s *Server) deleteAIModel(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if force {
-		// WP4: unbinding alone is not enough — every affected virtual
-		// key must converge before the model disappears, or a live key
-		// could keep calling a deleted model. Converge first; if any
-		// convergence fails the delete is NOT performed (502,
-		// retryable) so a half-applied state is never reported as
-		// success.
-		affected, err := s.modelBoundAgents(r.Context(), modelID, "")
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		userSet := map[string]bool{}
-		for _, agent := range affected {
-			if squad, err := s.store.GetSquad(r.Context(), agent.SquadID); err == nil && squad.OwnerID != "" {
-				userSet[squad.OwnerID] = true
-			}
-		}
-		report := &cascadeReport{
-			ModelID:        modelID,
-			Operation:      "delete",
-			AffectedAgents: len(affected),
-			AffectedUsers:  make([]string, 0, len(userSet)),
-		}
-		for uid := range userSet {
-			report.AffectedUsers = append(report.AffectedUsers, uid)
-		}
-		if len(affected) > 0 {
-			actions, failures := s.convergeAfterModelRemoval(r, modelID, model.ModelName, "deleted", affected)
-			report.KeyActions = actions
-			report.Failures = failures
-			s.notifyCascadeOwners(r.Context(), model.ModelName, "deleted", affected)
-		}
-		if report.hasFailures() {
-			s.finishCascade(w, r, report, true)
-			return
-		}
+	if force && !s.convergeForAIModelDelete(w, r, modelID, model) {
+		return
 	}
 	if err := s.store.DeleteAIModel(s.pendingUserAuditCtx(r, "aimodel.delete", "ai_model", modelID, "", nil), modelID); err != nil {
 		writeStorageError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// convergeForAIModelDelete runs the WP4 pre-delete convergence: every
+// affected virtual key must converge before the model disappears, or a
+// live key could keep calling a deleted model. If any convergence fails
+// the delete is NOT performed (502, retryable) so a half-applied state
+// is never reported as success. Returns true when the delete may proceed;
+// on failure it writes the HTTP response and returns false. Extracted
+// from deleteAIModel for cognitive complexity (S-126 / S3776).
+func (s *Server) convergeForAIModelDelete(w http.ResponseWriter, r *http.Request, modelID string, model *domain.AIModel) bool {
+	affected, err := s.modelBoundAgents(r.Context(), modelID, "")
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	userSet := map[string]bool{}
+	for _, agent := range affected {
+		if squad, err := s.store.GetSquad(r.Context(), agent.SquadID); err == nil && squad.OwnerID != "" {
+			userSet[squad.OwnerID] = true
+		}
+	}
+	report := &cascadeReport{
+		ModelID:        modelID,
+		Operation:      "delete",
+		AffectedAgents: len(affected),
+		AffectedUsers:  make([]string, 0, len(userSet)),
+	}
+	for uid := range userSet {
+		report.AffectedUsers = append(report.AffectedUsers, uid)
+	}
+	if len(affected) > 0 {
+		actions, failures := s.convergeAfterModelRemoval(r, modelID, model.ModelName, "deleted", affected)
+		report.KeyActions = actions
+		report.Failures = failures
+		s.notifyCascadeOwners(r.Context(), model.ModelName, "deleted", affected)
+	}
+	if report.hasFailures() {
+		s.finishCascade(w, r, report, true)
+		return false
+	}
+	return true
 }
 
 // grantedAIModels resolves a user's grants to model records.
@@ -515,23 +557,9 @@ func (s *Server) setUserModels(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	desired := make(map[string]bool, len(req.ModelIDs))
-	desiredIDs := make([]string, 0, len(req.ModelIDs))
-	for _, raw := range req.ModelIDs {
-		id := strings.TrimSpace(raw)
-		if id == "" {
-			writeError(w, http.StatusBadRequest, "bad_request", "model_ids entries must not be empty")
-			return
-		}
-		if desired[id] {
-			continue
-		}
-		if _, err := s.store.GetAIModel(r.Context(), id); err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		desired[id] = true
-		desiredIDs = append(desiredIDs, id)
+	desired, desiredIDs, ok := s.validateDesiredModelIDs(w, r, req.ModelIDs)
+	if !ok {
+		return
 	}
 	current, err := s.store.ListUserModelGrants(r.Context(), userID)
 	if err != nil {
@@ -548,34 +576,12 @@ func (s *Server) setUserModels(w http.ResponseWriter, r *http.Request) {
 	// is about to be removed, require ?force=true; with force the full
 	// cascade (clear slots → converge keys) runs for each removal.
 	force := r.URL.Query().Get("force") == "true"
-	type pendingRemoval struct {
-		modelID string
-		agents  []*domain.Agent
+	removals, boundTotal, err := s.pendingGrantRemovals(r, userID, current, desired)
+	if err != nil {
+		writeStorageError(w, err)
+		return
 	}
-	removals := make([]pendingRemoval, 0)
-	boundTotal := 0
-	for _, grant := range current {
-		if desired[grant.AIModelID] {
-			continue
-		}
-		bound, err := s.modelBoundAgents(r.Context(), grant.AIModelID, userID)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		if len(bound) > 0 {
-			boundTotal += len(bound)
-		}
-		removals = append(removals, pendingRemoval{modelID: grant.AIModelID, agents: bound})
-	}
-	if boundTotal > 0 && !force {
-		usage := make([]aiModelUsageEntry, 0, boundTotal)
-		for _, rem := range removals {
-			usage = append(usage, cascadeUsage(user.ID, user.Email, rem.agents, rem.modelID)...)
-		}
-		writeInUseConflict(w,
-			fmt.Sprintf("removing grants would orphan %d bound agent(s); retry with force=true to revoke the grants, clear the bindings and converge the virtual keys", boundTotal),
-			usage)
+	if s.writeGrantRemovalConflict(w, user, removals, boundTotal, force) {
 		return
 	}
 
@@ -585,34 +591,12 @@ func (s *Server) setUserModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to audit model grant update")
 		return
 	}
-	for _, id := range desiredIDs {
-		if currentSet[id] {
-			continue
-		}
-		if _, err := s.store.GrantModelToUser(r.Context(), &domain.UserModelGrant{
-			GranteeUserID: userID,
-			AIModelID:     id,
-			GrantedBy:     u.ID,
-		}); err != nil && !errors.Is(err, storage.ErrConflict) {
-			writeStorageError(w, err)
-			return
-		}
+	if !s.grantMissingModels(w, r, userID, desiredIDs, currentSet, u.ID) {
+		return
 	}
-	var cascadeFailures []cascadeFailure
-	for _, rem := range removals {
-		meta, _ := json.Marshal(map[string]any{"user_id": userID, "model_id": rem.modelID, "forced": true})
-		if err := s.store.RevokeModelFromUser(s.pendingUserAuditCtx(r, "aimodel.grant.revoke", "user_model_grant", rem.modelID, "", meta), userID, rem.modelID); err != nil && !errors.Is(err, storage.ErrNotFound) {
-			writeStorageError(w, err)
-			return
-		}
-		model, err := s.store.GetAIModel(r.Context(), rem.modelID)
-		modelName := rem.modelID
-		if err == nil {
-			modelName = model.ModelName
-		}
-		_, failures := s.convergeAfterModelRemoval(r, rem.modelID, modelName, "revoked", rem.agents)
-		cascadeFailures = append(cascadeFailures, failures...)
-		s.notifyCascadeOwners(r.Context(), modelName, "revoked from user "+user.Email, rem.agents)
+	cascadeFailures, ok := s.revokeGrantsAndConverge(w, r, userID, user, removals)
+	if !ok {
+		return
 	}
 	if len(cascadeFailures) > 0 {
 		// Grants were applied — that part is done — but some virtual keys
@@ -630,6 +614,119 @@ func (s *Server) setUserModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, models)
+}
+
+func (s *Server) writeGrantRemovalConflict(w http.ResponseWriter, user *domain.User, removals []pendingGrantRemoval, boundTotal int, force bool) bool {
+	if boundTotal == 0 || force {
+		return false
+	}
+	usage := make([]aiModelUsageEntry, 0, boundTotal)
+	for _, rem := range removals {
+		usage = append(usage, cascadeUsage(user.ID, user.Email, rem.agents, rem.modelID)...)
+	}
+	writeInUseConflict(w,
+		fmt.Sprintf("removing grants would orphan %d bound agent(s); retry with force=true to revoke the grants, clear the bindings and converge the virtual keys", boundTotal),
+		usage)
+	return true
+}
+
+// pendingGrantRemoval is a grant that is about to be revoked together
+// with the user-owned agents still bound to that model.
+type pendingGrantRemoval struct {
+	modelID string
+	agents  []*domain.Agent
+}
+
+// validateDesiredModelIDs trims, dedupes and existence-checks the
+// requested grant set. On invalid input it writes the HTTP error and
+// returns ok=false. Extracted from setUserModels for cognitive
+// complexity (S-126 / S3776).
+func (s *Server) validateDesiredModelIDs(w http.ResponseWriter, r *http.Request, rawIDs []string) (map[string]bool, []string, bool) {
+	desired := make(map[string]bool, len(rawIDs))
+	desiredIDs := make([]string, 0, len(rawIDs))
+	for _, raw := range rawIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "model_ids entries must not be empty")
+			return nil, nil, false
+		}
+		if desired[id] {
+			continue
+		}
+		if _, err := s.store.GetAIModel(r.Context(), id); err != nil {
+			writeStorageError(w, err)
+			return nil, nil, false
+		}
+		desired[id] = true
+		desiredIDs = append(desiredIDs, id)
+	}
+	return desired, desiredIDs, true
+}
+
+// pendingGrantRemovals diffs current grants against the desired set and
+// resolves the agents still bound to each removal. Extracted from
+// setUserModels for cognitive complexity (S-126 / S3776).
+func (s *Server) pendingGrantRemovals(r *http.Request, userID string, current []*domain.UserModelGrant, desired map[string]bool) ([]pendingGrantRemoval, int, error) {
+	removals := make([]pendingGrantRemoval, 0)
+	boundTotal := 0
+	for _, grant := range current {
+		if desired[grant.AIModelID] {
+			continue
+		}
+		bound, err := s.modelBoundAgents(r.Context(), grant.AIModelID, userID)
+		if err != nil {
+			return nil, 0, err
+		}
+		if len(bound) > 0 {
+			boundTotal += len(bound)
+		}
+		removals = append(removals, pendingGrantRemoval{modelID: grant.AIModelID, agents: bound})
+	}
+	return removals, boundTotal, nil
+}
+
+// grantMissingModels applies the additions (grants present in the desired
+// set but not currently granted). Idempotent: an existing-grant conflict
+// is a no-op. Extracted from setUserModels (S-126 / S3776).
+func (s *Server) grantMissingModels(w http.ResponseWriter, r *http.Request, userID string, desiredIDs []string, currentSet map[string]bool, grantedBy string) bool {
+	for _, id := range desiredIDs {
+		if currentSet[id] {
+			continue
+		}
+		if _, err := s.store.GrantModelToUser(r.Context(), &domain.UserModelGrant{
+			GranteeUserID: userID,
+			AIModelID:     id,
+			GrantedBy:     grantedBy,
+		}); err != nil && !errors.Is(err, storage.ErrConflict) {
+			writeStorageError(w, err)
+			return false
+		}
+	}
+	return true
+}
+
+// revokeGrantsAndConverge revokes each pending removal and converges the
+// affected virtual keys (WP4 D9). Returns the accumulated convergence
+// failures; on a store error it writes the HTTP error and returns
+// ok=false. Extracted from setUserModels (S-126 / S3776).
+func (s *Server) revokeGrantsAndConverge(w http.ResponseWriter, r *http.Request, userID string, user *domain.User, removals []pendingGrantRemoval) ([]cascadeFailure, bool) {
+	var cascadeFailures []cascadeFailure
+	for _, rem := range removals {
+		meta, _ := json.Marshal(map[string]any{"user_id": userID, "model_id": rem.modelID, "forced": true})
+		if err := s.store.RevokeModelFromUser(s.pendingUserAuditCtx(r, "aimodel.grant.revoke", "user_model_grant", rem.modelID, "", meta), userID, rem.modelID); err != nil && !errors.Is(err, storage.ErrNotFound) {
+			writeStorageError(w, err)
+			return nil, false
+		}
+		model, err := s.store.GetAIModel(r.Context(), rem.modelID)
+		modelName := rem.modelID
+		if err == nil {
+			modelName = model.ModelName
+		}
+		_, failures := s.convergeAfterModelRemoval(r, rem.modelID, modelName, "revoked", rem.agents)
+		cascadeFailures = append(cascadeFailures, failures...)
+		s.notifyCascadeOwners(r.Context(), modelName, "revoked from user "+user.Email, rem.agents)
+	}
+	return cascadeFailures, true
 }
 
 // listMyModels is the self-service read for the agent UI: only models
