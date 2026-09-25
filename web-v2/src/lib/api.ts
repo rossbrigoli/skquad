@@ -118,7 +118,7 @@ export type LLMProvider = {
   api_key_ref?: string;
   default_model?: string;
   models?: unknown;
-  pricing?: unknown;
+  // S-128: provider-level pricing removed — pricing lives only on AIModel.
   status: string;
   registered_by?: string;
   created_at?: string;

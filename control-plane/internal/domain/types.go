@@ -393,7 +393,10 @@ type LLMProvider struct {
 	APIKeyRef    string          `json:"api_key_ref"`
 	DefaultModel string          `json:"default_model,omitempty"`
 	Models       json.RawMessage `json:"models"`
-	Pricing      json.RawMessage `json:"pricing"`
+	// S-128: provider-level Pricing removed from the JSON surface. Pricing
+	// lives exclusively on AIModel (ADR-0010 D8); the legacy
+	// providers.pricing DB column is intentionally left in place (never
+	// edit applied migrations) but is no longer read or written.
 	Status       ResourceStatus  `json:"status"`
 	RegisteredBy string          `json:"registered_by"`
 	CreatedAt    time.Time       `json:"created_at"`

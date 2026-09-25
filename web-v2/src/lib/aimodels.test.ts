@@ -9,6 +9,7 @@ import {
   formatRate,
   grantedModelIds,
   grantDiff,
+  groupModelsByProvider,
   inUseConflict,
   isDuplicateModel,
   isPlatformAdmin,
@@ -278,5 +279,57 @@ describe("role gating", () => {
     expect(isPlatformAdmin("")).toBe(false);
     expect(isPlatformAdmin(undefined)).toBe(false);
     expect(isPlatformAdmin(null)).toBe(false);
+  });
+});
+
+// S-128 — grouping for the merged AI Models hierarchy tab
+// (providers as groups, models nested underneath).
+function provider(id: string, name = id) {
+  return { id, name, kind: "openai", base_url: `https://${id}.test`, status: "active" };
+}
+
+function nestedModel(id: string, providerId: string, name = id): AIModel {
+  return {
+    id,
+    provider_id: providerId,
+    display_name: name,
+    model_name: name,
+    context_window: 200000,
+    supports_tools: true,
+    pricing: { input_per_1m: 1, cached_input_per_1m: 0.1, cache_write_per_1m: 1.25, output_per_1m: 2 },
+    long_context_threshold_tokens: 0,
+    status: "active",
+  };
+}
+
+describe("groupModelsByProvider (S-128)", () => {
+  it("nests models under their provider in provider-list order", () => {
+    const providers = [provider("p-1"), provider("p-2")];
+    const models = [nestedModel("m-2", "p-2"), nestedModel("m-1a", "p-1"), nestedModel("m-1b", "p-1")];
+    const { groups, orphans } = groupModelsByProvider(providers, models);
+    expect(orphans).toEqual([]);
+    expect(groups.map((g) => g.provider.id)).toEqual(["p-1", "p-2"]);
+    expect(groups[0].models.map((m) => m.id)).toEqual(["m-1a", "m-1b"]);
+    expect(groups[1].models.map((m) => m.id)).toEqual(["m-2"]);
+  });
+
+  it("keeps providers with no models as empty groups", () => {
+    const { groups, orphans } = groupModelsByProvider([provider("p-empty")], []);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].models).toEqual([]);
+    expect(orphans).toEqual([]);
+  });
+
+  it("returns models with unknown/missing providers as orphans", () => {
+    const models = [nestedModel("m-ghost", "p-gone"), nestedModel("m-ok", "p-1")];
+    const { groups, orphans } = groupModelsByProvider([provider("p-1")], models);
+    expect(groups[0].models.map((m) => m.id)).toEqual(["m-ok"]);
+    expect(orphans.map((m) => m.id)).toEqual(["m-ghost"]);
+  });
+
+  it("handles empty provider list (everything orphaned)", () => {
+    const { groups, orphans } = groupModelsByProvider([], [nestedModel("m-1", "p-x")]);
+    expect(groups).toEqual([]);
+    expect(orphans.map((m) => m.id)).toEqual(["m-1"]);
   });
 });

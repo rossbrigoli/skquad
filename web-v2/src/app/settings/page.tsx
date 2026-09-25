@@ -26,6 +26,7 @@ import {
   formatInUseMessage,
   grantedModelIds,
   grantDiff,
+  groupModelsByProvider,
   inUseConflict,
   isDuplicateModel,
   isPlatformAdmin,
@@ -134,16 +135,32 @@ export default function SettingsPage() {
   // WP6 (S-111): AI Models + Access are admin-only surfaces. The tab
   // buttons are not rendered for non-admins at all (not just disabled),
   // and the content render is gated again as defence in depth.
-  const activeTab: Tab = !isAdmin && (tab === "ai-models" || tab === "access") ? "providers" : tab;
+  // S-128: providers + AI models are merged into one admin "AI Models"
+  // tab. Admins never get the standalone providers tab (it maps to the
+  // merged hierarchy view); non-admins keep the read-only providers
+  // list and never see the merged tab.
+  const activeTab: Tab = isAdmin
+    ? tab === "providers"
+      ? "ai-models"
+      : tab
+    : tab === "ai-models" || tab === "access"
+      ? "providers"
+      : tab;
 
   return (
     <AuthGate>
       <AppShell>
         <h1 className="page-title">Settings</h1>
         <div className="tabs">
-          <button type="button" className={activeTab === "providers" ? "active" : ""} onClick={() => setTab("providers")}>
-            LLM providers
-          </button>
+          {isAdmin ? (
+            <button type="button" className={activeTab === "ai-models" ? "active" : ""} onClick={() => setTab("ai-models")}>
+              AI Models
+            </button>
+          ) : (
+            <button type="button" className={activeTab === "providers" ? "active" : ""} onClick={() => setTab("providers")}>
+              LLM providers
+            </button>
+          )}
           <button type="button" className={activeTab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>
             Resources
           </button>
@@ -166,9 +183,9 @@ export default function SettingsPage() {
           </div>
         ) : null}
 
-        {activeTab === "providers" ? <ProvidersTab isAdmin={isAdmin} /> : null}
+        {!isAdmin && activeTab === "providers" ? <ProvidersTab isAdmin={false} /> : null}
         {activeTab === "resources" ? <ResourcesTab isAdmin={isAdmin} /> : null}
-        {isAdmin && activeTab === "ai-models" ? <AIModelsTab isAdmin={isAdmin} /> : null}
+        {isAdmin && activeTab === "ai-models" ? <ModelHierarchyTab /> : null}
         {isAdmin && activeTab === "access" ? <AccessTab /> : null}
       </AppShell>
     </AuthGate>
@@ -336,19 +353,26 @@ function ResourcesTab({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-// WP6 (S-111) — AI Models tab: admin registry of grantable models
-// (ADR-0010 D1/D2). List shows every contract field including the four
-// per-1M pricing rates; deprecate reports its blast radius; delete reuses
-// the S-103 in-use ConfirmDialog pattern with slot-aware usage.
-function AIModelsTab({ isAdmin }: { isAdmin: boolean }) {
+// S-128 — merged admin tab: the LLM Providers > AI Models hierarchy on
+// one screen. Providers render as credential-holder group headers (name,
+// kind, base_url, default model) with their registered models nested
+// underneath. All pricing lives on the model rows only — provider rows
+// and the provider form carry no pricing (ADR-0010 D8 made the model the
+// pricing + grant unit; the UI now matches). Create/edit/deprecate/delete
+// flows for both levels are preserved from the former ProvidersTab and
+// AIModelsTab (S-111).
+function ModelHierarchyTab() {
   const { token } = useAuth();
-  const models = useApi<AIModel[]>("/ai-models", 60000);
   const providers = useApi<LLMProvider[]>("/registry/llm-providers", 60000);
-  const [editing, setEditing] = useState<AIModel | null>(null);
-  const [creating, setCreating] = useState(false);
+  const models = useApi<AIModel[]>("/ai-models", 60000);
+  const [editingProvider, setEditingProvider] = useState<LLMProvider | null>(null);
+  const [creatingProvider, setCreatingProvider] = useState(false);
+  const [editingModel, setEditingModel] = useState<AIModel | null>(null);
+  const [creatingModel, setCreatingModel] = useState(false);
   const [report, setReport] = useState("");
-  const items = models.data || [];
-  const providerNames = new Map((providers.data || []).map((p) => [p.id, p.name]));
+
+  const { groups, orphans } = groupModelsByProvider(providers.data || [], models.data || []);
+  const loading = providers.loading || models.loading;
 
   async function deprecate(model: AIModel) {
     try {
@@ -360,15 +384,51 @@ function AIModelsTab({ isAdmin }: { isAdmin: boolean }) {
     }
   }
 
+  // modelRow renders one nested model row under its provider group. The
+  // provider name is the group header, so the row subtitle omits it; the
+  // four per-1M rates stay visible (pricing lives here, not on the
+  // provider).
+  function modelRow(m: AIModel) {
+    const row = modelRowFields(m);
+    return (
+      <div key={m.id} className="entity-row model-nested-row">
+        <div className="entity-main">
+          <span className="entity-title">{row.title}</span>
+          <span className="entity-meta">
+            {m.model_name} · {row.contextWindow} · {row.tools} · {row.longContextThreshold}
+          </span>
+          <span className="entity-meta">
+            {row.rates.map((r) => `${r.label}: ${r.value}`).join(" · ")}
+          </span>
+        </div>
+        <div className="entity-side">
+          <StatusChip status={m.status === "active" ? "idle" : m.status === "deprecated" ? "paused" : "error"} />
+          <button type="button" className="btn btn-sm" onClick={() => setEditingModel(m)}>
+            Edit
+          </button>
+          {m.status === "active" ? (
+            <button type="button" className="btn btn-sm btn-danger" onClick={() => void deprecate(m)}>
+              Deprecate
+            </button>
+          ) : null}
+          <DeleteAIModelButton model={m} onDeleted={() => void models.refresh()} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <section>
       <div className="section-head">
         <h2>AI Models</h2>
-        {isAdmin ? (
-          <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" className="btn btn-primary" onClick={() => setCreatingModel(true)}>
             + Register model
           </button>
-        ) : null}
+          <button type="button" className="btn" onClick={() => setCreatingProvider(true)}>
+            + Register provider
+          </button>
+        </div>
       </div>
       {report ? (
         <div className="notice" role="status" style={{ marginBottom: "var(--space-4)" }}>
@@ -378,57 +438,99 @@ function AIModelsTab({ isAdmin }: { isAdmin: boolean }) {
           </button>
         </div>
       ) : null}
+      {providers.error ? <div className="notice error">{providers.error}</div> : null}
       {models.error ? <div className="notice error">{models.error}</div> : null}
-      {items.length === 0 && !models.loading ? (
-        <EmptyState title="No AI models registered" hint="Register models here, then grant them to users under Access." />
-      ) : (
+      {groups.length === 0 && orphans.length === 0 && !loading ? (
+        <EmptyState
+          title="No AI models registered"
+          hint="Register a provider (credential holder), then add its models. Models are the unit granted to users under Access."
+        />
+      ) : null}
+      {groups.length > 0 || orphans.length > 0 ? (
         <div className="entity-list">
-          {items.map((m) => {
-            const row = modelRowFields(m, providerNames.get(m.provider_id));
-            return (
-              <div key={m.id} className="entity-row">
+          {groups.map(({ provider, models: providerModels }) => (
+            <div key={provider.id} className="provider-group">
+              <div className="entity-row provider-header-row">
                 <div className="entity-main">
-                  <span className="entity-title">{row.title}</span>
+                  <span className="entity-title">{provider.name}</span>
                   <span className="entity-meta">
-                    {row.subtitle} · {row.contextWindow} · {row.tools} · {row.longContextThreshold}
-                  </span>
-                  <span className="entity-meta">
-                    {row.rates.map((r) => `${r.label}: ${r.value}`).join(" · ")}
+                    {provider.kind} · {provider.base_url} · default {provider.default_model || "—"}
                   </span>
                 </div>
                 <div className="entity-side">
-                  <StatusChip status={m.status === "active" ? "idle" : m.status === "deprecated" ? "paused" : "error"} />
-                  {isAdmin ? (
-                    <button type="button" className="btn btn-sm" onClick={() => setEditing(m)}>
-                      Edit
-                    </button>
-                  ) : null}
-                  {isAdmin && m.status === "active" ? (
-                    <button type="button" className="btn btn-sm btn-danger" onClick={() => void deprecate(m)}>
+                  <StatusChip
+                    status={provider.status === "active" ? "idle" : provider.status === "deprecated" ? "paused" : "error"}
+                  />
+                  <button type="button" className="btn btn-sm" onClick={() => setEditingProvider(provider)}>
+                    Edit
+                  </button>
+                  {provider.status === "active" ? (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-danger"
+                      onClick={async () => {
+                        await apiPost(`/registry/llm-providers/${provider.id}/deprecate`, token, {});
+                        await providers.refresh();
+                      }}
+                    >
                       Deprecate
                     </button>
                   ) : null}
-                  {isAdmin ? (
-                    <DeleteAIModelButton model={m} onDeleted={() => void models.refresh()} />
-                  ) : null}
+                  <DeleteResourceButton
+                    path={`/registry/llm-providers/${provider.id}`}
+                    name={provider.name}
+                    onDeleted={() => void providers.refresh()}
+                  />
                 </div>
               </div>
-            );
-          })}
+              <div className="provider-models">
+                {providerModels.length === 0 ? (
+                  <div className="provider-empty">No models registered under this provider yet.</div>
+                ) : (
+                  providerModels.map((m) => modelRow(m))
+                )}
+              </div>
+            </div>
+          ))}
+          {orphans.length > 0 ? (
+            <div className="provider-group orphan-group">
+              <div className="entity-row provider-header-row">
+                <div className="entity-main">
+                  <span className="entity-title">Unassigned models</span>
+                  <span className="entity-meta">No matching provider found — re-register the provider or delete these models.</span>
+                </div>
+              </div>
+              <div className="provider-models">{orphans.map((m) => modelRow(m))}</div>
+            </div>
+          ) : null}
         </div>
-      )}
-      {(creating || editing) && (
+      ) : null}
+      {(creatingModel || editingModel) && (
         <AIModelModal
-          model={editing}
+          model={editingModel}
           providers={providers.data || []}
           onClose={() => {
-            setCreating(false);
-            setEditing(null);
+            setCreatingModel(false);
+            setEditingModel(null);
           }}
           onSaved={() => {
-            setCreating(false);
-            setEditing(null);
+            setCreatingModel(false);
+            setEditingModel(null);
             models.refresh();
+          }}
+        />
+      )}
+      {(creatingProvider || editingProvider) && (
+        <ProviderModal
+          provider={editingProvider}
+          onClose={() => {
+            setCreatingProvider(false);
+            setEditingProvider(null);
+          }}
+          onSaved={() => {
+            setCreatingProvider(false);
+            setEditingProvider(null);
+            providers.refresh();
           }}
         />
       )}
@@ -808,7 +910,8 @@ function ProviderModal({
   const [apiKeyRef, setApiKeyRef] = useState(provider?.api_key_ref || "");
   const [defaultModel, setDefaultModel] = useState(provider?.default_model || "");
   const [models, setModels] = useState(provider?.models ? JSON.stringify(provider.models, null, 2) : "");
-  const [pricing, setPricing] = useState(provider?.pricing ? JSON.stringify(provider.pricing, null, 2) : "");
+  // S-128: no provider-level pricing — the pricing field was removed from
+  // the form and the payload; rates belong on the AI Models underneath.
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -831,7 +934,6 @@ function ProviderModal({
               api_key_ref: apiKeyRef.trim(),
               default_model: defaultModel.trim(),
               models: parseJsonField(models, "Models"),
-              pricing: parseJsonField(pricing, "Pricing"),
             };
             if (provider) {
               await apiPatch(`/registry/llm-providers/${provider.id}`, token, body);
@@ -872,10 +974,6 @@ function ProviderModal({
         <label className="field">
           <span>Models (JSON, optional)</span>
           <textarea value={models} onChange={(e) => setModels(e.target.value)} placeholder='["gpt-5.5", "gpt-5.4-mini"]' />
-        </label>
-        <label className="field">
-          <span>Pricing (JSON, optional)</span>
-          <textarea value={pricing} onChange={(e) => setPricing(e.target.value)} placeholder='{"input_per_1k": 0.01, "output_per_1k": 0.03}' />
         </label>
       </ModalForm>
     </Modal>

@@ -1490,3 +1490,27 @@ button.nav-group-parent {
 .collapsible-body {
   margin-top: var(--space-3);
 }
+
+/* S-128 — provider > model hierarchy in the merged Settings → AI Models tab */
+.provider-group {
+  border-bottom: 1px solid var(--line);
+}
+
+.provider-group:last-child {
+  border-bottom: none;
+}
+
+.provider-header-row {
+  background: var(--surface-sunken);
+}
+
+.provider-models {
+  margin-left: var(--space-5);
+  border-left: 2px solid var(--line);
+}
+
+.provider-empty {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}

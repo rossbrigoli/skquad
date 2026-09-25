@@ -611,7 +611,8 @@ func (s *Server) createLLMProvider(w http.ResponseWriter, r *http.Request) {
 		APIKeyRef    string          `json:"api_key_ref"`
 		DefaultModel string          `json:"default_model"`
 		Models       json.RawMessage `json:"models"`
-		Pricing      json.RawMessage `json:"pricing"`
+		// S-128: "pricing" is no longer accepted on providers — pricing
+		// belongs to AI Models only. Unknown fields are ignored by decode.
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -622,9 +623,6 @@ func (s *Server) createLLMProvider(w http.ResponseWriter, r *http.Request) {
 	if len(req.Models) == 0 {
 		req.Models = json.RawMessage(`[]`)
 	}
-	if len(req.Pricing) == 0 {
-		req.Pricing = json.RawMessage(`{}`)
-	}
 	u := currentUser(r.Context())
 	provider := &domain.LLMProvider{
 		Name:         strings.TrimSpace(req.Name),
@@ -633,7 +631,6 @@ func (s *Server) createLLMProvider(w http.ResponseWriter, r *http.Request) {
 		APIKeyRef:    req.APIKeyRef,
 		DefaultModel: strings.TrimSpace(req.DefaultModel),
 		Models:       req.Models,
-		Pricing:      req.Pricing,
 		Status:       domain.ResourceActive,
 		RegisteredBy: u.ID,
 	}
@@ -679,7 +676,7 @@ func (s *Server) updateLLMProvider(w http.ResponseWriter, r *http.Request) {
 		APIKeyRef    *string          `json:"api_key_ref"`
 		DefaultModel *string          `json:"default_model"`
 		Models       *json.RawMessage `json:"models"`
-		Pricing      *json.RawMessage `json:"pricing"`
+		// S-128: "pricing" no longer accepted on providers (see create).
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -710,9 +707,6 @@ func (s *Server) updateLLMProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Models != nil {
 		provider.Models = *req.Models
-	}
-	if req.Pricing != nil {
-		provider.Pricing = *req.Pricing
 	}
 	updated, err := s.store.UpdateLLMProvider(s.pendingUserAuditCtx(r, "registry.llm_provider.update", string(domain.ResLLMProvider), provider.ID, "", nil), provider)
 	if err != nil {

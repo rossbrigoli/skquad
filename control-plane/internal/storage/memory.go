@@ -2153,7 +2153,6 @@ func cloneLLMProvider(p *domain.LLMProvider) *domain.LLMProvider {
 	}
 	v := *p
 	v.Models = slices.Clone(p.Models)
-	v.Pricing = slices.Clone(p.Pricing)
 	return &v
 }
 

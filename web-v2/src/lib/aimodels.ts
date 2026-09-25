@@ -6,7 +6,7 @@
 // React components so the contract shape is unit-testable in the node
 // environment, matching this repo's "logic layer" test philosophy.
 
-import { ApiError } from "./api";
+import { ApiError, type LLMProvider } from "./api";
 
 // --- Types mirroring control-plane JSON (domain.AIModel, model_cascade.go) ---
 
@@ -254,6 +254,37 @@ export type AIModelRow = {
   longContextThreshold: string;
   status: string;
 };
+
+// S-128 — hierarchy grouping for the merged Settings → AI Models tab:
+// providers are credential-holder groups, models nest underneath.
+export type ProviderModelGroup = {
+  provider: LLMProvider;
+  models: AIModel[];
+};
+
+// groupModelsByProvider orders groups by the providers list and keeps
+// each bucket in the models list order. Models whose provider is missing
+// (data drift — the FK should prevent this, but the UI must not hide
+// them) come back as `orphans` for a separate "Unassigned" section.
+export function groupModelsByProvider(
+  providers: LLMProvider[],
+  models: AIModel[],
+): { groups: ProviderModelGroup[]; orphans: AIModel[] } {
+  const providerIds = new Set(providers.map((p) => p.id));
+  const bucketed = new Map<string, AIModel[]>();
+  const orphans: AIModel[] = [];
+  for (const m of models) {
+    if (!providerIds.has(m.provider_id)) {
+      orphans.push(m);
+      continue;
+    }
+    const bucket = bucketed.get(m.provider_id);
+    if (bucket) bucket.push(m);
+    else bucketed.set(m.provider_id, [m]);
+  }
+  const groups = providers.map((provider) => ({ provider, models: bucketed.get(provider.id) ?? [] }));
+  return { groups, orphans };
+}
 
 // modelRowFields is the single source of truth for what the AI Models
 // list row renders — every contract field, including all four rates.
