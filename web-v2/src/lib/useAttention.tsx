@@ -41,12 +41,12 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
     let active = true;
     const load = async () => {
       try {
-        const squads = await apiGet<Squad[]>("/squads", token);
+        const squads = (await apiGet<Squad[]>("/squads", token)) ?? [];
         const perSquad = await Promise.all(
           squads.map(async (squad) => {
             const [board, agents] = await Promise.all([
               apiGet<BoardPayload>(`/squads/${squad.id}/board`, token).catch(() => null),
-              apiGet<Agent[]>(`/squads/${squad.id}/agents`, token).catch(() => [] as Agent[]),
+              apiGet<Agent[]>(`/squads/${squad.id}/agents`, token).catch(() => [] as Agent[]).then((a) => a ?? []),
             ]);
             return { squadId: squad.id, tasks: board?.tasks || [], agents: agents || [] };
           }),

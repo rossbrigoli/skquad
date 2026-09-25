@@ -355,7 +355,7 @@ func (p *PostgresStore) ListUsers(ctx context.Context) ([]*domain.User, error) {
 	}
 	defer rows.Close()
 
-	var users []*domain.User
+	users := make([]*domain.User, 0)
 	for rows.Next() {
 		u, err := scanUser(rows)
 		if err != nil {
@@ -479,7 +479,7 @@ func (p *PostgresStore) DeleteSquad(ctx context.Context, id string) error {
 		return mapPgErr(err)
 	}
 	defer rows.Close()
-	var agents []*domain.Agent
+	agents := make([]*domain.Agent, 0)
 	for rows.Next() {
 		agent, err := scanAgent(rows)
 		if err != nil {
@@ -533,7 +533,7 @@ func (p *PostgresStore) ListSquads(ctx context.Context, ownerID string) ([]*doma
 	}
 	defer rows.Close()
 
-	var squads []*domain.Squad
+	squads := make([]*domain.Squad, 0)
 	for rows.Next() {
 		s, err := scanSquad(rows)
 		if err != nil {
@@ -675,7 +675,7 @@ func (p *PostgresStore) ListAgents(ctx context.Context, squadID string) ([]*doma
 	}
 	defer rows.Close()
 
-	var agents []*domain.Agent
+	agents := make([]*domain.Agent, 0)
 	for rows.Next() {
 		a, err := scanAgent(rows)
 		if err != nil {
@@ -825,7 +825,7 @@ func (p *PostgresStore) ListAllAgents(ctx context.Context) ([]*domain.Agent, err
 	}
 	defer rows.Close()
 
-	var agents []*domain.Agent
+	agents := make([]*domain.Agent, 0)
 	for rows.Next() {
 		a, err := scanAgent(rows)
 		if err != nil {
@@ -877,7 +877,7 @@ func (p *PostgresStore) ListGrants(ctx context.Context, squadID string) ([]*doma
 	}
 	defer rows.Close()
 
-	var grants []*domain.AccessGrant
+	grants := make([]*domain.AccessGrant, 0)
 	for rows.Next() {
 		grant, err := scanGrant(rows)
 		if err != nil {
@@ -1067,7 +1067,7 @@ func (p *PostgresStore) ListLLMProviders(ctx context.Context) ([]*domain.LLMProv
 	}
 	defer rows.Close()
 
-	var providers []*domain.LLMProvider
+	providers := make([]*domain.LLMProvider, 0)
 	for rows.Next() {
 		provider, err := scanLLMProvider(rows)
 		if err != nil {
@@ -1139,7 +1139,7 @@ func (p *PostgresStore) ListAIModels(ctx context.Context, status domain.Resource
 	}
 	defer rows.Close()
 
-	var models []*domain.AIModel
+	models := make([]*domain.AIModel, 0)
 	for rows.Next() {
 		model, err := scanAIModel(rows)
 		if err != nil {
@@ -1324,7 +1324,7 @@ func (p *PostgresStore) queryUserModelGrants(ctx context.Context, where string, 
 	}
 	defer rows.Close()
 
-	var grants []*domain.UserModelGrant
+	grants := make([]*domain.UserModelGrant, 0)
 	for rows.Next() {
 		grant, err := scanUserModelGrant(rows)
 		if err != nil {
@@ -1466,7 +1466,7 @@ func (p *PostgresStore) ListResources(ctx context.Context, typ domain.ResourceTy
 	}
 	defer rows.Close()
 
-	var resources []*domain.RegistryResource
+	resources := make([]*domain.RegistryResource, 0)
 	for rows.Next() {
 		resource, err := scanResource(rows)
 		if err != nil {
@@ -1506,7 +1506,7 @@ func (p *PostgresStore) ListAgentPermissions(ctx context.Context, agentID string
 	}
 	defer rows.Close()
 
-	var perms []*domain.AgentPermission
+	perms := make([]*domain.AgentPermission, 0)
 	for rows.Next() {
 		perm, err := scanAgentPermission(rows)
 		if err != nil {
@@ -1531,7 +1531,7 @@ func (p *PostgresStore) ListPermissionsByResource(ctx context.Context, typ domai
 	}
 	defer rows.Close()
 
-	var perms []*domain.AgentPermission
+	perms := make([]*domain.AgentPermission, 0)
 	for rows.Next() {
 		perm, err := scanAgentPermission(rows)
 		if err != nil {
@@ -1695,7 +1695,7 @@ func (p *PostgresStore) ListAudit(ctx context.Context, squadID string, limit int
 	}
 	defer rows.Close()
 
-	var entries []*domain.AuditEntry
+	entries := make([]*domain.AuditEntry, 0)
 	for rows.Next() {
 		entry, err := scanAuditEntry(rows)
 		if err != nil {
@@ -1911,7 +1911,7 @@ func (p *PostgresStore) ListAgentTasks(ctx context.Context, agentID string) ([]*
 	}
 	defer rows.Close()
 
-	var tasks []*domain.Task
+	tasks := make([]*domain.Task, 0)
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
@@ -2278,7 +2278,7 @@ func (p *PostgresStore) ListAgentMemory(ctx context.Context, agentID string, squ
 	}
 	defer rows.Close()
 
-	var memories []*domain.AgentMemory
+	memories := make([]*domain.AgentMemory, 0)
 	for rows.Next() {
 		memory, err := scanAgentMemory(rows)
 		if err != nil {
@@ -3167,7 +3167,7 @@ func scanInboxMessage(row scanner) (*domain.InboxMessage, error) {
 }
 
 func scanMessages(rows pgx.Rows) ([]*domain.Message, error) {
-	var messages []*domain.Message
+	messages := make([]*domain.Message, 0)
 	for rows.Next() {
 		msg, err := scanMessage(rows)
 		if err != nil {

@@ -32,11 +32,13 @@ export default function CostsPage() {
     let active = true;
     const load = async () => {
       try {
-        const squads = await apiGet<Squad[]>("/squads", token);
+        // `?? []`: a Go nil slice marshals as JSON null on empty collections;
+        // guard so .map never sees null (S-121 crash class).
+        const squads = (await apiGet<Squad[]>("/squads", token)) ?? [];
         const perSquad = await Promise.all(
           squads.map(async (squad) => {
             const total = await apiGet<MeteringSummary>(`/squads/${squad.id}/metering`, token).catch(() => null);
-            const agents = await apiGet<Agent[]>(`/squads/${squad.id}/agents`, token).catch(() => [] as Agent[]);
+            const agents = (await apiGet<Agent[]>(`/squads/${squad.id}/agents`, token).catch(() => [] as Agent[])) ?? [];
             const agentCosts = await Promise.all(
               agents.map(async (agent) => ({
                 agent,
