@@ -62,6 +62,9 @@ func fetchProviderModels(ctx context.Context, client *http.Client, baseURL, apiK
 	}
 	req.Header.Set("Accept", "application/json")
 
+	// #nosec G704 -- URL is built from the admin-registered provider base_url
+	// on a platform-admin-only route; no attacker-controlled component reaches
+	// this request (same trust model as the LiteLLM admin client).
 	resp, err := client.Do(req)
 	if err != nil {
 		var netErr net.Error
