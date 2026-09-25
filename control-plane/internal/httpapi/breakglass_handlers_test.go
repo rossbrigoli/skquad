@@ -198,12 +198,10 @@ func TestBreakGlassLoginIssuesWorkingAdminToken(t *testing.T) {
 
 	// And it can actually perform an admin-only mutation, which is the whole point.
 	dep := bgPost(t, handler, "/api/v1/registry/llm-providers", map[string]any{
-		"name":          "bg-provider",
-		"kind":          "openai",
-		"base_url":      "https://api.example.com/v1",
-		"api_key_ref":   "k8s://secret/bg-key",
-		"default_model": "gpt-test",
-		"models":        []string{"gpt-test"},
+		"name":        "bg-provider",
+		"kind":        "openai",
+		"base_url":    "https://api.example.com/v1",
+		"api_key_ref": "k8s://secret/bg-key",
 	}, "100.64.9.9:5555", map[string]string{"Authorization": "Bearer " + out.Token})
 	if dep.Code != http.StatusCreated && dep.Code != http.StatusOK {
 		t.Fatalf("admin mutation with break-glass token = %d, want 200/201; body=%s", dep.Code, dep.Body.String())

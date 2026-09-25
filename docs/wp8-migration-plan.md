@@ -1,6 +1,6 @@
 # WP8 Migration Plan — AIModel-8 / S-113: Backfill agent model bindings & drop the `llm_provider` grant type
 
-Status: EXECUTING — 0013 backfill + step-4 cutover implemented & validated 2026-09-24 (scratch-DB round-trip: live-shaped seed → backfill → idempotent re-run → flat/per-model pricing → unresolvable-left-unbound). 0014 drops remain next-cycle per gates.
+Status: 0014 IMPLEMENTED (this branch, WP8 closeout) — legacy code paths removed from control-plane + web-v2, and `0014_drop_legacy_llm_provider.sql` written (delete llm_provider grants → tighten resource_type CHECK → drop agents.default_provider/default_model + providers.default_model/models/pricing; idempotent). Prior: 0013 backfill live since 2026-09-24; all 3 agents bound; gates V1-V3 = 0. 0014 ships on next deploy per the ≥1-release-clean gate (docs §3).
 Date: 2026-09-24
 Baseline: `main` @ 3dbb458 (ADR-0010 epic WP1–WP7 merged)
 

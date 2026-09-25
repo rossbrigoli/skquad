@@ -218,9 +218,7 @@ function ProvidersTab({ isAdmin }: { isAdmin: boolean }) {
             <div key={p.id} className="entity-row">
               <div className="entity-main">
                 <span className="entity-title">{p.name}</span>
-                <span className="entity-meta">
-                  {p.kind} · {p.base_url} · default {p.default_model || "—"}
-                </span>
+                <span className="entity-meta">{p.kind} · {p.base_url}</span>
               </div>
               <div className="entity-side">
                 <StatusChip status={p.status === "active" ? "idle" : p.status === "deprecated" ? "paused" : "error"} />
@@ -453,9 +451,7 @@ function ModelHierarchyTab() {
               <div className="entity-row provider-header-row">
                 <div className="entity-main">
                   <span className="entity-title">{provider.name}</span>
-                  <span className="entity-meta">
-                    {provider.kind} · {provider.base_url} · default {provider.default_model || "—"}
-                  </span>
+                  <span className="entity-meta">{provider.kind} · {provider.base_url}</span>
                 </div>
                 <div className="entity-side">
                   <StatusChip
@@ -908,10 +904,9 @@ function ProviderModal({
   const [kind, setKind] = useState(provider?.kind || "openai");
   const [baseUrl, setBaseUrl] = useState(provider?.base_url || "");
   const [apiKeyRef, setApiKeyRef] = useState(provider?.api_key_ref || "");
-  const [defaultModel, setDefaultModel] = useState(provider?.default_model || "");
-  const [models, setModels] = useState(provider?.models ? JSON.stringify(provider.models, null, 2) : "");
-  // S-128: no provider-level pricing — the pricing field was removed from
-  // the form and the payload; rates belong on the AI Models underneath.
+  // WP8 (0014): default_model / models inputs removed from the provider
+  // form — model configuration lives on the AI Models underneath.
+  // S-128: no provider-level pricing — rates belong on the AI Models.
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -932,8 +927,6 @@ function ProviderModal({
               kind: kind.trim(),
               base_url: baseUrl.trim(),
               api_key_ref: apiKeyRef.trim(),
-              default_model: defaultModel.trim(),
-              models: parseJsonField(models, "Models"),
             };
             if (provider) {
               await apiPatch(`/registry/llm-providers/${provider.id}`, token, body);
@@ -966,15 +959,7 @@ function ProviderModal({
             <span>API key ref</span>
             <input value={apiKeyRef} onChange={(e) => setApiKeyRef(e.target.value)} placeholder="k8s secret / vault ref (never the key itself)" />
           </label>
-          <label className="field">
-            <span>Default model</span>
-            <input value={defaultModel} onChange={(e) => setDefaultModel(e.target.value)} placeholder="gpt-5.5" />
-          </label>
         </div>
-        <label className="field">
-          <span>Models (JSON, optional)</span>
-          <textarea value={models} onChange={(e) => setModels(e.target.value)} placeholder='["gpt-5.5", "gpt-5.4-mini"]' />
-        </label>
       </ModalForm>
     </Modal>
   );

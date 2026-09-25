@@ -605,14 +605,17 @@ func (s *Server) createLLMProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name         string          `json:"name"`
-		Kind         string          `json:"kind"`
-		BaseURL      string          `json:"base_url"`
-		APIKeyRef    string          `json:"api_key_ref"`
-		DefaultModel string          `json:"default_model"`
-		Models       json.RawMessage `json:"models"`
-		// S-128: "pricing" is no longer accepted on providers — pricing
-		// belongs to AI Models only. Unknown fields are ignored by decode.
+		Name      string `json:"name"`
+		Kind      string `json:"kind"`
+		BaseURL   string `json:"base_url"`
+		APIKeyRef string `json:"api_key_ref"`
+		// WP8 (0014): legacy "default_model"/"models" (and S-128's
+		// "pricing") are no longer honored on providers. decodeJSON
+		// rejects unknown fields, so the deprecated keys are accepted
+		// here as blank fields and discarded.
+		LegacyDefaultModel json.RawMessage `json:"default_model,omitempty"`
+		LegacyModels       json.RawMessage `json:"models,omitempty"`
+		LegacyPricing      json.RawMessage `json:"pricing,omitempty"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -620,17 +623,12 @@ func (s *Server) createLLMProvider(w http.ResponseWriter, r *http.Request) {
 	if !validateName(w, req.Name) || !validateRequired(w, "kind", req.Kind) || !validateRequired(w, "base_url", req.BaseURL) {
 		return
 	}
-	if len(req.Models) == 0 {
-		req.Models = json.RawMessage(`[]`)
-	}
 	u := currentUser(r.Context())
 	provider := &domain.LLMProvider{
 		Name:         strings.TrimSpace(req.Name),
 		Kind:         strings.TrimSpace(req.Kind),
 		BaseURL:      strings.TrimSpace(req.BaseURL),
 		APIKeyRef:    req.APIKeyRef,
-		DefaultModel: strings.TrimSpace(req.DefaultModel),
-		Models:       req.Models,
 		Status:       domain.ResourceActive,
 		RegisteredBy: u.ID,
 	}
@@ -670,13 +668,15 @@ func (s *Server) updateLLMProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name         *string          `json:"name"`
-		Kind         *string          `json:"kind"`
-		BaseURL      *string          `json:"base_url"`
-		APIKeyRef    *string          `json:"api_key_ref"`
-		DefaultModel *string          `json:"default_model"`
-		Models       *json.RawMessage `json:"models"`
-		// S-128: "pricing" no longer accepted on providers (see create).
+		Name      *string `json:"name"`
+		Kind      *string `json:"kind"`
+		BaseURL   *string `json:"base_url"`
+		APIKeyRef *string `json:"api_key_ref"`
+		// WP8 (0014): legacy "default_model"/"models" accepted-and-
+		// discarded on update too (see create for why).
+		LegacyDefaultModel json.RawMessage `json:"default_model,omitempty"`
+		LegacyModels       json.RawMessage `json:"models,omitempty"`
+		LegacyPricing      json.RawMessage `json:"pricing,omitempty"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -701,12 +701,6 @@ func (s *Server) updateLLMProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.APIKeyRef != nil {
 		provider.APIKeyRef = *req.APIKeyRef
-	}
-	if req.DefaultModel != nil {
-		provider.DefaultModel = strings.TrimSpace(*req.DefaultModel)
-	}
-	if req.Models != nil {
-		provider.Models = *req.Models
 	}
 	updated, err := s.store.UpdateLLMProvider(s.pendingUserAuditCtx(r, "registry.llm_provider.update", string(domain.ResLLMProvider), provider.ID, "", nil), provider)
 	if err != nil {
@@ -1382,13 +1376,17 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name              string          `json:"name"`
-		Role              string          `json:"role"`
-		SystemPrompt      string          `json:"system_prompt"`
-		DefaultProviderID string          `json:"default_provider_id"`
-		DefaultModel      string          `json:"default_model"`
-		Permissions       json.RawMessage `json:"permissions"`
-		IdleTimeoutSec    int             `json:"idle_timeout_sec"`
+		Name           string          `json:"name"`
+		Role           string          `json:"role"`
+		SystemPrompt   string          `json:"system_prompt"`
+		Permissions    json.RawMessage `json:"permissions"`
+		IdleTimeoutSec int             `json:"idle_timeout_sec"`
+		// WP8 (0014): legacy "default_provider_id"/"default_model" are
+		// accepted-and-discarded (decodeJSON rejects unknown fields, so
+		// they are declared as blank fields). Model selection is via the
+		// ai_model_id binding (ADR-0010 D4).
+		LegacyDefaultProviderID json.RawMessage `json:"default_provider_id,omitempty"`
+		LegacyDefaultModel      json.RawMessage `json:"default_model,omitempty"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -1406,15 +1404,13 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	agent := &domain.Agent{
-		SquadID:         squad.ID,
-		Name:            req.Name,
-		Role:            req.Role,
-		SystemPrompt:    strings.TrimSpace(req.SystemPrompt),
-		DefaultProvider: strings.TrimSpace(req.DefaultProviderID),
-		DefaultModel:    strings.TrimSpace(req.DefaultModel),
-		Permissions:     req.Permissions,
-		IdleTimeoutSec:  req.IdleTimeoutSec,
-		Status:          domain.AgentIdle,
+		SquadID:        squad.ID,
+		Name:           req.Name,
+		Role:           req.Role,
+		SystemPrompt:   strings.TrimSpace(req.SystemPrompt),
+		Permissions:    req.Permissions,
+		IdleTimeoutSec: req.IdleTimeoutSec,
+		Status:         domain.AgentIdle,
 	}
 	created, err := s.store.CreateAgent(s.pendingUserAuditCtx(r, "agent.create", "agent", "", squad.ID, nil), agent)
 	if err != nil {
@@ -1451,13 +1447,15 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name              *string          `json:"name"`
-		Role              *string          `json:"role"`
-		SystemPrompt      *string          `json:"system_prompt"`
-		DefaultProviderID *string          `json:"default_provider_id"`
-		DefaultModel      *string          `json:"default_model"`
-		Permissions       *json.RawMessage `json:"permissions"`
-		IdleTimeoutSec    *int             `json:"idle_timeout_sec"`
+		Name           *string          `json:"name"`
+		Role           *string          `json:"role"`
+		SystemPrompt   *string          `json:"system_prompt"`
+		Permissions    *json.RawMessage `json:"permissions"`
+		IdleTimeoutSec *int             `json:"idle_timeout_sec"`
+		// WP8 (0014): legacy "default_provider_id"/"default_model"
+		// accepted-and-discarded (see agent create).
+		LegacyDefaultProviderID json.RawMessage `json:"default_provider_id,omitempty"`
+		LegacyDefaultModel      json.RawMessage `json:"default_model,omitempty"`
 		// AI model binding (ADR-0010 D4). Pointer semantics: nil = leave
 		// unchanged, "" = clear the slot, id = bind. A successful binding
 		// change converges the agent's virtual key immediately (D5).
@@ -1484,12 +1482,6 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SystemPrompt != nil {
 		agent.SystemPrompt = strings.TrimSpace(*req.SystemPrompt)
-	}
-	if req.DefaultProviderID != nil {
-		agent.DefaultProvider = strings.TrimSpace(*req.DefaultProviderID)
-	}
-	if req.DefaultModel != nil {
-		agent.DefaultModel = strings.TrimSpace(*req.DefaultModel)
 	}
 	if req.Permissions != nil {
 		agent.Permissions = *req.Permissions
@@ -2313,7 +2305,7 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 	cost := req.Cost
 	var (
 		rateIn, rateCached, rateWrite, rateOut *float64
-		snapshot                            bool
+		snapshot                               bool
 	)
 	if modelUsed != "" {
 		if model, ok := s.resolveMeteringModel(r.Context(), agent, modelUsed); ok {
@@ -2329,17 +2321,17 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.RecordMetering(r.Context(), &domain.MeteringEvent{
-		AgentID:      req.AgentID,
-		SquadID:      req.SquadID,
-		TaskID:       req.TaskID,
-		ProviderID:   req.ProviderID,
-		Model:        req.Model,
-		ModelUsed:    modelUsed,
-		InputTokens:  req.InputTokens,
-		OutputTokens: req.OutputTokens,
-		Cost:         cost,
-		Currency:     req.Currency,
-		Timestamp:    req.Timestamp,
+		AgentID:              req.AgentID,
+		SquadID:              req.SquadID,
+		TaskID:               req.TaskID,
+		ProviderID:           req.ProviderID,
+		Model:                req.Model,
+		ModelUsed:            modelUsed,
+		InputTokens:          req.InputTokens,
+		OutputTokens:         req.OutputTokens,
+		Cost:                 cost,
+		Currency:             req.Currency,
+		Timestamp:            req.Timestamp,
 		RateInputPer1M:       rateIn,
 		RateCachedInputPer1M: rateCached,
 		RateCacheWritePer1M:  rateWrite,
@@ -2946,9 +2938,7 @@ func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPer
 			return agentRuntimeResource{}, false, nil
 		}
 		manifest, err := json.Marshal(map[string]any{
-			"kind":          provider.Kind,
-			"default_model": provider.DefaultModel,
-			"models":        json.RawMessage(defaultRawJSON(provider.Models, "[]")),
+			"kind": provider.Kind,
 		})
 		if err != nil {
 			return agentRuntimeResource{}, false, err
