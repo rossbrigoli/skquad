@@ -17,13 +17,18 @@ import (
 
 const (
 	runtimeImageRef = "example.com/skquad/agent-runtime:test"
+	testAPIVersion  = "skquad.io/v1"
+	testCredRef     = "k8s://squad-test/agent-credential"
+	testNamespace   = "skquad-system"
+	testSquadName   = "squad-1"
+	testToken       = "test-token"
 )
 
 func TestSecretNameFromRef(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]string{
-		"k8s://squad-test/agent-credential":       "agent-credential",
+		testCredRef:                               "agent-credential",
 		"k8s://squad-test/agent-virtual-key":      "agent-virtual-key",
 		"plain-secret":                            "plain-secret",
 		"llm-gateway://virtual-keys/legacy-agent": "",
@@ -40,7 +45,7 @@ func TestSecretNameFromRef(t *testing.T) {
 func TestSecretTargetFromRef(t *testing.T) {
 	t.Parallel()
 
-	namespace, name := secretTargetFromRef("k8s://squad-test/agent-credential")
+	namespace, name := secretTargetFromRef(testCredRef)
 	if namespace != "squad-test" || name != "agent-credential" {
 		t.Fatalf("secret target = %q/%q, want squad-test/agent-credential", namespace, name)
 	}
@@ -67,15 +72,15 @@ func TestUpsertAgentMapsGeneratedSecretRefs(t *testing.T) {
 
 	writer := &CRWriter{
 		baseURL:      server.URL,
-		namespace:    "skquad-system",
-		groupVersion: "skquad.io/v1",
+		namespace:    testNamespace,
+		groupVersion: testAPIVersion,
 		agentImage:   runtimeImageRef,
-		token:        "test-token",
+		token:        testToken,
 		client:       server.Client(),
 	}
 	agent := &domain.Agent{
 		ID:             "agent-1",
-		SquadID:        "squad-1",
+		SquadID:        testSquadName,
 		Role:           "coder",
 		IdleTimeoutSec: 300,
 	}
@@ -125,14 +130,14 @@ func TestUpsertAgentEmitsWorkspaceSecrets(t *testing.T) {
 
 	writer := &CRWriter{
 		baseURL:      server.URL,
-		namespace:    "skquad-system",
-		groupVersion: "skquad.io/v1",
+		namespace:    testNamespace,
+		groupVersion: testAPIVersion,
 		agentImage:   runtimeImageRef,
-		token:        "test-token",
+		token:        testToken,
 		client:       server.Client(),
 	}
 
-	agent := &domain.Agent{ID: "agent-ws", SquadID: "squad-1", Role: "coder", IdleTimeoutSec: 300}
+	agent := &domain.Agent{ID: "agent-ws", SquadID: testSquadName, Role: "coder", IdleTimeoutSec: 300}
 	if err := writer.UpsertAgent(context.Background(), agent, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -181,13 +186,13 @@ func TestWriteAgentCredentialAppliesOpaqueSecret(t *testing.T) {
 
 	writer := &CRWriter{
 		baseURL: server.URL,
-		token:   "test-token",
+		token:   testToken,
 		client:  server.Client(),
 	}
 
 	if err := writer.WriteAgentCredential(
 		context.Background(),
-		"k8s://squad-test/agent-credential",
+		testCredRef,
 		"agent-1",
 		"runtime-token",
 	); err != nil {
@@ -224,17 +229,17 @@ func TestNewCRWriterTrustsProvidedCAFile(t *testing.T) {
 
 	writer, err := NewCRWriter(&config.Config{
 		K8sAPIBase:      server.URL,
-		K8sNamespace:    "skquad-system",
+		K8sNamespace:    testNamespace,
 		K8sTokenFile:    tokenFile,
 		K8sCAFile:       caFile,
-		K8sGroupVersion: "skquad.io/v1",
+		K8sGroupVersion: testAPIVersion,
 	})
 	if err != nil {
 		t.Fatalf("NewCRWriter: %v", err)
 	}
 	// With the provided CA the TLS handshake must succeed against the
 	// httptest server (whose CA is absent from the system trust store).
-	if err := writer.UpsertSquad(context.Background(), &domain.Squad{ID: "squad-1", Namespace: "squad-test"}); err != nil {
+	if err := writer.UpsertSquad(context.Background(), &domain.Squad{ID: testSquadName, Namespace: "squad-test"}); err != nil {
 		t.Fatalf("UpsertSquad over provided CA: %v", err)
 	}
 }
@@ -254,10 +259,10 @@ func TestNewCRWriterRejectsUnparsableCAFile(t *testing.T) {
 
 	_, err := NewCRWriter(&config.Config{
 		K8sAPIBase:      "https://kubernetes.default.svc",
-		K8sNamespace:    "skquad-system",
+		K8sNamespace:    testNamespace,
 		K8sTokenFile:    tokenFile,
 		K8sCAFile:       caFile,
-		K8sGroupVersion: "skquad.io/v1",
+		K8sGroupVersion: testAPIVersion,
 	})
 	if err == nil {
 		t.Fatal("expected NewCRWriter to reject a CA file with no certificates")
@@ -275,10 +280,10 @@ func TestNewCRWriterMissingCAFileFallsBackToSystemPool(t *testing.T) {
 
 	if _, err := NewCRWriter(&config.Config{
 		K8sAPIBase:      "https://kubernetes.default.svc",
-		K8sNamespace:    "skquad-system",
+		K8sNamespace:    testNamespace,
 		K8sTokenFile:    tokenFile,
 		K8sCAFile:       filepath.Join(dir, "absent-ca.crt"),
-		K8sGroupVersion: "skquad.io/v1",
+		K8sGroupVersion: testAPIVersion,
 	}); err != nil {
 		t.Fatalf("missing CA file should not fail construction: %v", err)
 	}
@@ -301,16 +306,16 @@ func TestUpsertAgentEmitsModelBindingFields(t *testing.T) {
 
 	writer := &CRWriter{
 		baseURL:      server.URL,
-		namespace:    "skquad-system",
-		groupVersion: "skquad.io/v1",
+		namespace:    testNamespace,
+		groupVersion: testAPIVersion,
 		agentImage:   runtimeImageRef,
-		token:        "test-token",
+		token:        testToken,
 		client:       server.Client(),
 	}
 
 	agent := &domain.Agent{
 		ID:                  "agent-bind",
-		SquadID:             "squad-1",
+		SquadID:             testSquadName,
 		Role:                "coder",
 		AIModelID:           "ai-primary-uuid",
 		FallbackAIModelID:   "ai-fallback-uuid",
@@ -349,16 +354,16 @@ func TestUpsertAgentDefaultModelNeverFallsBackToLegacy(t *testing.T) {
 
 	writer := &CRWriter{
 		baseURL:      server.URL,
-		namespace:    "skquad-system",
-		groupVersion: "skquad.io/v1",
+		namespace:    testNamespace,
+		groupVersion: testAPIVersion,
 		agentImage:   runtimeImageRef,
-		token:        "test-token",
+		token:        testToken,
 		client:       server.Client(),
 	}
 
 	agent := &domain.Agent{
 		ID:             "agent-legacy",
-		SquadID:        "squad-1",
+		SquadID:        testSquadName,
 		Role:           "coder",
 		AIModelID:      "ai-unresolved-uuid",
 		IdleTimeoutSec: 300,

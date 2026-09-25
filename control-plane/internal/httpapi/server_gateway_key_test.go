@@ -505,7 +505,7 @@ func TestGatewayFailureSurfacesInReconcile(t *testing.T) {
 	// fails) to converge the key.
 	f.seedBinding(t, f.modelB.ID, f.modelA.ID)
 	var summary map[string]any
-	doJSON(t, f.handler, http.MethodPost, "/api/v1/admin/gateway/keys/reconcile", nil, http.StatusOK, &summary)
+	doJSON(t, f.handler, http.MethodPost, pathGatewayKeysReconcile, nil, http.StatusOK, &summary)
 	require.EqualValues(t, 1, summary["errors"])
 	require.Contains(t, summary, "failures")
 
@@ -525,7 +525,7 @@ func TestReconcileGatewayKeysRepairsDrift(t *testing.T) {
 	require.NoError(t, err)
 
 	var summary map[string]any
-	doJSON(t, f.handler, http.MethodPost, "/api/v1/admin/gateway/keys/reconcile", nil, http.StatusOK, &summary)
+	doJSON(t, f.handler, http.MethodPost, pathGatewayKeysReconcile, nil, http.StatusOK, &summary)
 	require.EqualValues(t, 1, summary["provisioned"])
 
 	identity := f.identity(t)
@@ -535,7 +535,7 @@ func TestReconcileGatewayKeysRepairsDrift(t *testing.T) {
 	// Idempotent: second run re-converges without error and without
 	// generating another key.
 	var summary2 map[string]any
-	doJSON(t, f.handler, http.MethodPost, "/api/v1/admin/gateway/keys/reconcile", nil, http.StatusOK, &summary2)
+	doJSON(t, f.handler, http.MethodPost, pathGatewayKeysReconcile, nil, http.StatusOK, &summary2)
 	require.EqualValues(t, 1, summary2["updated"])
 }
 
@@ -549,7 +549,7 @@ func TestReconcileRevokesUnboundAgentKey(t *testing.T) {
 	f.seedBinding(t, "", "")
 
 	var summary map[string]any
-	doJSON(t, f.handler, http.MethodPost, "/api/v1/admin/gateway/keys/reconcile", nil, http.StatusOK, &summary)
+	doJSON(t, f.handler, http.MethodPost, pathGatewayKeysReconcile, nil, http.StatusOK, &summary)
 	require.EqualValues(t, 1, summary["revoked"])
 	require.Equal(t, domain.GatewayKeyRevoked, f.identity(t).GatewayKeyStatus)
 	_, _, del := f.gateway.counts()
@@ -567,7 +567,7 @@ func TestReconcileReportsUngrantedBindingAsError(t *testing.T) {
 	// reconcile path itself is what refuses.
 	f.seedBinding(t, f.modelNoGrant.ID, "")
 	var summary map[string]any
-	doJSON(t, f.handler, http.MethodPost, "/api/v1/admin/gateway/keys/reconcile", nil, http.StatusOK, &summary)
+	doJSON(t, f.handler, http.MethodPost, pathGatewayKeysReconcile, nil, http.StatusOK, &summary)
 	require.EqualValues(t, 1, summary["errors"])
 	require.Equal(t, domain.GatewayKeyActive, f.identity(t).GatewayKeyStatus, "refused convergence must not mutate the key")
 }

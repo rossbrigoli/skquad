@@ -32,9 +32,9 @@ func newDelegationFixture(t *testing.T) *delegationFixture {
 	var squad domain.Squad
 	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "Delegation Squad"}, http.StatusCreated, &squad)
 	var sender domain.Agent
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{"name": "Coordinator"}, http.StatusCreated, &sender)
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{"name": "Coordinator"}, http.StatusCreated, &sender)
 	var worker domain.Agent
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{"name": "Worker"}, http.StatusCreated, &worker)
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{"name": "Worker"}, http.StatusCreated, &worker)
 
 	var senderID domain.AgentIdentity
 	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+sender.ID+"/identity", nil, http.StatusCreated, &senderID)
@@ -57,7 +57,7 @@ func (f *delegationFixture) delegate(t *testing.T, messageType string, body map[
 	body["to_agent_id"] = f.workerID
 	body["type"] = messageType
 	var sent domain.Message
-	doAgentJSON(t, f.handler, f.senderID, f.senderCred, http.MethodPost, "/api/v1/agents/me/messages", body, http.StatusCreated, &sent)
+	doAgentJSON(t, f.handler, f.senderID, f.senderCred, http.MethodPost, pathMyMessages, body, http.StatusCreated, &sent)
 	return sent
 }
 
@@ -66,7 +66,7 @@ func (f *delegationFixture) boardTasks(t *testing.T) []domain.Task {
 	var board struct {
 		Tasks []domain.Task `json:"tasks"`
 	}
-	doJSON(t, f.handler, http.MethodGet, "/api/v1/squads/"+f.squadID+"/board", nil, http.StatusOK, &board)
+	doJSON(t, f.handler, http.MethodGet, pathSquadsPrefix+f.squadID+"/board", nil, http.StatusOK, &board)
 	return board.Tasks
 }
 
@@ -151,7 +151,7 @@ func TestDelegatedTaskCompletionNotifiesRequester(t *testing.T) {
 	// The requesting agent receives a reply correlated to the original
 	// delegate message.
 	var inbox []*domain.Message
-	doAgentJSON(t, f.handler, f.senderID, f.senderCred, http.MethodGet, "/api/v1/agents/me/messages", nil, http.StatusOK, &inbox)
+	doAgentJSON(t, f.handler, f.senderID, f.senderCred, http.MethodGet, pathMyMessages, nil, http.StatusOK, &inbox)
 	require.Len(t, inbox, 1)
 	reply := inbox[0]
 	require.Equal(t, domain.MessageReply, reply.Type)
@@ -215,10 +215,10 @@ func TestCrossSquadDelegateRespectsGrants(t *testing.T) {
 	var squad2 domain.Squad
 	doJSON(t, f.handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "Other Squad"}, http.StatusCreated, &squad2)
 	var otherWorker domain.Agent
-	doJSON(t, f.handler, http.MethodPost, "/api/v1/squads/"+squad2.ID+"/agents", map[string]any{"name": "Foreign Worker"}, http.StatusCreated, &otherWorker)
+	doJSON(t, f.handler, http.MethodPost, pathSquadsPrefix+squad2.ID+pathAgents, map[string]any{"name": "Foreign Worker"}, http.StatusCreated, &otherWorker)
 
 	var denied domain.Message
-	doAgentJSON(t, f.handler, f.senderID, f.senderCred, http.MethodPost, "/api/v1/agents/me/messages", map[string]any{
+	doAgentJSON(t, f.handler, f.senderID, f.senderCred, http.MethodPost, pathMyMessages, map[string]any{
 		"to_agent_id": otherWorker.ID,
 		"type":        "delegate",
 		"message":     "unauthorized work",

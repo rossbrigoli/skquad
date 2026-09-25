@@ -135,7 +135,7 @@ func TestMemoryStoreReapExpiredTaskExecutions(t *testing.T) {
 	agent := mustCreateMemoryTestAgent(t, ctx, store, squad.ID)
 	task := mustCreateMemoryTestTask(t, ctx, store, squad, agent)
 
-	claimed, err := store.ClaimNextTask(ctx, agent.ID, "worker-1", time.Minute)
+	claimed, err := store.ClaimNextTask(ctx, agent.ID, testWorkerID, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestMemoryStoreReapSkipsHeartbeatedExecution(t *testing.T) {
 	agent := mustCreateMemoryTestAgent(t, ctx, store, squad.ID)
 	mustCreateMemoryTestTask(t, ctx, store, squad, agent)
 
-	claimed, err := store.ClaimNextTask(ctx, agent.ID, "worker-1", time.Minute)
+	claimed, err := store.ClaimNextTask(ctx, agent.ID, testWorkerID, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestMemoryStoreReapKeepsTaskInProgressWithLiveAttempt(t *testing.T) {
 	agent := mustCreateMemoryTestAgent(t, ctx, store, squad.ID)
 	task := mustCreateMemoryTestTask(t, ctx, store, squad, agent)
 
-	claimed, err := store.ClaimNextTask(ctx, agent.ID, "worker-1", time.Minute)
+	claimed, err := store.ClaimNextTask(ctx, agent.ID, testWorkerID, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,7 @@ func TestMemoryStoreReapSkipsCompletedExecution(t *testing.T) {
 	agent := mustCreateMemoryTestAgent(t, ctx, store, squad.ID)
 	task := mustCreateMemoryTestTask(t, ctx, store, squad, agent)
 
-	claimed, err := store.ClaimNextTask(ctx, agent.ID, "worker-1", time.Minute)
+	claimed, err := store.ClaimNextTask(ctx, agent.ID, testWorkerID, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,6 +21,13 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
 
+const (
+	bearerPrefix     = "Bearer "
+	controlPlaneName = "skquad-control-plane"
+	k8sRefPrefix     = "k8s://"
+	managedByLabel   = "app.kubernetes.io/managed-by"
+)
+
 // CRWriter writes Squad and Agent custom resources through the Kubernetes API.
 type CRWriter struct {
 	baseURL         string
@@ -80,8 +87,8 @@ func (w *CRWriter) UpsertSquad(ctx context.Context, squad *domain.Squad) error {
 			"name":      squadCRName(squad.ID),
 			"namespace": w.namespace,
 			"labels": map[string]string{
-				"app.kubernetes.io/managed-by": "skquad-control-plane",
-				"skquad.io/squad-id":           squad.ID,
+				managedByLabel:       controlPlaneName,
+				"skquad.io/squad-id": squad.ID,
 			},
 		},
 		"spec": map[string]any{
@@ -151,9 +158,9 @@ func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identit
 			"name":      agentCRName(agent.ID),
 			"namespace": w.namespace,
 			"labels": map[string]string{
-				"app.kubernetes.io/managed-by": "skquad-control-plane",
-				"skquad.io/agent-id":           agent.ID,
-				"skquad.io/squad-id":           agent.SquadID,
+				managedByLabel:       controlPlaneName,
+				"skquad.io/agent-id": agent.ID,
+				"skquad.io/squad-id": agent.SquadID,
 			},
 		},
 		"spec": spec,
@@ -177,8 +184,8 @@ func (w *CRWriter) WriteAgentCredential(ctx context.Context, credentialRef strin
 			"name":      name,
 			"namespace": namespace,
 			"labels": map[string]string{
-				"app.kubernetes.io/managed-by": "skquad-control-plane",
-				"skquad.io/agent-id":           agentID,
+				managedByLabel:       controlPlaneName,
+				"skquad.io/agent-id": agentID,
 			},
 		},
 		"type": "Opaque",
@@ -208,7 +215,7 @@ func (w *CRWriter) apply(ctx context.Context, plural, name string, body map[stri
 	if err != nil {
 		return fmt.Errorf("kube: build apply request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+w.token)
+	req.Header.Set("Authorization", bearerPrefix+w.token)
 	req.Header.Set("Content-Type", "application/apply-patch+yaml")
 
 	resp, err := w.client.Do(req)
@@ -233,7 +240,7 @@ func (w *CRWriter) applyCore(ctx context.Context, plural, namespace, name string
 	if err != nil {
 		return fmt.Errorf("kube: build apply request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+w.token)
+	req.Header.Set("Authorization", bearerPrefix+w.token)
 	req.Header.Set("Content-Type", "application/apply-patch+yaml")
 
 	resp, err := w.client.Do(req)
@@ -253,7 +260,7 @@ func (w *CRWriter) delete(ctx context.Context, plural, name string) error {
 	if err != nil {
 		return fmt.Errorf("kube: build delete request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+w.token)
+	req.Header.Set("Authorization", bearerPrefix+w.token)
 
 	resp, err := w.client.Do(req)
 	if err != nil {
@@ -275,7 +282,7 @@ func (w *CRWriter) deleteCore(ctx context.Context, plural, namespace, name strin
 	if err != nil {
 		return fmt.Errorf("kube: build delete request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+w.token)
+	req.Header.Set("Authorization", bearerPrefix+w.token)
 
 	resp, err := w.client.Do(req)
 	if err != nil {
@@ -325,8 +332,8 @@ func secretNameFromRef(ref string) string {
 	if ref == "" {
 		return ""
 	}
-	if strings.HasPrefix(ref, "k8s://") {
-		parts := strings.Split(strings.TrimPrefix(ref, "k8s://"), "/")
+	if strings.HasPrefix(ref, k8sRefPrefix) {
+		parts := strings.Split(strings.TrimPrefix(ref, k8sRefPrefix), "/")
 		if len(parts) >= 2 {
 			return parts[len(parts)-1]
 		}
@@ -340,10 +347,10 @@ func secretNameFromRef(ref string) string {
 
 func secretTargetFromRef(ref string) (string, string) {
 	ref = strings.TrimSpace(ref)
-	if !strings.HasPrefix(ref, "k8s://") {
+	if !strings.HasPrefix(ref, k8sRefPrefix) {
 		return "", ""
 	}
-	parts := strings.Split(strings.TrimPrefix(ref, "k8s://"), "/")
+	parts := strings.Split(strings.TrimPrefix(ref, k8sRefPrefix), "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", ""
 	}

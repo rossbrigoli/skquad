@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+const (
+	loadErrFormat      = "Load: %v"
+	platformAdminGroup = "ross-private-cloud:platform"
+	testAudience       = "skquad-api"
+	testGatewayURL     = "https://gateway.skquad.test"
+)
+
 // clearEnv removes every SKQUAD_* variable so Load() starts from defaults.
 // t.Setenv is used for the overrides so each test restores the environment.
 func clearEnv(t *testing.T) {
@@ -25,7 +32,7 @@ func TestLoadDefaults(t *testing.T) {
 
 	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf(loadErrFormat, err)
 	}
 	if cfg.Addr != ":8080" {
 		t.Fatalf("Addr = %q, want :8080", cfg.Addr)
@@ -71,14 +78,14 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("SKQUAD_ADDR", ":9999")
 	t.Setenv("SKQUAD_AUTH_MODE", "oidc")
 	t.Setenv("SKQUAD_OIDC_ISSUER", "https://idp.example.test/realms/skquad")
-	t.Setenv("SKQUAD_OIDC_AUDIENCE", "skquad-api")
+	t.Setenv("SKQUAD_OIDC_AUDIENCE", testAudience)
 	t.Setenv("SKQUAD_DATABASE_URL", "postgres://example/db")
 	t.Setenv("SKQUAD_K8S_ENABLED", "true")
 	t.Setenv("SKQUAD_K8S_INSECURE", "true")
 	t.Setenv("SKQUAD_K8S_NAMESPACE", "skquad-dev")
 	t.Setenv("SKQUAD_AGENT_IMAGE", "registry.example.test/agent:1.2.3")
 	t.Setenv("SKQUAD_CONTROL_PLANE_URL", "https://api.skquad.test")
-	t.Setenv("SKQUAD_LLM_GATEWAY_URL", "https://gateway.skquad.test")
+	t.Setenv("SKQUAD_LLM_GATEWAY_URL", testGatewayURL)
 	t.Setenv("SKQUAD_LITELLM_ADMIN_URL", "https://admin.skquad.test")
 	t.Setenv("SKQUAD_LITELLM_MASTER_KEY", "master-key")
 	t.Setenv("SKQUAD_GATEWAY_CALLBACK_TOKEN", "callback-token")
@@ -90,12 +97,12 @@ func TestLoadOverrides(t *testing.T) {
 
 	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf(loadErrFormat, err)
 	}
 	if cfg.Addr != ":9999" || cfg.AuthMode != AuthOIDC {
 		t.Fatalf("addr/auth = %q/%q", cfg.Addr, cfg.AuthMode)
 	}
-	if cfg.IssuerURL != "https://idp.example.test/realms/skquad" || cfg.Audience != "skquad-api" {
+	if cfg.IssuerURL != "https://idp.example.test/realms/skquad" || cfg.Audience != testAudience {
 		t.Fatalf("oidc settings = %q/%q", cfg.IssuerURL, cfg.Audience)
 	}
 	if cfg.DatabaseURL != "postgres://example/db" {
@@ -127,13 +134,13 @@ func TestLoadOverrides(t *testing.T) {
 func TestLoadLiteLLMAdminURLFallsBackToGateway(t *testing.T) {
 	clearEnv(t)
 
-	t.Setenv("SKQUAD_LLM_GATEWAY_URL", "https://gateway.skquad.test")
+	t.Setenv("SKQUAD_LLM_GATEWAY_URL", testGatewayURL)
 
 	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf(loadErrFormat, err)
 	}
-	if cfg.LiteLLMAdminURL != "https://gateway.skquad.test" {
+	if cfg.LiteLLMAdminURL != testGatewayURL {
 		t.Fatalf("LiteLLMAdminURL = %q, want gateway fallback", cfg.LiteLLMAdminURL)
 	}
 }
@@ -162,7 +169,7 @@ func TestLoadOIDCRequiresIssuerAndAudience(t *testing.T) {
 		t.Fatalf("Load error = %v, want audience requirement", err)
 	}
 
-	t.Setenv("SKQUAD_OIDC_AUDIENCE", "skquad-api")
+	t.Setenv("SKQUAD_OIDC_AUDIENCE", testAudience)
 	if _, err := Load(); err != nil {
 		t.Fatalf("Load with complete oidc settings: %v", err)
 	}
@@ -245,9 +252,9 @@ func TestEnvDurationAndSeconds(t *testing.T) {
 }
 
 func TestAdminGroupMatched(t *testing.T) {
-	c := &Config{OIDCAdminGroups: []string{"ross-private-cloud:platform", " Other Admins "}}
+	c := &Config{OIDCAdminGroups: []string{platformAdminGroup, " Other Admins "}}
 
-	if !c.AdminGroupMatched([]string{"ross-private-cloud:limited", "ross-private-cloud:platform"}) {
+	if !c.AdminGroupMatched([]string{"ross-private-cloud:limited", platformAdminGroup}) {
 		t.Fatal("expected a matching bound group to grant admin")
 	}
 	// Case-insensitive on both sides.
@@ -262,7 +269,7 @@ func TestAdminGroupMatched(t *testing.T) {
 	}
 	// No bindings configured => nobody is admin via groups.
 	none := &Config{}
-	if none.AdminGroupMatched([]string{"ross-private-cloud:platform"}) {
+	if none.AdminGroupMatched([]string{platformAdminGroup}) {
 		t.Fatal("empty admin-group config must not grant admin")
 	}
 }

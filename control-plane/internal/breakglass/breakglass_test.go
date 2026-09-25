@@ -14,6 +14,12 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
+const (
+	issueTokenErrFormat = "IssueToken: %v"
+	testClientIP        = "192.168.68.5"
+	testPassphrase      = "s3cret-breakglass-passphrase"
+)
+
 const testKey = "0123456789abcdef0123456789abcdef" // 32 bytes
 
 // makePHC builds a valid argon2id PHC string for tests.
@@ -54,19 +60,19 @@ func parseCIDR(t *testing.T, cidr string) *net.IPNet {
 }
 
 func TestVerifyCredentials(t *testing.T) {
-	a := testAuth(t, "s3cret-breakglass-passphrase")
+	a := testAuth(t, testPassphrase)
 
-	if !a.VerifyCredentials("breakglass", "s3cret-breakglass-passphrase") {
+	if !a.VerifyCredentials("breakglass", testPassphrase) {
 		t.Fatal("correct credentials rejected")
 	}
 	if a.VerifyCredentials("breakglass", "wrong-password") {
 		t.Fatal("wrong password accepted")
 	}
-	if a.VerifyCredentials("not-the-user", "s3cret-breakglass-passphrase") {
+	if a.VerifyCredentials("not-the-user", testPassphrase) {
 		t.Fatal("wrong username accepted")
 	}
 	// Username comparison is trimmed on the config side but must still match.
-	if !a.VerifyCredentials("  breakglass  ", "s3cret-breakglass-passphrase") {
+	if !a.VerifyCredentials("  breakglass  ", testPassphrase) {
 		t.Fatal("trimmed username rejected")
 	}
 }
@@ -91,7 +97,7 @@ func TestTokenRoundTrip(t *testing.T) {
 
 	token, exp, err := a.IssueToken("uid-1", "breakglass@breakglass.skquad.local", "platform_admin", now)
 	if err != nil {
-		t.Fatalf("IssueToken: %v", err)
+		t.Fatalf(issueTokenErrFormat, err)
 	}
 	if !exp.After(now) {
 		t.Fatalf("expiry %v is not after issue time %v", exp, now)
@@ -114,7 +120,7 @@ func TestVerifyTokenRejectsTampering(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	token, _, err := a.IssueToken("uid-1", "x@y.z", "platform_admin", now)
 	if err != nil {
-		t.Fatalf("IssueToken: %v", err)
+		t.Fatalf(issueTokenErrFormat, err)
 	}
 	parts := strings.Split(token, ".")
 
@@ -203,7 +209,7 @@ func TestIsBreakGlassToken(t *testing.T) {
 	a := testAuth(t, "passphrase-detect")
 	token, _, err := a.IssueToken("uid", "x@y.z", "platform_admin", time.Now())
 	if err != nil {
-		t.Fatalf("IssueToken: %v", err)
+		t.Fatalf(issueTokenErrFormat, err)
 	}
 	if !IsBreakGlassToken(token) {
 		t.Fatal("break-glass token not detected")
@@ -256,7 +262,7 @@ func TestCloudflareSignals(t *testing.T) {
 		}
 	}
 	plain := http.Header{}
-	plain.Set("X-Forwarded-For", "192.168.68.5")
+	plain.Set("X-Forwarded-For", testClientIP)
 	if CloudflareSignals(plain) {
 		t.Error("plain LAN request flagged as Cloudflare")
 	}
@@ -277,11 +283,11 @@ func TestRateLimit(t *testing.T) {
 	a := testAuth(t, "passphrase-rate")
 	now := time.Unix(1_800_000_000, 0)
 	for i := 1; i <= 3; i++ {
-		if ok, _ := a.RateLimit("192.168.68.5", now); !ok {
+		if ok, _ := a.RateLimit(testClientIP, now); !ok {
 			t.Fatalf("attempt %d blocked before the budget was exhausted", i)
 		}
 	}
-	ok, retry := a.RateLimit("192.168.68.5", now)
+	ok, retry := a.RateLimit(testClientIP, now)
 	if ok {
 		t.Fatal("4th attempt allowed with MaxAttempts=3")
 	}
@@ -293,7 +299,7 @@ func TestRateLimit(t *testing.T) {
 		t.Fatal("unrelated IP blocked by another IP's budget")
 	}
 	// Window expiry resets the budget.
-	if ok, _ := a.RateLimit("192.168.68.5", now.Add(16*time.Minute)); !ok {
+	if ok, _ := a.RateLimit(testClientIP, now.Add(16*time.Minute)); !ok {
 		t.Fatal("budget did not reset after the window")
 	}
 }
@@ -339,7 +345,7 @@ func TestDisabledFailsClosed(t *testing.T) {
 	if _, err := a.VerifyToken("x.y.z", time.Now()); err == nil {
 		t.Fatal("disabled auth verified a token")
 	}
-	if a.ClientAllowed("192.168.68.5") {
+	if a.ClientAllowed(testClientIP) {
 		t.Fatal("disabled auth allowed a client")
 	}
 }

@@ -26,7 +26,7 @@ func TestGitWorkspaceRegistrationValidation(t *testing.T) {
 	// Valid git workspace.
 	valid := registerWorkspace(t, h, map[string]any{
 		"name":     "team-repo",
-		"endpoint": "https://git.example.com/team/repo.git",
+		"endpoint": testRepoURL,
 		"auth_ref": "secret/git/team-repo",
 		"manifest": map[string]any{"kind": "git", "default_branch": "main"},
 	}, http.StatusCreated)
@@ -36,30 +36,30 @@ func TestGitWorkspaceRegistrationValidation(t *testing.T) {
 	// kind must be "git".
 	registerWorkspace(t, h, map[string]any{
 		"name":     "no-kind",
-		"endpoint": "https://git.example.com/team/repo.git",
-		"auth_ref": "secret/git/x",
+		"endpoint": testRepoURL,
+		"auth_ref": gitSecretRef,
 		"manifest": map[string]any{"default_branch": "main"},
 	}, http.StatusBadRequest)
 
 	// default_branch required.
 	registerWorkspace(t, h, map[string]any{
 		"name":     "no-branch",
-		"endpoint": "https://git.example.com/team/repo.git",
-		"auth_ref": "secret/git/x",
+		"endpoint": testRepoURL,
+		"auth_ref": gitSecretRef,
 		"manifest": map[string]any{"kind": "git"},
 	}, http.StatusBadRequest)
 
 	// auth_ref required.
 	registerWorkspace(t, h, map[string]any{
 		"name":     "no-auth",
-		"endpoint": "https://git.example.com/team/repo.git",
+		"endpoint": testRepoURL,
 		"manifest": map[string]any{"kind": "git", "default_branch": "main"},
 	}, http.StatusBadRequest)
 
 	// endpoint required.
 	registerWorkspace(t, h, map[string]any{
 		"name":     "no-endpoint",
-		"auth_ref": "secret/git/x",
+		"auth_ref": gitSecretRef,
 		"manifest": map[string]any{"kind": "git", "default_branch": "main"},
 	}, http.StatusBadRequest)
 }
@@ -70,7 +70,7 @@ func TestTaskWorkspaceLinkage(t *testing.T) {
 
 	ws := registerWorkspace(t, h, map[string]any{
 		"name":     "link-repo",
-		"endpoint": "https://git.example.com/team/repo.git",
+		"endpoint": testRepoURL,
 		"auth_ref": "secret/git/link",
 		"manifest": map[string]any{"kind": "git", "default_branch": "main"},
 	}, http.StatusCreated)
@@ -93,7 +93,7 @@ func TestTaskWorkspaceLinkage(t *testing.T) {
 	branch := "skquad/worker/" + taskID
 	var updated domain.Task
 	doAgentJSON(t, h, f.workerID, f.workerCred, http.MethodPost,
-		"/api/v1/agents/me/tasks/"+taskID+"/workspace",
+		pathMyTasksPrefix+taskID+pathWorkspace,
 		map[string]any{"workspace_resource_id": ws.ID, "branch": branch, "commit_sha": "abc123def"},
 		http.StatusOK, &updated)
 	require.Equal(t, ws.ID, updated.WorkspaceResourceID)
@@ -113,13 +113,13 @@ func TestTaskWorkspaceLinkage(t *testing.T) {
 		"manifest": map[string]any{"kind": "git", "default_branch": "main"},
 	}, http.StatusCreated)
 	doAgentJSONNoBody(t, h, f.workerID, f.workerCred, http.MethodPost,
-		"/api/v1/agents/me/tasks/"+taskID+"/workspace",
+		pathMyTasksPrefix+taskID+pathWorkspace,
 		map[string]any{"workspace_resource_id": other.ID, "branch": "x", "commit_sha": "y"},
 		http.StatusForbidden)
 
 	// A non-assignee (the sender) cannot link workspace refs to the worker's task.
 	doAgentJSONNoBody(t, h, f.senderID, f.senderCred, http.MethodPost,
-		"/api/v1/agents/me/tasks/"+taskID+"/workspace",
+		pathMyTasksPrefix+taskID+pathWorkspace,
 		map[string]any{"workspace_resource_id": ws.ID, "branch": "x", "commit_sha": "y"},
 		http.StatusForbidden)
 }

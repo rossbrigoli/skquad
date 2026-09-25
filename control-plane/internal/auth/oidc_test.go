@@ -18,6 +18,12 @@ import (
 	"time"
 )
 
+const (
+	bearerPrefix = "Bearer "
+	testAudience = "skquad-api"
+	testJWT      = "abc.def.ghi"
+)
+
 func TestBearerToken(t *testing.T) {
 	t.Parallel()
 
@@ -27,11 +33,11 @@ func TestBearerToken(t *testing.T) {
 		wantToken string
 		wantOK    bool
 	}{
-		{name: "plain", header: "Bearer abc.def.ghi", wantToken: "abc.def.ghi", wantOK: true},
-		{name: "lowercase scheme", header: "bearer abc.def.ghi", wantToken: "abc.def.ghi", wantOK: true},
-		{name: "extra whitespace", header: "   Bearer    abc.def.ghi  ", wantToken: "abc.def.ghi", wantOK: true},
+		{name: "plain", header: "Bearer abc.def.ghi", wantToken: testJWT, wantOK: true},
+		{name: "lowercase scheme", header: "bearer abc.def.ghi", wantToken: testJWT, wantOK: true},
+		{name: "extra whitespace", header: "   Bearer    abc.def.ghi  ", wantToken: testJWT, wantOK: true},
 		{name: "empty header", header: "", wantOK: false},
-		{name: "token only", header: "abc.def.ghi", wantOK: false},
+		{name: "token only", header: testJWT, wantOK: false},
 		{name: "wrong scheme", header: "Basic abc.def.ghi", wantOK: false},
 		{name: "no token", header: "Bearer", wantOK: false},
 		{name: "blank token", header: "Bearer    ", wantOK: false},
@@ -182,7 +188,7 @@ func (f *fakeIssuer) authenticator(t *testing.T) *OIDCAuthenticator {
 }
 
 func TestOIDCAuthenticateHappyPath(t *testing.T) {
-	audience := "skquad-api"
+	audience := testAudience
 	f := newFakeIssuer(t, audience)
 	authn := f.authenticator(t)
 
@@ -192,7 +198,7 @@ func TestOIDCAuthenticateHappyPath(t *testing.T) {
 		"name":           "Ada Example",
 	}})
 
-	profile, err := authn.Authenticate(context.Background(), "Bearer "+token)
+	profile, err := authn.Authenticate(context.Background(), bearerPrefix+token)
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -214,7 +220,7 @@ func TestOIDCAuthenticateHappyPath(t *testing.T) {
 }
 
 func TestOIDCNameFallbacks(t *testing.T) {
-	f := newFakeIssuer(t, "skquad-api")
+	f := newFakeIssuer(t, testAudience)
 	authn := f.authenticator(t)
 	ctx := context.Background()
 
@@ -223,7 +229,7 @@ func TestOIDCNameFallbacks(t *testing.T) {
 		"name":               "   ",
 		"preferred_username": "ada",
 	}})
-	profile, err := authn.Authenticate(ctx, "Bearer "+preferred)
+	profile, err := authn.Authenticate(ctx, bearerPrefix+preferred)
 	if err != nil {
 		t.Fatalf("Authenticate(preferred_username): %v", err)
 	}
@@ -234,7 +240,7 @@ func TestOIDCNameFallbacks(t *testing.T) {
 	emailOnly := f.token(t, "user-email", tokenOverrides{claims: map[string]any{
 		"email": "fallback@example.test",
 	}})
-	profile, err = authn.Authenticate(ctx, "Bearer "+emailOnly)
+	profile, err = authn.Authenticate(ctx, bearerPrefix+emailOnly)
 	if err != nil {
 		t.Fatalf("Authenticate(email-only): %v", err)
 	}
@@ -246,7 +252,7 @@ func TestOIDCNameFallbacks(t *testing.T) {
 	omitted := f.token(t, "user-omit", tokenOverrides{claims: map[string]any{
 		"email": "omit@example.test",
 	}})
-	profile, err = authn.Authenticate(ctx, "Bearer "+omitted)
+	profile, err = authn.Authenticate(ctx, bearerPrefix+omitted)
 	if err != nil {
 		t.Fatalf("Authenticate(omitted email_verified): %v", err)
 	}
@@ -256,7 +262,7 @@ func TestOIDCNameFallbacks(t *testing.T) {
 }
 
 func TestOIDCAuthenticateRejects(t *testing.T) {
-	audience := "skquad-api"
+	audience := testAudience
 	f := newFakeIssuer(t, audience)
 	authn := f.authenticator(t)
 	ctx := context.Background()
@@ -370,13 +376,13 @@ func TestNewOIDCAuthenticatorDiscoveryFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if _, err := NewOIDCAuthenticator(ctx, url, "skquad-api"); err == nil {
+	if _, err := NewOIDCAuthenticator(ctx, url, testAudience); err == nil {
 		t.Fatal("NewOIDCAuthenticator against unreachable issuer returned no error")
 	}
 }
 
 func TestOIDCGroupsClaim(t *testing.T) {
-	f := newFakeIssuer(t, "skquad-api")
+	f := newFakeIssuer(t, testAudience)
 	authn := f.authenticator(t)
 	ctx := context.Background()
 
@@ -384,7 +390,7 @@ func TestOIDCGroupsClaim(t *testing.T) {
 		"email":  "ross@example.test",
 		"groups": []any{"ross-private-cloud:limited", " ross-private-cloud:platform ", ""},
 	}})
-	profile, err := authn.Authenticate(ctx, "Bearer "+withGroups)
+	profile, err := authn.Authenticate(ctx, bearerPrefix+withGroups)
 	if err != nil {
 		t.Fatalf("Authenticate(groups): %v", err)
 	}
@@ -402,7 +408,7 @@ func TestOIDCGroupsClaim(t *testing.T) {
 	noGroups := f.token(t, "user-nogroups", tokenOverrides{claims: map[string]any{
 		"email": "plain@example.test",
 	}})
-	profile, err = authn.Authenticate(ctx, "Bearer "+noGroups)
+	profile, err = authn.Authenticate(ctx, bearerPrefix+noGroups)
 	if err != nil {
 		t.Fatalf("Authenticate(no groups): %v", err)
 	}

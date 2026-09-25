@@ -9,6 +9,11 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
 
+const (
+	auditSquadCreate = "squad.create"
+	auditTaskCreate  = "task.create"
+)
+
 // S-86: significant mutations must record their audit entry in the same
 // transaction — a committed change always has its audit record, and an
 // audit-write failure rolls the mutation back.
@@ -17,7 +22,7 @@ func TestMemoryPendingAuditCommittedWithMutation(t *testing.T) {
 	store := NewMemoryStore()
 	ctx := context.Background()
 
-	entry := NewAuditEntry("user", "u1", "squad.create", "squad", "", "", nil)
+	entry := NewAuditEntry("user", "u1", auditSquadCreate, "squad", "", "", nil)
 	created, err := store.CreateSquad(WithPendingAudit(ctx, entry), &domain.Squad{
 		Name:    "audited-squad",
 		OwnerID: "u1",
@@ -27,7 +32,7 @@ func TestMemoryPendingAuditCommittedWithMutation(t *testing.T) {
 	entries, err := store.ListAudit(ctx, created.ID, 10)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
-	require.Equal(t, "squad.create", entries[0].Action)
+	require.Equal(t, auditSquadCreate, entries[0].Action)
 	// Fill-in: the store knew the new squad id even though the handler did not.
 	require.Equal(t, created.ID, entries[0].ResourceID)
 	require.Equal(t, created.ID, entries[0].SquadID)
@@ -37,7 +42,7 @@ func TestMemoryPendingAuditDrainedOnce(t *testing.T) {
 	store := NewMemoryStore()
 	ctx := context.Background()
 
-	entry := NewAuditEntry("user", "u1", "squad.create", "squad", "", "", nil)
+	entry := NewAuditEntry("user", "u1", auditSquadCreate, "squad", "", "", nil)
 	ctx = WithPendingAudit(ctx, entry)
 
 	first, err := store.CreateSquad(ctx, &domain.Squad{Name: "squad-a", OwnerID: "u1"})
@@ -61,7 +66,7 @@ func TestPostgresPendingAuditCommittedWithMutation(t *testing.T) {
 
 	f := newPGFixture(t, store)
 
-	entry := NewAuditEntry("user", f.user.ID, "task.create", "task", "", f.squad.ID, nil)
+	entry := NewAuditEntry("user", f.user.ID, auditTaskCreate, "task", "", f.squad.ID, nil)
 	task, err := store.CreateTask(WithPendingAudit(ctx, entry), &domain.Task{
 		BoardID:       f.board.ID,
 		SquadID:       f.squad.ID,
@@ -75,7 +80,7 @@ func TestPostgresPendingAuditCommittedWithMutation(t *testing.T) {
 	require.NoError(t, err)
 	var found bool
 	for _, e := range entries {
-		if e.Action == "task.create" && e.ResourceID == task.ID {
+		if e.Action == auditTaskCreate && e.ResourceID == task.ID {
 			found = true
 		}
 	}
@@ -94,7 +99,7 @@ func TestPostgresAuditFailureRollsBackMutation(t *testing.T) {
 	before, err := store.ListTasks(ctx, f.board.ID, "")
 	require.NoError(t, err)
 
-	badEntry := NewAuditEntry("user", f.user.ID, "task.create", "task", "not-a-uuid", f.squad.ID, nil)
+	badEntry := NewAuditEntry("user", f.user.ID, auditTaskCreate, "task", "not-a-uuid", f.squad.ID, nil)
 	_, err = store.CreateTask(WithPendingAudit(ctx, badEntry), &domain.Task{
 		BoardID:       f.board.ID,
 		SquadID:       f.squad.ID,

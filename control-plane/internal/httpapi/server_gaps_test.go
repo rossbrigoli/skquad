@@ -42,7 +42,7 @@ func errorEnvelope(t *testing.T, rec *httptest.ResponseRecorder) map[string]stri
 func promoteAdmin(t *testing.T, store *storage.MemoryStore, handler http.Handler, authorization string) domain.User {
 	t.Helper()
 	var user domain.User
-	doJSONAuth(t, handler, authorization, http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &user)
+	doJSONAuth(t, handler, authorization, http.MethodGet, pathAuthMe, nil, http.StatusOK, &user)
 	require.NoError(t, store.SetUserRole(context.Background(), user.ID, domain.RolePlatformAdmin))
 	user.Role = domain.RolePlatformAdmin
 	return user
@@ -59,13 +59,13 @@ func agentRuntimeSetup(t *testing.T, squadName string) (http.Handler, *fakeCRWri
 	handler, crWriter := newCRBackedHandler()
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": squadName}, http.StatusCreated, &squad)
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{"name": squadName}, http.StatusCreated, &squad)
 
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{"name": "worker"}, http.StatusCreated, &agent)
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{"name": "worker"}, http.StatusCreated, &agent)
 
 	var identity domain.AgentIdentity
-	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+agent.ID+"/identity", nil, http.StatusCreated, &identity)
+	doJSON(t, handler, http.MethodPost, pathAgentsPrefix+agent.ID+pathIdentity, nil, http.StatusCreated, &identity)
 
 	credential := crWriter.credentialTokens[identity.CredentialRef]
 	require.NotEmpty(t, credential)
@@ -109,17 +109,17 @@ func TestAgentIdentityWithoutCRWriter(t *testing.T) {
 	handler := New(testConfig(), storage.NewMemoryStore())
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "No CR Squad"}, http.StatusCreated, &squad)
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{"name": "No CR Squad"}, http.StatusCreated, &squad)
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{"name": "worker"}, http.StatusCreated, &agent)
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{"name": "worker"}, http.StatusCreated, &agent)
 
 	var identity domain.AgentIdentity
-	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+agent.ID+"/identity", nil, http.StatusCreated, &identity)
+	doJSON(t, handler, http.MethodPost, pathAgentsPrefix+agent.ID+pathIdentity, nil, http.StatusCreated, &identity)
 	require.NotEmpty(t, identity.CredentialRef)
 	require.NotEmpty(t, identity.VirtualKeyRef)
 
 	var rotated domain.AgentIdentity
-	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+agent.ID+"/identity/rotate", nil, http.StatusOK, &rotated)
+	doJSON(t, handler, http.MethodPost, pathAgentsPrefix+agent.ID+"/identity/rotate", nil, http.StatusOK, &rotated)
 	require.NotEmpty(t, rotated.CredentialRef)
 }
 
@@ -131,12 +131,12 @@ func TestAgentIdentityRollsBackSecretsWhenWriteFails(t *testing.T) {
 	handler := NewWithCRWriter(testConfig(), store, crWriter)
 
 	var squad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "Rollback Squad"}, http.StatusCreated, &squad)
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{"name": "Rollback Squad"}, http.StatusCreated, &squad)
 	var agent domain.Agent
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{"name": "worker"}, http.StatusCreated, &agent)
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{"name": "worker"}, http.StatusCreated, &agent)
 
 	var body map[string]map[string]string
-	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+agent.ID+"/identity", nil, http.StatusInternalServerError, &body)
+	doJSON(t, handler, http.MethodPost, pathAgentsPrefix+agent.ID+pathIdentity, nil, http.StatusInternalServerError, &body)
 	require.Equal(t, "internal", body["error"]["code"])
 
 	// The already-written credential secret must be revoked, and no identity may
@@ -150,7 +150,7 @@ func TestAgentIdentityRollsBackSecretsWhenWriteFails(t *testing.T) {
 	// A second attempt must not leave a half-written identity behind either.
 	crWriter.failOnWrite = 4
 	var retryBody map[string]map[string]string
-	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+agent.ID+"/identity", nil, http.StatusInternalServerError, &retryBody)
+	doJSON(t, handler, http.MethodPost, pathAgentsPrefix+agent.ID+pathIdentity, nil, http.StatusInternalServerError, &retryBody)
 	_, err = store.GetAgentIdentity(context.Background(), agent.ID)
 	require.ErrorIs(t, err, storage.ErrNotFound)
 }
@@ -171,16 +171,16 @@ func TestNewWithDependenciesWiresOIDCAndCRWriter(t *testing.T) {
 	crWriter := &fakeCRWriter{}
 	store := storage.NewMemoryStore()
 	handler := NewWithDependencies(cfg, store, headerOIDC{
-		"Bearer admin": {Email: "admin@example.com", Name: "Admin"},
+		authAdmin: {Email: adminEmail, Name: "Admin"},
 	}, crWriter)
-	promoteAdmin(t, store, handler, "Bearer admin")
+	promoteAdmin(t, store, handler, authAdmin)
 
 	// OIDC is enforced: no bearer token must not reach the handler.
-	rec := doRaw(t, handler, http.MethodGet, "/api/v1/squads", "", "")
+	rec := doRaw(t, handler, http.MethodGet, pathSquads, "", "")
 	require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
 
 	var squad domain.Squad
-	doJSONAuth(t, handler, "Bearer admin", http.MethodPost, "/api/v1/squads", map[string]any{
+	doJSONAuth(t, handler, authAdmin, http.MethodPost, pathSquads, map[string]any{
 		"name": "Wired Squad",
 	}, http.StatusCreated, &squad)
 	// Mutations are queued for the Kubernetes outbox worker, which owns the
@@ -197,31 +197,31 @@ func TestListSquadsScopesToOwnerUnlessAdminRequestsAll(t *testing.T) {
 	cfg.AuthMode = config.AuthOIDC
 	store := storage.NewMemoryStore()
 	handler := NewWithOIDCAuthenticator(cfg, store, headerOIDC{
-		"Bearer alice": {Email: "alice@example.com", Name: "Alice"},
-		"Bearer bob":   {Email: "bob@example.com", Name: "Bob"},
-		"Bearer admin": {Email: "admin@example.com", Name: "Admin"},
+		authAlice:    {Email: "alice@example.com", Name: "Alice"},
+		"Bearer bob": {Email: "bob@example.com", Name: "Bob"},
+		authAdmin:    {Email: adminEmail, Name: "Admin"},
 	})
-	promoteAdmin(t, store, handler, "Bearer admin")
+	promoteAdmin(t, store, handler, authAdmin)
 
 	var aliceSquad, bobSquad domain.Squad
-	doJSONAuth(t, handler, "Bearer alice", http.MethodPost, "/api/v1/squads", map[string]any{"name": "Alice Squad"}, http.StatusCreated, &aliceSquad)
-	doJSONAuth(t, handler, "Bearer bob", http.MethodPost, "/api/v1/squads", map[string]any{"name": "Bob Squad"}, http.StatusCreated, &bobSquad)
+	doJSONAuth(t, handler, authAlice, http.MethodPost, pathSquads, map[string]any{"name": "Alice Squad"}, http.StatusCreated, &aliceSquad)
+	doJSONAuth(t, handler, "Bearer bob", http.MethodPost, pathSquads, map[string]any{"name": "Bob Squad"}, http.StatusCreated, &bobSquad)
 
 	var aliceSquads []domain.Squad
-	doJSONAuth(t, handler, "Bearer alice", http.MethodGet, "/api/v1/squads", nil, http.StatusOK, &aliceSquads)
+	doJSONAuth(t, handler, authAlice, http.MethodGet, pathSquads, nil, http.StatusOK, &aliceSquads)
 	require.Len(t, aliceSquads, 1)
 	require.Equal(t, aliceSquad.ID, aliceSquads[0].ID)
 
 	// ?all=true only widens the scope for platform admins.
-	doJSONAuth(t, handler, "Bearer alice", http.MethodGet, "/api/v1/squads?all=true", nil, http.StatusOK, &aliceSquads)
+	doJSONAuth(t, handler, authAlice, http.MethodGet, "/api/v1/squads?all=true", nil, http.StatusOK, &aliceSquads)
 	require.Len(t, aliceSquads, 1, "non-admin must not be able to list every squad")
 
 	var allSquads []domain.Squad
-	doJSONAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/squads?all=true", nil, http.StatusOK, &allSquads)
+	doJSONAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/squads?all=true", nil, http.StatusOK, &allSquads)
 	require.Len(t, allSquads, 2)
 
 	var adminOwn []domain.Squad
-	doJSONAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/squads", nil, http.StatusOK, &adminOwn)
+	doJSONAuth(t, handler, authAdmin, http.MethodGet, pathSquads, nil, http.StatusOK, &adminOwn)
 	require.Empty(t, adminOwn, "admin without ?all=true sees only squads they own")
 }
 
@@ -231,41 +231,41 @@ func TestListAgentsAndGrantsEnforceSquadAccess(t *testing.T) {
 	cfg := testConfig()
 	cfg.AuthMode = config.AuthOIDC
 	handler := NewWithOIDCAuthenticator(cfg, storage.NewMemoryStore(), headerOIDC{
-		"Bearer owner":  {Email: "owner@example.com", Name: "Owner"},
-		"Bearer reader": {Email: "reader@example.com", Name: "Reader"},
+		authOwner:  {Email: "owner@example.com", Name: "Owner"},
+		authReader: {Email: "reader@example.com", Name: "Reader"},
 	})
 
 	var squad domain.Squad
-	doJSONAuth(t, handler, "Bearer owner", http.MethodPost, "/api/v1/squads", map[string]any{"name": "Listed Squad"}, http.StatusCreated, &squad)
+	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquads, map[string]any{"name": "Listed Squad"}, http.StatusCreated, &squad)
 	var agent domain.Agent
-	doJSONAuth(t, handler, "Bearer owner", http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{"name": "Listed Agent"}, http.StatusCreated, &agent)
+	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{"name": "Listed Agent"}, http.StatusCreated, &agent)
 
 	var agents []domain.Agent
-	doJSONAuth(t, handler, "Bearer owner", http.MethodGet, "/api/v1/squads/"+squad.ID+"/agents", nil, http.StatusOK, &agents)
+	doJSONAuth(t, handler, authOwner, http.MethodGet, pathSquadsPrefix+squad.ID+pathAgents, nil, http.StatusOK, &agents)
 	require.Len(t, agents, 1)
 	require.Equal(t, agent.ID, agents[0].ID)
 
 	var denied map[string]map[string]string
-	doJSONAuth(t, handler, "Bearer reader", http.MethodGet, "/api/v1/squads/"+squad.ID+"/agents", nil, http.StatusForbidden, &denied)
+	doJSONAuth(t, handler, authReader, http.MethodGet, pathSquadsPrefix+squad.ID+pathAgents, nil, http.StatusForbidden, &denied)
 	require.Equal(t, "forbidden", denied["error"]["code"])
 
 	// listGrants is owner-only: a read grant is not enough.
 	var viewer domain.User
-	doJSONAuth(t, handler, "Bearer reader", http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &viewer)
+	doJSONAuth(t, handler, authReader, http.MethodGet, pathAuthMe, nil, http.StatusOK, &viewer)
 	var grant domain.AccessGrant
-	doJSONAuth(t, handler, "Bearer owner", http.MethodPost, "/api/v1/squads/"+squad.ID+"/access-grants", map[string]any{
+	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquadsPrefix+squad.ID+pathAccessGrants, map[string]any{
 		"grantee_type": "user",
 		"grantee_id":   viewer.ID,
 		"permissions":  "read",
 	}, http.StatusCreated, &grant)
 
 	var grants []domain.AccessGrant
-	doJSONAuth(t, handler, "Bearer owner", http.MethodGet, "/api/v1/squads/"+squad.ID+"/access-grants", nil, http.StatusOK, &grants)
+	doJSONAuth(t, handler, authOwner, http.MethodGet, pathSquadsPrefix+squad.ID+pathAccessGrants, nil, http.StatusOK, &grants)
 	require.Len(t, grants, 1)
 	require.Equal(t, grant.ID, grants[0].ID)
 
 	var forbiddenGrants map[string]map[string]string
-	doJSONAuth(t, handler, "Bearer reader", http.MethodGet, "/api/v1/squads/"+squad.ID+"/access-grants", nil, http.StatusForbidden, &forbiddenGrants)
+	doJSONAuth(t, handler, authReader, http.MethodGet, pathSquadsPrefix+squad.ID+pathAccessGrants, nil, http.StatusForbidden, &forbiddenGrants)
 	require.Equal(t, "forbidden", forbiddenGrants["error"]["code"])
 }
 
@@ -276,29 +276,29 @@ func TestListAuditRequiresPlatformAdminAndFilters(t *testing.T) {
 	cfg.AuthMode = config.AuthOIDC
 	store := storage.NewMemoryStore()
 	handler := NewWithOIDCAuthenticator(cfg, store, headerOIDC{
-		"Bearer admin": {Email: "admin@example.com", Name: "Admin"},
-		"Bearer user":  {Email: "user@example.com", Name: "User"},
+		authAdmin: {Email: adminEmail, Name: "Admin"},
+		authUser:  {Email: "user@example.com", Name: "User"},
 	})
 
 	var denied map[string]map[string]string
-	doJSONAuth(t, handler, "Bearer user", http.MethodGet, "/api/v1/audit", nil, http.StatusForbidden, &denied)
-	promoteAdmin(t, store, handler, "Bearer admin")
+	doJSONAuth(t, handler, authUser, http.MethodGet, "/api/v1/audit", nil, http.StatusForbidden, &denied)
+	promoteAdmin(t, store, handler, authAdmin)
 	require.Equal(t, "forbidden", denied["error"]["code"])
 
 	var squad domain.Squad
-	doJSONAuth(t, handler, "Bearer admin", http.MethodPost, "/api/v1/squads", map[string]any{"name": "Audited Squad"}, http.StatusCreated, &squad)
+	doJSONAuth(t, handler, authAdmin, http.MethodPost, pathSquads, map[string]any{"name": "Audited Squad"}, http.StatusCreated, &squad)
 
 	var entries []domain.AuditEntry
-	doJSONAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/audit?squad_id="+squad.ID, nil, http.StatusOK, &entries)
+	doJSONAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/audit?squad_id="+squad.ID, nil, http.StatusOK, &entries)
 	require.Contains(t, auditActions(entries), "squad.create")
 
 	// A squad_id that matches nothing must not leak other squads' entries.
 	var filtered []domain.AuditEntry
-	doJSONAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/audit?squad_id=does-not-exist", nil, http.StatusOK, &filtered)
+	doJSONAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/audit?squad_id=does-not-exist", nil, http.StatusOK, &filtered)
 	require.Empty(t, filtered)
 
 	var limited []domain.AuditEntry
-	doJSONAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/audit?limit=1", nil, http.StatusOK, &limited)
+	doJSONAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/audit?limit=1", nil, http.StatusOK, &limited)
 	require.Len(t, limited, 1)
 }
 
@@ -335,51 +335,51 @@ func TestGetAndDeprecateLLMProvider(t *testing.T) {
 	cfg.AuthMode = config.AuthOIDC
 	store := storage.NewMemoryStore()
 	handler := NewWithOIDCAuthenticator(cfg, store, headerOIDC{
-		"Bearer admin": {Email: "admin@example.com", Name: "Admin"},
-		"Bearer user":  {Email: "user@example.com", Name: "User"},
+		authAdmin: {Email: adminEmail, Name: "Admin"},
+		authUser:  {Email: "user@example.com", Name: "User"},
 	})
-	promoteAdmin(t, store, handler, "Bearer admin")
+	promoteAdmin(t, store, handler, authAdmin)
 
 	var provider domain.LLMProvider
-	doJSONAuth(t, handler, "Bearer admin", http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
 		"name":     "OpenAI",
 		"kind":     "openai",
 		"base_url": "https://api.openai.com/v1",
 	}, http.StatusCreated, &provider)
 
 	var fetched domain.LLMProvider
-	doJSONAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/registry/llm-providers/"+provider.ID, nil, http.StatusOK, &fetched)
+	doJSONAuth(t, handler, authAdmin, http.MethodGet, pathProvidersPrefix+provider.ID, nil, http.StatusOK, &fetched)
 	require.Equal(t, provider.ID, fetched.ID)
 	require.Equal(t, domain.ResourceActive, fetched.Status)
 
 	// Reads are not admin-only, but a missing provider is still a 404.
-	doJSONAuth(t, handler, "Bearer user", http.MethodGet, "/api/v1/registry/llm-providers/"+provider.ID, nil, http.StatusOK, &fetched)
+	doJSONAuth(t, handler, authUser, http.MethodGet, pathProvidersPrefix+provider.ID, nil, http.StatusOK, &fetched)
 
 	var missing map[string]map[string]string
-	doJSONAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/registry/llm-providers/nope", nil, http.StatusNotFound, &missing)
+	doJSONAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/registry/llm-providers/nope", nil, http.StatusNotFound, &missing)
 	require.Equal(t, "not_found", missing["error"]["code"])
 
 	var denied map[string]map[string]string
-	doJSONAuth(t, handler, "Bearer user", http.MethodPost, "/api/v1/registry/llm-providers/"+provider.ID+"/deprecate", nil, http.StatusForbidden, &denied)
+	doJSONAuth(t, handler, authUser, http.MethodPost, pathProvidersPrefix+provider.ID+"/deprecate", nil, http.StatusForbidden, &denied)
 	require.Equal(t, "forbidden", denied["error"]["code"])
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/registry/llm-providers/"+provider.ID+"/deprecate", nil)
-	req.Header.Set("Authorization", "Bearer admin")
+	req := httptest.NewRequest(http.MethodPost, pathProvidersPrefix+provider.ID+"/deprecate", nil)
+	req.Header.Set("Authorization", authAdmin)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 
-	doJSONAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/registry/llm-providers/"+provider.ID, nil, http.StatusOK, &fetched)
+	doJSONAuth(t, handler, authAdmin, http.MethodGet, pathProvidersPrefix+provider.ID, nil, http.StatusOK, &fetched)
 	require.Equal(t, domain.ResourceDeprecated, fetched.Status)
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/registry/llm-providers/does-not-exist/deprecate", nil)
-	req.Header.Set("Authorization", "Bearer admin")
+	req.Header.Set("Authorization", authAdmin)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 
 	var audit []domain.AuditEntry
-	doJSONAuth(t, handler, "Bearer admin", http.MethodGet, "/api/v1/audit", nil, http.StatusOK, &audit)
+	doJSONAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/audit", nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "registry.llm_provider.deprecate")
 }
 
@@ -390,28 +390,28 @@ func TestAgentStartsAssignedTaskAndBlocksUnassignedOnes(t *testing.T) {
 
 	// A second agent in the same squad must not be able to start agent 1's task.
 	var other domain.Agent
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/agents", map[string]any{"name": "other"}, http.StatusCreated, &other)
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{"name": "other"}, http.StatusCreated, &other)
 	var otherIdentity domain.AgentIdentity
-	doJSON(t, handler, http.MethodPost, "/api/v1/agents/"+other.ID+"/identity", nil, http.StatusCreated, &otherIdentity)
+	doJSON(t, handler, http.MethodPost, pathAgentsPrefix+other.ID+pathIdentity, nil, http.StatusCreated, &otherIdentity)
 	otherCredential := crWriter.credentialTokens[otherIdentity.CredentialRef]
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Start me",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &task)
 
 	var forbidden map[string]map[string]string
-	doAgentJSON(t, handler, other.ID, otherCredential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/start", nil, http.StatusForbidden, &forbidden)
+	doAgentJSON(t, handler, other.ID, otherCredential, http.MethodPost, pathMyTasksPrefix+task.ID+"/start", nil, http.StatusForbidden, &forbidden)
 	require.Equal(t, "forbidden", forbidden["error"]["code"])
 	require.Equal(t, "task is not assigned to this agent", forbidden["error"]["message"])
 
 	var started domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/start", nil, http.StatusOK, &started)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+"/start", nil, http.StatusOK, &started)
 	require.Equal(t, domain.TaskInProgress, started.Status)
 
 	var busy domain.Agent
-	doJSON(t, handler, http.MethodGet, "/api/v1/agents/"+agent.ID, nil, http.StatusOK, &busy)
+	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID, nil, http.StatusOK, &busy)
 	require.Equal(t, domain.AgentBusy, busy.Status)
 
 	var body map[string]map[string]string
@@ -419,7 +419,7 @@ func TestAgentStartsAssignedTaskAndBlocksUnassignedOnes(t *testing.T) {
 	require.Equal(t, "not_found", body["error"]["code"])
 
 	var audit []domain.AuditEntry
-	doJSON(t, handler, http.MethodGet, "/api/v1/squads/"+squad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "task.start")
 }
 
@@ -429,7 +429,7 @@ func TestAgentBlocksTaskWithLeaseAndRejectsStaleFence(t *testing.T) {
 	handler, _, squad, agent, credential := agentRuntimeSetup(t, "Block Squad")
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Block me",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &task)
@@ -438,22 +438,22 @@ func TestAgentBlocksTaskWithLeaseAndRejectsStaleFence(t *testing.T) {
 	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", nil, http.StatusOK, &claimed)
 
 	var body map[string]map[string]string
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/block", map[string]any{}, http.StatusBadRequest, &body)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+pathBlock, map[string]any{}, http.StatusBadRequest, &body)
 	require.Equal(t, "execution_id is required", body["error"]["message"])
 
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/block", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+pathBlock, map[string]any{
 		"execution_id": claimed.ExecutionID,
 	}, http.StatusBadRequest, &body)
 	require.Equal(t, "fencing_token is required", body["error"]["message"])
 
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/block", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+pathBlock, map[string]any{
 		"execution_id":  claimed.ExecutionID,
 		"fencing_token": "stale-token",
 	}, http.StatusConflict, &body)
 	require.Equal(t, "conflict", body["error"]["code"])
 
 	var blocked domain.Task
-	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/block", map[string]any{
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+pathBlock, map[string]any{
 		"execution_id":  claimed.ExecutionID,
 		"fencing_token": claimed.FencingToken,
 		"summary":       "waiting on credentials",
@@ -462,11 +462,11 @@ func TestAgentBlocksTaskWithLeaseAndRejectsStaleFence(t *testing.T) {
 
 	// A blocked task leaves no assigned work pending, so the agent goes idle.
 	var idle domain.Agent
-	doJSON(t, handler, http.MethodGet, "/api/v1/agents/"+agent.ID, nil, http.StatusOK, &idle)
+	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID, nil, http.StatusOK, &idle)
 	require.Equal(t, domain.AgentIdle, idle.Status)
 
 	var audit []domain.AuditEntry
-	doJSON(t, handler, http.MethodGet, "/api/v1/squads/"+squad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "task.block")
 }
 
@@ -476,18 +476,18 @@ func TestUpdateTaskValidatesPayloadAndAssignee(t *testing.T) {
 	handler, _, squad, agent, _ := agentRuntimeSetup(t, "Update Squad")
 
 	var otherSquad domain.Squad
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads", map[string]any{"name": "Other Squad"}, http.StatusCreated, &otherSquad)
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{"name": "Other Squad"}, http.StatusCreated, &otherSquad)
 	var foreignAgent domain.Agent
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+otherSquad.ID+"/agents", map[string]any{"name": "foreign"}, http.StatusCreated, &foreignAgent)
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+otherSquad.ID+pathAgents, map[string]any{"name": "foreign"}, http.StatusCreated, &foreignAgent)
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Original title",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &task)
 
 	var updated domain.Task
-	doJSON(t, handler, http.MethodPatch, "/api/v1/tasks/"+task.ID, map[string]any{
+	doJSON(t, handler, http.MethodPatch, pathTasksPrefix+task.ID, map[string]any{
 		"title":       "Renamed",
 		"description": "updated description",
 	}, http.StatusOK, &updated)
@@ -495,36 +495,36 @@ func TestUpdateTaskValidatesPayloadAndAssignee(t *testing.T) {
 	require.Equal(t, "updated description", updated.Description)
 
 	var body map[string]map[string]string
-	doJSON(t, handler, http.MethodPatch, "/api/v1/tasks/"+task.ID, map[string]any{"title": "   "}, http.StatusBadRequest, &body)
+	doJSON(t, handler, http.MethodPatch, pathTasksPrefix+task.ID, map[string]any{"title": "   "}, http.StatusBadRequest, &body)
 	require.Equal(t, "title must not be empty", body["error"]["message"])
 
 	// Assigning to an agent from another squad would break squad isolation.
-	doJSON(t, handler, http.MethodPatch, "/api/v1/tasks/"+task.ID, map[string]any{
+	doJSON(t, handler, http.MethodPatch, pathTasksPrefix+task.ID, map[string]any{
 		"assignee_agent_id": foreignAgent.ID,
 	}, http.StatusBadRequest, &body)
 	require.Equal(t, "assignee_agent_id must belong to this squad", body["error"]["message"])
 
-	doJSON(t, handler, http.MethodPatch, "/api/v1/tasks/"+task.ID, map[string]any{
+	doJSON(t, handler, http.MethodPatch, pathTasksPrefix+task.ID, map[string]any{
 		"assignee_agent_id": "does-not-exist",
 	}, http.StatusNotFound, &body)
 	require.Equal(t, "not_found", body["error"]["code"])
 
 	// Unassigning is allowed and clears the mirror on the previous assignee.
 	var unassigned domain.Task
-	doJSON(t, handler, http.MethodPatch, "/api/v1/tasks/"+task.ID, map[string]any{
+	doJSON(t, handler, http.MethodPatch, pathTasksPrefix+task.ID, map[string]any{
 		"assignee_agent_id": "",
 	}, http.StatusOK, &unassigned)
 	require.Empty(t, unassigned.AssigneeAgentID)
 
-	rec := doRaw(t, handler, http.MethodPatch, "/api/v1/tasks/"+task.ID, "{not json", "")
+	rec := doRaw(t, handler, http.MethodPatch, pathTasksPrefix+task.ID, "{not json", "")
 	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 	require.Equal(t, "bad_request", errorEnvelope(t, rec)["code"])
 
-	rec = doRaw(t, handler, http.MethodPatch, "/api/v1/tasks/does-not-exist", `{"title":"x"}`, "")
+	rec = doRaw(t, handler, http.MethodPatch, pathTaskMissing, `{"title":"x"}`, "")
 	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 
 	var audit []domain.AuditEntry
-	doJSON(t, handler, http.MethodGet, "/api/v1/squads/"+squad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "task.update")
 }
 
@@ -534,21 +534,21 @@ func TestUpdateTaskDeniedForReadonlyGrant(t *testing.T) {
 	cfg := testConfig()
 	cfg.AuthMode = config.AuthOIDC
 	handler := NewWithOIDCAuthenticator(cfg, storage.NewMemoryStore(), headerOIDC{
-		"Bearer owner":  {Email: "owner@example.com", Name: "Owner"},
-		"Bearer reader": {Email: "reader@example.com", Name: "Reader"},
+		authOwner:  {Email: "owner@example.com", Name: "Owner"},
+		authReader: {Email: "reader@example.com", Name: "Reader"},
 	})
 
 	var squad domain.Squad
-	doJSONAuth(t, handler, "Bearer owner", http.MethodPost, "/api/v1/squads", map[string]any{"name": "Guarded Squad"}, http.StatusCreated, &squad)
+	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquads, map[string]any{"name": "Guarded Squad"}, http.StatusCreated, &squad)
 	var task domain.Task
-	doJSONAuth(t, handler, "Bearer owner", http.MethodPost, "/api/v1/squads/"+squad.ID+"/board/tasks", map[string]any{
+	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title": "Guarded task",
 	}, http.StatusCreated, &task)
 
 	var viewer domain.User
-	doJSONAuth(t, handler, "Bearer reader", http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &viewer)
+	doJSONAuth(t, handler, authReader, http.MethodGet, pathAuthMe, nil, http.StatusOK, &viewer)
 	var grant domain.AccessGrant
-	doJSONAuth(t, handler, "Bearer owner", http.MethodPost, "/api/v1/squads/"+squad.ID+"/access-grants", map[string]any{
+	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquadsPrefix+squad.ID+pathAccessGrants, map[string]any{
 		"grantee_type": "user",
 		"grantee_id":   viewer.ID,
 		"permissions":  "read",
@@ -556,23 +556,23 @@ func TestUpdateTaskDeniedForReadonlyGrant(t *testing.T) {
 
 	// Read access can fetch the task but not mutate it.
 	var readable domain.Task
-	doJSONAuth(t, handler, "Bearer reader", http.MethodGet, "/api/v1/tasks/"+task.ID, nil, http.StatusOK, &readable)
+	doJSONAuth(t, handler, authReader, http.MethodGet, pathTasksPrefix+task.ID, nil, http.StatusOK, &readable)
 
 	var forbidden map[string]map[string]string
-	doJSONAuth(t, handler, "Bearer reader", http.MethodPatch, "/api/v1/tasks/"+task.ID, map[string]any{"title": "hijacked"}, http.StatusForbidden, &forbidden)
+	doJSONAuth(t, handler, authReader, http.MethodPatch, pathTasksPrefix+task.ID, map[string]any{"title": "hijacked"}, http.StatusForbidden, &forbidden)
 	require.Equal(t, "forbidden", forbidden["error"]["code"])
 
-	doJSONAuth(t, handler, "Bearer reader", http.MethodPost, "/api/v1/tasks/"+task.ID+"/move", map[string]any{"status": "done"}, http.StatusForbidden, &forbidden)
+	doJSONAuth(t, handler, authReader, http.MethodPost, pathTasksPrefix+task.ID+"/move", map[string]any{"status": "done"}, http.StatusForbidden, &forbidden)
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/v1/tasks/"+task.ID, nil)
-	req.Header.Set("Authorization", "Bearer reader")
+	req := httptest.NewRequest(http.MethodDelete, pathTasksPrefix+task.ID, nil)
+	req.Header.Set("Authorization", authReader)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
 
 	// A stranger with no grant at all cannot even read it.
 	var strangerBody map[string]map[string]string
-	doJSONAuth(t, handler, "Bearer reader", http.MethodGet, "/api/v1/tasks/does-not-exist", nil, http.StatusNotFound, &strangerBody)
+	doJSONAuth(t, handler, authReader, http.MethodGet, pathTaskMissing, nil, http.StatusNotFound, &strangerBody)
 }
 
 func TestDeleteTaskRemovesItAndSyncsAssignedAgent(t *testing.T) {
@@ -581,34 +581,34 @@ func TestDeleteTaskRemovesItAndSyncsAssignedAgent(t *testing.T) {
 	handler, _, squad, agent, _ := agentRuntimeSetup(t, "Delete Squad")
 
 	var task domain.Task
-	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/board/tasks", map[string]any{
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
 		"title":             "Delete me",
 		"assignee_agent_id": agent.ID,
 	}, http.StatusCreated, &task)
 
 	// Assigning pending work marks the agent busy; deleting it must release them.
 	var busy domain.Agent
-	doJSON(t, handler, http.MethodGet, "/api/v1/agents/"+agent.ID, nil, http.StatusOK, &busy)
+	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID, nil, http.StatusOK, &busy)
 	require.Equal(t, domain.AgentBusy, busy.Status)
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/v1/tasks/"+task.ID, nil)
+	req := httptest.NewRequest(http.MethodDelete, pathTasksPrefix+task.ID, nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 
 	var body map[string]map[string]string
-	doJSON(t, handler, http.MethodGet, "/api/v1/tasks/"+task.ID, nil, http.StatusNotFound, &body)
+	doJSON(t, handler, http.MethodGet, pathTasksPrefix+task.ID, nil, http.StatusNotFound, &body)
 
 	var idle domain.Agent
-	doJSON(t, handler, http.MethodGet, "/api/v1/agents/"+agent.ID, nil, http.StatusOK, &idle)
+	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID, nil, http.StatusOK, &idle)
 	require.Equal(t, domain.AgentIdle, idle.Status)
 
-	req = httptest.NewRequest(http.MethodDelete, "/api/v1/tasks/does-not-exist", nil)
+	req = httptest.NewRequest(http.MethodDelete, pathTaskMissing, nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 
 	var audit []domain.AuditEntry
-	doJSON(t, handler, http.MethodGet, "/api/v1/squads/"+squad.ID+"/audit", nil, http.StatusOK, &audit)
+	doJSON(t, handler, http.MethodGet, pathSquadsPrefix+squad.ID+pathAudit, nil, http.StatusOK, &audit)
 	require.Contains(t, auditActions(audit), "task.delete")
 }
