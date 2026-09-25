@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -28,10 +29,15 @@ type recordingGateway struct {
 	updated      []map[string]any
 	deleted      []string
 	live         map[string][]string // token → current model allow-list (WP4 invariant)
+	aliases      map[string]string   // key_alias → token (S-129 unique-alias enforcement)
 	failGenerate bool
 	failUpdate   bool
 	failDelete   bool
-	seq          int
+	// enforceUniqueAlias makes /key/generate reject a duplicate alias with
+	// 400 "already exists", mirroring LiteLLM. Off by default so existing
+	// lifecycle tests keep their lenient stand-in.
+	enforceUniqueAlias bool
+	seq                int
 }
 
 // canCall reports whether the virtual key identified by token is still live
@@ -81,10 +87,25 @@ func (g *recordingGateway) handler() http.Handler {
 			g.handleUpdate(w, body)
 		case "/key/delete":
 			g.handleDelete(w, body)
+		case "/key/list":
+			g.handleList(w, r)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})
+}
+
+// handleList serves GET /key/list?key_alias=... — the lookup the control
+// plane uses to adopt an existing key on alias collision (S-129).
+func (g *recordingGateway) handleList(w http.ResponseWriter, r *http.Request) {
+	alias := r.URL.Query().Get("key_alias")
+	keys := []map[string]any{}
+	if alias != "" {
+		if token, ok := g.aliases[alias]; ok {
+			keys = append(keys, map[string]any{"token": token, "key_alias": alias})
+		}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"keys": keys})
 }
 
 // handleGenerate records a /key/generate call (S-126 / S3776 split).
@@ -93,12 +114,30 @@ func (g *recordingGateway) handleGenerate(w http.ResponseWriter, body map[string
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	alias, _ := body["key_alias"].(string)
+	if g.enforceUniqueAlias && alias != "" {
+		if _, exists := g.aliases[alias]; exists {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"message": fmt.Sprintf("Key with alias '%s' already exists. Unique key aliases across all keys are required.", alias),
+				},
+			})
+			return
+		}
+	}
 	g.seq++
 	token := "tok-" + string(rune('a'+g.seq))
 	if g.live == nil {
 		g.live = map[string][]string{}
 	}
 	g.live[token] = gatewayModelsField(body)
+	if g.aliases == nil {
+		g.aliases = map[string]string{}
+	}
+	if alias != "" {
+		g.aliases[alias] = token
+	}
 	g.generated = append(g.generated, body)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"key":   "sk-generated-" + string(rune('a'+g.seq)),
@@ -128,6 +167,14 @@ func (g *recordingGateway) handleDelete(w http.ResponseWriter, body map[string]a
 	if token, ok := body["key"].(string); ok && g.live != nil {
 		delete(g.live, token)
 	}
+	// Faithful to LiteLLM: deleting a key frees its alias for reuse.
+	if g.aliases != nil {
+		for alias, tok := range g.aliases {
+			if tok == body["key"] {
+				delete(g.aliases, alias)
+			}
+		}
+	}
 	g.deleted = append(g.deleted, body["key"].(string))
 	_ = json.NewEncoder(w).Encode(map[string]any{"deleted": true})
 }
@@ -136,6 +183,14 @@ func (g *recordingGateway) counts() (gen, upd int, del []string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return len(g.generated), len(g.updated), append([]string{}, g.deleted...)
+}
+
+// lookupAlias returns the token stored for a key alias (S-129 tests).
+func (g *recordingGateway) lookupAlias(alias string) (string, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	token, ok := g.aliases[alias]
+	return token, ok
 }
 
 // gatewayFixture wires a server to a recording gateway and returns the pieces
@@ -520,17 +575,21 @@ func TestReconcileGatewayKeysRepairsDrift(t *testing.T) {
 	f.bind(t, f.modelA.ID, f.modelB.ID)
 	f.createIdentity(t)
 
-	// Simulate drift: identity says revoked but a binding is active.
+	// Simulate drift: identity says revoked (token lost) but the binding is
+	// active and the gateway still holds the agent's key under its alias —
+	// the exact S-129 stuck state. Reconcile now ADOPTS the live key rather
+	// than failing /key/generate on the duplicate alias.
 	_, err := f.store.SetAgentIdentityGatewayKey(context.Background(), f.agentID, "tok-lost", domain.GatewayKeyRevoked)
 	require.NoError(t, err)
 
 	var summary map[string]any
 	doJSON(t, f.handler, http.MethodPost, pathGatewayKeysReconcile, nil, http.StatusOK, &summary)
-	require.EqualValues(t, 1, summary["provisioned"])
+	require.EqualValues(t, 1, summary["adopted"])
 
 	identity := f.identity(t)
 	require.Equal(t, domain.GatewayKeyActive, identity.GatewayKeyStatus)
 	require.NotEmpty(t, identity.GatewayKeyToken)
+	require.NotEqual(t, "tok-lost", identity.GatewayKeyToken, "recovered the gateway's real key token")
 
 	// Idempotent: second run re-converges without error and without
 	// generating another key.

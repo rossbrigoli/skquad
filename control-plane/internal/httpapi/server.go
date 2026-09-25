@@ -150,6 +150,10 @@ type LLMGatewayProvisioner interface {
 	UpdateAgentKey(ctx context.Context, token string, req GatewayKeyRequest) error
 	// RevokeAgentKey deletes a key so further model calls fail.
 	RevokeAgentKey(ctx context.Context, token string) error
+	// FindKeyByAlias returns the token of an existing key with the given
+	// alias (found=false when absent). Used to adopt a gateway key whose
+	// token the identity row lost (S-129).
+	FindKeyByAlias(ctx context.Context, alias string) (token string, found bool, err error)
 }
 
 // GatewayKeyRequest describes the access a new runtime virtual key should have.
@@ -364,6 +368,7 @@ func (noopLLMGateway) ProvisionAgentKey(context.Context, GatewayKeyRequest) (str
 
 func (noopLLMGateway) UpdateAgentKey(context.Context, string, GatewayKeyRequest) error { return nil }
 func (noopLLMGateway) RevokeAgentKey(context.Context, string) error                    { return nil }
+func (noopLLMGateway) FindKeyByAlias(context.Context, string) (string, bool, error)    { return "", false, nil }
 
 type principalKey struct{}
 type agentPrincipalKey struct{}
@@ -829,7 +834,7 @@ func (s *Server) reconcileGatewayKeys(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	summary := map[string]int{"checked": len(agents), "provisioned": 0, "updated": 0, "revoked": 0, "none": 0}
+	summary := map[string]int{"checked": len(agents), "provisioned": 0, "updated": 0, "revoked": 0, "adopted": 0, "none": 0}
 	var failures []map[string]string
 	for _, agent := range agents {
 		action, err := s.syncAgentGatewayKey(r.Context(), agent)
@@ -2084,8 +2089,31 @@ func (s *Server) syncAgentGatewayKey(ctx context.Context, agent *domain.Agent) (
 	if err != nil {
 		return "", err
 	}
+	return s.provisionOrAdoptGatewayKey(ctx, agent, squad, keyReq)
+}
+
+// provisionOrAdoptGatewayKey issues a fresh virtual key for an agent that
+// has none recorded, or adopts the key that already exists at the gateway.
+//
+// LiteLLM enforces unique key aliases ("skquad-agent-<agentID>"). When the
+// identity row shows no active token but the gateway still holds the key
+// for that alias — the legacy/stuck state that triggered S-129 — a plain
+// /key/generate fails with 400 "alias already exists", which previously
+// aborted the binding PATCH with 502 and left the new binding
+// unpersisted. Adopting the existing key (rewrite its allow-list, record
+// its token) makes provisioning idempotent so the rebind succeeds.
+func (s *Server) provisionOrAdoptGatewayKey(ctx context.Context, agent *domain.Agent, squad *domain.Squad, keyReq GatewayKeyRequest) (string, error) {
+	alias := fmt.Sprintf("skquad-agent-%s", agent.ID)
+	if existing, found, ferr := s.llmGateway.FindKeyByAlias(ctx, alias); ferr == nil && found {
+		return s.adoptGatewayKey(ctx, agent, existing, keyReq)
+	}
 	key, token, err := s.llmGateway.ProvisionAgentKey(ctx, keyReq)
 	if err != nil {
+		// A concurrent provision may have created the key between the
+		// pre-check and the generate; adopt it rather than failing.
+		if existing, found, ferr := s.llmGateway.FindKeyByAlias(ctx, alias); ferr == nil && found {
+			return s.adoptGatewayKey(ctx, agent, existing, keyReq)
+		}
 		return "", err
 	}
 	ref := generatedVirtualKeyRef(squad.Namespace, agent.ID)
@@ -2099,6 +2127,21 @@ func (s *Server) syncAgentGatewayKey(ctx context.Context, agent *domain.Agent) (
 		return "", err
 	}
 	return "provisioned", nil
+}
+
+// adoptGatewayKey converges an already-existing gateway key (identified by
+// its token) onto the agent's current binding and records the token so the
+// identity row stops claiming "none". The full secret is not recoverable
+// from the gateway, so the k8s credential secret is left untouched — it
+// already holds the runtime key from the original provisioning.
+func (s *Server) adoptGatewayKey(ctx context.Context, agent *domain.Agent, token string, keyReq GatewayKeyRequest) (string, error) {
+	if err := s.llmGateway.UpdateAgentKey(ctx, token, keyReq); err != nil {
+		return "", err
+	}
+	if _, err := s.store.SetAgentIdentityGatewayKey(ctx, agent.ID, token, domain.GatewayKeyActive); err != nil {
+		return "", err
+	}
+	return "adopted", nil
 }
 
 // convergeUnboundGatewayKey decides what to do with a gateway key when the
