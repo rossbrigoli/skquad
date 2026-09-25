@@ -340,7 +340,8 @@ export default function AgentProfilePage() {
               await apiPost(agent?.identity_id ? `/agents/${agentId}/identity/rotate` : `/agents/${agentId}/identity`, token, {});
               agents.refresh();
             } catch (err) {
-              setIdentityError(err instanceof Error ? err.message : agent?.identity_id ? "rotate failed" : "provision failed");
+              const fallbackMsg = agent?.identity_id ? "rotate failed" : "provision failed";
+              setIdentityError(err instanceof Error ? err.message : fallbackMsg);
             } finally {
               setIdentityBusy(false);
             }

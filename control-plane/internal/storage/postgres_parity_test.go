@@ -16,6 +16,9 @@ const (
 	reapErrFormat  = "reap: %v"
 	testModel      = "test-model"
 	zeroUUID       = "00000000-0000-0000-0000-000000000000"
+	// wrongFencingToken is a deliberately invalid token used to assert that
+	// lease-fencing checks reject stale callers.
+	wrongFencingToken = "not-the-token"
 )
 
 // These tests run the Postgres implementation against a real database so that
@@ -191,7 +194,7 @@ func TestPostgresStoreTaskExecutionLeaseAndFencing(t *testing.T) {
 	}
 
 	// Completing with a stale token must not touch the task.
-	if _, err := store.CompleteTaskExecution(ctx, f.agent.ID, task.ID, claimed.ExecutionID, "not-the-token", domain.TaskDone, "nope"); !errors.Is(err, ErrConflict) {
+	if _, err := store.CompleteTaskExecution(ctx, f.agent.ID, task.ID, claimed.ExecutionID, wrongFencingToken, domain.TaskDone, "nope"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale-token complete error = %v, want ErrConflict", err)
 	}
 
@@ -704,11 +707,11 @@ func assertFencingRejections(t *testing.T, store *PostgresStore, ctx context.Con
 		t.Fatalf("second claim error = %v, want ErrNotFound", err)
 	}
 	// Heartbeat with the wrong fencing token is rejected as a conflict.
-	if _, err := store.HeartbeatTaskExecution(ctx, agentID, claimed.ExecutionID, "not-the-token", time.Minute); !errors.Is(err, ErrConflict) {
+	if _, err := store.HeartbeatTaskExecution(ctx, agentID, claimed.ExecutionID, wrongFencingToken, time.Minute); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale-token heartbeat error = %v, want ErrConflict", err)
 	}
 	// Completing with a stale token must not touch the task.
-	if _, err := store.CompleteTaskExecution(ctx, agentID, task.ID, claimed.ExecutionID, "not-the-token", domain.TaskDone, "nope"); !errors.Is(err, ErrConflict) {
+	if _, err := store.CompleteTaskExecution(ctx, agentID, task.ID, claimed.ExecutionID, wrongFencingToken, domain.TaskDone, "nope"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale-token complete error = %v, want ErrConflict", err)
 	}
 }

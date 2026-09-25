@@ -3268,14 +3268,17 @@ func parseClaimStartedAt(r *http.Request) time.Time {
 	return time.Time{}
 }
 
+// taskCompletionRequest is the JSON body for completing the agent's current task.
+type taskCompletionRequest struct {
+	Status        domain.TaskStatus `json:"status"`
+	Summary       string            `json:"summary"`
+	PersistMemory bool              `json:"persist_memory"`
+	ExecutionID   string            `json:"execution_id"`
+	FencingToken  string            `json:"fencing_token"`
+}
+
 func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Status        domain.TaskStatus `json:"status"`
-		Summary       string            `json:"summary"`
-		PersistMemory bool              `json:"persist_memory"`
-		ExecutionID   string            `json:"execution_id"`
-		FencingToken  string            `json:"fencing_token"`
-	}
+	var req taskCompletionRequest
 	if r.Body != nil && r.ContentLength != 0 {
 		if !decodeJSON(w, r, &req) {
 			return
@@ -3308,7 +3311,7 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 		fmt.Sprintf("Agent %s moved task %q to %s", principal.Agent.Name, updated.Title, req.Status))
 	s.notifyDelegationResult(r.Context(), updated, principal.Agent, string(req.Status), summary)
 	if req.PersistMemory && strings.TrimSpace(req.Summary) != "" {
-		s.persistCompletionMemory(w, r, principal, updated, summary, strings.TrimSpace(req.Summary), req.Status, executionID)
+		s.persistCompletionMemory(w, r, principal, updated, summary, strings.TrimSpace(req.Summary), req)
 	}
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -3316,10 +3319,11 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 // persistCompletionMemory stores the runtime completion summary as raw-model
 // agent memory pending review. A persistence failure is audited but never
 // fails the completion itself.
-func (s *Server) persistCompletionMemory(w http.ResponseWriter, r *http.Request, principal *agentPrincipal, updated *domain.Task, summary, rawSummary string, status domain.TaskStatus, executionID string) {
+func (s *Server) persistCompletionMemory(w http.ResponseWriter, r *http.Request, principal *agentPrincipal, updated *domain.Task, summary, rawSummary string, req taskCompletionRequest) {
+	executionID := strings.TrimSpace(req.ExecutionID)
 	metadata, err := json.Marshal(map[string]any{
 		"kind":         "task_completion",
-		"task_status":  string(status),
+		"task_status":  string(req.Status),
 		"execution_id": executionID,
 		"source":       "runtime_completion_summary",
 	})
