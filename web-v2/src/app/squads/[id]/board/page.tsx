@@ -270,6 +270,10 @@ function ColumnConfigModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
+  // S2004: hoist the column patch out of the JSX so handlers stay shallow.
+  const patchCol = (status: string, patch: Partial<BoardColumnConfig>) =>
+    setCols((prev) => prev.map((c) => (c.status === status ? { ...c, ...patch } : c)));
+
   return (
     <Modal title="Configure board columns" onClose={onClose}>
       <p style={{ marginTop: 0, color: "var(--ink-muted)", fontSize: "var(--text-sm)" }}>
@@ -282,15 +286,11 @@ function ColumnConfigModal({
             <input
               type="checkbox"
               checked={col.visible}
-              onChange={(e) =>
-                setCols((prev) => prev.map((c) => (c.status === col.status ? { ...c, visible: e.target.checked } : c)))
-              }
+              onChange={(e) => patchCol(col.status, { visible: e.target.checked })}
             />
             <input
               value={col.label}
-              onChange={(e) =>
-                setCols((prev) => prev.map((c) => (c.status === col.status ? { ...c, label: e.target.value } : c)))
-              }
+              onChange={(e) => patchCol(col.status, { label: e.target.value })}
               style={{
                 border: "1px solid var(--line-strong)",
                 borderRadius: "var(--radius-md)",

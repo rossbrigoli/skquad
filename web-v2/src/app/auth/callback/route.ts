@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   SESSION_COOKIE,
   appRedirect,
-  decodeSession,
   encodeSession,
   exchangeCode,
   oidcEnabled,
@@ -86,6 +85,3 @@ export async function GET(request: NextRequest) {
     );
   }
 }
-
-// ensure decodeSession import is retained for future introspection use
-void decodeSession;
