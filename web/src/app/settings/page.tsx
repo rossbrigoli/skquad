@@ -33,6 +33,7 @@ import {
   isPlatformAdmin,
   modelFieldMode,
   modelRowFields,
+  PLATFORM_ADMIN_ROLE,
   parseProviderModels,
   PRICING_RATE_KEYS,
   PRICING_RATE_LABELS,
@@ -877,11 +878,16 @@ function AIModelModal({
   );
 }
 
-// WP6 (S-111) — Access tab: per-user AI model grants (ADR-0010 D3).
+// WP6 (S-111) — Access tab: platform role management + per-user AI model
+// grants (ADR-0010 D3).
 // Removals from the grant set are guarded server-side (409 in_use); the
 // force retry is always an explicit second click so running agents are
 // never silently orphaned (D9).
+// Role changes are app-managed (PATCH /users/{id}/role): the last
+// platform admin cannot be demoted (409 last_admin) and every change is
+// audited server-side.
 function AccessTab() {
+  const { user: me } = useAuth();
   const users = useApi<AdminUser[]>("/users", 60000);
   const [selected, setSelected] = useState<AdminUser | null>(null);
   const items = users.data || [];
@@ -889,7 +895,7 @@ function AccessTab() {
   return (
     <section>
       <div className="section-head">
-        <h2>Model access</h2>
+        <h2>Users &amp; access</h2>
       </div>
       {users.error ? (
         <div className="notice error">
@@ -904,12 +910,22 @@ function AccessTab() {
           {items.map((u) => (
             <div key={u.id} className="entity-row">
               <div className="entity-main">
-                <span className="entity-title">{u.name || u.email}</span>
+                <span className="entity-title">
+                  {u.name || u.email}
+                  {me?.id === u.id ? <span className="entity-meta"> (you)</span> : null}
+                </span>
                 <span className="entity-meta">
                   {u.email} · role {u.role}
                 </span>
               </div>
-              <div className="entity-side">
+              <div className="entity-side" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <RoleControl
+                  user={u}
+                  isSelf={me?.id === u.id}
+                  onChanged={() => {
+                    users.refresh();
+                  }}
+                />
                 <button
                   type="button"
                   className={`btn btn-sm${selected?.id === u.id ? " btn-primary" : ""}`}
@@ -924,6 +940,81 @@ function AccessTab() {
       )}
       {selected ? <GrantEditor key={selected.id} user={selected} /> : null}
     </section>
+  );
+}
+
+// RoleControl promotes/demotes a user's Layer-1 platform role.
+// Every change goes through an explicit confirm dialog; the server's
+// 409 last_admin guard is surfaced as a plain-language message.
+function RoleControl({
+  user,
+  isSelf,
+  onChanged,
+}: {
+  readonly user: AdminUser;
+  readonly isSelf: boolean;
+  readonly onChanged: () => void;
+}) {
+  const { token } = useAuth();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const isAdminUser = user.role === PLATFORM_ADMIN_ROLE;
+  const targetRole = isAdminUser ? "user" : PLATFORM_ADMIN_ROLE;
+
+  async function apply() {
+    setBusy(true);
+    setError("");
+    try {
+      await apiPatch(`/users/${user.id}/role`, token, { role: targetRole });
+      setConfirming(false);
+      onChanged();
+    } catch (err) {
+      setConfirming(false);
+      if (err instanceof ApiError && err.status === 409) {
+        setError("Last platform admin — demoting this account would lock everyone out.");
+      } else {
+        setError(errorMessage(err, "role change failed"));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const label = isAdminUser ? "Demote" : "Make admin";
+  const confirmBody = isSelf
+    ? "You are changing your OWN role. You will lose access to this admin surface immediately."
+    : isAdminUser
+      ? `Remove platform admin from ${user.name || user.email}? They keep their squads, agents and model grants.`
+      : `Give ${user.name || user.email} full platform admin (user management, model grants, registry writes)?`;
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`btn btn-sm${isAdminUser ? " btn-danger" : ""}`}
+        disabled={busy}
+        onClick={() => setConfirming(true)}
+      >
+        {label}
+      </button>
+      {error ? (
+        <span className="notice error" role="alert" style={{ marginLeft: 8 }}>
+          {error}
+        </span>
+      ) : null}
+      {confirming ? (
+        <ConfirmDialog
+          title={`${label} ${user.name || user.email}?`}
+          body={confirmBody}
+          confirmLabel={label}
+          onConfirm={async () => {
+            await apply();
+          }}
+          onClose={() => setConfirming(false)}
+        />
+      ) : null}
+    </>
   );
 }
 
