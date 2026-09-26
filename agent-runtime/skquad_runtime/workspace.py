@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,11 @@ DEFAULT_WORKSPACES_DIR = "/var/run/skquad/workspaces"
 DEFAULT_WORKSPACE_BASE = "/tmp/skquad-workspaces"
 # Where the operator mounts the per-agent workspace PVC (S-135/S-136).
 DEFAULT_PVC_MOUNT_PATH = "/workspace"
+# S-139: minimum free bytes required on the workspace filesystem before a
+# task may start. Running a task on a full filesystem produces silent
+# truncation/corruption; the runtime blocks the task cleanly instead.
+# Overridable via SKQUAD_MIN_FREE_BYTES.
+DEFAULT_MIN_FREE_BYTES = 104_857_600  # 100 MiB
 
 
 @dataclass(frozen=True)
@@ -69,6 +75,27 @@ def resolve_workspace_base(base_dest: str | Path | None = None) -> Path:
     if mount.is_dir() and os.access(mount, os.W_OK):
         return mount
     return Path(DEFAULT_WORKSPACE_BASE)
+
+
+def check_free_space(
+    path: str | Path, min_free_bytes: int = DEFAULT_MIN_FREE_BYTES
+) -> tuple[bool, int | None]:
+    """Best-effort free-space check for the filesystem holding ``path``.
+
+    Returns ``(ok, free_bytes)``. If the stat itself fails (unusual
+    filesystem, transient error) the check passes with ``free_bytes``
+    ``None`` and a warning — a disk probe must never break a task that
+    could otherwise run (S-139 best-effort rule).
+    """
+    try:
+        usage = shutil.disk_usage(str(path))
+    except OSError as exc:
+        LOGGER.warning(
+            "free-space check failed; proceeding anyway",
+            extra={"path": str(path), "error": str(exc)},
+        )
+        return True, None
+    return usage.free >= min_free_bytes, usage.free
 
 
 def git_clone_dir(base: str | Path, resource_id: str) -> Path:

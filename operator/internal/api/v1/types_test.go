@@ -11,12 +11,12 @@ import (
 	"testing"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apiservalidation "k8s.io/apiextensions-apiserver/pkg/apiserver/validation"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
-	apimachineryyaml "k8s.io/apimachinery/pkg/util/yaml"
-	apiservalidation "k8s.io/apiextensions-apiserver/pkg/apiserver/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	apimachineryyaml "k8s.io/apimachinery/pkg/util/yaml"
 
 	skquadv1 "github.com/rossbrigoli/skquad/operator/internal/api/v1"
 )

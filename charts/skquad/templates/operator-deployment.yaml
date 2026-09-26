@@ -51,6 +51,8 @@ spec:
               value: {{ .Values.agent.taskSummaryMaxChars | quote }}
             - name: SKQUAD_API_SERVER_SERVICE_ACCOUNT_NAME
               value: {{ include "skquad.apiServerName" . | quote }}
+            - name: SKQUAD_MAX_AGENT_STORAGE
+              value: {{ .Values.operator.maxAgentStorage | quote }}
           livenessProbe:
             httpGet:
               path: /healthz

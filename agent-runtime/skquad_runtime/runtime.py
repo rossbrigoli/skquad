@@ -18,11 +18,14 @@ from typing import Callable, Mapping, Protocol
 from urllib import error, request
 
 from .workspace import (
+    DEFAULT_MIN_FREE_BYTES,
     DEFAULT_WORKSPACES_DIR,
     WorkspaceHandle,
+    check_free_space,
     ensure_task_dirs,
     finalize_task_workspace,
     prepare_task_workspace,
+    resolve_workspace_base,
 )
 from .journal import (
     gc_task_dirs,
@@ -86,6 +89,9 @@ class BootstrapConfig:
     # (SKQUAD_WORKSPACE_MOUNT_PATH, default /workspace) and fall back to
     # the ephemeral /tmp base when no PVC is mounted (S-136).
     workspace_base: str = ""
+    # S-139: tasks are blocked when the workspace filesystem has less
+    # than this many bytes free (SKQUAD_MIN_FREE_BYTES).
+    min_free_bytes: int = DEFAULT_MIN_FREE_BYTES
     # WP5 (ADR-0010 D4): the agent's model binding, injected by the
     # operator. The runtime does NOT route on these ids (the gateway owns
     # failover, D6); they make the binding visible in the runtime env and
@@ -359,6 +365,7 @@ def load_bootstrap_config(environ: Mapping[str, str] | None = None) -> Bootstrap
         workspace_enabled=env_bool(env, "SKQUAD_WORKSPACE_ENABLED", True),
         workspaces_dir=env.get("SKQUAD_WORKSPACES_DIR", DEFAULT_WORKSPACES_DIR),
         workspace_base=env.get("SKQUAD_WORKSPACE_BASE", ""),
+        min_free_bytes=env_int(env, "SKQUAD_MIN_FREE_BYTES", DEFAULT_MIN_FREE_BYTES),
     )
 
 
@@ -1547,6 +1554,33 @@ def _finalize_task_result(
     )
 
 
+def _block_disk_full(
+    control_plane: "ControlPlaneClient",
+    task: RuntimeTask,
+    state: RuntimeState | None,
+    base: Path,
+    free: int | None,
+    floor: int,
+) -> RuntimeTask:
+    """Fail a claimed task cleanly as *blocked* because the workspace
+    filesystem is (nearly) full (S-139). A clear summary beats silent
+    truncation: the control plane surfaces it in the agent/task status."""
+    free_str = "unknown" if free is None else f"{free}"
+    summary = (
+        f"workspace filesystem full: {base} has {free_str} bytes free, "
+        f"below the {floor}-byte floor (SKQUAD_MIN_FREE_BYTES)"
+    )
+    LOGGER.warning(
+        "workspace filesystem full; blocking task",
+        extra={"task_id": task.id, "base": str(base), "free_bytes": free},
+    )
+    final_task = control_plane.block_task(task, summary=summary)
+    control_plane.heartbeat("idle")
+    if state is not None:
+        state.task_failed(task.id, summary)
+    return final_task
+
+
 def run_task_once(
     config: BootstrapConfig,
     handler: TaskHandler,
@@ -1567,10 +1601,19 @@ def run_task_once(
     control_plane.heartbeat("busy", task)
     resumed = False
     if config.workspace_enabled:
+        # S-139: disk-full guard BEFORE any workspace work. Running a
+        # task on a full filesystem silently truncates writes; block the
+        # task with a clear summary instead. Best-effort: a failed stat
+        # passes (check_free_space) so odd filesystems never wedge tasks.
+        pre_base = resolve_workspace_base(config.workspace_base)
+        ok, free = check_free_space(pre_base, config.min_free_bytes)
+        if not ok:
+            return _block_disk_full(control_plane, task, state, pre_base, free, config.min_free_bytes)
         # Durable per-task dir on the PVC (S-136): scripts the handler
         # writes under SKQUAD_TASK_DIR survive crashes/restarts.
         # S-137: prior artifacts in the dir mean this is a crash-resume;
         # the journal + resume note are prepared before the handler runs.
+        base = pre_base
         try:
             base, task_dir = ensure_task_dirs(config.workspace_base, task.id)
             if task_dir is not None:
@@ -1586,6 +1629,12 @@ def run_task_once(
                 "task dir creation failed",
                 extra={"task_id": task.id, "error": str(exc)},
             )
+        # S-139: re-check after task dir creation — the floor could have
+        # been crossed between the pre-check and now (another writer
+        # filled the volume mid-setup).
+        ok, free = check_free_space(base, config.min_free_bytes)
+        if not ok:
+            return _block_disk_full(control_plane, task, state, base, free, config.min_free_bytes)
     started = monotonic()
     workspace = _prepare_task_workspace(config, control_plane, task, resumed=resumed)
     if workspace is not None and workspace.resume_note:

@@ -6,8 +6,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
+	"strconv"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -19,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	skquadv1 "github.com/rossbrigoli/skquad/operator/internal/api/v1"
@@ -117,10 +121,51 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.AgentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("skquad-agent-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create Agent controller")
+		os.Exit(1)
+	}
+
+	// S-139: orphaned workspace PVC GC. Runs once at startup and then on
+	// a fixed interval inside the manager (leader-elected: only the leader
+	// sweeps). Scoped by construction — labeled workspace PVCs inside
+	// squad namespaces only (see internal/controller/workspace_gc.go).
+	gc := &controller.OrphanPVCGC{
+		Client:   mgr.GetClient(),
+		Recorder: mgr.GetEventRecorderFor("skquad-workspace-gc"),
+	}
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		interval := time.Duration(envIntOrDefault("SKQUAD_ORPHAN_PVC_SWEEP_INTERVAL_MINUTES", 15)) * time.Minute
+		sweep := func() {
+			report, err := gc.SweepOrphanWorkspacePVCs(ctx)
+			if err != nil {
+				ctrl.Log.Error(err, "orphan workspace PVC sweep failed")
+				return
+			}
+			if report.Scanned > 0 || report.Cleaned > 0 || report.Retained > 0 {
+				ctrl.Log.Info("orphan workspace PVC sweep complete",
+					"scanned", report.Scanned,
+					"cleaned", report.Cleaned,
+					"retained", report.Retained,
+					"skippedInUse", report.SkippedInUse)
+			}
+		}
+		sweep()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				sweep()
+			}
+		}
+	})); err != nil {
+		ctrl.Log.Error(err, "unable to add orphan workspace PVC GC runnable")
 		os.Exit(1)
 	}
 
@@ -146,6 +191,13 @@ const envAPIServerServiceAccount = "SKQUAD_API_SERVER_SERVICE_ACCOUNT_NAME"
 
 func envOrDefault(name string, fallback string) string {
 	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envIntOrDefault(name string, fallback int) int {
+	if value, err := strconv.Atoi(os.Getenv(name)); err == nil && value > 0 {
 		return value
 	}
 	return fallback

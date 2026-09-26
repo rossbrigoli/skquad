@@ -256,5 +256,34 @@ class PvcPrepareTests(unittest.TestCase):
             self.assertTrue((handle.path / "README.md").exists())
 
 
+class CheckFreeSpaceTest(unittest.TestCase):
+    """S-139: best-effort free-space probe for the workspace filesystem."""
+
+    def test_passes_when_free_above_floor(self):
+        usage = mock.Mock(free=5 * 1024 * 1024 * 1024)
+        with mock.patch.object(ws.shutil, "disk_usage", return_value=usage):
+            ok, free = ws.check_free_space("/whatever", 1000)
+        self.assertTrue(ok)
+        self.assertEqual(free, 5 * 1024 * 1024 * 1024)
+
+    def test_fails_when_free_below_floor(self):
+        usage = mock.Mock(free=999)
+        with mock.patch.object(ws.shutil, "disk_usage", return_value=usage):
+            ok, free = ws.check_free_space("/whatever", 1000)
+        self.assertFalse(ok)
+        self.assertEqual(free, 999)
+
+    def test_stat_failure_proceeds_with_warning(self):
+        with mock.patch.object(
+            ws.shutil, "disk_usage", side_effect=OSError("weird fs")
+        ):
+            ok, free = ws.check_free_space("/weird", 1000)
+        self.assertTrue(ok)
+        self.assertIsNone(free)
+
+    def test_default_floor_is_100_mib(self):
+        self.assertEqual(ws.DEFAULT_MIN_FREE_BYTES, 104_857_600)
+
+
 if __name__ == "__main__":
     unittest.main()
