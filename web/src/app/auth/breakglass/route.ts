@@ -46,7 +46,7 @@ export async function POST(request: Request) {
 
   const headers = new Headers({
     "Content-Type": "application/json",
-    "User-Agent": "skquad-web-v2-breakglass",
+    "User-Agent": "skquad-web-breakglass",
   });
   for (const name of ["x-real-ip", "x-forwarded-for", "cf-ray", "cf-connecting-ip"]) {
     const value = request.headers.get(name);
@@ -93,8 +93,8 @@ export async function POST(request: Request) {
 
   const res = NextResponse.json({ ok: true, user: body.user ?? null });
   // The shared sessionCookieOpts() derives `secure` from the OIDC redirect URL,
-  // which is https://skquad-v2.rossbrigoli.com. Break-glass is reached over
-  // plain-HTTP on the internal name (http://skquad-v2.lab) or over Tailscale,
+  // which is https://skquad.rossbrigoli.com. Break-glass is reached over
+  // plain-HTTP on the internal name (http://skquad.lab) or over Tailscale,
   // so inheriting secure=true would mean the browser never sends the cookie back
   // and every proxied call comes back 401 "session expired".
   //

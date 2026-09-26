@@ -1,7 +1,7 @@
 // S-140: inline SVG icons for the primary rail menu. Stroke-based 16px
 // glyphs that inherit `currentColor`, so they follow the nav item's theme
 // state (muted → bright) without extra CSS. No icon dependency added —
-// web-v2 deliberately stays on a tiny dependency footprint.
+// The web app deliberately stays on a tiny dependency footprint.
 
 type IconProps = { readonly size?: number };
 

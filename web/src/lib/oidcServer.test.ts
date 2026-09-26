@@ -10,9 +10,9 @@ import {
 
 const OIDC_ENV = {
   SKQUAD_OIDC_ISSUER: "https://idp.example.com/auth",
-  SKQUAD_OIDC_CLIENT_ID: "skquad-v2",
+  SKQUAD_OIDC_CLIENT_ID: "skquad",
   SKQUAD_OIDC_CLIENT_SECRET: "***",
-  SKQUAD_OIDC_REDIRECT_URL: "https://skquad-v2.rossbrigoli.com/auth/callback",
+  SKQUAD_OIDC_REDIRECT_URL: "https://skquad.rossbrigoli.com/auth/callback",
 };
 
 function clearEnv() {
@@ -120,47 +120,47 @@ describe("publicOrigin (redirect-origin leak fix)", () => {
     new Request("http://127.0.0.1:3000/auth/callback", { headers });
 
   it("explicit SKQUAD_PUBLIC_BASE_URL wins over everything", () => {
-    process.env.SKQUAD_PUBLIC_BASE_URL = "https://skquad-v2.rossbrigoli.com/";
+    process.env.SKQUAD_PUBLIC_BASE_URL = "https://skquad.rossbrigoli.com/";
     const o = publicOrigin(req({ "x-forwarded-host": "elsewhere.example.com" }));
-    expect(o).toBe("https://skquad-v2.rossbrigoli.com");
+    expect(o).toBe("https://skquad.rossbrigoli.com");
   });
 
   it("uses x-forwarded-host + x-forwarded-proto when no env is set", () => {
     const o = publicOrigin(
-      req({ "x-forwarded-host": "skquad-v2.rossbrigoli.com", "x-forwarded-proto": "https" }),
+      req({ "x-forwarded-host": "skquad.rossbrigoli.com", "x-forwarded-proto": "https" }),
     );
-    expect(o).toBe("https://skquad-v2.rossbrigoli.com");
+    expect(o).toBe("https://skquad.rossbrigoli.com");
   });
 
   it("takes the first value of a comma-separated forwarded host chain", () => {
     const o = publicOrigin(
-      req({ "x-forwarded-host": "skquad-v2.rossbrigoli.com, internal.corp", "x-forwarded-proto": "https,http" }),
+      req({ "x-forwarded-host": "skquad.rossbrigoli.com, internal.corp", "x-forwarded-proto": "https,http" }),
     );
-    expect(o).toBe("https://skquad-v2.rossbrigoli.com");
+    expect(o).toBe("https://skquad.rossbrigoli.com");
   });
 
   it("falls back to the Host header when there is no forwarded header", () => {
-    const o = publicOrigin(req({ host: "skquad-v2.rossbrigoli.com" }));
-    expect(o).toBe("https://skquad-v2.rossbrigoli.com");
+    const o = publicOrigin(req({ host: "skquad.rossbrigoli.com" }));
+    expect(o).toBe("https://skquad.rossbrigoli.com");
   });
 
   it("refuses to echo a localhost Host (the exact bug we hit)", () => {
-    process.env.SKQUAD_OIDC_REDIRECT_URL = "https://skquad-v2.rossbrigoli.com/auth/callback";
+    process.env.SKQUAD_OIDC_REDIRECT_URL = "https://skquad.rossbrigoli.com/auth/callback";
     process.env.SKQUAD_OIDC_ISSUER = "https://idp.example.com/auth";
     process.env.SKQUAD_OIDC_CLIENT_ID = "c";
     process.env.SKQUAD_OIDC_CLIENT_SECRET = "s";
     const o = publicOrigin(req({ host: "localhost:3000" }));
     expect(o).not.toContain("localhost");
-    expect(o).toBe("https://skquad-v2.rossbrigoli.com");
+    expect(o).toBe("https://skquad.rossbrigoli.com");
   });
 
   it("refuses a 127.0.0.1 forwarded host too", () => {
-    process.env.SKQUAD_OIDC_REDIRECT_URL = "https://skquad-v2.rossbrigoli.com/auth/callback";
+    process.env.SKQUAD_OIDC_REDIRECT_URL = "https://skquad.rossbrigoli.com/auth/callback";
     process.env.SKQUAD_OIDC_ISSUER = "https://idp.example.com/auth";
     process.env.SKQUAD_OIDC_CLIENT_ID = "c";
     process.env.SKQUAD_OIDC_CLIENT_SECRET = "s";
     const o = publicOrigin(req({ "x-forwarded-host": "127.0.0.1:3000" }));
-    expect(o).toBe("https://skquad-v2.rossbrigoli.com");
+    expect(o).toBe("https://skquad.rossbrigoli.com");
   });
 
   it("returns empty string when nothing usable is configured", () => {

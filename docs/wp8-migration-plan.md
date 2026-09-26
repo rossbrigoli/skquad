@@ -1,6 +1,8 @@
 # WP8 Migration Plan — AIModel-8 / S-113: Backfill agent model bindings & drop the `llm_provider` grant type
 
 Status: 0014 IMPLEMENTED (this branch, WP8 closeout) — legacy code paths removed from control-plane + web-v2, and `0014_drop_legacy_llm_provider.sql` written (delete llm_provider grants → tighten resource_type CHECK → drop agents.default_provider/default_model + providers.default_model/models/pricing; idempotent). Prior: 0013 backfill live since 2026-09-24; all 3 agents bound; gates V1-V3 = 0. 0014 ships on next deploy per the ≥1-release-clean gate (docs §3).
+> **Note (2026-09-26):** `web-v2` is now `web` (v1 UI retired 2026-09-26); `web-v2` references in this document mean the current `web/` app.
+
 Date: 2026-09-24
 Baseline: `main` @ 3dbb458 (ADR-0010 epic WP1–WP7 merged)
 

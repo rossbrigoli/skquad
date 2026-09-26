@@ -54,7 +54,7 @@ spec:
             - name: SKQUAD_LLM_GATEWAY_VERSION
               value: {{ .Values.version.llmGateway | default .Values.image.llmGateway.tag | quote }}
             - name: SKQUAD_WEB_UI_VERSION
-              value: {{ .Values.version.webUi | default .Values.image.webV2.tag | quote }}
+              value: {{ .Values.version.webUi | default .Values.image.web.tag | quote }}
             # The two secret inputs are optional so a deployment with break-glass
             # disabled never blocks on a missing Secret. If break-glass IS enabled
             # without them, the process fails loudly at startup instead of running

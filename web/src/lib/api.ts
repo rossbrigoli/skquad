@@ -23,9 +23,15 @@ export type Agent = {
   role?: string;
   system_prompt?: string;
   identity_id?: string;
-  default_provider_id?: string;
-  default_model?: string;
+  // AI model binding (ADR-0010 D4, WP7). Bound via the agent page's
+  // LLM section; PATCH /agents/{id} with "" clears a slot.
+  ai_model_id?: string;
+  fallback_ai_model_id?: string;
   idle_timeout_sec?: number;
+  // Durable workspace PVC (S-138). storageClass is platform-admin only
+  // and intentionally absent from the tenant-facing surface.
+  storage_enabled?: boolean;
+  storage_size?: string;
   status?: string;
   created_at?: string;
   updated_at?: string;
@@ -112,9 +118,8 @@ export type LLMProvider = {
   kind: string;
   base_url: string;
   api_key_ref?: string;
-  default_model?: string;
-  models?: unknown;
-  pricing?: unknown;
+  // WP8 (0014): legacy default_model/models removed — model config lives
+  // on AIModel rows (ADR-0010). S-128: pricing lives only on AIModel.
   status: string;
   registered_by?: string;
   created_at?: string;
@@ -177,16 +182,26 @@ export type ApiState<T> = {
 };
 
 export function apiBaseUrl(): string {
+  if (apiBaseOverride) return apiBaseOverride.replace(/\/$/, "");
   const configured = process.env.NEXT_PUBLIC_SKQUAD_API_BASE_URL || "/api/v1";
   return configured.replace(/\/$/, "");
 }
 
+// OIDC mode routes all API calls through the server-side /proxy (UIv2-13).
+let apiBaseOverride: string | null = null;
+export function setApiBaseOverride(base: string | null): void {
+  apiBaseOverride = base;
+}
+
 export class ApiError extends Error {
   status: number;
+  // Parsed JSON body when available — carries the S-103 in-use usage list.
+  body: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -230,13 +245,14 @@ async function apiRequest<T>(path: string, token: string, options: { method: str
   });
   if (!response.ok) {
     let message = response.statusText;
+    let body: unknown = undefined;
     try {
-      const body = await response.json();
-      message = body?.error?.message || message;
+      body = await response.json();
+      message = (body as any)?.error?.message || (body as any)?.message || message;
     } catch {
       // Keep the HTTP status text when the body is not JSON.
     }
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, message, body);
   }
   if (response.status === 204) {
     return undefined as T;

@@ -2,11 +2,11 @@
 // everything comes from the IdP's .well-known/openid-configuration, so any
 // compliant provider (Dex, Keycloak, Entra, Authelia…) works unchanged.
 //
-// Env (set on the web-v2 deployment):
+// Env (set on the web deployment):
 //   SKQUAD_OIDC_ISSUER        e.g. https://cloud.rossbrigoli.com/auth
-//   SKQUAD_OIDC_CLIENT_ID     e.g. skquad-v2
+//   SKQUAD_OIDC_CLIENT_ID     e.g. skquad
 //   SKQUAD_OIDC_CLIENT_SECRET
-//   SKQUAD_OIDC_REDIRECT_URL  e.g. https://skquad-v2.rossbrigoli.com/auth/callback
+//   SKQUAD_OIDC_REDIRECT_URL  e.g. https://skquad.rossbrigoli.com/auth/callback
 //   SKQUAD_OIDC_SCOPES        default "openid profile email offline_access"
 
 import { NextResponse } from "next/server";
@@ -189,7 +189,7 @@ export const NONCE_COOKIE = "skquad_oidc_nonce";
  *
  * sessionCookieOpts() derives `secure` from the configured OIDC redirect URL,
  * which is the public https hostname. Break-glass (and any internal access via
- * http://skquad-v2.lab or Tailscale) arrives over plain HTTP, where a Secure
+ * http://skquad.lab or Tailscale) arrives over plain HTTP, where a Secure
  * cookie is silently dropped by the browser — which shows up as the session
  * dying after the first proxied call, because the proxy re-writes the cookie.
  */
