@@ -2139,11 +2139,12 @@ func TestOIDCGroupRoleBindingKeepsPlainUsersPlain(t *testing.T) {
 	require.Equal(t, domain.RoleUser, user.Role)
 }
 
-// UpsertUser only assigns role on INSERT, so the middleware must promote an
-// existing row when the principal gains a bound admin group. Losing the group
-// deliberately does NOT demote: a misconfigured SKQUAD_OIDC_ADMIN_GROUPS must
-// not be able to lock every admin out. Demotion is an explicit operator action.
-func TestOIDCGroupRoleBindingPromotesExistingRowButDoesNotAutoDemote(t *testing.T) {
+// Bootstrap-only semantics: UpsertUser assigns role on INSERT, so a bound
+// admin group grants platform_admin on the FIRST login. After the row
+// exists, group claims never change it — the role is app-managed via
+// PATCH /api/v1/users/{userID}/role, so in-app demotions stick across
+// logins even if the principal is still in the bound IdP group.
+func TestOIDCGroupRoleBindingBootstrapOnly(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig()
@@ -2169,20 +2170,21 @@ func TestOIDCGroupRoleBindingPromotesExistingRowButDoesNotAutoDemote(t *testing.
 		http.MethodGet, pathAuthMe, nil, http.StatusOK, &first)
 	require.Equal(t, domain.RoleUser, first.Role)
 
-	// Gains the bound group => promoted on the very next request, same row.
+	// Gains the bound group => NO re-promotion of the existing row.
+	// Role lifecycle is app-managed; group claims only bootstrap.
 	var second domain.User
 	doJSON(t,
 		NewWithOIDCAuthenticator(cfg, store, fakeOIDC{profile: profile([]string{"skquad-admins"})}),
 		http.MethodGet, pathAuthMe, nil, http.StatusOK, &second)
 	require.Equal(t, first.ID, second.ID, "same principal must be reused, not duplicated")
-	require.Equal(t, domain.RolePlatformAdmin, second.Role)
+	require.Equal(t, domain.RoleUser, second.Role, "existing rows are not promoted by group claims")
 
-	// Loses the group => stays admin (no auto-demotion, by design).
+	// Loses the group => still plain (nothing was ever promoted).
 	var third domain.User
 	doJSON(t,
 		NewWithOIDCAuthenticator(cfg, store, fakeOIDC{profile: profile([]string{"everyone"})}),
 		http.MethodGet, pathAuthMe, nil, http.StatusOK, &third)
-	require.Equal(t, domain.RolePlatformAdmin, third.Role, "role must not be auto-demoted by group loss")
+	require.Equal(t, domain.RoleUser, third.Role)
 }
 
 // With no admin groups configured, nobody is promoted via groups — and an
