@@ -323,6 +323,7 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Delete(routeAIModel, s.deleteAIModel)
 
 			r.Get("/users", s.listUsers)
+			r.Patch("/users/{userID}/role", s.setUserRole)
 			r.Get("/users/{userID}/models", s.listUserModels)
 			r.Put("/users/{userID}/models", s.setUserModels)
 			r.Delete("/users/{userID}/models/{modelID}", s.revokeUserModel)
@@ -447,7 +448,8 @@ func (s *Server) serveDevAuth(w http.ResponseWriter, r *http.Request, next http.
 }
 
 // serveOIDCAuth authenticates the bearer token against the OIDC provider,
-// reconciles the promotion-only group role binding, and serves the request.
+// bootstraps the Layer-1 role from group claims on first login, and
+// serves the request.
 func (s *Server) serveOIDCAuth(w http.ResponseWriter, r *http.Request, next http.Handler) {
 	if s.oidcAuth == nil {
 		writeError(w, http.StatusInternalServerError, "internal", "OIDC authentication is not configured")
@@ -476,21 +478,13 @@ func (s *Server) serveOIDCAuth(w http.ResponseWriter, r *http.Request, next http
 		writeError(w, http.StatusInternalServerError, "internal", "failed to load authenticated principal")
 		return
 	}
-	// Group binding is PROMOTION-ONLY by deliberate design.
-	// UpsertUser assigns role on INSERT but never overwrites it, so an
-	// existing row needs this to pick up a newly bound admin group.
-	// Auto-demotion is intentionally NOT performed here: if
-	// SKQUAD_OIDC_ADMIN_GROUPS were ever misconfigured or emptied, a
-	// demote-on-every-request rule would lock every administrator out of
-	// the system with no way back in. Demotion stays an explicit operator
-	// action (store.SetUserRole).
-	if desiredRole == domain.RolePlatformAdmin && user.Role != desiredRole {
-		if err := s.store.SetUserRole(r.Context(), user.ID, desiredRole); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", "failed to reconcile principal role")
-			return
-		}
-		user.Role = desiredRole
-	}
+	// Group claims bootstrap the role on FIRST login (INSERT) only.
+	// After the row exists, the role is app-managed exclusively via
+	// PATCH /api/v1/users/{userID}/role: in-app promotions and
+	// demotions stick across logins, and a stale or misconfigured
+	// SKQUAD_OIDC_ADMIN_GROUPS can neither re-promote an existing
+	// row nor demote one. Recovery with no usable admin is what the
+	// break-glass path is for.
 	next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, user)))
 }
 
