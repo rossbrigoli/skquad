@@ -36,6 +36,21 @@ type Store interface {
 	WakeLatencyStore
 	AuditStore
 	WorkNotificationStore
+	PromptTierStore
+}
+
+// PromptTierStore persists the stored prompt tiers (organization via
+// instance_settings; squad and agent through their entity updates) and
+// the append-only prompt revision history (S-PROMPT WP2, ADR-0011 D5).
+// Revision rows are never updated or deleted — retention is forever.
+type PromptTierStore interface {
+	GetInstanceSettings(ctx context.Context) (*domain.InstanceSettings, error)
+	// UpdateInstanceSettings writes the org tier. When the context carries
+	// a PromptRevisionIntent and org_prompt actually changed, the revision
+	// row is appended in the same transaction as the settings update.
+	UpdateInstanceSettings(ctx context.Context, settings *domain.InstanceSettings) (*domain.InstanceSettings, error)
+	// ListPromptRevisions returns revisions newest-first for one tier.
+	ListPromptRevisions(ctx context.Context, scope, scopeID string, limit int) ([]*domain.PromptRevision, error)
 }
 
 // KubernetesOutboxStore persists durable Kubernetes reconciliation intents.
