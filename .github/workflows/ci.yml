@@ -477,7 +477,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/go/bin
-          key: sec-tools-${{ runner.os }}-2026-09-26
+          key: sec-tools-sca-${{ runner.os }}-2026-09-26
       - name: Install govulncheck
         if: steps.sec-tools.outputs.cache-hit != 'true'
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -534,7 +534,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/go/bin
-          key: sec-tools-${{ runner.os }}-2026-09-26
+          key: sec-tools-gosec-${{ runner.os }}-2026-09-26
       - name: Install gosec
         if: steps.sec-tools.outputs.cache-hit != 'true'
         run: go install github.com/securego/gosec/v2/cmd/gosec@latest
