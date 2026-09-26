@@ -12,6 +12,7 @@ import type { Agent, Squad } from "../lib/api";
 import type { DashboardPayload } from "../lib/dashboard";
 import { ThemeToggle } from "./ThemeToggle";
 import { UserMenu } from "./UserMenu";
+import { IconAbout, IconAgents, IconCosts, IconDashboard, IconInbox, IconSettings, IconSquads } from "./icons";
 import { agentIdFromPath, breadcrumbsForPath } from "../lib/breadcrumbs";
 import {
   agentsSectionActive,
@@ -29,13 +30,16 @@ import {
 // that squad's agents (GET /squads/<id>/agents, same source as the squad's
 // Agents tab); globally they are every accessible agent grouped by squad,
 // sourced from GET /dashboard (the only scoped all-agents endpoint).
+// S-140: every top-level menu item carries a 16px icon so the rail reads
+// less bare. Icons live in components/icons.tsx and inherit currentColor.
 const simpleNav = [
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/inbox", label: "Inbox" },
+  { href: "/dashboard", label: "Dashboard", Icon: IconDashboard },
+  { href: "/inbox", label: "Inbox", Icon: IconInbox },
 ];
 const tailNav = [
-  { href: "/costs", label: "Costs" },
-  { href: "/settings", label: "Settings" },
+  { href: "/costs", label: "Costs", Icon: IconCosts },
+  { href: "/settings", label: "Settings", Icon: IconSettings },
+  { href: "/about", label: "About", Icon: IconAbout },
 ];
 
 type NavItem = { href: string; label: string };
@@ -99,7 +103,10 @@ function SquadsNavGroup({
     <div className="nav-group">
       <div className={active ? "nav-item nav-group-parent active" : "nav-item nav-group-parent"}>
         <Link href="/squads" className="nav-group-link">
-          Squads
+          <span className="nav-item-main">
+            <IconSquads />
+            Squads
+          </span>
         </Link>
         <button
           type="button"
@@ -177,7 +184,12 @@ function AgentsNavGroup({
         aria-expanded={expanded}
         onClick={onToggle}
       >
-        <span className="nav-group-link">Agents</span>
+        <span className="nav-group-link">
+          <span className="nav-item-main">
+            <IconAgents />
+            Agents
+          </span>
+        </span>
         <span className="nav-group-chevron" aria-hidden="true">
           {expanded ? "▾" : "▸"}
         </span>
@@ -235,7 +247,7 @@ function PrimaryRail({
   return (
     <nav className="rail rail-primary" aria-label="Primary navigation">
       <Link href="/dashboard" className="rail-brand" aria-label="Skquad dashboard">
-        <Image src="/skquad-logo-64.png" width={28} height={28} alt="" className="rail-brand-logo" priority />
+        <Image src="/skquad-logo-64.png" width={42} height={42} alt="" className="rail-brand-logo" priority />
         skquad
       </Link>
       {simpleNav.map((item) => (
@@ -244,7 +256,10 @@ function PrimaryRail({
           href={item.href}
           className={pathname.startsWith(item.href) ? "nav-item active" : "nav-item"}
         >
-          {item.label}
+          <span className="nav-item-main">
+            <item.Icon />
+            {item.label}
+          </span>
           {item.href === "/inbox" && inboxBadge > 0 ? <span className="nav-badge">{inboxBadge}</span> : null}
         </Link>
       ))}
@@ -272,7 +287,10 @@ function PrimaryRail({
           href={item.href}
           className={pathname.startsWith(item.href) ? "nav-item active" : "nav-item"}
         >
-          {item.label}
+          <span className="nav-item-main">
+            <item.Icon />
+            {item.label}
+          </span>
         </Link>
       ))}
       <div className="rail-footer">

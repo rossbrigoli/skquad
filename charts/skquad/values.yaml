@@ -27,6 +27,15 @@ replicas:
   web: 1
   webV2: 1
 
+# S-130: overrides for the component versions shown on the About page.
+# Leave empty to use the image tag deployed for each component.
+version:
+  apiServer: ""
+  operator: ""
+  agentRuntime: ""
+  llmGateway: ""
+  webUi: ""
+
 namespace:
   create: true
 

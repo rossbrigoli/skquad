@@ -43,6 +43,18 @@ spec:
           env:
             - name: SKQUAD_ADDR
               value: ":8080"
+            # S-130: component versions for the About page. Defaults track the
+            # image tags this release deploys, so the UI shows what is running.
+            - name: SKQUAD_VERSION
+              value: {{ .Values.version.apiServer | default .Values.image.apiServer.tag | quote }}
+            - name: SKQUAD_OPERATOR_VERSION
+              value: {{ .Values.version.operator | default .Values.image.operator.tag | quote }}
+            - name: SKQUAD_AGENT_RUNTIME_VERSION
+              value: {{ .Values.version.agentRuntime | default .Values.image.agentRuntime.tag | quote }}
+            - name: SKQUAD_LLM_GATEWAY_VERSION
+              value: {{ .Values.version.llmGateway | default .Values.image.llmGateway.tag | quote }}
+            - name: SKQUAD_WEB_UI_VERSION
+              value: {{ .Values.version.webUi | default .Values.image.webV2.tag | quote }}
             # The two secret inputs are optional so a deployment with break-glass
             # disabled never blocks on a missing Secret. If break-glass IS enabled
             # without them, the process fails loudly at startup instead of running
