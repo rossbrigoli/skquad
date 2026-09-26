@@ -70,6 +70,12 @@ operator:
   metricsBindAddress: ":8080"
   healthProbeBindAddress: ":8081"
   imagePullPolicy: IfNotPresent
+  # S-139: platform-wide per-agent storage cap enforced at operator
+  # admission (defense in depth behind the API validation). Agent CRs
+  # requesting more than this never get a PVC: WorkspaceReady=False /
+  # StorageSizeExceedsPlatformMax. Keep in sync with
+  # apiServer.maxAgentStorageSize unless deliberately stricter.
+  maxAgentStorage: 10Gi
   # S6864: explicit memory limit.
   resources:
     requests:

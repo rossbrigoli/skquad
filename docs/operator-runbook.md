@@ -409,6 +409,17 @@ mount paths unless actively debugging on a private terminal.
   policies are still future work.
 - Do not enable public ingress while `apiServer.authMode=dev`.
 
+## Agent Workspace Storage
+
+Per-agent durable workspace PVCs (S-135 … S-139) have their own
+operations reference: **`docs/agent-storage-ops.md`** — backup stance
+(git is the backup, the PVC is a cache), CSI snapshot option, size-cap
+admission (`operator.maxAgentStorage` / `SKQUAD_MAX_AGENT_STORAGE`),
+disk-full task blocking (`SKQUAD_MIN_FREE_BYTES`), orphan PVC GC
+behavior and guards, retention (`skquad.io/retain-pvc`), and the
+`skquad_workspace_*` metrics on the operator's existing `/metrics`
+endpoint.
+
 ## Uninstall
 
 For a direct Helm install:

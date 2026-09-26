@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -45,6 +46,18 @@ const (
 	RetainPVCKeepAnnotation = "skquad.io/retain-pvc"
 	// LabelAgentID links a Deployment back to its Agent identity.
 	LabelAgentID = "skquad.io/agent-id"
+	// LabelWorkspacePVC marks a PVC as a platform-managed per-agent
+	// workspace claim (S-139). The orphan GC only ever considers PVCs
+	// carrying this label inside squad namespaces — nothing else.
+	LabelWorkspacePVC = "skquad.io/workspace-pvc"
+	// envMaxAgentStorage overrides the platform-wide per-agent storage
+	// cap enforced at operator admission (S-139). Defense in depth: the
+	// API validates too, but a directly-applied CR must not conjure an
+	// oversized PVC.
+	envMaxAgentStorage = "SKQUAD_MAX_AGENT_STORAGE"
+	// defaultMaxAgentStorage mirrors the control-plane default
+	// (SKQUAD_MAX_AGENT_STORAGE, "10Gi").
+	defaultMaxAgentStorage = "10Gi"
 	// readinessRequeue keeps the operator re-checking an agent whose pod is
 	// not ready yet (S-104). Without it a DesiredActive agent that never
 	// becomes ready is never revisited.
@@ -55,6 +68,17 @@ const (
 type AgentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Recorder emits Kubernetes events for storage admission decisions
+	// (S-139). Optional: unit tests may leave it nil.
+	Recorder record.EventRecorder
+}
+
+// eventf emits a warning event if a Recorder is wired; never fails a
+// reconcile because events are best-effort.
+func (r *AgentReconciler) eventf(obj runtime.Object, eventType, reason, messageFmt string, args ...interface{}) {
+	if r.Recorder != nil {
+		r.Recorder.Eventf(obj, eventType, reason, messageFmt, args...)
+	}
 }
 
 // Reconcile ensures the agent Deployment exists in its squad namespace.
@@ -188,7 +212,7 @@ func (r *AgentReconciler) applyAgentDeploymentSpec(agent *skquadv1.Agent, deploy
 
 // agentEnv builds the container environment for the agent runtime.
 func agentEnv(agent *skquadv1.Agent) []corev1.EnvVar {
-	return []corev1.EnvVar{
+	env := []corev1.EnvVar{
 		{Name: "SKQUAD_AGENT_ID", Value: agent.Spec.AgentID},
 		{Name: "SKQUAD_SQUAD_ID", Value: agent.Spec.SquadID},
 		{Name: "SKQUAD_AGENT_ROLE", Value: agent.Spec.Role},
@@ -222,6 +246,15 @@ func agentEnv(agent *skquadv1.Agent) []corev1.EnvVar {
 		{Name: "SKQUAD_MAX_LLM_STEPS", Value: envOrDefault("SKQUAD_AGENT_MAX_LLM_STEPS", "8")},
 		{Name: "SKQUAD_TASK_SUMMARY_MAX_CHARS", Value: envOrDefault("SKQUAD_AGENT_TASK_SUMMARY_MAX_CHARS", "4000")},
 	}
+	// S-139 (S-136 follow-up): tell the runtime where the workspace PVC
+	// is actually mounted so its auto-resolution matches the real mount
+	// even when spec.storage.mountPath is non-default. Only injected when
+	// storage is enabled — storage-disabled agents keep the ephemeral
+	// /tmp fallback exactly as before.
+	if cfg := workspaceConfig(agent); cfg != nil {
+		env = append(env, corev1.EnvVar{Name: "SKQUAD_WORKSPACE_MOUNT_PATH", Value: cfg.MountPath})
+	}
+	return env
 }
 
 // updateAgentStatus persists the derived readiness state and chooses the
@@ -444,9 +477,20 @@ func (r *AgentReconciler) reconcileWorkspace(ctx context.Context, agent *skquadv
 		return nil, nil
 	}
 	state := &workspaceState{}
-	if _, err := resource.ParseQuantity(cfg.Size); err != nil {
+	requested, err := resource.ParseQuantity(cfg.Size)
+	if err != nil {
 		state.reason = "InvalidStorageSize"
 		state.message = fmt.Sprintf("agent %s/%s storage.size %q is not a valid Kubernetes quantity: %v", agent.Namespace, agent.Name, cfg.Size, err)
+		return state, nil
+	}
+	// S-139 admission: never create a PVC above the platform cap, even
+	// when the CR was applied directly (bypassing API validation). The
+	// agent stays not-ready with an explicit reason and a warning event.
+	max := maxAgentStorage()
+	if requested.Cmp(max) > 0 {
+		state.reason = "StorageSizeExceedsPlatformMax"
+		state.message = fmt.Sprintf("agent %s/%s requests %s, above the platform max %s (%s); PVC not created", agent.Namespace, agent.Name, cfg.Size, max.String(), envMaxAgentStorage)
+		r.eventf(agent, corev1.EventTypeWarning, "StorageSizeExceedsPlatformMax", "%s", state.message)
 		return state, nil
 	}
 	pvc, err := r.ensureWorkspacePVC(ctx, agent, namespace, cfg)
@@ -477,6 +521,18 @@ func (r *AgentReconciler) ensureWorkspacePVC(ctx context.Context, agent *skquadv
 	var pvc corev1.PersistentVolumeClaim
 	err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &pvc)
 	if err == nil {
+		// Adopt as-is, but migrate the workspace-PVC marker label onto
+		// claims created before S-139 so the orphan GC can see them.
+		if pvc.Labels[LabelWorkspacePVC] != "true" {
+			patched := pvc.DeepCopy()
+			if patched.Labels == nil {
+				patched.Labels = map[string]string{}
+			}
+			patched.Labels[LabelWorkspacePVC] = "true"
+			if err := r.Update(ctx, patched); err != nil && !apierrors.IsConflict(err) {
+				return nil, err
+			}
+		}
 		return &pvc, nil
 	}
 	if !apierrors.IsNotFound(err) {
@@ -486,7 +542,11 @@ func (r *AgentReconciler) ensureWorkspacePVC(ctx context.Context, agent *skquadv
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
-			Labels:    agentLabels(agent),
+			Labels: func() map[string]string {
+				labels := agentLabels(agent)
+				labels[LabelWorkspacePVC] = "true"
+				return labels
+			}(),
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -516,6 +576,7 @@ func (r *AgentReconciler) ensureWorkspacePVC(ctx context.Context, agent *skquadv
 		}
 		return nil, err
 	}
+	workspacePVCCreatedTotal.Inc()
 	return &pvc, nil
 }
 
@@ -524,6 +585,16 @@ func envOrDefault(name string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// maxAgentStorage parses the platform per-agent storage cap from
+// SKQUAD_MAX_AGENT_STORAGE; invalid or unset falls back to 10Gi (the
+// same default the control-plane API enforces, S-139).
+func maxAgentStorage() resource.Quantity {
+	if q, err := resource.ParseQuantity(envOrDefault(envMaxAgentStorage, defaultMaxAgentStorage)); err == nil {
+		return q
+	}
+	return resource.MustParse(defaultMaxAgentStorage)
 }
 
 // agentResourceRequirements gives the agent container explicit cpu/memory

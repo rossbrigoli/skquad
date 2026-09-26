@@ -1188,6 +1188,7 @@ class FakeControlPlaneClient:
         self.completion_summaries = []
         self.persist_memory = []
         self.blocked = []
+        self.blocked_summaries = []
         self.acked_messages = []
         self.failed_messages = []
 
@@ -1219,6 +1220,7 @@ class FakeControlPlaneClient:
     def block_task(self, task, summary=""):
         task_id = task.id if isinstance(task, RuntimeTask) else task
         self.blocked.append(task_id)
+        self.blocked_summaries.append(summary)
         return fake_task(task_id, status="blocked")
 
 
@@ -1971,6 +1973,108 @@ class ModelUsedObservabilityTest(unittest.TestCase):
             config = self._task_config(tmp)
             self.assertEqual(config.ai_model_id, "ai-model-primary-uuid")
             self.assertEqual(config.fallback_model_id, "ai-model-fallback-uuid")
+
+
+class RecordingTaskHandler(StaticTaskHandler):
+    """Static handler that records whether it was ever invoked."""
+
+    def __init__(self, result):
+        super().__init__(result)
+        self.called = False
+
+    def handle_task(self, task, config):
+        self.called = True
+        return super().handle_task(task, config)
+
+
+class DiskFullGuardTest(unittest.TestCase):
+    """S-139: workspace filesystem-full guard blocks tasks cleanly."""
+
+    def _config(self, tmp):
+        return replace(
+            ready_config(tmp),
+            workspace_base=str(Path(tmp) / "pvc"),
+            min_free_bytes=1000,
+        )
+
+    def test_blocks_task_before_handler_when_already_full(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            client = FakeControlPlaneClient(claimed_task=fake_task("task-full"))
+            handler = RecordingTaskHandler(TaskResult(status="done"))
+            state = RuntimeState()
+            with mock.patch(
+                "skquad_runtime.runtime.check_free_space", return_value=(False, 10)
+            ):
+                task = run_task_once(config, handler, client, state=state)
+            self.assertEqual(client.blocked, ["task-full"])
+            self.assertEqual(client.completed, [])
+            self.assertFalse(handler.called)
+            self.assertIn("workspace filesystem full", client.blocked_summaries[0])
+            self.assertIn("SKQUAD_MIN_FREE_BYTES", client.blocked_summaries[0])
+            self.assertEqual(task.status, "blocked")
+            self.assertEqual(state.snapshot().tasks_blocked, 1)
+            self.assertEqual(client.heartbeats, ["busy", "idle"])
+
+    def test_blocks_task_when_floor_crossed_after_task_dir_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            client = FakeControlPlaneClient(claimed_task=fake_task("task-late-full"))
+            handler = RecordingTaskHandler(TaskResult(status="done"))
+            with mock.patch(
+                "skquad_runtime.runtime.check_free_space",
+                side_effect=[(True, 10**12), (False, 5)],
+            ):
+                run_task_once(config, handler, client)
+            self.assertEqual(client.blocked, ["task-late-full"])
+            self.assertFalse(handler.called)
+
+    def test_proceeds_when_check_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            client = FakeControlPlaneClient(claimed_task=fake_task("task-ok"))
+            handler = RecordingTaskHandler(TaskResult(status="done"))
+            with mock.patch(
+                "skquad_runtime.runtime.check_free_space", return_value=(True, 10**12)
+            ):
+                run_task_once(config, handler, client)
+            self.assertTrue(handler.called)
+            self.assertEqual(client.completed, [("task-ok", "done")])
+            self.assertEqual(client.blocked, [])
+
+    def test_proceeds_when_stat_fails_best_effort(self):
+        # check_free_space already swallows OSError into (True, None);
+        # the guard must let the task through on that signal.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            client = FakeControlPlaneClient(claimed_task=fake_task("task-weirdfs"))
+            handler = RecordingTaskHandler(TaskResult(status="done"))
+            with mock.patch(
+                "skquad_runtime.runtime.check_free_space", return_value=(True, None)
+            ):
+                run_task_once(config, handler, client)
+            self.assertTrue(handler.called)
+            self.assertEqual(client.blocked, [])
+
+    def test_no_check_when_workspace_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = replace(self._config(tmp), workspace_enabled=False)
+            client = FakeControlPlaneClient(claimed_task=fake_task("task-nostore"))
+            handler = RecordingTaskHandler(TaskResult(status="done"))
+            with mock.patch("skquad_runtime.runtime.check_free_space") as probe:
+                run_task_once(config, handler, client)
+            probe.assert_not_called()
+            self.assertEqual(client.completed, [("task-nostore", "done")])
+
+    def test_min_free_bytes_from_environment(self):
+        config = load_bootstrap_config(
+            {
+                "SKQUAD_AGENT_ID": "agent-1",
+                "SKQUAD_SQUAD_ID": "squad-1",
+                "SKQUAD_MIN_FREE_BYTES": "123456",
+            }
+        )
+        self.assertEqual(config.min_free_bytes, 123456)
 
 
 if __name__ == "__main__":
