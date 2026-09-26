@@ -24,6 +24,16 @@ from .workspace import (
     finalize_task_workspace,
     prepare_task_workspace,
 )
+from .journal import (
+    gc_task_dirs,
+    init_journal,
+    journal_complete_step,
+    journal_start_step,
+    read_resume_note,
+    resolve_task_dir,
+    set_resume_note,
+    task_dir_has_prior_state,
+)
 
 
 DEFAULT_CREDENTIALS_DIR = Path("/var/run/skquad/credentials")
@@ -994,6 +1004,7 @@ class LiteLLMTaskHandler:
         resources = context.resources if context is not None else self.available_resources(config)
         memories = context.memory if context is not None else []
         plugins = self.available_plugins(resources)
+        resume_note = self._resume_note(config, task)
         messages: list[dict[str, object]] = [
             {
                 "role": "system",
@@ -1001,7 +1012,7 @@ class LiteLLMTaskHandler:
             },
             {
                 "role": "user",
-                "content": task_prompt(task),
+                "content": task_prompt(task) + resume_note,
             },
         ]
         tools = self.tool_schemas(plugins)
@@ -1141,6 +1152,18 @@ class LiteLLMTaskHandler:
     ) -> ToolResult:
         candidates = self.plugins if plugins is None else plugins
         return invoke_plugin_tool(call, config, candidates)
+
+    def _resume_note(self, config: BootstrapConfig, task: RuntimeTask) -> str:
+        """S-137: prepend the crash-resume note (rendered by the runtime at
+        claim time and persisted in the task journal) to the task prompt.
+        Empty string on a fresh task or any journal failure."""
+        task_dir = resolve_task_dir(config.workspace_base, task.id)
+        if task_dir is None:
+            return ""
+        note = read_resume_note(task_dir)
+        if not note:
+            return ""
+        return "\n\n" + note
 
 
 def invoke_plugin_tool(
@@ -1462,7 +1485,7 @@ def poll_once(config: BootstrapConfig, client: ControlPlaneClient | None = None)
 
 
 def _prepare_task_workspace(
-    config: BootstrapConfig, control_plane: ControlPlaneClient, task: RuntimeTask
+    config: BootstrapConfig, control_plane: ControlPlaneClient, task: RuntimeTask, resumed: bool = False
 ):
     """Best-effort: fetch the task context and prepare a git workspace if granted."""
     if not config.workspace_enabled:
@@ -1481,6 +1504,7 @@ def _prepare_task_workspace(
         task.id,
         workspaces_dir=config.workspaces_dir,
         base_dest=config.workspace_base,
+        resumed=resumed,
     )
 
 
@@ -1541,20 +1565,38 @@ def run_task_once(
         state.task_claimed(task)
     LOGGER.info("agent task claimed", extra={"task_id": task.id, "squad_id": task.squad_id})
     control_plane.heartbeat("busy", task)
+    resumed = False
     if config.workspace_enabled:
         # Durable per-task dir on the PVC (S-136): scripts the handler
         # writes under SKQUAD_TASK_DIR survive crashes/restarts.
+        # S-137: prior artifacts in the dir mean this is a crash-resume;
+        # the journal + resume note are prepared before the handler runs.
         try:
-            _, task_dir = ensure_task_dirs(config.workspace_base, task.id)
+            base, task_dir = ensure_task_dirs(config.workspace_base, task.id)
             if task_dir is not None:
+                resumed = task_dir_has_prior_state(task_dir)
+                init_journal(task_dir, task.id, resumed=resumed)
                 os.environ["SKQUAD_TASK_DIR"] = str(task_dir)
+                os.environ["SKQUAD_TASK_RESUMED"] = "1" if resumed else "0"
+                # TTL GC of old task dirs: best-effort, logged, never
+                # blocks or fails the current task.
+                gc_task_dirs(base, keep_task_id=task.id)
         except OSError as exc:  # noqa: BLE001 - task dirs are best-effort
             LOGGER.warning(
                 "task dir creation failed",
                 extra={"task_id": task.id, "error": str(exc)},
             )
     started = monotonic()
-    workspace = _prepare_task_workspace(config, control_plane, task)
+    workspace = _prepare_task_workspace(config, control_plane, task, resumed=resumed)
+    if workspace is not None and workspace.resume_note:
+        try:
+            if workspace.task_dir is not None:
+                set_resume_note(workspace.task_dir, workspace.resume_note)
+        except OSError as exc:  # noqa: BLE001 - journal is best-effort
+            LOGGER.warning(
+                "resume note persist failed",
+                extra={"task_id": task.id, "error": str(exc)},
+            )
     try:
         with TaskLeaseHeartbeat(control_plane, task, config.heartbeat_interval_seconds):
             result = handle_task_with_timeout(handler, task, config)
