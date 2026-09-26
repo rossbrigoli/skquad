@@ -467,6 +467,9 @@ jobs:
           cache-dependency-path: |
             control-plane/go.sum
             operator/go.sum
+          # Go 1.26.8 is pre-seeded in the runner image tool cache (K-37);
+          # skip setup-go's own distribution+cache handling (~4 min/job).
+          cache: false
       - name: Cache Go security tools
         id: sec-tools
         # Avoid recompiling govulncheck every run. Bump the date suffix to
@@ -521,6 +524,9 @@ jobs:
           cache-dependency-path: |
             control-plane/go.sum
             operator/go.sum
+          # Go 1.26.8 is pre-seeded in the runner image tool cache (K-37);
+          # skip setup-go's own distribution+cache handling (~4 min/job).
+          cache: false
       - name: Cache Go security tools
         id: sec-tools
         # Avoid recompiling gosec every run. Bump the date suffix to
