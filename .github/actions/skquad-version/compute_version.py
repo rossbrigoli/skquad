@@ -105,6 +105,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"build={build}")
     print(f"version={version}")
     print(f"version_tag=v{version}")
+    # Emitted as one value on purpose: concatenating "${major}.${minor}" inside a
+    # workflow tag list silently produced the invalid tag "repo:." when a job
+    # forgot to forward the outputs (Images run 148). One output, no templating.
+    print(f"version_series={major}.{minor}")
     print(f"commit={full_commit}")
     print(f"commit_short={short_commit}")
     print(f"baseline={major}.{minor}.{build_base}@run{run_base}", file=sys.stderr)

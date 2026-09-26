@@ -1,7 +1,7 @@
 {
-  "_comment": "Skquad release version baseline (SemVer: major.minor.build). The build number is NOT stored here — it is derived per release by .github/actions/skquad-version as: build = buildBase + (releaseRunNumber - runBase), where releaseRunNumber is the run_number of the Images workflow that publishes the release. Bumping major/minor: set buildBase to 0 (or 1) and runBase to the last Images run number at that moment. See docs/versioning.md.",
+  "_comment": "Skquad release version baseline (SemVer: major.minor.build). The build number is NOT stored here — it is derived per release by .github/actions/skquad-version as: build = buildBase + (releaseRunNumber - runBase), where releaseRunNumber is the run_number of the Images workflow that publishes the release. Bumping major/minor: set buildBase to 0 (or 1) and runBase to the last Images run number at that moment. runBase was advanced 147 -> 148 after Images run 148 failed on an invalid tag and published nothing, so the first successful release is still 0.1.100. See docs/versioning.md.",
   "major": 0,
   "minor": 1,
   "buildBase": 99,
-  "runBase": 147
+  "runBase": 148
 }

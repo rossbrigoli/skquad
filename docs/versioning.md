@@ -17,11 +17,13 @@ never commits back to git.
 `version.json` as it stands:
 
 ```json
-{ "major": 0, "minor": 1, "buildBase": 99, "runBase": 147 }
+{ "major": 0, "minor": 1, "buildBase": 99, "runBase": 148 }
 ```
 
-The baseline means: *Images run 147 already produced build 99*. So the next
-release run (148) is **0.1.100**, the one after (149) is **0.1.101**, and so on.
+The baseline means: *Images run 148 is already accounted for* (it failed on an
+invalid tag and published nothing, so its run number was folded into `runBase`).
+The next release run (149) is therefore **0.1.100**, the one after (150) is
+**0.1.101**, and so on.
 
 ## How the pipeline does it
 
@@ -52,6 +54,13 @@ identical.
 **Monotonicity guard:** `compute_version.py` exits 1 if `run_number <= runBase`.
 Replaying an older pipeline run cannot publish a *lower* version than what is
 already out there.
+
+**Tag-shape guard:** the action emits `version_series` (`0.1`) as a single value.
+Images run 148 failed because the workflow built the series tag itself as
+`${{ ...major }}.${{ ...minor }}` while the job forgot to forward those outputs,
+so every image got the invalid tag `repo:.`. The `version` job now validates
+`version` / `version_series` / `commit` shapes before the matrix starts, so that
+class of mistake fails in one 5-second job instead of five build jobs.
 
 ## How it reaches the UI
 

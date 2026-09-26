@@ -50,6 +50,9 @@ jobs:
     outputs:
       version: ${{ steps.semver.outputs.version }}
       version_tag: ${{ steps.semver.outputs.version_tag }}
+      major: ${{ steps.semver.outputs.major }}
+      minor: ${{ steps.semver.outputs.minor }}
+      version_series: ${{ steps.semver.outputs.version_series }}
       commit: ${{ steps.semver.outputs.commit }}
       commit_short: ${{ steps.semver.outputs.commit_short }}
     steps:
@@ -65,6 +68,24 @@ jobs:
           echo "## Skquad release ${{ steps.semver.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
           echo "commit: ${{ steps.semver.outputs.commit_short }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Release version: ${{ steps.semver.outputs.version }} (commit ${{ steps.semver.outputs.commit_short }})"
+
+      # Fail here rather than in 5 parallel matrix jobs: Images run 148 pushed
+      # `repo:.` because the job forgot to forward major/minor, so the tag
+      # template expanded to a bare dot.
+      - name: Validate version outputs
+        env:
+          VERSION: ${{ steps.semver.outputs.version }}
+          SERIES: ${{ steps.semver.outputs.version_series }}
+          COMMIT: ${{ steps.semver.outputs.commit }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "invalid release version: '$VERSION'" >&2; exit 1; }
+          printf '%s' "$SERIES" | grep -Eq '^[0-9]+\.[0-9]+$' \
+            || { echo "invalid version series tag: '$SERIES'" >&2; exit 1; }
+          printf '%s' "$COMMIT" | grep -Eq '^[0-9a-f]{7,40}$|^unknown$' \
+            || { echo "invalid commit: '$COMMIT'" >&2; exit 1; }
+          echo "Validated: $VERSION (series $SERIES, commit $COMMIT)"
 
   build:
     name: Build ${{ matrix.component }} image
@@ -109,7 +130,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=${{ needs.version.outputs.version }}
-            type=raw,value=${{ needs.version.outputs.major }}.${{ needs.version.outputs.minor }}
+            type=raw,value=${{ needs.version.outputs.version_series }}
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Login to GHCR
@@ -144,7 +165,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=${{ needs.version.outputs.version }}
-            type=raw,value=${{ needs.version.outputs.major }}.${{ needs.version.outputs.minor }}
+            type=raw,value=${{ needs.version.outputs.version_series }}
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Login to Docker Hub

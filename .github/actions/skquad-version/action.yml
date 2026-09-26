@@ -34,6 +34,9 @@ outputs:
   version_tag:
     description: "Git-style tag for the version, e.g. v0.1.100."
     value: ${{ steps.compute.outputs.version_tag }}
+  version_series:
+    description: "Major.minor series tag, e.g. 0.1 (use this instead of concatenating major/minor in a workflow)."
+    value: ${{ steps.compute.outputs.version_series }}
   commit:
     description: "Full commit SHA baked into the release."
     value: ${{ steps.compute.outputs.commit }}
