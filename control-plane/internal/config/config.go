@@ -96,6 +96,9 @@ type Config struct {
 	AgentRuntimeVersion string // SKQUAD_AGENT_RUNTIME_VERSION
 	LLMGatewayVersion   string // SKQUAD_LLM_GATEWAY_VERSION
 	WebUIVersion        string // SKQUAD_WEB_UI_VERSION
+	// GitCommit (S-141) is the commit the release was built from, shown next to
+	// the semantic version on the About page.
+	GitCommit string // SKQUAD_GIT_COMMIT
 }
 
 // Load reads configuration from the environment, applying defaults.
@@ -143,6 +146,7 @@ func Load() (*Config, error) {
 		AgentRuntimeVersion:   envOr("SKQUAD_AGENT_RUNTIME_VERSION", "unknown"),
 		LLMGatewayVersion:     envOr("SKQUAD_LLM_GATEWAY_VERSION", "unknown"),
 		WebUIVersion:          envOr("SKQUAD_WEB_UI_VERSION", "unknown"),
+		GitCommit:             envOr("SKQUAD_GIT_COMMIT", "unknown"),
 	}
 	if c.LiteLLMAdminURL == "" {
 		c.LiteLLMAdminURL = c.LLMGatewayURL

@@ -100,6 +100,7 @@ func TestVersionsEndpointVisibleToAllRoles(t *testing.T) {
 	cfg.AgentRuntimeVersion = "0.9.9"
 	cfg.LLMGatewayVersion = "unknown"
 	cfg.WebUIVersion = "1.2.3"
+	cfg.GitCommit = "4ae923c5226229165b919d422f8ca056b39496b0"
 	store := storage.NewMemoryStore()
 	handler := NewWithOIDCAuthenticator(cfg, store, headerOIDC{
 		authAlice: {Email: aliceEmail, Name: "Alice"},
@@ -114,6 +115,9 @@ func TestVersionsEndpointVisibleToAllRoles(t *testing.T) {
 		require.Equal(t, "0.9.9", versions["agent_runtime"])
 		require.Equal(t, "unknown", versions["llm_gateway"])
 		require.Equal(t, "1.2.3", versions["web_ui"])
+		// S-141: the commit SHA travels with the versions so the About page can
+		// show exactly what this release was built from.
+		require.Equal(t, "4ae923c5226229165b919d422f8ca056b39496b0", versions["commit"])
 	}
 
 	// Unauthenticated callers must not learn versions.

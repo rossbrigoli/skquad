@@ -40,9 +40,35 @@ jobs:
           fi
           echo "Gate passed (event=$EVENT)."
 
+  # S-141: one release version per pipeline run, shared by every component image.
+  # build = buildBase + (Images run_number - runBase), from version.json — so the
+  # build number auto-increments on every release and no file needs editing.
+  version:
+    name: Release version
+    needs: gate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.semver.outputs.version }}
+      version_tag: ${{ steps.semver.outputs.version_tag }}
+      commit: ${{ steps.semver.outputs.commit }}
+      commit_short: ${{ steps.semver.outputs.commit_short }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - id: semver
+        uses: ./.github/actions/skquad-version
+
+      - name: Report release version
+        run: |
+          echo "## Skquad release ${{ steps.semver.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "commit: ${{ steps.semver.outputs.commit_short }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Release version: ${{ steps.semver.outputs.version }} (commit ${{ steps.semver.outputs.commit_short }})"
+
   build:
     name: Build ${{ matrix.component }} image
-    needs: gate
+    needs: [gate, version]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -82,6 +108,8 @@ jobs:
             type=sha,prefix=sha-
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=${{ needs.version.outputs.major }}.${{ needs.version.outputs.minor }}
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Login to GHCR
@@ -99,6 +127,9 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SKQUAD_VERSION=${{ needs.version.outputs.version }}
+            SKQUAD_COMMIT=${{ needs.version.outputs.commit }}
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
 
@@ -112,6 +143,8 @@ jobs:
             type=sha,prefix=sha-
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=${{ needs.version.outputs.major }}.${{ needs.version.outputs.minor }}
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Login to Docker Hub
@@ -129,4 +162,7 @@ jobs:
           push: true
           tags: ${{ steps.dockerhub-meta.outputs.tags }}
           labels: ${{ steps.dockerhub-meta.outputs.labels }}
+          build-args: |
+            SKQUAD_VERSION=${{ needs.version.outputs.version }}
+            SKQUAD_COMMIT=${{ needs.version.outputs.commit }}
           cache-from: type=gha,scope=${{ matrix.component }}

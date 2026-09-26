@@ -14,6 +14,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # S-141: guard the release-version math. The version itself is computed in the
+  # Images workflow (only real releases consume build numbers); CI tests the logic.
+  versioning:
+    name: Versioning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Unit tests for release-version computation
+        working-directory: .github/actions/skquad-version
+        run: python3 -m unittest discover -p 'test_*.py' -v
+      - name: version.json is loadable
+        run: python3 -c "import json,pathlib; d=json.loads(pathlib.Path('version.json').read_text()); print('baseline', d['major'], d['minor'], d['buildBase'], d['runBase'])"
+
   control-plane:
     name: Control plane
     runs-on: ubuntu-latest

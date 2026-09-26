@@ -25,12 +25,19 @@ replicas:
 
 # S-130: overrides for the component versions shown on the About page.
 # Leave empty to use the image tag deployed for each component.
+# S-141: with the release pipeline those tags are semantic (major.minor.build,
+# e.g. 0.1.100), so the About page shows the release version by default.
 version:
   apiServer: ""
   operator: ""
   agentRuntime: ""
   llmGateway: ""
   webUi: ""
+
+# S-141: commit the release was built from, shown on the About page next to the
+# version. The Images workflow prints it per release; leave empty for "unknown".
+git:
+  commit: ""
 
 namespace:
   create: true

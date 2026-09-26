@@ -2,5 +2,6 @@ apiVersion: v2
 name: skquad
 description: skquad — open-source cloud-native Agentic AI platform
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.1.1
+# appVersion tracks the Skquad release version (S-141: major.minor.build).
+appVersion: "0.1.100"

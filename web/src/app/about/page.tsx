@@ -9,6 +9,7 @@ import Image from "next/image";
 import { AuthGate } from "../../components/AuthGate";
 import { AppShell } from "../../components/AppShell";
 import { useApi } from "../../lib/useApi";
+import { buildInfo, versionLabel, versionText } from "../../lib/buildInfo";
 
 type Versions = {
   readonly api_server?: string;
@@ -25,10 +26,6 @@ const VERSION_ROWS: readonly { readonly key: keyof Versions; readonly label: str
   { key: "agent_runtime", label: "Skquad Agent Runtime" },
   { key: "llm_gateway", label: "Skquad LLM Gateway" },
 ];
-
-function versionText(value: string | undefined): string {
-  return value && value.trim() !== "" ? value : "unknown";
-}
 
 export default function AboutPage() {
   const versions = useApi<Versions>("/versions");
@@ -59,6 +56,14 @@ export default function AboutPage() {
           </div>
 
           <h1 className="about-title">About Skquad</h1>
+
+          {/* S-141: release identity of this build — semantic version + commit. */}
+          <p className="about-build">
+            <span className="about-build-version">{versionLabel}</span>
+            <span className="about-build-commit" title={buildInfo.commit}>
+              commit {versionText(buildInfo.shortCommit)}
+            </span>
+          </p>
 
           <p className="about-license">
             Skquad is open source software licensed under the{" "}
