@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# Cancel stale runs on the same ref instead of queueing them (K-37).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   control-plane:
     name: Control plane
@@ -462,7 +467,16 @@ jobs:
           cache-dependency-path: |
             control-plane/go.sum
             operator/go.sum
+      - name: Cache Go security tools
+        id: sec-tools
+        # Avoid recompiling govulncheck every run. Bump the date suffix to
+        # refresh @latest installs (K-37).
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin
+          key: sec-tools-${{ runner.os }}-2026-09-26
       - name: Install govulncheck
+        if: steps.sec-tools.outputs.cache-hit != 'true'
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: govulncheck control-plane
         working-directory: control-plane
@@ -507,7 +521,16 @@ jobs:
           cache-dependency-path: |
             control-plane/go.sum
             operator/go.sum
+      - name: Cache Go security tools
+        id: sec-tools
+        # Avoid recompiling gosec every run. Bump the date suffix to
+        # refresh @latest installs (K-37).
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin
+          key: sec-tools-${{ runner.os }}-2026-09-26
       - name: Install gosec
+        if: steps.sec-tools.outputs.cache-hit != 'true'
         run: go install github.com/securego/gosec/v2/cmd/gosec@latest
       - name: gosec control-plane (fail on HIGH/CRITICAL)
         working-directory: control-plane
