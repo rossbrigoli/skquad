@@ -648,6 +648,7 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 // getVersions serves the running component versions for the About page
 // (S-130). Values come from env (SKQUAD_*_VERSION), which the Helm chart
 // fills from the image tags it deploys; "unknown" means not supplied.
+// S-141 adds the release commit SHA alongside the semantic versions.
 func (s *Server) getVersions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"api_server":    s.cfg.APIServerVersion,
@@ -655,6 +656,7 @@ func (s *Server) getVersions(w http.ResponseWriter, r *http.Request) {
 		"agent_runtime": s.cfg.AgentRuntimeVersion,
 		"llm_gateway":   s.cfg.LLMGatewayVersion,
 		"web_ui":        s.cfg.WebUIVersion,
+		"commit":        s.cfg.GitCommit,
 	})
 }
 

@@ -11,6 +11,11 @@ containers for every charted component. Pull requests build the images without
 publishing. Pushes to `main` and `v*.*.*` tags publish to GHCR. The workflow
 also mirrors to Docker Hub when Docker Hub repository secrets are configured.
 
+Since S-141 the workflow opens with a `version` job that computes the release's
+semantic version (`major.minor.build`, build auto-incremented from the run
+number) and stamps it on every component image plus `SKQUAD_VERSION` /
+`SKQUAD_COMMIT` build args. See [versioning](versioning.md).
+
 The lab deployment is managed from `/home/ross/projects/k3s-cluster` through
 the ArgoCD Application `apps/app-skquad.yaml`. It tracks this repository's
 `charts/skquad` path on `main`, deploys into `skquad-system`, pins the promoted
@@ -21,6 +26,7 @@ still defaults to development authentication.
 
 | Job | Checks |
 |-----|--------|
+| Versioning | unit tests for the release-version computation (`major.minor.build`) and a `version.json` load check |
 | Control plane | `go vet ./...` and `go test ./...` in `control-plane/` |
 | Operator | `go vet ./...` and `go test ./...` in `operator/` |
 | Agent runtime | installs the Python package, runs `unittest`, and compiles runtime/test modules |

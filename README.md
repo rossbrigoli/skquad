@@ -210,6 +210,7 @@ suite and cluster-required checks.
 | Agent execution | [Runtime](docs/agent-runtime.md), [task lifecycle](docs/kanban-task-lifecycle.md), [messaging](docs/collaboration-messaging.md), [plugins](docs/plugin-architecture.md) |
 | Platform services | [LLM gateway](docs/llm-gateway.md), [resource registry](docs/resource-registry.md), [operator and deployment](docs/deployment-operator.md), [operator runbook](docs/operator-runbook.md) |
 | Operations and security | [Identity and security](docs/identity-security.md), [threat model](docs/security-threat-model.md), [observability and metering](docs/observability-metering.md), [CI/CD](docs/ci-cd.md), [testing strategy](docs/testing-strategy.md) |
+| Releases | [Versioning](docs/versioning.md) — `major.minor.build`, CI auto-increment, where the version is displayed |
 | User experience | [Web application UX](docs/web-app-ux.md) |
 
 ## Security and production use

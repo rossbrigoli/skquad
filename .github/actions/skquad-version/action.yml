@@ -1,0 +1,59 @@
+name: skquad-version
+description: >-
+  Compute the Skquad release version (major.minor.build, S-141). major/minor come
+  from version.json; build auto-increments from the release pipeline run number, so
+  nobody has to edit a file per release and CI never has to commit back to git.
+
+inputs:
+  run_number:
+    description: "Run number of the releasing pipeline run (Images workflow run_number)."
+    required: true
+    default: ${{ github.run_number }}
+  commit:
+    description: "Full commit SHA being released."
+    required: false
+    default: ${{ github.sha }}
+  file:
+    description: "Baseline version file, relative to the workspace root."
+    required: false
+    default: version.json
+
+outputs:
+  major:
+    description: "Major version component."
+    value: ${{ steps.compute.outputs.major }}
+  minor:
+    description: "Minor version component."
+    value: ${{ steps.compute.outputs.minor }}
+  build:
+    description: "Auto-incremented build number."
+    value: ${{ steps.compute.outputs.build }}
+  version:
+    description: "Semantic version as major.minor.build, e.g. 0.1.100."
+    value: ${{ steps.compute.outputs.version }}
+  version_tag:
+    description: "Git-style tag for the version, e.g. v0.1.100."
+    value: ${{ steps.compute.outputs.version_tag }}
+  commit:
+    description: "Full commit SHA baked into the release."
+    value: ${{ steps.compute.outputs.commit }}
+  commit_short:
+    description: "First 7 chars of the commit SHA."
+    value: ${{ steps.compute.outputs.commit_short }}
+
+runs:
+  using: composite
+  steps:
+    - id: compute
+      shell: bash
+      env:
+        SKQUAD_RUN_NUMBER: ${{ inputs.run_number }}
+        SKQUAD_COMMIT: ${{ inputs.commit }}
+        SKQUAD_VERSION_FILE: ${{ inputs.file }}
+      run: |
+        set -euo pipefail
+        python3 "${GITHUB_ACTION_PATH}/compute_version.py" \
+          --file "${SKQUAD_VERSION_FILE}" \
+          --run-number "${SKQUAD_RUN_NUMBER}" \
+          --commit "${SKQUAD_COMMIT}" \
+          >> "${GITHUB_OUTPUT}"

@@ -14,6 +14,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import { UserMenu } from "./UserMenu";
 import { IconAbout, IconAgents, IconCosts, IconDashboard, IconInbox, IconSettings, IconSquads } from "./icons";
 import { agentIdFromPath, breadcrumbsForPath } from "../lib/breadcrumbs";
+import { buildInfo, versionLabel } from "../lib/buildInfo";
 import {
   agentsSectionActive,
   buildGlobalAgentGroups,
@@ -246,10 +247,20 @@ function PrimaryRail({
 }) {
   return (
     <nav className="rail rail-primary" aria-label="Primary navigation">
-      <Link href="/dashboard" className="rail-brand" aria-label="Skquad dashboard">
-        <Image src="/skquad-logo-64.png" width={42} height={42} alt="" className="rail-brand-logo" priority />
-        skquad
-      </Link>
+      <div className="rail-brand-block">
+        <Link href="/dashboard" className="rail-brand" aria-label="Skquad dashboard">
+          <Image src="/skquad-logo-64.png" width={42} height={42} alt="" className="rail-brand-logo" priority />
+          skquad
+        </Link>
+        {/* S-141: the UI's own release version, baked in at build time and
+            shown directly under the wordmark. */}
+        <span
+          className="rail-brand-version"
+          title={`Skquad UI ${buildInfo.version} \u00b7 commit ${buildInfo.shortCommit}`}
+        >
+          {versionLabel}
+        </span>
+      </div>
       {simpleNav.map((item) => (
         <Link
           key={item.href}
