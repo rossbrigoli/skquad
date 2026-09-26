@@ -227,9 +227,10 @@ button {
 
 .rail-brand-logo {
   /* S-123: logo mark beside the wordmark. Rounded slightly so it matches
-     the pill look of the old dot in both themes. */
-  width: 28px;
-  height: 28px;
+     the pill look of the old dot in both themes.
+     S-134: 28px -> 42px (+50%) — the old mark read too small. */
+  width: 42px;
+  height: 42px;
   border-radius: var(--radius-md, 8px);
   flex-shrink: 0;
 }
@@ -256,6 +257,15 @@ button {
   cursor: pointer;
   text-align: left;
   transition: background var(--motion-fast) var(--ease-out);
+}
+
+/* S-140: icon + label stay glued together inside space-between nav items
+   (the badge owns the right edge). */
+.nav-item-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .nav-item:hover {
@@ -1676,4 +1686,84 @@ dialog.modal-backdrop::backdrop {
   padding: var(--space-3) var(--space-4);
   font-size: var(--text-sm);
   color: var(--ink-muted);
+}
+
+/* ── S-130: About page ───────────────────────────────────────────── */
+.about-page {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: var(--space-4) 0;
+}
+
+.about-banner {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-6) 0 var(--space-4);
+}
+
+.about-banner-img {
+  max-width: min(340px, 80%);
+  height: auto;
+}
+
+.about-banner-dark {
+  display: none;
+}
+
+[data-theme="dark"] .about-banner-dark {
+  display: block;
+}
+
+[data-theme="dark"] .about-banner-light {
+  display: none;
+}
+
+.about-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xl, 1.5rem);
+}
+
+.about-license {
+  color: var(--ink-muted);
+  margin: 0 0 var(--space-6);
+}
+
+.about-versions-heading {
+  font-size: var(--text-lg, 1.15rem);
+  margin: 0 0 var(--space-2);
+}
+
+.about-versions {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.about-versions th,
+.about-versions td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  font-weight: 500;
+}
+
+.about-versions tr:last-child th,
+.about-versions tr:last-child td {
+  border-bottom: none;
+}
+
+.about-versions th {
+  color: var(--ink-muted);
+  width: 60%;
+}
+
+.about-version-value {
+  font-family: var(--font-mono, monospace);
+}
+
+.about-muted {
+  color: var(--ink-faint);
 }

@@ -43,6 +43,7 @@ import {
   type CascadeReport,
   type ModelUsageEntry,
 } from "../../lib/aimodels";
+import { kindOptionsFor } from "../../lib/providerKinds";
 
 type DeleteUsage = { agent_id: string; agent_name: string; squad_id: string };
 
@@ -1100,7 +1101,14 @@ function ProviderModal({
           </label>
           <label className="field">
             <span>Kind</span>
-            <input value={kind} onChange={(e) => setKind(e.target.value)} placeholder="openai | anthropic | ollama …" />
+            {/* S-132: dropdown of known API kinds instead of free text. */}
+            <select value={kind} onChange={(e) => setKind(e.target.value)}>
+              {kindOptionsFor(provider?.kind).map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </label>
         </div>
         <label className="field">

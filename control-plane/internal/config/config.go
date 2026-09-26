@@ -87,6 +87,15 @@ type Config struct {
 	DefaultAgentStorageSize string // SKQUAD_DEFAULT_AGENT_STORAGE_SIZE (default "2Gi")
 	MaxAgentStorage         string // SKQUAD_MAX_AGENT_STORAGE (default "10Gi")
 	StorageClass            string // SKQUAD_STORAGE_CLASS ("" = cluster default, omitted from PVC)
+
+	// Component versions (S-130 About page). The Helm chart supplies these
+	// from the image tags it actually deploys, so the About page reflects
+	// the running release. "unknown" when unset (e.g. bare `go run`).
+	APIServerVersion    string // SKQUAD_VERSION
+	OperatorVersion     string // SKQUAD_OPERATOR_VERSION
+	AgentRuntimeVersion string // SKQUAD_AGENT_RUNTIME_VERSION
+	LLMGatewayVersion   string // SKQUAD_LLM_GATEWAY_VERSION
+	WebUIVersion        string // SKQUAD_WEB_UI_VERSION
 }
 
 // Load reads configuration from the environment, applying defaults.
@@ -129,6 +138,11 @@ func Load() (*Config, error) {
 		DefaultAgentStorageSize: envOr("SKQUAD_DEFAULT_AGENT_STORAGE_SIZE", "2Gi"),
 		MaxAgentStorage:         envOr("SKQUAD_MAX_AGENT_STORAGE", "10Gi"),
 		StorageClass:            strings.TrimSpace(os.Getenv("SKQUAD_STORAGE_CLASS")),
+		APIServerVersion:      envOr("SKQUAD_VERSION", "unknown"),
+		OperatorVersion:       envOr("SKQUAD_OPERATOR_VERSION", "unknown"),
+		AgentRuntimeVersion:   envOr("SKQUAD_AGENT_RUNTIME_VERSION", "unknown"),
+		LLMGatewayVersion:     envOr("SKQUAD_LLM_GATEWAY_VERSION", "unknown"),
+		WebUIVersion:          envOr("SKQUAD_WEB_UI_VERSION", "unknown"),
 	}
 	if c.LiteLLMAdminURL == "" {
 		c.LiteLLMAdminURL = c.LLMGatewayURL

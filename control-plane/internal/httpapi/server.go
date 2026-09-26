@@ -263,6 +263,10 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 
 			r.Get("/auth/me", s.me)
 
+			// S-130: component versions for the About page. Readable by any
+			// authenticated user of any role.
+			r.Get("/versions", s.getVersions)
+
 			r.Get("/dashboard", s.getDashboard)
 			r.Get("/inbox", s.listInbox)
 			r.Post("/inbox/{messageID}/read", s.markInboxRead)
@@ -645,6 +649,19 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, currentUser(r.Context()))
+}
+
+// getVersions serves the running component versions for the About page
+// (S-130). Values come from env (SKQUAD_*_VERSION), which the Helm chart
+// fills from the image tags it deploys; "unknown" means not supplied.
+func (s *Server) getVersions(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"api_server":    s.cfg.APIServerVersion,
+		"operator":      s.cfg.OperatorVersion,
+		"agent_runtime": s.cfg.AgentRuntimeVersion,
+		"llm_gateway":   s.cfg.LLMGatewayVersion,
+		"web_ui":        s.cfg.WebUIVersion,
+	})
 }
 
 func (s *Server) createLLMProvider(w http.ResponseWriter, r *http.Request) {
@@ -1146,7 +1163,8 @@ func (s *Server) getSquad(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) updateSquad(w http.ResponseWriter, r *http.Request) {
-	squad, ok := s.loadOwnedSquad(w, r)
+	// S-133: platform admins may edit any squad, not only the owner.
+	squad, ok := s.loadOwnedOrAdminSquad(w, r)
 	if !ok {
 		return
 	}
@@ -1183,7 +1201,8 @@ func (s *Server) updateSquad(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteSquad(w http.ResponseWriter, r *http.Request) {
-	squad, ok := s.loadOwnedSquad(w, r)
+	// S-133: platform admins may delete any squad (orphan cleanup), not only the owner.
+	squad, ok := s.loadOwnedOrAdminSquad(w, r)
 	if !ok {
 		return
 	}
@@ -1682,7 +1701,8 @@ func (s *Server) convergeAgentBinding(w http.ResponseWriter, r *http.Request, ag
 }
 
 func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
-	agent, ok := s.loadOwnedAgent(w, r)
+	// S-133: platform admins may edit any agent, not only the owner.
+	agent, ok := s.loadOwnedOrAdminAgent(w, r)
 	if !ok {
 		return
 	}
@@ -1721,7 +1741,8 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
-	agent, ok := s.loadOwnedAgent(w, r)
+	// S-133: platform admins may delete any agent (orphan cleanup), not only the owner.
+	agent, ok := s.loadOwnedOrAdminAgent(w, r)
 	if !ok {
 		return
 	}
