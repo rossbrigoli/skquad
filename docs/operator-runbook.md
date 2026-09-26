@@ -86,7 +86,10 @@ apiServer:
     issuer: https://issuer.example.com
     audience: skquad
     # IdP groups mapped to platform_admin (SKQUAD_OIDC_ADMIN_GROUPS).
-    # Promotion is one-way: gaining the group promotes, losing it does not demote.
+    # Bootstrap-only: the group grants admin at the user's FIRST login.
+    # Later role changes are app-managed (Access tab /
+    # PATCH /api/v1/users/:id/role) — group membership changes do not
+    # re-promote or demote existing users.
     adminGroups:
       - my-org:platform
 
@@ -301,13 +304,14 @@ kubectl --namespace skquad-system get deploy skquad-api-server \
 kubectl --namespace skquad-system logs deployment/skquad-api-server --tail=100
 ```
 
-For the "buttons disabled" case: check the user's role via `/auth/me`, then
-confirm the IdP token actually carries a group listed in
-`SKQUAD_OIDC_ADMIN_GROUPS` (matching is case-insensitive). Promotion applies
-on the next authenticated request — no re-login needed if the session token
-already carries the bound group. Remember promotion is one-way: removing the
-group config does not demote anyone; demotion is an explicit `SetUserRole`
-action. If the OIDC path itself is unusable, use the
+For the "buttons disabled" case: check the user's role via `/auth/me`. Role
+changes for **existing** users are app-managed — use the **Access tab** in
+the web UI (or `PATCH /api/v1/users/:id/role` with an admin token). The
+endpoint is guarded (no demoting the last platform admin, 409 `last_admin`)
+and every change is audited as `user.role_changed`. Group claims in the IdP
+token only apply at a user's **first login** (bootstrap); adding or removing
+someone from `SKQUAD_OIDC_ADMIN_GROUPS` later does nothing to existing rows.
+If the OIDC path itself is unusable, use the
 [break-glass login](#break-glass-admin-access).
 
 Current boundary: OIDC account identity still needs hardening to use

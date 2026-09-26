@@ -46,9 +46,10 @@
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/users` | List users (admin). |
-| `GET` | `/api/v1/users/:id` | Get a user (admin). |
-| `PATCH` | `/api/v1/users/:id/role` | Set a user's role (admin). |
-| `PATCH` | `/api/v1/users/:id/status` | Activate/deactivate (admin). |
+| `PATCH` | `/api/v1/users/:id/role` | Promote/demote the platform role (admin). Body `{"role":"platform_admin"\|"user"}`. 400 invalid role · 404 unknown user · 409 `last_admin` when it would demote the only platform admin. Audited as `user.role_changed` (old/new role); rolled back if the audit write fails. |
+| `GET` | `/api/v1/users/:id/models` | List AI models granted to a user (admin). |
+| `PUT` | `/api/v1/users/:id/models` | Replace a user's model grant set (admin). Removals still used by running agents return 409 `in_use`; retry with `?force=true` to revoke and converge keys. |
+| `DELETE` | `/api/v1/users/:id/models/:modelId` | Revoke one model grant (admin). |
 
 ---
 
@@ -330,6 +331,10 @@ Current read endpoints return aggregate totals. `?from=`, `?to=`, and
 | Cross-squad message | ✅ | ✅ (per grants) | — | ✅ (per grants) |
 | View metering | ✅ (all) | ✅ (own) | — | — |
 | View audit | ✅ (all) | ✅ (own) | — | — |
+
+Platform admins may **edit or delete any squad/agent**, not only their own
+(S-133, orphan cleanup). Owners are restricted to squads they own or hold
+grants for.
 
 ---
 

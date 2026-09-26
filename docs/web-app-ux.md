@@ -1,7 +1,13 @@
 # skquad — Web App & UX Design
 
-> **Status:** Draft v1; first-pass squad, agent, task, resource, grant, admin,
-> identity, and chat workflows are implemented in the current web app.
+> **Status:** v1-era design document. The IA described below (Admin/Providers
+> main-menu sections, squad-centric sidebar) reflects the **retired v1 app**.
+> As of 2026-09-26 the only UI is the v2 app in `web/` — see
+> [`UI-V2-PLAN.md`](UI-V2-PLAN.md) and
+> [`UI-REDESIGN-PROPOSAL.md`](UI-REDESIGN-PROPOSAL.md) for the current IA
+> (Dashboard · Inbox · Squads · Costs · Settings, slim breadcrumb top bar).
+> Platform-admin surfaces live under **Settings** (AI Models / Resources /
+> Access); see §4.9 for the current shape.
 >
 > The web app is a **SPA** (React / Next.js) — the primary interface for users.
 > It is optimised for **simplicity**: the onboarding path is a few clicks, and
@@ -191,10 +197,25 @@ summary endpoints when the current user has access.
 Current implementation: platform admins register and deprecate LLM providers
 here (`ProvidersSection`).
 
-### 4.9 Admin / Settings (platform admin)
-- Platform config (OIDC, defaults, idle timeout, observability toggle).
-- User management (roles, activate/deactivate).
-- Platform health.
+### 4.9 Settings → Access (platform admin)
+
+Current implementation (v2 app): the admin **Settings** page carries the
+platform-admin surfaces as tabs:
+
+- **AI Models** — LLM providers and their models (register, deprecate,
+  pricing on models).
+- **Resources** — the registry (skills, tools, APIs, knowledge bases,
+  project workspaces).
+- **Access** — **Users & access**: every user appears after their first
+  OIDC sign-in. Per user: **Make admin / Demote** (explicit confirm
+  dialog, `(you)` marker, server-side last-admin guard surfaced as a
+  readable message; changes audited as `user.role_changed`) and
+  **Manage models** (per-user AI model grants; removals in use by running
+  agents require an explicit force retry).
+
+Activate/deactivate of users is **not implemented**; role is the only
+per-user control. Platform config (OIDC, idle timeout) is operator-level
+(Helm values / env), not an in-app screen.
 
 ---
 

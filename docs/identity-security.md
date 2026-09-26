@@ -84,12 +84,18 @@ Roles for **human users**, managed by the **platform administrator**:
 | **platform_admin** | Manage users/roles, register **registry resources** (LLM providers, skills, tools, APIs, KBs, workspaces), configure the platform, view all squads/metering, manage the LLM gateway. |
 | **user** | Create/own squads, add agents, manage their own squads (board, tasks, agent permissions, access grants), view their own metering. |
 
-- Role assignment is a **platform-admin** action.
+- Role assignment is a **platform-admin** action performed **inside skquad**
+  (Access tab in the web UI, or `PATCH /api/v1/users/:id/role`). IdP group
+  claims only bootstrap the role at first login — see §3.1.
 - A `user` can only act on **squads they own** (or have been granted access to).
 - Authorization checks are enforced **centrally in the API server** on every
   request.
 
-### 3.1 Group → platform_admin binding (OIDC)
+### 3.1 Role lifecycle: group bootstrap + app-managed roles
+
+The platform role lifecycle lives **inside skquad**. OIDC group claims only
+**bootstrap** the role on a user's first login; after that the row is
+owned by the admin API/UI.
 
 - The IdP `groups` claim is parsed into the authenticated profile (trimmed,
   empty entries dropped, nil-safe).
@@ -97,14 +103,25 @@ Roles for **human users**, managed by the **platform administrator**:
   to **platform_admin**. Matching is case-insensitive on both sides. Helm
   value: `apiServer.oidc.adminGroups`. With Dex + GitHub, group names are
   org/team slugs such as `ross-private-cloud:platform`.
-- Promotion happens at authentication: a login carrying a bound group is
-  granted `platform_admin` even when the stored row says `user`.
-- **Promotion is one-way.** Losing the group later does **not** auto-demote the
-  stored role. A demote-on-every-request rule would let a mis-set or emptied
-  `SKQUAD_OIDC_ADMIN_GROUPS` strip every administrator out with no way back
-  in; demotion stays an explicit `SetUserRole` operator action.
-- Empty `SKQUAD_OIDC_ADMIN_GROUPS` means nobody is group-promoted (safe
-  default; it never demotes existing admins).
+- **Bootstrap-only:** the group claim decides the role when the user row is
+  **INSERTed** (first login). Once the row exists, group claims never change
+  the stored role — the per-request group→role reconcile that used to
+  re-promote existing rows was removed deliberately.
+- **App-managed thereafter:** promotions and demotions go through
+  `PATCH /api/v1/users/:id/role` (Access tab). They stick across logins:
+  a demoted user stays plain even while still in the bound IdP group, and a
+  user added to the group after their first login is **not** auto-promoted.
+- **Guards on role changes:**
+  - Caller must be `platform_admin`.
+  - Role must be `platform_admin` or `user` (400 otherwise).
+  - **Last-admin guard:** the only `platform_admin` cannot be demoted
+    (409 `last_admin`) — lockout prevention. Recovery with no usable admin
+    is the break-glass path (§2.1).
+- **Audited:** every actual change records a `user.role_changed` audit entry
+  with old and new role. If the audit write fails, the role change is rolled
+  back (fail closed).
+- Empty `SKQUAD_OIDC_ADMIN_GROUPS` means nobody is group-bootstrapped (safe
+  default; it never affects existing admins).
 
 ---
 
