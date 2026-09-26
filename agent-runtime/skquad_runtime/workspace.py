@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from . import git_workspace
 from .git_workspace import GitError
+from .journal import build_resume_note, git_resume_info
 
 LOGGER = logging.getLogger(__name__)
 
@@ -36,6 +38,14 @@ class WorkspaceHandle:
     branch: str
     push_url: str
     task_dir: Path | None = None
+    # S-137: True when this claim is resuming a crashed run of the same
+    # task (prior artifacts existed in the task dir).
+    resumed: bool = False
+    # Snapshot of the clone taken BEFORE sync discarded anything: branch,
+    # local-commits-not-on-remote count, dirty-file summary.
+    pre_sync_git: Mapping[str, Any] | None = None
+    # Rendered resume note (also persisted in the task journal).
+    resume_note: str = ""
 
 
 def resolve_workspace_base(base_dest: str | Path | None = None) -> Path:
@@ -74,6 +84,44 @@ def task_dir_for(base: str | Path, task_id: str) -> Path:
 def scratch_dir(base: str | Path) -> Path:
     """General durable scratch: ``<base>/scratch``."""
     return Path(base) / "scratch"
+
+
+def clone_is_healthy(dest: str | Path) -> bool:
+    """Cheap worktree sanity check: ``git rev-parse --git-dir`` succeeds."""
+    import subprocess
+
+    repo = Path(dest)
+    if not (repo / ".git").is_dir():
+        return False
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--git-dir"], cwd=str(repo), capture_output=True, text=True
+        )
+    except OSError:
+        return False
+    return proc.returncode == 0
+
+
+def move_aside_corrupt_clone(dest: str | Path) -> Path | None:
+    """Rename a corrupt clone to ``<name>.corrupt.<utc-stamp>`` so the
+    caller can full re-clone. Returns the new path, or ``None`` on failure
+    (never raises — hygiene must not block the task)."""
+    repo = Path(dest)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    aside = repo.with_name(f"{repo.name}.corrupt.{stamp}")
+    try:
+        repo.rename(aside)
+    except OSError as exc:
+        LOGGER.error(
+            "failed to move aside corrupt clone",
+            extra={"path": str(repo), "error": str(exc)},
+        )
+        return None
+    LOGGER.warning(
+        "corrupt git clone moved aside for re-clone",
+        extra={"path": str(repo), "moved_to": str(aside)},
+    )
+    return aside
 
 
 def ensure_task_dirs(
@@ -129,8 +177,16 @@ def prepare_task_workspace(
     task_id: str,
     workspaces_dir: str | Path | None = None,
     base_dest: str | Path | None = None,
+    resumed: bool = False,
 ) -> WorkspaceHandle | None:
-    """Prepare a per-task git workspace, or return ``None`` if not applicable."""
+    """Prepare a per-task git workspace, or return ``None`` if not applicable.
+
+    S-137 crash-resume additions: when ``resumed`` is set and a clone
+    already exists, a pre-sync git snapshot is captured (before
+    ``sync_workspace`` discards uncommitted leftovers) so the resume note
+    can surface it; a corrupt clone is moved aside so the dispatch below
+    takes the full re-clone path. Pushed/committed work is never removed —
+    only the corrupt clone directory itself is renamed, not deleted."""
     found = find_git_workspace(resources)
     if not found:
         return None
@@ -157,6 +213,15 @@ def prepare_task_workspace(
     # so git-history attribution is done here (see ADR-0009).
     author_name = f"skquad/{agent_id[:8]}"
     author_email = f"{agent_id}@skquad.local"
+    # Worktree hygiene (S-137): a clone whose rev-parse fails is moved
+    # aside (renamed, never deleted) so prepare_workspace re-clones cleanly.
+    pre_sync_git: Mapping[str, Any] | None = None
+    if dest.exists() and not clone_is_healthy(dest):
+        move_aside_corrupt_clone(dest)
+    elif resumed and clone_is_healthy(dest):
+        # Snapshot BEFORE sync discards uncommitted leftovers, so the
+        # resume note can surface them instead of losing them silently.
+        pre_sync_git = git_resume_info(dest)
     try:
         push_url = git_workspace.authed_https_url(endpoint, token)
         git_workspace.prepare_workspace(
@@ -175,10 +240,25 @@ def prepare_task_workspace(
         return None
     LOGGER.info(
         "git workspace prepared",
-        extra={"workspace_resource_id": rid, "branch": branch, "path": str(dest)},
+        extra={
+            "workspace_resource_id": rid,
+            "branch": branch,
+            "path": str(dest),
+            "resumed": resumed,
+        },
+    )
+    resume_note = (
+        build_resume_note(task_dir, git_info=pre_sync_git) if resumed else ""
     )
     return WorkspaceHandle(
-        resource_id=rid, path=dest, branch=branch, push_url=push_url, task_dir=task_dir
+        resource_id=rid,
+        path=dest,
+        branch=branch,
+        push_url=push_url,
+        task_dir=task_dir,
+        resumed=resumed,
+        pre_sync_git=pre_sync_git,
+        resume_note=resume_note,
     )
 
 
