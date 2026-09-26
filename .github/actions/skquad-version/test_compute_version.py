@@ -108,6 +108,21 @@ class MainTest(unittest.TestCase):
             self.assertEqual(out["version_tag"], "v0.1.100")
             self.assertEqual(out["commit_short"], "abc1234")
 
+    def test_version_series_is_a_valid_tag_suffix(self) -> None:
+        # Images run 148 built `repo:.` because the workflow concatenated
+        # major/minor itself and the outputs were not forwarded. The action now
+        # emits the series as one value; assert it is always "<n>.<n>".
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_baseline(tmp, major=12, minor=34)
+            buf = io.StringIO()
+            with mock.patch("sys.stdout", buf), mock.patch("sys.stderr", io.StringIO()):
+                rc = main(["--file", str(path), "--run-number", "148", "--commit", "abc1234"])
+            self.assertEqual(rc, 0)
+            out = dict(line.split("=", 1) for line in buf.getvalue().splitlines() if "=" in line)
+            self.assertEqual(out["version_series"], "12.34")
+            self.assertRegex(out["version_series"], r"^[0-9]+\.[0-9]+$")
+            self.assertEqual(out["version"], "12.34.100")
+
     def test_exit_one_on_bad_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("sys.stderr", io.StringIO()):
