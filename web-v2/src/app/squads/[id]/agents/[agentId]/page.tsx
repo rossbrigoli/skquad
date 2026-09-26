@@ -14,6 +14,7 @@ import { MetricTile } from "../../../../../components/MetricTile";
 import { Modal, ModalForm } from "../../../../../components/Modal";
 import { SquadRail } from "../../../../../components/SquadRail";
 import { StatusChip } from "../../../../../components/StatusChip";
+import { storageDisplay } from "../../../../../lib/agentStorage";
 import { useApi } from "../../../../../lib/useApi";
 import { useAuth } from "../../../../../lib/auth";
 import {
@@ -287,6 +288,11 @@ export default function AgentProfilePage() {
             label="Granted resources"
             value={resourceGrants.length}
             sub={resourceGrants.length === 0 ? "no resource grants" : "see below"}
+          />
+          <MetricTile
+            label="Workspace storage"
+            value={storageDisplay(agent?.storage_enabled, agent?.storage_size)}
+            sub={agent?.storage_enabled ? "durable, survives restarts" : "ephemeral workspace"}
           />
         </div>
 

@@ -255,7 +255,7 @@ func (p *PostgresStore) enqueueAgentOutboxTx(ctx context.Context, tx pgx.Tx, ope
 func getAgentTx(ctx context.Context, tx pgx.Tx, id string) (*domain.Agent, error) {
 	row := tx.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -474,7 +474,7 @@ func (p *PostgresStore) DeleteSquad(ctx context.Context, id string) error {
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
 		FROM agents
 		WHERE squad_id = $1
 		ORDER BY name
@@ -559,11 +559,11 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 	defer tx.Rollback(ctx)
 
 	row := tx.QueryRow(ctx, `
-		INSERT INTO agents (squad_id, name, role, system_prompt, ai_model_id, fallback_ai_model_id, permissions, idle_timeout_sec, status)
-		VALUES ($1, $2, $3, $4, nullif($5, '')::uuid, nullif($6, '')::uuid, $7, $8, $9)
+		INSERT INTO agents (squad_id, name, role, system_prompt, ai_model_id, fallback_ai_model_id, permissions, idle_timeout_sec, status, storage_enabled, storage_size)
+		VALUES ($1, $2, $3, $4, nullif($5, '')::uuid, nullif($6, '')::uuid, $7, $8, $9, $10, $11)
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
-	`, a.SquadID, a.Name, a.Role, a.SystemPrompt, a.AIModelID, a.FallbackAIModelID, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status))
+		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
+	`, a.SquadID, a.Name, a.Role, a.SystemPrompt, a.AIModelID, a.FallbackAIModelID, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status), a.StorageEnabled, defaultStorageSize(a.StorageSize))
 	created, err := scanAgent(row)
 	if err != nil {
 		return nil, err
@@ -583,7 +583,7 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 func (p *PostgresStore) GetAgent(ctx context.Context, id string) (*domain.Agent, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -610,11 +610,13 @@ func (p *PostgresStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*doma
 		    permissions = $5,
 		    idle_timeout_sec = $6,
 		    status = $7,
+		    storage_enabled = $10,
+		    storage_size = $11,
 		    updated_at = now()
 		WHERE id = $1
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
-	`, a.ID, a.Name, a.Role, a.SystemPrompt, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status), a.AIModelID, a.FallbackAIModelID)
+		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
+	`, a.ID, a.Name, a.Role, a.SystemPrompt, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status), a.AIModelID, a.FallbackAIModelID, a.StorageEnabled, defaultStorageSize(a.StorageSize))
 	updated, err := scanAgent(row)
 	if err != nil {
 		return nil, err
@@ -640,7 +642,7 @@ func (p *PostgresStore) DeleteAgent(ctx context.Context, id string) error {
 
 	row := tx.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -667,7 +669,7 @@ func (p *PostgresStore) DeleteAgent(ctx context.Context, id string) error {
 func (p *PostgresStore) ListAgents(ctx context.Context, squadID string) ([]*domain.Agent, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
 		FROM agents
 		WHERE squad_id = $1
 		ORDER BY name
@@ -700,7 +702,7 @@ func (p *PostgresStore) SetAgentStatus(ctx context.Context, id string, status do
 		SET status = $2, updated_at = now()
 		WHERE id = $1
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
+		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
 	`, id, status)
 	agent, err := scanAgent(row)
 	if err != nil {
@@ -818,7 +820,7 @@ func (p *PostgresStore) SetAgentIdentityGatewayKey(ctx context.Context, agentID 
 func (p *PostgresStore) ListAllAgents(ctx context.Context) ([]*domain.Agent, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
 		FROM agents
 		ORDER BY name
 	`)
@@ -2854,6 +2856,8 @@ func scanAgent(row scanner) (*domain.Agent, error) {
 		&a.FallbackAIModelID,
 		&a.Permissions,
 		&a.IdleTimeoutSec,
+		&a.StorageEnabled,
+		&a.StorageSize,
 		&a.Status,
 		&a.CreatedAt,
 		&a.UpdatedAt,
@@ -3241,6 +3245,17 @@ func defaultAgentStatus(status domain.AgentStatus) domain.AgentStatus {
 		return domain.AgentIdle
 	}
 	return status
+}
+
+// defaultStorageSize keeps the persisted storage_size aligned with the
+// CRD-level default (S-135/S-138): an empty size is stored as "2Gi" so
+// the DB row always carries a concrete quantity even when the caller
+// enabled storage without naming a size.
+func defaultStorageSize(size string) string {
+	if strings.TrimSpace(size) == "" {
+		return "2Gi"
+	}
+	return size
 }
 
 func defaultTaskStatus(status domain.TaskStatus) domain.TaskStatus {

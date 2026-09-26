@@ -9,7 +9,7 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "lcov"],
       reportsDirectory: "coverage",
-      include: ["src/lib/status.ts", "src/lib/format.ts", "src/lib/attention.ts"],
+      include: ["src/lib/status.ts", "src/lib/format.ts", "src/lib/attention.ts", "src/lib/agentStorage.ts"],
       thresholds: {
         statements: 85,
         lines: 85,

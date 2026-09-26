@@ -67,6 +67,14 @@ spec:
               value: {{ .Release.Namespace | quote }}
             - name: SKQUAD_AGENT_IMAGE
               value: {{ printf "%s:%s" .Values.image.agentRuntime.repository .Values.image.agentRuntime.tag | quote }}
+            # Agent workspace storage front-door (S-138): default size, per-agent
+            # max, and the platform-only storageClass ("" = cluster default).
+            - name: SKQUAD_DEFAULT_AGENT_STORAGE_SIZE
+              value: {{ .Values.apiServer.defaultAgentStorageSize | default "2Gi" | quote }}
+            - name: SKQUAD_MAX_AGENT_STORAGE
+              value: {{ .Values.apiServer.maxAgentStorageSize | default "10Gi" | quote }}
+            - name: SKQUAD_STORAGE_CLASS
+              value: {{ .Values.apiServer.storageClass | default "" | quote }}
             - name: SKQUAD_CONTROL_PLANE_URL
               value: {{ default (printf "http://%s.%s.svc.cluster.local" (include "skquad.apiServerName" .) .Release.Namespace) .Values.apiServer.runtimeControlPlaneUrl | quote }}
             - name: SKQUAD_LLM_GATEWAY_URL

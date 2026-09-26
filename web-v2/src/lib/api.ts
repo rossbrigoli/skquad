@@ -28,6 +28,10 @@ export type Agent = {
   ai_model_id?: string;
   fallback_ai_model_id?: string;
   idle_timeout_sec?: number;
+  // Durable workspace PVC (S-138). storageClass is platform-admin only
+  // and intentionally absent from the tenant-facing surface.
+  storage_enabled?: boolean;
+  storage_size?: string;
   status?: string;
   created_at?: string;
   updated_at?: string;
