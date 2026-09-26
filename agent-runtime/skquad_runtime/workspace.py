@@ -25,6 +25,8 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_WORKSPACES_DIR = "/var/run/skquad/workspaces"
 DEFAULT_WORKSPACE_BASE = "/tmp/skquad-workspaces"
+# Where the operator mounts the per-agent workspace PVC (S-135/S-136).
+DEFAULT_PVC_MOUNT_PATH = "/workspace"
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,58 @@ class WorkspaceHandle:
     path: Path
     branch: str
     push_url: str
+    task_dir: Path | None = None
+
+
+def resolve_workspace_base(base_dest: str | Path | None = None) -> Path:
+    """Resolve the writable workspace base, PVC-aware (S-136).
+
+    Precedence:
+
+    1. explicit ``base_dest`` (tests / overrides),
+    2. ``SKQUAD_WORKSPACE_BASE`` env var,
+    3. the per-agent PVC mount (``SKQUAD_WORKSPACE_MOUNT_PATH``, default
+       ``/workspace``) when it exists and is writable,
+    4. the ephemeral ``/tmp`` base — storage-disabled agents keep the
+       pre-PVC behaviour exactly.
+    """
+    if base_dest:
+        return Path(base_dest)
+    env_base = os.environ.get("SKQUAD_WORKSPACE_BASE")
+    if env_base:
+        return Path(env_base)
+    mount = Path(os.environ.get("SKQUAD_WORKSPACE_MOUNT_PATH", DEFAULT_PVC_MOUNT_PATH))
+    if mount.is_dir() and os.access(mount, os.W_OK):
+        return mount
+    return Path(DEFAULT_WORKSPACE_BASE)
+
+
+def git_clone_dir(base: str | Path, resource_id: str) -> Path:
+    """Persistent clone location on the PVC: ``<base>/git/<resource_id>``."""
+    return Path(base) / "git" / resource_id
+
+
+def task_dir_for(base: str | Path, task_id: str) -> Path:
+    """Crash-survivable per-task directory: ``<base>/tasks/<task_id>``."""
+    return Path(base) / "tasks" / task_id
+
+
+def scratch_dir(base: str | Path) -> Path:
+    """General durable scratch: ``<base>/scratch``."""
+    return Path(base) / "scratch"
+
+
+def ensure_task_dirs(
+    base_dest: str | Path | None = None, task_id: str | None = None
+) -> tuple[Path, Path | None]:
+    """Create the durable scratch dir (and per-task dir when ``task_id`` is
+    given) under the resolved base. Returns ``(base, task_dir)``."""
+    base = resolve_workspace_base(base_dest)
+    scratch_dir(base).mkdir(parents=True, exist_ok=True)
+    task_dir = task_dir_for(base, task_id) if task_id else None
+    if task_dir is not None:
+        task_dir.mkdir(parents=True, exist_ok=True)
+    return base, task_dir
 
 
 def _field(res: object, name: str, default: object = "") -> object:
@@ -89,8 +143,14 @@ def prepare_task_workspace(
         )
         return None
     branch = git_workspace.work_branch_for(agent_id, task_id)
-    base = Path(base_dest or os.environ.get("SKQUAD_WORKSPACE_BASE", DEFAULT_WORKSPACE_BASE))
-    dest = base / f"{rid}-{task_id}"
+    base = resolve_workspace_base(base_dest)
+    # PVC layout (S-136): persistent clone per granted workspace, durable
+    # per-task dir, and a general scratch area. All survive pod restarts
+    # when the base is the mounted PVC.
+    dest = git_clone_dir(base, rid)
+    task_dir = task_dir_for(base, task_id)
+    scratch_dir(base).mkdir(parents=True, exist_ok=True)
+    task_dir.mkdir(parents=True, exist_ok=True)
     # Per-agent commit authorship: the full agent id rides in the email so
     # any commit maps back to the control-plane agent; the short name keeps
     # git log readable. The shared workspace token cannot distinguish agents,
@@ -117,7 +177,9 @@ def prepare_task_workspace(
         "git workspace prepared",
         extra={"workspace_resource_id": rid, "branch": branch, "path": str(dest)},
     )
-    return WorkspaceHandle(resource_id=rid, path=dest, branch=branch, push_url=push_url)
+    return WorkspaceHandle(
+        resource_id=rid, path=dest, branch=branch, push_url=push_url, task_dir=task_dir
+    )
 
 
 def finalize_task_workspace(handle: WorkspaceHandle, message: str):

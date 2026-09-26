@@ -2,13 +2,17 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from skquad_runtime import git_workspace
 from skquad_runtime.git_workspace import (
     GitError,
     authed_https_url,
     clean_url,
+    clone_workspace,
     commit_and_push,
     prepare_workspace,
+    sync_workspace,
     work_branch_for,
 )
 
@@ -125,6 +129,65 @@ class GitOpsTests(unittest.TestCase):
             self.assertFalse(result.changed)
             self.assertFalse(result.pushed)
             self.assertEqual(len(result.commit_sha), 40)
+
+
+class SyncWorkspaceTests(unittest.TestCase):
+    def test_prepare_dispatches_to_sync_when_clone_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            bare = _seed_bare_repo(parent)
+            dest = parent / "ws"
+            clone_workspace(str(bare), "main", "skquad/a/t1", dest)
+            # A warm clone must never trigger a full re-clone.
+            with mock.patch.object(
+                git_workspace,
+                "clone_workspace",
+                side_effect=AssertionError("re-cloned a warm workspace"),
+            ):
+                prepare_workspace(str(bare), "main", "skquad/a/t2", dest)
+            self.assertEqual(_git(["rev-parse", "--abbrev-ref", "HEAD"], dest), "skquad/a/t2")
+
+    def test_sync_scrubs_token_after_fetch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            bare = _seed_bare_repo(parent)
+            dest = parent / "ws"
+            clone_workspace(str(bare), "main", "skquad/a/t1", dest)
+            # Simulate a leaked credential persisted in the remote config.
+            _git(["remote", "set-url", "origin", "https://user:***@host/repo.git"], dest)
+            sync_workspace(str(bare), "main", "skquad/a/t2", dest)
+            self.assertEqual(_git(["config", "--get", "remote.origin.url"], dest), str(bare))
+
+    def test_sync_recovers_existing_task_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            bare = _seed_bare_repo(parent)
+            dest = parent / "ws"
+            clone_workspace(str(bare), "main", "skquad/a/t1", dest)
+            (dest / "keep.txt").write_text("kept\n", encoding="utf-8")
+            _git(["add", "-A"], dest)
+            _git(["commit", "-m", "wip"], dest)
+            # Same task branch on a warm wake: committed work is preserved.
+            sync_workspace(str(bare), "main", "skquad/a/t1", dest)
+            self.assertEqual(_git(["rev-parse", "--abbrev-ref", "HEAD"], dest), "skquad/a/t1")
+            self.assertTrue((dest / "keep.txt").exists())
+
+    def test_sync_discards_dirty_leftovers_when_switching(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            bare = _seed_bare_repo(parent)
+            dest = parent / "ws"
+            clone_workspace(str(bare), "main", "skquad/a/t1", dest)
+            (dest / "dirty.txt").write_text("crash leftover\n", encoding="utf-8")
+            # A new task must not be blocked by a dirty tree from a crash.
+            sync_workspace(str(bare), "main", "skquad/a/t2", dest)
+            self.assertEqual(_git(["rev-parse", "--abbrev-ref", "HEAD"], dest), "skquad/a/t2")
+            self.assertFalse((dest / "dirty.txt").exists())
+
+    def test_sync_requires_existing_clone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(GitError):
+                sync_workspace("https://h/r.git", "main", "skquad/a/t", Path(tmp) / "missing")
 
 
 if __name__ == "__main__":

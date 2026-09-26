@@ -74,7 +74,20 @@ def clean_url(repo_url: str) -> str:
     return repo_url
 
 
-def prepare_workspace(
+def _configure_repo(
+    dest: Path, clone_url: str, author_name: str, author_email: str
+) -> None:
+    """Scrub credentials from ``remote.origin.url`` and set authorship.
+
+    Called after every clone/fetch so the token never lands in
+    ``.git/config`` regardless of the path taken.
+    """
+    _run(["git", "remote", "set-url", "origin", clean_url(clone_url)], cwd=dest)
+    _run(["git", "config", "user.name", author_name], cwd=dest)
+    _run(["git", "config", "user.email", author_email], cwd=dest)
+
+
+def clone_workspace(
     clone_url: str,
     base_branch: str,
     work_branch: str,
@@ -82,7 +95,8 @@ def prepare_workspace(
     author_name: str = "skquad-agent",
     author_email: str = "agent@skquad.local",
 ) -> Path:
-    """Clone ``clone_url`` at ``base_branch`` into ``dest`` and check out ``work_branch``.
+    """Full clone of ``clone_url`` at ``base_branch`` into ``dest``, then
+    check out ``work_branch``.
 
     ``dest`` is removed first if it exists so the workspace is deterministic.
     ``clone_url`` may already carry credentials (production) or be a local
@@ -94,11 +108,91 @@ def prepare_workspace(
     dest.parent.mkdir(parents=True, exist_ok=True)
     _run(["git", "clone", "--branch", base_branch, "--single-branch", clone_url, str(dest)])
     # Never persist credentials in .git/config.
-    _run(["git", "remote", "set-url", "origin", clean_url(clone_url)], cwd=dest)
-    _run(["git", "config", "user.name", author_name], cwd=dest)
-    _run(["git", "config", "user.email", author_email], cwd=dest)
+    _configure_repo(dest, clone_url, author_name, author_email)
     _run(["git", "checkout", "-b", work_branch], cwd=dest)
     return dest
+
+
+def sync_workspace(
+    clone_url: str,
+    base_branch: str,
+    work_branch: str,
+    dest: Path,
+    author_name: str = "skquad-agent",
+    author_email: str = "agent@skquad.local",
+) -> Path:
+    """Fetch into an existing clone at ``dest`` and check out ``work_branch``.
+
+    Used on warm PVC wakes (S-136) so the persistent clone under
+    ``<base>/git/<resource_id>/`` is reused instead of re-cloning:
+
+    - ``git fetch`` runs against the (possibly credential-bearing)
+      ``clone_url`` passed explicitly on the command line; the persisted
+      ``remote.origin.url`` is re-scrubbed afterwards, so the token still
+      never lands in ``.git/config``.
+    - Uncommitted leftovers from a crashed run are discarded
+      (``reset --hard`` + ``clean -fd``) so branch switching is
+      deterministic; committed work on task branches survives.
+    - If the per-task branch already exists locally (crash recovery for
+      the same task) it is checked out as-is; otherwise it is (re)created
+      from the freshly fetched base branch.
+    """
+    dest = Path(dest)
+    if not (dest / ".git").is_dir():
+        raise GitError(f"sync_workspace requires an existing clone at {dest}")
+    _run(
+        [
+            "git",
+            "fetch",
+            clone_url,
+            f"+refs/heads/{base_branch}:refs/remotes/origin/{base_branch}",
+        ],
+        cwd=dest,
+    )
+    _configure_repo(dest, clone_url, author_name, author_email)
+    # Discard uncommitted leftovers from a crashed run so the checkout below
+    # cannot fail on a dirty tree.
+    _run(["git", "reset", "--hard", "HEAD"], cwd=dest)
+    _run(["git", "clean", "-fd"], cwd=dest)
+    has_branch = (
+        _run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{work_branch}"],
+            cwd=dest,
+            check=False,
+        ).returncode
+        == 0
+    )
+    if has_branch:
+        # Crash recovery: resume the task branch with its committed work intact.
+        _run(["git", "checkout", work_branch], cwd=dest)
+    else:
+        _run(["git", "checkout", "-B", work_branch, f"refs/remotes/origin/{base_branch}"], cwd=dest)
+    return dest
+
+
+def prepare_workspace(
+    clone_url: str,
+    base_branch: str,
+    work_branch: str,
+    dest: Path,
+    author_name: str = "skquad-agent",
+    author_email: str = "agent@skquad.local",
+) -> Path:
+    """Prepare ``dest`` for a task: reuse-and-fetch when a clone already
+    exists there (warm PVC, S-136), otherwise full clone.
+
+    Dispatches to :func:`sync_workspace` when ``dest/.git`` exists, and to
+    :func:`clone_workspace` otherwise (a stale non-clone directory at
+    ``dest`` is removed first by the clone path).
+    """
+    dest = Path(dest)
+    if (dest / ".git").is_dir():
+        return sync_workspace(
+            clone_url, base_branch, work_branch, dest, author_name=author_name, author_email=author_email
+        )
+    return clone_workspace(
+        clone_url, base_branch, work_branch, dest, author_name=author_name, author_email=author_email
+    )
 
 
 def commit_and_push(

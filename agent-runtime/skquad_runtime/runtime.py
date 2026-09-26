@@ -19,8 +19,8 @@ from urllib import error, request
 
 from .workspace import (
     DEFAULT_WORKSPACES_DIR,
-    DEFAULT_WORKSPACE_BASE,
     WorkspaceHandle,
+    ensure_task_dirs,
     finalize_task_workspace,
     prepare_task_workspace,
 )
@@ -72,7 +72,10 @@ class BootstrapConfig:
     system_prompt: str = ""
     workspace_enabled: bool = True
     workspaces_dir: str = DEFAULT_WORKSPACES_DIR
-    workspace_base: str = DEFAULT_WORKSPACE_BASE
+    # Empty means "auto-resolve": prefer the per-agent PVC mount
+    # (SKQUAD_WORKSPACE_MOUNT_PATH, default /workspace) and fall back to
+    # the ephemeral /tmp base when no PVC is mounted (S-136).
+    workspace_base: str = ""
     # WP5 (ADR-0010 D4): the agent's model binding, injected by the
     # operator. The runtime does NOT route on these ids (the gateway owns
     # failover, D6); they make the binding visible in the runtime env and
@@ -345,7 +348,7 @@ def load_bootstrap_config(environ: Mapping[str, str] | None = None) -> Bootstrap
         enabled_plugins=parse_csv(env.get("SKQUAD_ENABLED_PLUGINS", "")),
         workspace_enabled=env_bool(env, "SKQUAD_WORKSPACE_ENABLED", True),
         workspaces_dir=env.get("SKQUAD_WORKSPACES_DIR", DEFAULT_WORKSPACES_DIR),
-        workspace_base=env.get("SKQUAD_WORKSPACE_BASE", DEFAULT_WORKSPACE_BASE),
+        workspace_base=env.get("SKQUAD_WORKSPACE_BASE", ""),
     )
 
 
@@ -1538,6 +1541,18 @@ def run_task_once(
         state.task_claimed(task)
     LOGGER.info("agent task claimed", extra={"task_id": task.id, "squad_id": task.squad_id})
     control_plane.heartbeat("busy", task)
+    if config.workspace_enabled:
+        # Durable per-task dir on the PVC (S-136): scripts the handler
+        # writes under SKQUAD_TASK_DIR survive crashes/restarts.
+        try:
+            _, task_dir = ensure_task_dirs(config.workspace_base, task.id)
+            if task_dir is not None:
+                os.environ["SKQUAD_TASK_DIR"] = str(task_dir)
+        except OSError as exc:  # noqa: BLE001 - task dirs are best-effort
+            LOGGER.warning(
+                "task dir creation failed",
+                extra={"task_id": task.id, "error": str(exc)},
+            )
     started = monotonic()
     workspace = _prepare_task_workspace(config, control_plane, task)
     try:
