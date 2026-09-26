@@ -2,7 +2,7 @@
 //
 // Bug report: binding a new model on the agent page appeared to succeed,
 // but after navigating away and back the old model was shown again. These
-// tests replay the EXACT sequence the web-v2 LLM tab performs
+// tests replay the EXACT sequence the web LLM tab performs
 // (buildBindingPayload always sends both keys; "" clears a slot) against
 // a freshly bound agent and assert the GET/list read-paths — which the UI
 // re-renders from on remount — reflect the change.

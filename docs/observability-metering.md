@@ -132,7 +132,7 @@ metering(
 - The **platform admin** can view metering across all squads.
 - **Cost display precision (S-121):** per-1M-token pricing produces squad
   totals far below a tenth of a cent (e.g. ~$9e-06 for a small call). The
-  UI formatter (`web-v2/src/lib/format.ts`) renders amounts ≥ $0.0001 with
+  UI formatter (`web/src/lib/format.ts`) renders amounts ≥ $0.0001 with
   four decimals, but switches to two significant digits below that so real
   spend never renders as a misleading `0.0000`. Stored costs are always the
   full-precision snapshot from ingest; this is display-only.

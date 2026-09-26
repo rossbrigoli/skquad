@@ -35,7 +35,7 @@ func bgConfig(enabled bool) *config.Config {
 	cfg := testConfig()
 	cfg.AuthMode = config.AuthOIDC
 	cfg.IssuerURL = "https://cloud.rossbrigoli.com/auth"
-	cfg.Audience = "skquad-v2"
+	cfg.Audience = "skquad"
 	cfg.BreakGlassEnabled = enabled
 	cfg.BreakGlassUsername = bgUser
 	cfg.BreakGlassPasswordHash = bgPHC(bgPassword)

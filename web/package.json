@@ -1,29 +1,29 @@
 {
-  "name": "skquad-web",
+  "name": "web",
   "version": "0.1.0",
   "private": true,
-  "description": "skquad web app (React / Next.js SPA)",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint .",
+    "lint": "eslint",
     "test": "vitest run",
-    "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "next": "^16.3.3",
-    "react": "^18.3.0",
-    "react-dom": "^18.3.0"
+    "jose": "^6.2.12",
+    "next": "16.3.5",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@types/node": "^22.19.0",
-    "@types/react": "^18.3.0",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
     "@vitest/coverage-v8": "^5.0.1",
-    "eslint": "^9.39.5",
-    "eslint-config-next": "^16.3.3",
-    "typescript": "^5.4.0",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.5",
+    "typescript": "^5",
     "vitest": "^5.0.1"
   }
 }

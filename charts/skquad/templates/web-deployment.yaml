@@ -34,6 +34,30 @@ spec:
               value: {{ printf "http://%s.%s.svc.cluster.local/api/v1" (include "skquad.apiServerName" .) .Release.Namespace | quote }}
             - name: NEXT_PUBLIC_SKQUAD_API_BASE_URL
               value: {{ .Values.web.apiBaseUrl | quote }}
+            {{- if .Values.web.publicBaseUrl }}
+            # Externally visible origin. Required because Next.js resolves
+            # request.url from its own bind address behind our proxy chain, which
+            # would otherwise leak http://localhost:3000 into redirects.
+            - name: SKQUAD_PUBLIC_BASE_URL
+              value: {{ .Values.web.publicBaseUrl | quote }}
+            {{- end }}
+            {{- if .Values.web.oidc.enabled }}
+            # UIv2-13 (now the only web): generic OIDC (authorization code + PKCE). Any IdP with
+            # .well-known/openid-configuration works; cluster default is Dex.
+            - name: SKQUAD_OIDC_ISSUER
+              value: {{ .Values.web.oidc.issuer | quote }}
+            - name: SKQUAD_OIDC_CLIENT_ID
+              value: {{ .Values.web.oidc.clientId | quote }}
+            - name: SKQUAD_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.web.oidc.secretName | quote }}
+                  key: {{ .Values.web.oidc.clientSecretKey | quote }}
+            - name: SKQUAD_OIDC_REDIRECT_URL
+              value: {{ .Values.web.oidc.redirectUrl | quote }}
+            - name: SKQUAD_OIDC_SCOPES
+              value: {{ .Values.web.oidc.scopes | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.web.resources | nindent 12 }}
 {{- end }}

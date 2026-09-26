@@ -2,6 +2,8 @@
 
 **Date:** 2026-09-22 · **Owner:** Sherlock · **Design basis:** `docs/UI-REDESIGN-PROPOSAL.md`
 
+> **Status (2026-09-26):** This plan is shipped and closed. The v2 UI is now the only UI: `web-v2/` was renamed to `web/` and the v1 app was retired. Every "v2" reference below points at today's `web/` app.
+
 Ross's brief: build the redesigned UI **from scratch** as a **new app** in the same repo
 (`web-v2/`), **do not touch** the current `web/` app, deploy to the k3s cluster so
 v1 (`skquad.rossbrigoli.com`) and v2 (`skquad-v2.rossbrigoli.com`) run side-by-side

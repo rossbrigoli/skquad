@@ -132,7 +132,7 @@ Operating rules:
 
 - **Never use the public hostname.** Requests carrying Cloudflare signals
   (`CF-Ray`/`CF-Connecting-IP`) are refused with 403 regardless of source IP.
-  Use the internal address (`http://skquad-v2.lab`) or the Tailscale IP.
+  Use the internal address (`http://skquad.lab`) or the Tailscale IP.
 - Generate the credential material locally:
 
   ```bash

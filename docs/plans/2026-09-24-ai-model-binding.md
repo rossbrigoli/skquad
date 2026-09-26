@@ -1,5 +1,7 @@
 # Implementation Plan — AI Model binding (ADR-0010)
 
+> **Note (2026-09-26):** `web-v2` is now `web` (v1 UI retired 2026-09-26); `web-v2` references in this document mean the current `web/` app.
+
 **Goal:** replace `llm_provider`-as-agent-grant with admin-registered **AI Models** granted to
 **users**, bound 1:1 to an agent as primary + optional fallback.
 

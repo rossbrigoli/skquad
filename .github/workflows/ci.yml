@@ -349,32 +349,6 @@ jobs:
           NEXT_TELEMETRY_DISABLED: "1"
         run: npm run build
 
-  web-v2:
-    name: Web v2
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web-v2
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web-v2/package-lock.json
-      - name: Install dependencies
-        run: npm ci
-      - name: Unit tests with coverage
-        run: npm run test:coverage
-      - uses: actions/upload-artifact@v7
-        with:
-          name: coverage-web-v2
-          path: web-v2/coverage/lcov.info
-      - name: Build
-        env:
-          NEXT_TELEMETRY_DISABLED: "1"
-        run: npm run build
-
   # ---------------------------------------------------------------------------
   # Security jobs (Kanbunny S-102). Self-hosted on the in-cluster skquad runner:
   # SonarQube is unreachable from GitHub-hosted runners (Cloudflare Access gate),
@@ -390,7 +364,6 @@ jobs:
       - agent-runtime
       - llm-gateway
       - web
-      - web-v2
     runs-on: [self-hosted, skquad]
     timeout-minutes: 45
     env:
@@ -437,10 +410,6 @@ jobs:
         with:
           name: coverage-web
           path: web/coverage
-      - uses: actions/download-artifact@v7
-        with:
-          name: coverage-web-v2
-          path: web-v2/coverage
       - name: Run SonarQube analysis
         env:
           SONAR_SCANNER_OPTS: "-Xmx1g"
@@ -457,7 +426,7 @@ jobs:
       - uses: actions/checkout@v7
       # The skquad self-hosted runner image has no npm on PATH; the earlier
       # npm-audit steps failed with exit 127 (run 35848631030). Provide Node
-      # explicitly — matches the version the web/web-v2 jobs build with.
+      # explicitly — matches the version the web job builds with.
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -506,9 +475,6 @@ jobs:
           '
       - name: npm audit web (high+ critical)
         working-directory: web
-        run: npm audit --audit-level=high --package-lock-only
-      - name: npm audit web-v2 (high+ critical)
-        working-directory: web-v2
         run: npm audit --audit-level=high --package-lock-only
 
   security-sast:

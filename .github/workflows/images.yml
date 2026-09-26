@@ -63,9 +63,6 @@ jobs:
           - component: web
             context: web
             image: skquad-web
-          - component: web-v2
-            context: web-v2
-            image: skquad-web-v2
 
     steps:
       - uses: actions/checkout@v7
