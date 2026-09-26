@@ -36,6 +36,12 @@ type CRWriter struct {
 	agentImage      string
 	controlPlaneURL string
 	llmGatewayURL   string
+	// storageClass is platform-admin only (S-138/S-135 portability rule):
+	// empty means storageClassName is omitted from spec.storage so the
+	// cluster default applies. defaultStorageSize backsfills an empty
+	// agent.StorageSize (matches the CRD default "2Gi").
+	storageClass        string
+	defaultStorageSize string
 	token           string
 	client          *http.Client
 }
@@ -74,6 +80,8 @@ func NewCRWriter(cfg *config.Config) (*CRWriter, error) {
 		agentImage:      cfg.AgentImage,
 		controlPlaneURL: cfg.ControlPlaneURL,
 		llmGatewayURL:   cfg.LLMGatewayURL,
+		storageClass:        strings.TrimSpace(cfg.StorageClass),
+		defaultStorageSize:  strings.TrimSpace(cfg.DefaultAgentStorageSize),
 		token:           strings.TrimSpace(string(token)),
 		client:          &http.Client{Transport: transport},
 	}, nil
@@ -126,6 +134,13 @@ func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identit
 		"permissions":       rawJSON(agent.Permissions, []any{}),
 		"idleTimeout":       fmt.Sprintf("%ds", agent.IdleTimeoutSec),
 		"desiredActive":     agent.Status == domain.AgentBusy,
+	}
+	// Durable workspace PVC (S-138): emitted only when the agent opted in.
+	// storageClass rides along solely when the platform set it; the CRD
+	// defaults size to 2Gi when empty, so we resolve the default here for
+	// an explicit, reviewable payload.
+	if agent.StorageEnabled {
+		spec["storage"] = agentStorageSpec(agent.StorageSize, w.defaultStorageSize, w.storageClass)
 	}
 	if w.controlPlaneURL != "" {
 		spec["controlPlaneUrl"] = w.controlPlaneURL
@@ -302,6 +317,29 @@ func (w *CRWriter) deleteCore(ctx context.Context, plural, namespace, name strin
 // defaultModel is now derived exclusively from the resolved AI Model
 // binding (agent.AIModelName), never from the legacy free-text
 // agents.default_model.
+
+// agentStorageSpec builds the Agent CR spec.storage block (S-135 shape)
+// from the agent's persisted size plus platform defaults. Keys with an
+// empty value are omitted so the CRD/operator defaults apply.
+func agentStorageSpec(size, defaultSize, storageClass string) map[string]any {
+	out := map[string]any{"enabled": true}
+	if s := firstNonEmpty(size, defaultSize); s != "" {
+		out["size"] = s
+	}
+	if storageClass != "" {
+		out["storageClass"] = storageClass
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
 
 func rawJSON(raw json.RawMessage, fallback any) any {
 	if len(raw) == 0 {

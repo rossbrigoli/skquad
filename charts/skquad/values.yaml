@@ -93,6 +93,15 @@ apiServer:
   databaseUrl: ""
   runtimeControlPlaneUrl: ""
   runtimeLlmGatewayUrl: ""
+  # Agent workspace storage (S-138). Platform-admin knobs surfaced to the
+  # control plane as SKQUAD_DEFAULT_AGENT_STORAGE_SIZE /
+  # SKQUAD_MAX_AGENT_STORAGE / SKQUAD_STORAGE_CLASS. Squad owners pick a
+  # size up to maxAgentStorageSize in the UI/API; storageClass is never
+  # tenant-selectable — "" omits storageClassName so the cluster default
+  # applies (S-135 portability rule).
+  defaultAgentStorageSize: 2Gi
+  maxAgentStorageSize: 10Gi
+  storageClass: ""
   memoryEmbeddings:
     enabled: false
     model: ""

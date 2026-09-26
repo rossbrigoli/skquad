@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/breakglass"
+	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
 
 // AuthMode selects how the API authenticates human users.
@@ -79,6 +80,13 @@ type Config struct {
 	DefaultIdleTimeout time.Duration
 	ReaperInterval     time.Duration // how often the execution reaper runs
 	ReaperGrace        time.Duration // extra time beyond the lease before an execution is declared dead
+
+	// Agent workspace storage (S-138). Platform-admin knobs only: squad
+	// owners pick a size within [0, MaxAgentStorage]; the StorageClass is
+	// never tenant-selectable (portability rule, mirrors S-135).
+	DefaultAgentStorageSize string // SKQUAD_DEFAULT_AGENT_STORAGE_SIZE (default "2Gi")
+	MaxAgentStorage         string // SKQUAD_MAX_AGENT_STORAGE (default "10Gi")
+	StorageClass            string // SKQUAD_STORAGE_CLASS ("" = cluster default, omitted from PVC)
 }
 
 // Load reads configuration from the environment, applying defaults.
@@ -118,6 +126,9 @@ func Load() (*Config, error) {
 		DefaultIdleTimeout:      envDuration("SKQUAD_DEFAULT_IDLE_TIMEOUT", 5*time.Minute),
 		ReaperInterval:          envSeconds("SKQUAD_REAPER_INTERVAL_SECONDS", 30),
 		ReaperGrace:             envSeconds("SKQUAD_REAPER_GRACE_SECONDS", 120),
+		DefaultAgentStorageSize: envOr("SKQUAD_DEFAULT_AGENT_STORAGE_SIZE", "2Gi"),
+		MaxAgentStorage:         envOr("SKQUAD_MAX_AGENT_STORAGE", "10Gi"),
+		StorageClass:            strings.TrimSpace(os.Getenv("SKQUAD_STORAGE_CLASS")),
 	}
 	if c.LiteLLMAdminURL == "" {
 		c.LiteLLMAdminURL = c.LLMGatewayURL
@@ -141,6 +152,12 @@ func (c *Config) validate() error {
 	}
 	if c.AuthMode == AuthOIDC && c.Audience == "" {
 		return fmt.Errorf("config: SKQUAD_OIDC_AUDIENCE is required when SKQUAD_AUTH_MODE=oidc")
+	}
+	if _, err := domain.ParseStorageSize(c.DefaultAgentStorageSize); err != nil {
+		return fmt.Errorf("config: SKQUAD_DEFAULT_AGENT_STORAGE_SIZE: %w", err)
+	}
+	if _, err := domain.ParseStorageSize(c.MaxAgentStorage); err != nil {
+		return fmt.Errorf("config: SKQUAD_MAX_AGENT_STORAGE: %w", err)
 	}
 	return nil
 }

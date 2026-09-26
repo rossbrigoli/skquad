@@ -71,3 +71,30 @@ func TestAgentWorkNotifyMigrationDefinesTriggers(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentStorageMigrationDefinesColumns(t *testing.T) {
+	t.Parallel()
+
+	migrations, err := readMigrationFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sql string
+	for _, migration := range migrations {
+		if migration.Version == "0015_agent_storage.sql" {
+			sql = migration.SQL
+			break
+		}
+	}
+	if sql == "" {
+		t.Fatal("0015_agent_storage.sql migration not found")
+	}
+	for _, want := range []string{
+		"ALTER TABLE agents ADD COLUMN IF NOT EXISTS storage_enabled boolean NOT NULL DEFAULT false",
+		"ALTER TABLE agents ADD COLUMN IF NOT EXISTS storage_size    text    NOT NULL DEFAULT '2Gi'",
+	} {
+		if !regexp.MustCompile(regexp.QuoteMeta(want)).MatchString(sql) {
+			t.Fatalf("0015 migration missing %q", want)
+		}
+	}
+}

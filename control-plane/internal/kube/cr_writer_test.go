@@ -384,3 +384,110 @@ func TestUpsertAgentDefaultModelNeverFallsBackToLegacy(t *testing.T) {
 		t.Fatalf("aiModelId = %v, want ai-unresolved-uuid", got)
 	}
 }
+
+func TestUpsertAgentEmitsStorageBlock(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	writer := &CRWriter{
+		baseURL:            server.URL,
+		namespace:          testNamespace,
+		groupVersion:       testAPIVersion,
+		agentImage:         runtimeImageRef,
+		storageClass:       "fast-ssd",
+		defaultStorageSize: "2Gi",
+		token:              testToken,
+		client:             server.Client(),
+	}
+
+	agent := &domain.Agent{
+		ID:             "agent-store-1",
+		SquadID:        testSquadName,
+		Role:           "coder",
+		IdleTimeoutSec: 300,
+		StorageEnabled: true,
+		StorageSize:    "5Gi",
+	}
+	if err := writer.UpsertAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	spec := gotBody["spec"].(map[string]any)
+	storageBlock, ok := spec["storage"].(map[string]any)
+	if !ok {
+		t.Fatalf("spec.storage missing: %v", spec["storage"])
+	}
+	if storageBlock["enabled"] != true {
+		t.Fatalf("storage.enabled = %v, want true", storageBlock["enabled"])
+	}
+	if storageBlock["size"] != "5Gi" {
+		t.Fatalf("storage.size = %v, want 5Gi", storageBlock["size"])
+	}
+	if storageBlock["storageClass"] != "fast-ssd" {
+		t.Fatalf("storage.storageClass = %v, want fast-ssd", storageBlock["storageClass"])
+	}
+
+	// Enabled with no size: the platform default fills in.
+	agent.StorageSize = ""
+	if err := writer.UpsertAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	spec = gotBody["spec"].(map[string]any)
+	storageBlock = spec["storage"].(map[string]any)
+	if storageBlock["size"] != "2Gi" {
+		t.Fatalf("storage.size = %v, want platform default 2Gi", storageBlock["size"])
+	}
+
+	// Disabled: no storage block at all (legacy behaviour preserved).
+	agent.StorageEnabled = false
+	if err := writer.UpsertAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	spec = gotBody["spec"].(map[string]any)
+	if _, present := spec["storage"]; present {
+		t.Fatalf("spec.storage must be absent when storage disabled")
+	}
+}
+
+func TestUpsertAgentOmitsStorageClassWhenPlatformDefault(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	writer := &CRWriter{
+		baseURL:            server.URL,
+		namespace:          testNamespace,
+		groupVersion:       testAPIVersion,
+		agentImage:         runtimeImageRef,
+		defaultStorageSize: "2Gi",
+		token:              testToken,
+		client:             server.Client(),
+	}
+	agent := &domain.Agent{
+		ID:             "agent-store-2",
+		SquadID:        testSquadName,
+		StorageEnabled: true,
+		StorageSize:    "1Gi",
+	}
+	if err := writer.UpsertAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	storageBlock := gotBody["spec"].(map[string]any)["storage"].(map[string]any)
+	if _, present := storageBlock["storageClass"]; present {
+		t.Fatalf("storageClass must be omitted when the platform has no override (portability rule)")
+	}
+}

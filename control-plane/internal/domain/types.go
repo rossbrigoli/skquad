@@ -81,6 +81,13 @@ type Agent struct {
 	FallbackAIModelID string          `json:"fallback_ai_model_id,omitempty"`
 	Permissions       json.RawMessage `json:"permissions"`
 	IdleTimeoutSec    int             `json:"idle_timeout_sec"`
+	// StorageEnabled and StorageSize configure the agent's durable workspace
+	// PVC (S-138). They flow into the Agent CR's spec.storage via the
+	// outbox writer. StorageClass is deliberately NOT part of this surface:
+	// tenant-selectable storage classes are a portability/cost footgun, so
+	// only the platform (Helm/env at the control plane) may set it.
+	StorageEnabled bool   `json:"storage_enabled"`
+	StorageSize    string `json:"storage_size,omitempty"`
 	Status            AgentStatus     `json:"status"`
 	CreatedAt         time.Time       `json:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`

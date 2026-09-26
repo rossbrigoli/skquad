@@ -1451,6 +1451,11 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		SystemPrompt   string          `json:"system_prompt"`
 		Permissions    json.RawMessage `json:"permissions"`
 		IdleTimeoutSec int             `json:"idle_timeout_sec"`
+		// Storage (S-138): squad owners choose whether the agent gets a
+		// durable workspace PVC and how large. storageClass is NOT accepted
+		// here — platform-admin only (SKQUAD_STORAGE_CLASS).
+		StorageEnabled *bool  `json:"storage_enabled"`
+		StorageSize    string `json:"storage_size"`
 		// WP8 (0014): legacy "default_provider_id"/"default_model" are
 		// accepted-and-discarded (decodeJSON rejects unknown fields, so
 		// they are declared as blank fields). Model selection is via the
@@ -1472,6 +1477,17 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	if req.IdleTimeoutSec <= 0 {
 		req.IdleTimeoutSec = int(s.cfg.DefaultIdleTimeout / time.Second)
 	}
+	storageEnabled := req.StorageEnabled != nil && *req.StorageEnabled
+	storageSize := strings.TrimSpace(req.StorageSize)
+	if storageSize != "" {
+		if err := s.validateStorageSize(storageSize); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+	}
+	if storageEnabled && storageSize == "" {
+		storageSize = s.cfg.DefaultAgentStorageSize
+	}
 
 	agent := &domain.Agent{
 		SquadID:        squad.ID,
@@ -1481,6 +1497,8 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		Permissions:    req.Permissions,
 		IdleTimeoutSec: req.IdleTimeoutSec,
 		Status:         domain.AgentIdle,
+		StorageEnabled: storageEnabled,
+		StorageSize:    storageSize,
 	}
 	created, err := s.store.CreateAgent(s.pendingUserAuditCtx(r, "agent.create", "agent", "", squad.ID, nil), agent)
 	if err != nil {
@@ -1527,13 +1545,17 @@ type updateAgentRequest struct {
 	// change converges the agent's virtual key immediately (D5).
 	AIModelID         *string `json:"ai_model_id"`
 	FallbackAIModelID *string `json:"fallback_ai_model_id"`
+	// Storage (S-138). Pointer semantics like the model bindings:
+	// nil = leave unchanged. storageClass is not accepted (platform only).
+	StorageEnabled *bool   `json:"storage_enabled"`
+	StorageSize    *string `json:"storage_size"`
 }
 
 // applyAgentScalarUpdates copies the non-binding scalar fields from the
 // request onto the agent, returning a validation error (HTTP 400 message)
 // when one is invalid. Extracted from updateAgent for cognitive
 // complexity (S-126 / S3776).
-func applyAgentScalarUpdates(agent *domain.Agent, req updateAgentRequest) error {
+func (s *Server) applyAgentScalarUpdates(agent *domain.Agent, req updateAgentRequest) error {
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name == "" {
@@ -1556,7 +1578,33 @@ func applyAgentScalarUpdates(agent *domain.Agent, req updateAgentRequest) error 
 		}
 		agent.IdleTimeoutSec = *req.IdleTimeoutSec
 	}
+	if req.StorageEnabled != nil {
+		agent.StorageEnabled = *req.StorageEnabled
+	}
+	if req.StorageSize != nil {
+		size := strings.TrimSpace(*req.StorageSize)
+		if size != "" {
+			if err := s.validateStorageSize(size); err != nil {
+				return err
+			}
+		}
+		agent.StorageSize = size
+	}
+	if agent.StorageEnabled && agent.StorageSize == "" {
+		agent.StorageSize = s.cfg.DefaultAgentStorageSize
+	}
 	return nil
+}
+
+// validateStorageSize enforces the S-138 front-door rules: a valid
+// Kubernetes quantity, positive, and within the platform maximum
+// (SKQUAD_MAX_AGENT_STORAGE, default 10Gi).
+func (s *Server) validateStorageSize(raw string) error {
+	max := strings.TrimSpace(s.cfg.MaxAgentStorage)
+	if max == "" {
+		max = "10Gi"
+	}
+	return domain.ValidateStorageSizeWithin(raw, max)
 }
 
 // applyAgentModelBinding validates and applies the requested primary /
@@ -1645,7 +1693,7 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	// Captured before any mutation so a post-gateway persist failure can
 	// roll the virtual key back to the pre-request binding.
 	prevPrimary, prevFallback := agent.AIModelID, agent.FallbackAIModelID
-	if err := applyAgentScalarUpdates(agent, req); err != nil {
+	if err := s.applyAgentScalarUpdates(agent, req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
