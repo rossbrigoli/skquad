@@ -115,6 +115,30 @@ type AgentSpec struct {
 	WorkspaceSecrets  []WorkspaceSecret    `json:"workspaceSecrets,omitempty"`
 	IdleTimeout       string               `json:"idleTimeout,omitempty"`
 	DesiredActive     bool                 `json:"desiredActive"`
+	// Storage declares a durable per-agent workspace PVC (S-135). When
+	// nil or disabled the agent runs without persistent workspace, exactly
+	// as before. PORTABILITY RULE: StorageClass is optional and NEVER
+	// defaulted to a concrete provisioner — an empty storageClass omits
+	// storageClassName from the PVC so Kubernetes uses the cluster
+	// default (works on OpenShift/EKS/GKE/any flavour).
+	Storage *AgentStorage `json:"storage,omitempty"`
+}
+
+// AgentStorage configures the per-agent durable workspace PVC (S-135).
+type AgentStorage struct {
+	// Enabled turns the per-agent workspace PVC on. Default false for
+	// backward compatibility.
+	Enabled bool `json:"enabled,omitempty"`
+	// Size is a Kubernetes resource quantity string for the PVC request.
+	// Defaults to "2Gi" when empty.
+	Size string `json:"size,omitempty"`
+	// StorageClass is OPTIONAL. Empty means "use the cluster default":
+	// storageClassName is omitted entirely from the PVC. The operator
+	// never hardcodes a StorageClass anywhere.
+	StorageClass string `json:"storageClass,omitempty"`
+	// MountPath is where the PVC mounts in the agent container. Defaults
+	// to "/workspace" when empty.
+	MountPath string `json:"mountPath,omitempty"`
 }
 
 // WorkspaceSecret maps a granted git workspace (registry resource id) to the
@@ -194,6 +218,10 @@ func (in *Agent) DeepCopyObject() runtime.Object {
 	*out = *in
 	out.ObjectMeta = *in.ObjectMeta.DeepCopy()
 	out.Spec.Permissions = cloneJSON(in.Spec.Permissions)
+	if in.Spec.Storage != nil {
+		out.Spec.Storage = new(AgentStorage)
+		*out.Spec.Storage = *in.Spec.Storage
+	}
 	out.Status.Conditions = append([]metav1.Condition(nil), in.Status.Conditions...)
 	return out
 }

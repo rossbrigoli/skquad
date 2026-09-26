@@ -66,6 +66,29 @@ rules:
       - serviceaccounts
     verbs:
       - create
+  # S-135: per-agent durable workspace PVCs (create + lifecycle). The
+  # operator never reads volume contents; it only manages claim
+  # lifecycle in squad namespaces.
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims/status
+    verbs:
+      - get
+      - list
+      - watch
   - apiGroups:
       - ""
     resources:

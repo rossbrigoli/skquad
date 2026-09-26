@@ -77,6 +77,27 @@ spec:
                   type: string
                 desiredActive:
                   type: boolean
+                storage:
+                  type: object
+                  description: >-
+                    Durable per-agent workspace PVC (S-135). storageClass is
+                    OPTIONAL and never defaulted to a concrete provisioner:
+                    when empty, storageClassName is omitted from the PVC so
+                    Kubernetes uses the cluster default (portable across
+                    OpenShift/EKS/GKE).
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    size:
+                      type: string
+                      default: "2Gi"
+                    storageClass:
+                      type: string
+                      default: ""
+                    mountPath:
+                      type: string
+                      default: "/workspace"
             status:
               type: object
               properties:

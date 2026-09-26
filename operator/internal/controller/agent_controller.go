@@ -33,6 +33,16 @@ const (
 	// (S-126 / S1192: single source of truth).
 	volumeAgentCredential = "agent-credential" // #nosec G101 -- Kubernetes volume name, not a credential value.
 	volumeAgentVirtualKey = "agent-virtual-key"
+	// workspaceVolumeName is the pod volume backing the per-agent durable
+	// workspace PVC (S-135).
+	workspaceVolumeName       = "workspace"
+	defaultWorkspaceSize      = "2Gi"
+	defaultWorkspaceMountPath = "/workspace"
+	// RetainPVCKeepAnnotation on an Agent CR (value "true") keeps the
+	// agent's workspace PVC when the Agent is deleted (S-135 retain
+	// policy). Without it, agent deletion cleans the PVC up with the
+	// Deployment via the agent finalizer.
+	RetainPVCKeepAnnotation = "skquad.io/retain-pvc"
 	// LabelAgentID links a Deployment back to its Agent identity.
 	LabelAgentID = "skquad.io/agent-id"
 	// readinessRequeue keeps the operator re-checking an agent whose pod is
@@ -69,6 +79,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
+	// S-135: create-or-adopt the durable workspace PVC before the
+	// Deployment so the pod never references a claim that doesn't exist.
+	workspace, err := r.reconcileWorkspace(ctx, &agent, namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: agent.Name, Namespace: namespace},
 	}
@@ -86,9 +103,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	// S-104: Ready must derive from observed cluster state (secrets present,
 	// mounts applied, pod actually ready) — never from "CR write succeeded".
-	ready, reason, message := r.evaluateAgentReadiness(ctx, &agent, deployment, namespace, replicas)
+	ready, reason, message := r.evaluateAgentReadiness(ctx, &agent, deployment, namespace, replicas, workspace)
 
-	return r.updateAgentStatus(ctx, &agent, deployment, ready, reason, message, replicas)
+	return r.updateAgentStatus(ctx, &agent, deployment, ready, reason, message, replicas, workspace)
 }
 
 // reconcileDelete handles an Agent that is being deleted: it cleans up the
@@ -121,6 +138,11 @@ func (r *AgentReconciler) applyAgentDeploymentSpec(agent *skquadv1.Agent, deploy
 	// arrive via projected Secret volumes. Keep the (permissionless) SA
 	// token out of the pod entirely and harden the container.
 	deployment.Spec.Template.Spec.AutomountServiceAccountToken = boolPtr(false)
+	// S-135: the workspace PVC is ReadWriteOnce and the agent is a
+	// single-replica workload; Recreate guarantees the old pod is fully
+	// terminated before a replacement starts, so two pods never race for
+	// the RWO volume (RollingUpdate could overlap).
+	deployment.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
 	container := corev1.Container{
 		Name:  agentContainerName,
 		Image: agentImage(agent),
@@ -141,8 +163,21 @@ func (r *AgentReconciler) applyAgentDeploymentSpec(agent *skquadv1.Agent, deploy
 		},
 	}
 	volumes := agentSecretVolumes(agent)
+	mounts := agentSecretVolumeMounts(agent)
+	if cfg := workspaceConfig(agent); cfg != nil {
+		volumes = append(volumes, corev1.Volume{
+			Name: workspaceVolumeName,
+			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: workspacePVCName(agent),
+			}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      workspaceVolumeName,
+			MountPath: cfg.MountPath,
+		})
+	}
 	if len(volumes) > 0 {
-		container.VolumeMounts = agentSecretVolumeMounts(agent)
+		container.VolumeMounts = mounts
 		deployment.Spec.Template.Spec.Volumes = volumes
 	} else {
 		deployment.Spec.Template.Spec.Volumes = nil
@@ -190,8 +225,9 @@ func agentEnv(agent *skquadv1.Agent) []corev1.EnvVar {
 }
 
 // updateAgentStatus persists the derived readiness state and chooses the
-// next requeue behaviour.
-func (r *AgentReconciler) updateAgentStatus(ctx context.Context, agent *skquadv1.Agent, deployment *appsv1.Deployment, ready bool, reason, message string, replicas int32) (ctrl.Result, error) {
+// next requeue behaviour. When the agent has a durable workspace it also
+// surfaces the PVC phase as a WorkspaceReady condition (S-135).
+func (r *AgentReconciler) updateAgentStatus(ctx context.Context, agent *skquadv1.Agent, deployment *appsv1.Deployment, ready bool, reason, message string, replicas int32, workspace *workspaceState) (ctrl.Result, error) {
 	agent.Status.ReadyDeployment = deployment.Name
 	agent.Status.Replicas = replicas
 	agent.Status.Ready = ready
@@ -214,6 +250,19 @@ func (r *AgentReconciler) updateAgentStatus(ctx context.Context, agent *skquadv1
 		Message:            message,
 		ObservedGeneration: agent.Generation,
 	})
+	if workspace != nil {
+		wsConditionStatus := metav1.ConditionFalse
+		if workspace.bound {
+			wsConditionStatus = metav1.ConditionTrue
+		}
+		setCondition(&agent.Status.Conditions, metav1.Condition{
+			Type:               "WorkspaceReady",
+			Status:             wsConditionStatus,
+			Reason:             workspace.reason,
+			Message:            workspace.message,
+			ObservedGeneration: agent.Generation,
+		})
+	}
 	if err := r.Status().Update(ctx, agent); err != nil {
 		if apierrors.IsConflict(err) {
 			// Lost a status race; re-check shortly instead of stalling.
@@ -237,9 +286,15 @@ func (r *AgentReconciler) updateAgentStatus(ctx context.Context, agent *skquadv1
 // Deployment template must actually mount them, and the Deployment must report
 // ready replicas. A scaled-to-zero agent is Ready by definition (nothing should
 // run); anything else is only Ready when observed ready.
-func (r *AgentReconciler) evaluateAgentReadiness(ctx context.Context, agent *skquadv1.Agent, deployment *appsv1.Deployment, namespace string, replicas int32) (bool, string, string) {
+func (r *AgentReconciler) evaluateAgentReadiness(ctx context.Context, agent *skquadv1.Agent, deployment *appsv1.Deployment, namespace string, replicas int32, workspace *workspaceState) (bool, string, string) {
 	if replicas == 0 {
 		return true, "ScaledToZero", fmt.Sprintf("Deployment %s/%s is scaled to zero", namespace, deployment.Name)
+	}
+	// S-135: an agent with storage enabled must NEVER silently start
+	// without its durable workspace — no emptyDir fallback. A Pending,
+	// Lost, or misconfigured PVC blocks readiness until resolved.
+	if workspace != nil && !workspace.bound {
+		return false, "Workspace" + workspace.reason, workspace.message
 	}
 	if agent.Spec.CredentialSecret == "" {
 		// The runtime can never pass /readyz without credentials; say so
@@ -326,9 +381,142 @@ func (r *AgentReconciler) cleanupAgent(ctx context.Context, agent *skquadv1.Agen
 	if err != nil {
 		return err
 	}
+	// S-135: the workspace PVC follows the agent's lifecycle unless the
+	// retain annotation opts out. Cross-namespace ownerReferences are
+	// invalid (Agent CR lives in the operator namespace, the PVC in the
+	// squad namespace), so the finalizer — same pattern as the
+	// Deployment — is the GC mechanism.
+	if !retainPVCRequested(agent) {
+		if err := deleteIfExists(ctx, r.Client, &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: workspacePVCName(agent), Namespace: namespace},
+		}); err != nil {
+			return err
+		}
+	}
 	return deleteIfExists(ctx, r.Client, &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: agent.Name, Namespace: namespace},
 	})
+}
+
+// retainPVCRequested reports whether the Agent opts to keep its workspace
+// PVC after deletion (skquad.io/retain-pvc: "true").
+func retainPVCRequested(agent *skquadv1.Agent) bool {
+	return agent.GetAnnotations()[RetainPVCKeepAnnotation] == "true"
+}
+
+// workspaceState is the reconciled view of the per-agent workspace PVC
+// (S-135). nil means the agent has no durable workspace configured.
+type workspaceState struct {
+	bound   bool
+	reason  string // Bound | Pending | Lost | InvalidStorageSize
+	message string
+}
+
+// workspaceConfig returns the effective storage configuration with
+// defaults applied, or nil when the agent has no durable workspace.
+// PORTABILITY RULE (S-135): StorageClass is passed through untouched —
+// empty means "cluster default" and the PVC omits storageClassName.
+func workspaceConfig(agent *skquadv1.Agent) *skquadv1.AgentStorage {
+	if agent.Spec.Storage == nil || !agent.Spec.Storage.Enabled {
+		return nil
+	}
+	cfg := *agent.Spec.Storage
+	if cfg.Size == "" {
+		cfg.Size = defaultWorkspaceSize
+	}
+	if cfg.MountPath == "" {
+		cfg.MountPath = defaultWorkspaceMountPath
+	}
+	return &cfg
+}
+
+func workspacePVCName(agent *skquadv1.Agent) string {
+	return fmt.Sprintf("agent-%s-workspace", agent.Name)
+}
+
+// reconcileWorkspace ensures the per-agent workspace PVC exists and maps
+// its phase into a WorkspaceReady state. Returns nil when the agent has
+// no durable workspace. A bad size is reported via the state (not a
+// reconcile error) so the condition surfaces on the CR.
+func (r *AgentReconciler) reconcileWorkspace(ctx context.Context, agent *skquadv1.Agent, namespace string) (*workspaceState, error) {
+	cfg := workspaceConfig(agent)
+	if cfg == nil {
+		return nil, nil
+	}
+	state := &workspaceState{}
+	if _, err := resource.ParseQuantity(cfg.Size); err != nil {
+		state.reason = "InvalidStorageSize"
+		state.message = fmt.Sprintf("agent %s/%s storage.size %q is not a valid Kubernetes quantity: %v", agent.Namespace, agent.Name, cfg.Size, err)
+		return state, nil
+	}
+	pvc, err := r.ensureWorkspacePVC(ctx, agent, namespace, cfg)
+	if err != nil {
+		return nil, err
+	}
+	switch pvc.Status.Phase {
+	case corev1.ClaimBound:
+		state.bound = true
+		state.reason = "Bound"
+		state.message = fmt.Sprintf("workspace PVC %s/%s is bound", namespace, pvc.Name)
+	case corev1.ClaimLost:
+		state.reason = "Lost"
+		state.message = fmt.Sprintf("workspace PVC %s/%s is lost; storage is unavailable", namespace, pvc.Name)
+	default:
+		state.reason = "Pending"
+		state.message = fmt.Sprintf("workspace PVC %s/%s is %s; agent will not start without durable storage", namespace, pvc.Name, pvc.Status.Phase)
+	}
+	return state, nil
+}
+
+// ensureWorkspacePVC create-or-adopts the per-agent workspace PVC in
+// the squad namespace. PVC fields (storageClassName, accessModes,
+// resources) are immutable once bound, so an existing claim is adopted
+// as-is — the operator never fights the cluster over a live volume.
+func (r *AgentReconciler) ensureWorkspacePVC(ctx context.Context, agent *skquadv1.Agent, namespace string, cfg *skquadv1.AgentStorage) (*corev1.PersistentVolumeClaim, error) {
+	name := workspacePVCName(agent)
+	var pvc corev1.PersistentVolumeClaim
+	err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &pvc)
+	if err == nil {
+		return &pvc, nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+	pvc = corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    agentLabels(agent),
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse(cfg.Size),
+				},
+			},
+		},
+	}
+	// PORTABILITY RULE (S-135): storageClassName is set ONLY when the
+	// CR explicitly names a StorageClass. Empty means the cluster
+	// default — the field is omitted entirely so this works on any
+	// Kubernetes flavour (OpenShift/EKS/GKE/...). No provisioner name
+	// is ever hardcoded in the operator.
+	if cfg.StorageClass != "" {
+		storageClass := cfg.StorageClass
+		pvc.Spec.StorageClassName = &storageClass
+	}
+	if err := r.Create(ctx, &pvc); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			// Lost a create race with another reconcile; adopt the winner.
+			if getErr := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &pvc); getErr != nil {
+				return nil, getErr
+			}
+			return &pvc, nil
+		}
+		return nil, err
+	}
+	return &pvc, nil
 }
 
 func envOrDefault(name string, fallback string) string {
@@ -372,13 +560,15 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// path for agents whose pods regress or never become ready (S-104).
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&skquadv1.Agent{}).
-		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapDeploymentToAgent)).
+		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapAgentLabeledResource)).
+		Watches(&corev1.PersistentVolumeClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapAgentLabeledResource)).
 		Complete(r)
 }
 
-// mapDeploymentToAgent maps a Deployment status/spec change to the owning
-// Agent CR by the skquad.io/agent-id label the control plane sets on both.
-func (r *AgentReconciler) mapDeploymentToAgent(ctx context.Context, obj client.Object) []reconcile.Request {
+// mapAgentLabeledResource maps a Deployment or workspace PVC change back
+// to the owning Agent CR by the skquad.io/agent-id label the control
+// plane sets on the Agent and the operator sets on owned resources.
+func (r *AgentReconciler) mapAgentLabeledResource(ctx context.Context, obj client.Object) []reconcile.Request {
 	agentID := obj.GetLabels()[LabelAgentID]
 	if agentID == "" {
 		return nil

@@ -177,6 +177,16 @@ func TestAgentDeepCopyIsolation(t *testing.T) {
 	if original.Status.Conditions[0].Message == "changed" {
 		t.Error("mutating copy Status.Conditions corrupted original (aliased slice)")
 	}
+
+	original.Spec.Storage = &skquadv1.AgentStorage{Enabled: true, Size: "2Gi"}
+	copied2 := original.DeepCopyObject().(*skquadv1.Agent)
+	copied2.Spec.Storage.Size = "10Gi"
+	if original.Spec.Storage.Size != "2Gi" {
+		t.Errorf("mutating copy Storage corrupted original: %q", original.Spec.Storage.Size)
+	}
+	if original.Spec.Storage == copied2.Spec.Storage {
+		t.Error("Storage pointer aliased between original and copy")
+	}
 }
 
 func TestListDeepCopiesAreIsolated(t *testing.T) {

@@ -677,7 +677,7 @@ func TestMapDeploymentToAgent(t *testing.T) {
 			Labels:    map[string]string{LabelAgentID: agent.Spec.AgentID},
 		},
 	}
-	requests := reconciler.mapDeploymentToAgent(context.Background(), dep)
+	requests := reconciler.mapAgentLabeledResource(context.Background(), dep)
 	if len(requests) != 1 {
 		t.Fatalf("requests = %d, want 1", len(requests))
 	}
@@ -687,7 +687,7 @@ func TestMapDeploymentToAgent(t *testing.T) {
 
 	// Deployment without the agent-id label maps to nothing.
 	orphan := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "orphan", Namespace: "default"}}
-	if got := reconciler.mapDeploymentToAgent(context.Background(), orphan); len(got) != 0 {
+	if got := reconciler.mapAgentLabeledResource(context.Background(), orphan); len(got) != 0 {
 		t.Fatalf("unlabeled deployment mapped to %d requests, want 0", len(got))
 	}
 }
