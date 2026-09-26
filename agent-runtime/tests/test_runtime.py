@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import replace
 import sys
 import tempfile
@@ -7,6 +8,7 @@ import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from skquad_runtime.runtime import (
     ControlPlaneClient,
@@ -460,6 +462,36 @@ class RuntimeBootstrapTest(unittest.TestCase):
             self.assertEqual(client.completion_summaries, [""])
             self.assertEqual(client.blocked, [])
             self.assertEqual(client.heartbeats, ["busy", "idle"])
+
+    def test_run_task_once_creates_durable_task_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = replace(ready_config(tmp), workspace_base=str(Path(tmp) / "pvc"))
+            client = FakeControlPlaneClient(claimed_task=fake_task("task-42"))
+            handler = StaticTaskHandler(TaskResult(status="done"))
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SKQUAD_TASK_DIR", None)
+                run_task_once(config, handler, client)
+                self.assertEqual(
+                    os.environ.get("SKQUAD_TASK_DIR"),
+                    str(Path(tmp) / "pvc" / "tasks" / "task-42"),
+                )
+            self.assertTrue((Path(tmp) / "pvc" / "tasks" / "task-42").is_dir())
+            self.assertTrue((Path(tmp) / "pvc" / "scratch").is_dir())
+
+    def test_run_task_once_skips_task_dir_when_workspace_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = replace(
+                ready_config(tmp),
+                workspace_base=str(Path(tmp) / "pvc"),
+                workspace_enabled=False,
+            )
+            client = FakeControlPlaneClient(claimed_task=fake_task("task-43"))
+            handler = StaticTaskHandler(TaskResult(status="done"))
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SKQUAD_TASK_DIR", None)
+                run_task_once(config, handler, client)
+                self.assertIsNone(os.environ.get("SKQUAD_TASK_DIR"))
+            self.assertFalse((Path(tmp) / "pvc").exists())
 
     def test_run_task_once_updates_runtime_state(self):
         with tempfile.TemporaryDirectory() as tmp:
