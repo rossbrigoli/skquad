@@ -1150,6 +1150,124 @@ dialog.modal-backdrop::backdrop {
   color: var(--ink);
 }
 
+/* S-159: markdown-rendered chat text (react-markdown + rehype-sanitize).
+   Unlike .chat-text there is no pre-wrap — markdown owns line breaks. Headings
+   are capped at --text-lg so an h1 in chat cannot explode the bubble; fenced
+   code scrolls horizontally; overflow-wrap:anywhere keeps long unbroken
+   tokens (URLs, hashes) from breaking the layout. */
+.chat-markdown {
+  font-size: var(--text-md);
+  color: var(--ink);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.chat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown p {
+  margin: var(--space-2) 0;
+}
+
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 {
+  font-size: var(--text-lg);
+  line-height: 1.3;
+  margin: var(--space-3) 0 var(--space-2);
+}
+
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 {
+  font-size: var(--text-md);
+}
+
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-5);
+}
+
+.chat-markdown li {
+  margin: 2px 0;
+}
+
+.chat-markdown li > ul,
+.chat-markdown li > ol {
+  margin: 2px 0;
+}
+
+.chat-markdown code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+  overflow-wrap: anywhere;
+}
+
+.chat-markdown pre {
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  margin: var(--space-2) 0;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.chat-markdown pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.chat-markdown blockquote {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-3);
+  border-left: 3px solid var(--line);
+  color: var(--ink-muted);
+}
+
+.chat-markdown table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  margin: var(--space-2) 0;
+  font-size: var(--text-sm);
+}
+
+.chat-markdown th,
+.chat-markdown td {
+  border: 1px solid var(--line);
+  padding: 4px var(--space-2);
+  text-align: left;
+}
+
+.chat-markdown hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: var(--space-3) 0;
+}
+
+.chat-markdown img {
+  max-width: 100%;
+  height: auto;
+}
+
 /* S-122: anchor messages to the bottom of the box so new messages push up
    from the bottom like ChatGPT/Telegram. margin-top:auto on the first child
    (instead of justify-content:flex-end) keeps the overflow scrollable. */
