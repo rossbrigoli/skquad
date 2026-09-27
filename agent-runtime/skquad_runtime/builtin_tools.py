@@ -10,12 +10,11 @@ handler layer.
 from __future__ import annotations
 
 import html.parser
-import ipaddress
+import base64
 import json
 import logging
 import os
 import re
-import socket
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -180,15 +179,16 @@ class ExecTool:
         )
 
 
-class _NoRedirectHandler(request.HTTPRedirectHandler):
-    """Turn redirects into a catchable 3xx instead of following them silently."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        return None
-
-
 class WebFetchTool:
-    """Fetch a URL with an SSRF guard and stdlib html->text extraction."""
+    """Fetch a URL via the control-plane proxy (BT-6).
+
+    Agent pods run under a default-deny egress NetworkPolicy (only DNS +
+    skquad-system are reachable), so the runtime cannot fetch arbitrary
+    URLs itself. The guarded fetch (SSRF dial guard, redirect cap, size
+    cap, timeout) executes in the control plane — the same proxy pattern
+    as web_search. This side keeps only scheme validation and the
+    html->text extraction.
+    """
 
     name = "web_fetch"
 
@@ -219,31 +219,6 @@ class WebFetchTool:
             }
         ]
 
-    def _assert_public_host(self, host: str) -> None:
-        """Reject hosts resolving to anything non-public unless explicitly allowed."""
-        if self.policy.get("allowPrivateNetwork") is True:
-            return
-        try:
-            infos = socket.getaddrinfo(host, None)
-        except socket.gaierror as exc:
-            raise ValueError(f"web_fetch: cannot resolve host {host!r}: {exc}") from exc
-        for info in infos:
-            ip = ipaddress.ip_address(info[4][0])
-            if (
-                ip.is_loopback
-                or ip.is_private
-                or ip.is_link_local
-                or ip.is_multicast
-                or ip.is_reserved
-                or ip.is_unspecified
-                or (ip.version == 4 and ip in ipaddress.ip_network("100.64.0.0/10"))
-                or (ip.version == 6 and ip in ipaddress.ip_network("fc00::/7"))
-            ):
-                raise ValueError(
-                    f"web_fetch: blocked by SSRF guard — {host!r} resolves to "
-                    f"non-public address {ip}"
-                )
-
     def invoke(self, call: ToolCall, config) -> ToolResult:  # noqa: ANN001
         url = str(call.arguments.get("url", ""))
         if not url:
@@ -257,51 +232,38 @@ class WebFetchTool:
             )
 
         timeout = int(self.policy.get("timeoutSeconds", 30))
-        max_bytes = int(self.policy.get("maxBytes", 262144))
-        opener = request.build_opener(_NoRedirectHandler())
-        max_hops = 3
+        proxy_url = self.context.control_plane_url.rstrip("/") + "/api/v1/tools/web_fetch"
+        payload = json.dumps({"url": url}).encode("utf-8")
+        # Same auth header pattern as the web_search proxy call.
+        req = request.Request(
+            proxy_url,
+            data=payload,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.context.agent_credential}",
+                "X-Skquad-Agent-ID": self.context.agent_id,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with request.urlopen(req, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            return ToolResult(content=f"web_fetch: HTTP {exc.code}", ok=False)
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return ToolResult(content=f"web_fetch: proxy request failed: {exc}", ok=False)
 
-        for _hop in range(max_hops + 1):
-            try:
-                parsed_host = url.split("://", 1)[1].split("/", 1)[0]
-                host_only = parsed_host.split("@")[-1].split(":")[0]
-                self._assert_public_host(host_only)
-            except ValueError as exc:
-                return ToolResult(content=str(exc), ok=False)
+        status = int(data.get("status", 0))
+        final_url = str(data.get("url", url))
+        if status >= 400:
+            return ToolResult(content=f"web_fetch: HTTP {status} for {final_url}", ok=False)
+        try:
+            body = base64.b64decode(data.get("bodyB64", "").encode("ascii"))
+        except Exception as exc:  # noqa: BLE001 — malformed proxy payload
+            return ToolResult(content=f"web_fetch: malformed proxy response: {exc}", ok=False)
 
-            req = request.Request(url, method="GET", headers={"Accept": "*/*"})
-            try:
-                with opener.open(req, timeout=timeout) as response:
-                    body = response.read(max_bytes + 1)
-                    content_type = response.headers.get("Content-Type", "")
-                    final_status = response.status
-            except error.HTTPError as exc:
-                if exc.code in (301, 302, 303, 307, 308):
-                    location = exc.headers.get("Location")
-                    if not location:
-                        return ToolResult(
-                            content=f"web_fetch: redirect ({exc.code}) without Location",
-                            ok=False,
-                        )
-                    url = request.urljoin(url, location)
-                    continue
-                return ToolResult(
-                    content=f"web_fetch: HTTP {exc.code} for {url}", ok=False
-                )
-            except (error.URLError, OSError) as exc:
-                return ToolResult(content=f"web_fetch: fetch failed: {exc}", ok=False)
-
-            if final_status >= 400:
-                return ToolResult(
-                    content=f"web_fetch: HTTP {final_status} for {url}", ok=False
-                )
-            break
-        else:
-            return ToolResult(content="web_fetch: too many redirects (max 3)", ok=False)
-
-        truncated = len(body) > max_bytes
-        if truncated:
-            body = body[:max_bytes]
+        content_type = str(data.get("contentType", ""))
         text = body.decode("utf-8", errors="replace")
         if "html" in content_type.lower():
             extractor = _TextExtractor()
@@ -311,7 +273,7 @@ class WebFetchTool:
                 text = extractor.text()
             except Exception:  # noqa: BLE001 — malformed html: keep raw text
                 pass
-        if truncated:
+        if data.get("truncated"):
             text += "\n[content truncated]"
         return ToolResult(content=text, ok=True)
 

@@ -11,6 +11,7 @@ Style note: unittest.TestCase + unittest.mock (repo convention, see
 ``test_runtime.py``) — pytest is not installed in the CI runner.
 """
 
+import base64
 import io
 import json
 import logging
@@ -242,179 +243,136 @@ class ExecToolTests(BuiltinToolsTestBase):
 # WebFetchTool — SSRF guard, redirects, html->text, truncation
 # --------------------------------------------------------------------------
 
-PRIVATE_TARGETS = [
-    ("loopback v4", "http://127.0.0.1/secret", "127.0.0.1"),
-    ("private v4", "http://private.example/x", "10.0.0.5"),
-    ("cloud metadata", "http://metadata.example/latest", "169.254.169.254"),
-    ("private v6", "http://v6.example/x", "fc00::1"),
-]
+def _proxy_json(url="http://target.example/page", status=200, content_type="text/html",
+               body=b"<html><body><p>hi</p></body></html>", truncated=False):
+    """Mimics the control-plane web_fetch proxy JSON (BT-6)."""
+    return json.dumps({
+        "url": url,
+        "status": status,
+        "contentType": content_type,
+        "bodyB64": base64.b64encode(body).decode("ascii"),
+        "truncated": truncated,
+    }).encode("utf-8")
 
 
 class WebFetchToolTests(BuiltinToolsTestBase):
-    def test_web_fetch_blocks_private_ips(self):
-        for label, url, ip in PRIVATE_TARGETS:
-            with self.subTest(label):
-                tool = bt.WebFetchTool({}, self.ctx())
-                opener_calls = []
+    # BT-6: the runtime no longer fetches directly — it calls the
+    # control-plane proxy (agent pods have no internet egress). SSRF and
+    # redirect policy are enforced CP-side (webfetch_proxy_test.go).
 
-                def opener(req, timeout=None):
-                    opener_calls.append(req)
-                    return FakeHTTPResponse(200, b"should never be read")
+    def test_web_fetch_posts_to_control_plane_with_auth(self):
+        tool = bt.WebFetchTool({}, self.ctx(credential="cred-77", agent_id="agent-9"))
+        captured = {}
 
-                with mock.patch(
-                    "skquad_runtime.builtin_tools.socket.getaddrinfo", return_value=addrinfo(ip)
-                ):
-                    with mock.patch(
-                        "skquad_runtime.builtin_tools.request.build_opener",
-                        return_value=_wrap_opener(opener),
-                    ):
-                        result = tool.invoke(
-                            ToolCall(id="c", name="web_fetch", arguments={"url": url}), None
-                        )
-                assert result.ok is False, label
-                assert "SSRF" in result.content
-                assert opener_calls == [], "no request may be issued to a blocked host"
+        def fake_urlopen(req, timeout=None):
+            captured["url"] = req.full_url
+            captured["auth"] = req.headers.get("Authorization")
+            captured["agent_id"] = req.headers.get("X-skquad-agent-id")
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return FakeHTTPResponse(200, _proxy_json(), content_type="application/json")
 
-    def test_web_fetch_allow_private_network_passes(self):
-        tool = bt.WebFetchTool({"allowPrivateNetwork": True}, self.ctx())
-        with mock.patch(
-            "skquad_runtime.builtin_tools.request.build_opener",
-            return_value=_wrap_opener(lambda req, timeout=None: FakeHTTPResponse(200, b"local ok")),
-        ):
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=fake_urlopen):
             result = tool.invoke(
-                ToolCall(id="c", name="web_fetch", arguments={"url": "http://127.0.0.1/x"}), None
+                ToolCall(id="c", name="web_fetch",
+                        arguments={"url": "http://target.example/page"}), None
             )
+        assert captured["url"] == "http://control-plane/api/v1/tools/web_fetch"
+        assert captured["auth"] == "Bearer cred-77"
+        assert captured["agent_id"] == "agent-9"
+        assert captured["body"] == {"url": "http://target.example/page"}
         assert result.ok is True
-        assert result.content == "local ok"
-
-    def test_web_fetch_blocks_private_second_hop_redirect(self):
-        tool = bt.WebFetchTool({}, self.ctx())
-        opener_calls = []
-
-        def opener(req, timeout=None):
-            opener_calls.append(req.full_url)
-            raise http_error(req.full_url, 302, {"Location": "http://internal.example/x"})
-
-        def fake_getaddrinfo(host, port, *a, **kw):
-            return addrinfo(PUBLIC_IP if host == "public.example" else "10.1.2.3")
-
-        with mock.patch("skquad_runtime.builtin_tools.socket.getaddrinfo", side_effect=fake_getaddrinfo):
-            with mock.patch(
-                "skquad_runtime.builtin_tools.request.build_opener", return_value=_wrap_opener(opener)
-            ):
-                result = tool.invoke(
-                    ToolCall(id="c", name="web_fetch", arguments={"url": "http://public.example/x"}),
-                    None,
-                )
-        assert result.ok is False
-        assert "SSRF" in result.content
-        # The public first hop was attempted; the private redirect target was
-        # blocked BEFORE any request was opened against it.
-        assert opener_calls == ["http://public.example/x"]
-
-    def test_web_fetch_max_three_redirects(self):
-        tool = bt.WebFetchTool({}, self.ctx())
-        hops = []
-
-        def opener(req, timeout=None):
-            hops.append(req.full_url)
-            raise http_error(req.full_url, 302, {"Location": f"http://loop.example/{len(hops)}"})
-
-        with mock.patch(
-            "skquad_runtime.builtin_tools.socket.getaddrinfo", return_value=addrinfo(PUBLIC_IP)
-        ):
-            with mock.patch(
-                "skquad_runtime.builtin_tools.request.build_opener", return_value=_wrap_opener(opener)
-            ):
-                result = tool.invoke(
-                    ToolCall(id="c", name="web_fetch", arguments={"url": "http://loop.example/0"}),
-                    None,
-                )
-        assert result.ok is False
-        assert "too many redirects" in result.content
-        assert len(hops) == 4  # initial + 3 followed redirects, then give up
 
     def test_web_fetch_html_to_text_strips_script_and_style(self):
         tool = bt.WebFetchTool({}, self.ctx())
         body = (
             b"<html><head><style>body { color: red; }</style>"
-            b"<script>var evil = 'DONT RENDER ME';</script></head>"
-            b"<body><h1>Title</h1><p>Hello <b>world</b></p>"
-            b"<ul><li>one</li><li>two</li></ul></body></html>"
+            b"<script>alert('x')</script></head>"
+            b"<body><h1>Title</h1><p>Readable text.</p></body></html>"
         )
 
-        def opener(req, timeout=None):
-            return FakeHTTPResponse(200, body, content_type="text/html; charset=utf-8")
+        def fake_urlopen(req, timeout=None):
+            return FakeHTTPResponse(
+                200,
+                _proxy_json(content_type="text/html; charset=utf-8", body=body),
+                content_type="application/json",
+            )
 
-        with mock.patch(
-            "skquad_runtime.builtin_tools.socket.getaddrinfo", return_value=addrinfo(PUBLIC_IP)
-        ):
-            with mock.patch(
-                "skquad_runtime.builtin_tools.request.build_opener", return_value=_wrap_opener(opener)
-            ):
-                result = tool.invoke(
-                    ToolCall(id="c", name="web_fetch", arguments={"url": "http://public.example/"}),
-                    None,
-                )
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=fake_urlopen):
+            result = tool.invoke(
+                ToolCall(id="c", name="web_fetch",
+                        arguments={"url": "http://target.example/page"}), None
+            )
         assert result.ok is True
-        assert "Hello world" in result.content
+        assert "Readable text." in result.content
         assert "Title" in result.content
-        assert "DONT RENDER ME" not in result.content
         assert "color: red" not in result.content
-        assert "<" not in result.content  # tags stripped
+        assert "alert" not in result.content
 
-    def test_web_fetch_truncates_at_max_bytes(self):
-        tool = bt.WebFetchTool({"maxBytes": 5}, self.ctx())
-
-        def opener(req, timeout=None):
-            return FakeHTTPResponse(200, b"abcdefghij" * 10)
-
-        with mock.patch(
-            "skquad_runtime.builtin_tools.socket.getaddrinfo", return_value=addrinfo(PUBLIC_IP)
-        ):
-            with mock.patch(
-                "skquad_runtime.builtin_tools.request.build_opener", return_value=_wrap_opener(opener)
-            ):
-                result = tool.invoke(
-                    ToolCall(id="c", name="web_fetch", arguments={"url": "http://public.example/"}),
-                    None,
-                )
-        assert result.ok is True
-        assert "[content truncated]" in result.content
-        assert "abcde" in result.content
-        assert "f" not in result.content.replace("[content truncated]", "")
-
-    def test_web_fetch_http_error_fails(self):
+    def test_web_fetch_truncation_flag_appends_note(self):
         tool = bt.WebFetchTool({}, self.ctx())
 
-        def opener(req, timeout=None):
-            raise http_error(req.full_url, 500)
+        def fake_urlopen(req, timeout=None):
+            return FakeHTTPResponse(
+                200,
+                _proxy_json(content_type="text/plain", body=b"x" * 10, truncated=True),
+                content_type="application/json",
+            )
 
-        with mock.patch(
-            "skquad_runtime.builtin_tools.socket.getaddrinfo", return_value=addrinfo(PUBLIC_IP)
-        ):
-            with mock.patch(
-                "skquad_runtime.builtin_tools.request.build_opener", return_value=_wrap_opener(opener)
-            ):
-                result = tool.invoke(
-                    ToolCall(id="c", name="web_fetch", arguments={"url": "http://public.example/"}),
-                    None,
-                )
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=fake_urlopen):
+            result = tool.invoke(
+                ToolCall(id="c", name="web_fetch",
+                        arguments={"url": "http://target.example/big"}), None
+            )
+        assert result.ok is True
+        assert result.content.endswith("[content truncated]")
+
+    def test_web_fetch_upstream_error_status_fails(self):
+        tool = bt.WebFetchTool({}, self.ctx())
+
+        def fake_urlopen(req, timeout=None):
+            return FakeHTTPResponse(
+                200,
+                _proxy_json(status=404, content_type="text/plain", body=b"nope"),
+                content_type="application/json",
+            )
+
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=fake_urlopen):
+            result = tool.invoke(
+                ToolCall(id="c", name="web_fetch",
+                        arguments={"url": "http://target.example/missing"}), None
+            )
         assert result.ok is False
-        assert "HTTP 500" in result.content
+        assert "404" in result.content
+
+    def test_web_fetch_proxy_http_error_fails(self):
+        tool = bt.WebFetchTool({}, self.ctx())
+
+        def fake_urlopen(req, timeout=None):
+            raise http_error(req.full_url, 502)
+
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=fake_urlopen):
+            result = tool.invoke(
+                ToolCall(id="c", name="web_fetch",
+                        arguments={"url": "http://target.example/x"}), None
+            )
+        assert result.ok is False
+        assert "502" in result.content
 
     def test_web_fetch_rejects_non_http_scheme(self):
         tool = bt.WebFetchTool({}, self.ctx())
-        result = tool.invoke(
-            ToolCall(id="c", name="web_fetch", arguments={"url": "file:///etc/passwd"}), None
-        )
+        for url in ["ftp://example.com/x", "file:///etc/passwd", "gopher://x"]:
+            with self.subTest(url=url):
+                result = tool.invoke(
+                    ToolCall(id="c", name="web_fetch", arguments={"url": url}), None
+                )
+                assert result.ok is False
+                assert "unsupported scheme" in result.content
+
+    def test_web_fetch_missing_url_fails(self):
+        tool = bt.WebFetchTool({}, self.ctx())
+        result = tool.invoke(ToolCall(id="c", name="web_fetch", arguments={}), None)
         assert result.ok is False
-        assert "unsupported scheme" in result.content
-
-
-# --------------------------------------------------------------------------
-# WebSearchTool — control-plane proxy call
-# --------------------------------------------------------------------------
+        assert "missing url" in result.content
 
 
 class WebSearchToolTests(BuiltinToolsTestBase):

@@ -303,6 +303,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 		r.Route("/tools", func(r chi.Router) {
 			r.Use(s.authenticateAgent)
 			r.Post("/web_search", s.agentWebSearch)
+			// BT-6: web_fetch proxy — agent pods have no internet egress
+			// (default-deny), so the guarded fetch runs here.
+			r.Post("/web_fetch", s.agentWebFetch)
 		})
 
 		r.Group(func(r chi.Router) {

@@ -92,6 +92,15 @@ POST /api/v1/tools/web_search
 - SSRF guard: block loopback, RFC1918, CGNAT, link-local incl. cloud metadata
   (169.254.169.254), and IPv6 ULA — unless `allowPrivateNetwork: true`.
 - Returns extracted readable text (html→text), truncated at `maxBytes`.
+- **BT-6 (2026-09-28): execution location moved to the control plane.**
+  Agent pods run under a default-deny egress NetworkPolicy (only DNS +
+  skquad-system reachable), so the runtime cannot fetch arbitrary URLs.
+  The guarded fetch now runs at `POST /api/v1/tools/web_fetch` (agent-
+  credential auth), mirroring the web_search proxy. The SSRF guard is
+  enforced at dial time (`DialContext` IP check), which also closes the
+  DNS-rebinding TOCTOU the old resolve-then-connect runtime guard had.
+  The runtime keeps only scheme validation + html→text extraction.
+  Policy fields and semantics are unchanged.
 
 `web_search`:
 ```json
