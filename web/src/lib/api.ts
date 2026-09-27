@@ -9,6 +9,9 @@ export type Squad = {
   id: string;
   name: string;
   mission?: string;
+  // S-PROMPT WP4: layer-3 squad prompt (mission stays as the short
+  // listing summary; the two coexist per resolved decision Q4).
+  prompt?: string;
   owner_id?: string;
   namespace?: string;
   status?: string;
@@ -248,7 +251,14 @@ async function apiRequest<T>(path: string, token: string, options: { method: str
     let body: unknown = undefined;
     try {
       body = await response.json();
-      message = (body as any)?.error?.message || (body as any)?.message || message;
+      const parsed = body as { error?: { message?: unknown }; message?: unknown } | null;
+      const parsedMessage =
+        typeof parsed?.error?.message === "string"
+          ? parsed.error.message
+          : typeof parsed?.message === "string"
+            ? parsed.message
+            : "";
+      message = parsedMessage || message;
     } catch {
       // Keep the HTTP status text when the body is not JSON.
     }

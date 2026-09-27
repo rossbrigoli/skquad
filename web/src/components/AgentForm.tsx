@@ -2,6 +2,9 @@
 
 import { useState } from "react";
 import { Modal, ModalForm } from "./Modal";
+import { TokenMeter } from "./TokenMeter";
+import { usePromptValidation } from "../lib/usePromptValidation";
+import { promptUserMessage, saveBlockedByValidation } from "../lib/prompt";
 import type { Agent } from "../lib/api";
 import {
   DEFAULT_AGENT_STORAGE_SIZE,
@@ -47,6 +50,14 @@ export function AgentFormModal({
   const [storageSize, setStorageSize] = useState(initial?.storage_size || DEFAULT_AGENT_STORAGE_SIZE);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // S-PROMPT WP4: layer-4 validation battery runs debounced while typing;
+  // reserved tokens / unknown template vars / hard-cap over are surfaced
+  // inline and block submit before the PATCH ever fires.
+  const { result: promptCheck, validating: promptValidating } = usePromptValidation("agent", systemPrompt);
+  const promptError =
+    promptCheck && !promptCheck.valid && promptCheck.error
+      ? promptUserMessage({ code: promptCheck.error.code, message: promptCheck.error.message })
+      : "";
 
   return (
     <Modal title={title} onClose={onClose}>
@@ -54,7 +65,11 @@ export function AgentFormModal({
         busy={busy}
         error={error}
         submitLabel={submitLabel}
-        submitDisabled={name.trim() === "" || (storageEnabled && !isValidStorageSize(storageSize))}
+        submitDisabled={
+          name.trim() === "" ||
+          (storageEnabled && !isValidStorageSize(storageSize)) ||
+          saveBlockedByValidation(promptCheck)
+        }
         onCancel={onClose}
         onSubmit={async () => {
           if (storageEnabled && !isValidStorageSize(storageSize)) {
@@ -97,13 +112,36 @@ export function AgentFormModal({
           </label>
         </div>
         <label className="field">
-          <span>System prompt</span>
+          <span>Agent prompt (layer 4 — your agent&rsquo;s identity and personality)</span>
           <textarea
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value)}
             placeholder="Persona and operating instructions for this agent"
           />
+          <span className="field-hint">
+            Cannot relax the platform, organization, or squad layers above it. Template variables
+            like {"{{agent.name}}"} or {"{{squad.name}}"} are substituted at compose time; reserved
+            &lt;skquad_…&gt; delimiters are rejected.
+          </span>
         </label>
+        {promptCheck ? (
+          <TokenMeter
+            tokens={promptCheck.tokens}
+            softWarn={promptCheck.soft_warn}
+            hardCap={promptCheck.hard_cap}
+            levelOverride={promptValidating ? "checking" : null}
+          />
+        ) : null}
+        {promptError ? (
+          <div className="notice error" role="alert">
+            {promptError}
+          </div>
+        ) : null}
+        {promptCheck?.warnings?.map((w) => (
+          <div key={w} className="notice warn" role="status">
+            {w}
+          </div>
+        ))}
         <div className="field">
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
             <input
@@ -147,7 +185,7 @@ export function AgentFormModal({
           </p>
         </div>
         <p className="field-hint">
-          Model binding: set the primary (and optional fallback) AI model on the agent's page after saving —
+          Model binding: set the primary (and optional fallback) AI model on the agent&apos;s page after saving —
           the LLM model section binds models from the admin registry.
         </p>
       </ModalForm>
