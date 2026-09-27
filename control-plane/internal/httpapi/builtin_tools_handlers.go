@@ -122,9 +122,13 @@ func (s *Server) patchBuiltinTool(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	actor := currentUser(r.Context())
-	metadata, _ := json.Marshal(map[string]any{"enabled": req.Enabled, "policy": req.Policy})
+	// NOTE: resource_id in audit_log is a uuid column; built-in tool names
+	// ("exec" etc.) are not uuids, so the resource id stays empty here and
+	// the tool name is carried in metadata instead (fixes the 22P02 cast
+	// failure that surfaced as "unexpected storage error").
+	metadata, _ := json.Marshal(map[string]any{"tool": name, "enabled": req.Enabled, "policy": req.Policy})
 	updated, err := s.store.UpdateBuiltinTool(
-		s.pendingUserAuditCtx(r, "builtin_tools.update", "builtin_tools", name, "", metadata),
+		s.pendingUserAuditCtx(r, "builtin_tools.update", "builtin_tools", "", "", metadata),
 		name, req.Enabled, req.Policy, actor.ID,
 	)
 	if err != nil {
