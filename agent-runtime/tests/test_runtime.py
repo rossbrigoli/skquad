@@ -1606,7 +1606,7 @@ class LLMMessageHandlerTest(unittest.TestCase):
             self.assertEqual(roles, ["system", "user"])
             self.assertEqual(
                 seen["messages"][1]["content"],
-                '<skquad_untrusted source="inbox" from="user-1">Hi there</skquad_untrusted>',
+                '<skquad_human trust="human" from="user-1">Hi there</skquad_human>',
             )
 
     def test_agent_message_acked_without_llm(self):
@@ -1664,7 +1664,7 @@ class LLMMessageHandlerTest(unittest.TestCase):
                 [
                     "Hi",
                     "Hello there",
-                    '<skquad_untrusted source="inbox" from="user-1">What\'s the weather?</skquad_untrusted>',
+                    '<skquad_human trust="human" from="user-1">What\'s the weather?</skquad_human>',
                 ],
             )
             roles = [m["role"] for m in seen["messages"]]
@@ -1693,7 +1693,7 @@ class LLMMessageHandlerTest(unittest.TestCase):
                 contents[1:],
                 [
                     "Hi",
-                    '<skquad_untrusted source="inbox" from="user-1">Repeat yourself</skquad_untrusted>',
+                    '<skquad_human trust="human" from="user-1">Repeat yourself</skquad_human>',
                 ],
             )
 
