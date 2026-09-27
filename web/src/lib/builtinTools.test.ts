@@ -98,7 +98,8 @@ describe("save payload shape (PATCH /admin/tools/{name})", () => {
   });
 
   it("emits ONLY the keys pinned for each tool (no cross-tool leakage)", () => {
-    const keys = (name: BuiltinToolName) => Object.keys(buildToolPolicy(name, form(name))).sort();
+    const keys = (name: BuiltinToolName) =>
+      Object.keys(buildToolPolicy(name, form(name))).sort((a, b) => a.localeCompare(b));
     expect(keys("exec")).toEqual(["deniedPatterns", "maxOutputBytes", "timeoutSeconds"]);
     expect(keys("web_fetch")).toEqual(["allowPrivateNetwork", "maxBytes", "timeoutSeconds"]);
     expect(keys("web_search")).toEqual(["maxResults", "provider", "timeoutSeconds"]);
