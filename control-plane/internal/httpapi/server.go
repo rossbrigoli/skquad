@@ -2989,16 +2989,14 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "bad_request", msgTypeInvalid)
 		return
 	}
-	// S-PROMPT WP5 red-team control: agent-authored message content is
-	// checked for reserved prompt delimiters at save time. A compromised
-	// agent must not be able to plant forged <skquad_*> blocks in another
-	// agent's inbox (cross-agent injection surface, ADR-0011 D3). Same
-	// code as the prompt-tier rejection so clients can handle both alike.
-	if err := messageContentSanityCheck(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "prompt_contains_reserved_tokens",
-			"message content contains reserved <skquad_ block delimiters")
-		return
-	}
+	// S-PROMPT: agent-authored message content is NOT rejected for reserved
+	// <skquad_ delimiters. Message content is DATA, never instructions: the
+	// receiving runtime wraps it in <skquad_untrusted source="inbox"> (WP3)
+	// before any LLM sees it, so forged blocks are inert there. Rejecting at
+	// save broke legitimate agent communication — an agent truthfully
+	// quoting its own prompt layers ("my context contains <skquad_...>")
+	// got a 400 and the reply was lost. Tier-level forgery rejection stays
+	// where composition actually consumes text (prompt save paths).
 	target, err := s.store.GetAgent(r.Context(), targetID)
 	if err != nil {
 		writeStorageError(w, err)

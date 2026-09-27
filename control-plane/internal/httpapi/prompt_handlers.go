@@ -100,18 +100,6 @@ func validRunPromptSHA(s string) bool {
 // body, the title, and the raw JSON payload (delegated task titles and
 // descriptions are materialized from these, so a rejection here stops
 // the forgery before any task row exists).
-func messageContentSanityCheck(req *messageRequest) error {
-	for _, text := range []string{req.Message, req.Title, string(req.Payload)} {
-		if text == "" {
-			continue
-		}
-		if err := promptcompo.Sanitize(text); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // writePromptFailure emits the standard error envelope, extended with the
 // token report fields when the failure carries them.
 func writePromptFailure(w http.ResponseWriter, f *promptFailure) {
