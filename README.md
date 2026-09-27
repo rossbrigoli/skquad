@@ -1,7 +1,7 @@
 <div align="center">
 
 
-   <img src="docs/images/logo/skquad-banner.png" alt="skquad">                                         
+   <img src="docs/images/logo/skquad-banner.png" style="width: 50%; height: auto;" alt="skquad">                                         
 
   <div>
     <a href="https://github.com/rossbrigoli/skquad/actions/workflows/ci.yml">
