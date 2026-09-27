@@ -46,6 +46,7 @@ import {
 } from "../../lib/aimodels";
 import { kindOptionsFor } from "../../lib/providerKinds";
 import { OrganizationPromptTab } from "../../components/PromptSettingsTab";
+import { BuiltinToolsPanel } from "../../components/BuiltinToolsPanel";
 
 type DeleteUsage = { agent_id: string; agent_name: string; squad_id: string };
 
@@ -59,7 +60,9 @@ function resolveSettingsTab(tab: Tab, isAdmin: boolean): Tab {
   }
   // S-PROMPT WP4: the organization prompt tier is platform-admin only
   // (mirrors requirePlatformAdmin on PUT /settings/prompt).
-  return tab === "ai-models" || tab === "access" || tab === "prompt" ? "providers" : tab;
+  // BT-4 (S-151): built-in tools settings is platform-admin only
+  // (mirrors requirePlatformAdmin on /admin/tools).
+  return tab === "ai-models" || tab === "access" || tab === "prompt" || tab === "builtin-tools" ? "providers" : tab;
 }
 
 // TabButton: one settings tab button (S-126 / S3358: keeps the ternary
@@ -166,7 +169,7 @@ function DeleteResourceButton({
 // S-117: "appearance" and "session" tabs removed — theme switching lives
 // in the top-right ThemeToggle and session details/sign-out in the
 // bottom-left UserMenu popover, both available on every page.
-type Tab = "providers" | "resources" | "ai-models" | "access" | "prompt";
+type Tab = "providers" | "resources" | "ai-models" | "access" | "prompt" | "builtin-tools";
 
 const RESOURCE_TABS: { key: string; label: string }[] = [
   { key: "skills", label: "Skills" },
@@ -206,6 +209,13 @@ export default function SettingsPage() {
           {isAdmin ? (
             <TabButton active={activeTab === "prompt"} label="Prompt" onClick={() => setTab("prompt")} />
           ) : null}
+          {isAdmin ? (
+            <TabButton
+              active={activeTab === "builtin-tools"}
+              label="Built-in Tools"
+              onClick={() => setTab("builtin-tools")}
+            />
+          ) : null}
         </div>
 
         {!isAdmin ? (
@@ -220,6 +230,7 @@ export default function SettingsPage() {
         {isAdmin && activeTab === "ai-models" ? <ModelHierarchyTab /> : null}
         {isAdmin && activeTab === "access" ? <AccessTab /> : null}
         {isAdmin && activeTab === "prompt" ? <OrganizationPromptTab /> : null}
+        {isAdmin && activeTab === "builtin-tools" ? <BuiltinToolsPanel /> : null}
       </AppShell>
     </AuthGate>
   );
