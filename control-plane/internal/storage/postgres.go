@@ -2067,7 +2067,7 @@ func (p *PostgresStore) createTaskExecutionTx(ctx context.Context, tx pgx.Tx, ta
 		VALUES ($1, $2, $3, now() + ($4::text)::interval)
 		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
 		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
-		          started_at, completed_at, updated_at
+		          prompt_sha, started_at, completed_at, updated_at
 	`, taskID, agentID, workerID, fmt.Sprintf(secondsFormat, int(leaseFor/time.Second)))
 	return scanTaskExecution(row)
 }
@@ -2076,7 +2076,7 @@ func (p *PostgresStore) ListBoardTaskExecutions(ctx context.Context, boardID str
 	rows, err := p.pool.Query(ctx, `
 		SELECT e.id::text, e.task_id::text, e.agent_id::text, e.worker_id, e.fencing_token,
 		       e.status, e.lease_expires_at, coalesce(e.result_status, ''), e.result_summary,
-		       e.started_at, e.completed_at, e.updated_at
+		       e.prompt_sha, e.started_at, e.completed_at, e.updated_at
 		FROM task_executions e
 		JOIN tasks t ON t.id = e.task_id
 		WHERE t.board_id = $1 AND e.status = $2
@@ -2112,7 +2112,7 @@ func (p *PostgresStore) HeartbeatTaskExecution(ctx context.Context, agentID stri
 		  AND status = 'active'
 		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
 		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
-		          started_at, completed_at, updated_at
+		          prompt_sha, started_at, completed_at, updated_at
 	`, executionID, agentID, fencingToken, fmt.Sprintf(secondsFormat, int(leaseFor/time.Second)))
 	exec, err := scanTaskExecution(row)
 	if errors.Is(err, ErrNotFound) {
@@ -3093,6 +3093,35 @@ func scanTask(row scanner) (*domain.Task, error) {
 	return &t, nil
 }
 
+// SetTaskExecutionPromptSHA records the composed-prompt sha on the agent's
+// active execution for a task (S-PROMPT WP5 run-audit, ADR-0011 D5).
+func (p *PostgresStore) SetTaskExecutionPromptSHA(ctx context.Context, agentID string, taskID string, promptSHA string) (*domain.TaskExecution, error) {
+	row := p.pool.QueryRow(ctx, `
+		UPDATE task_executions
+		SET prompt_sha = $4, updated_at = now()
+		WHERE agent_id = $1 AND task_id = $2 AND status = $5
+		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
+		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
+		          prompt_sha, started_at, completed_at, updated_at
+	`, agentID, taskID, promptSHA, domain.TaskExecutionActive)
+	return scanTaskExecution(row)
+}
+
+// GetLatestTaskExecution returns the most recent execution row for a task
+// regardless of status (S-PROMPT WP5 task-detail run-audit).
+func (p *PostgresStore) GetLatestTaskExecution(ctx context.Context, taskID string) (*domain.TaskExecution, error) {
+	row := p.pool.QueryRow(ctx, `
+		SELECT id::text, task_id::text, agent_id::text, worker_id, fencing_token,
+		       status, lease_expires_at, coalesce(result_status, ''), result_summary,
+		       prompt_sha, started_at, completed_at, updated_at
+		FROM task_executions
+		WHERE task_id = $1
+		ORDER BY started_at DESC, id
+		LIMIT 1
+	`, taskID)
+	return scanTaskExecution(row)
+}
+
 func scanTaskExecution(row scanner) (*domain.TaskExecution, error) {
 	var exec domain.TaskExecution
 	var completedAt sql.NullTime
@@ -3106,6 +3135,7 @@ func scanTaskExecution(row scanner) (*domain.TaskExecution, error) {
 		&exec.LeaseExpiresAt,
 		&exec.ResultStatus,
 		&exec.ResultSummary,
+		&exec.PromptSHA,
 		&exec.StartedAt,
 		&completedAt,
 		&exec.UpdatedAt,

@@ -325,6 +325,7 @@ class _SilentCP:
     def __init__(self):
         self.blocked_summaries = []
         self.completed = []
+        self.started = []  # (task_id, prompt_sha) — S-PROMPT WP5 run-audit
 
     def claim_task(self):
         from skquad_runtime.runtime import RuntimeTask
@@ -344,6 +345,10 @@ class _SilentCP:
 
     def heartbeat(self, status, task=None):
         return {}
+
+    def start_task(self, task_id, prompt_sha=None):
+        self.started.append((task_id, prompt_sha))
+        return self.claim_task()
 
     def block_task(self, task, summary=""):
         self.blocked_summaries.append(summary)

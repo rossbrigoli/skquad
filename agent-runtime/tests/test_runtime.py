@@ -1194,8 +1194,13 @@ class FakeControlPlaneClient:
         self.blocked_summaries = []
         self.acked_messages = []
         self.failed_messages = []
+        self.started = []  # (task_id, prompt_sha) — S-PROMPT WP5 run-audit
 
     def claim_task(self):
+        return self.claimed_task
+
+    def start_task(self, task_id, prompt_sha=None):
+        self.started.append((task_id, prompt_sha))
         return self.claimed_task
 
     def heartbeat(self, status, task=None):

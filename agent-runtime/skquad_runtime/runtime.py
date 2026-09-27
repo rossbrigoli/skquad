@@ -566,8 +566,12 @@ class ControlPlaneClient:
             return bool(payload.get("work_available"))
         return False
 
-    def start_task(self, task_id: str) -> RuntimeTask:
-        payload = self._json("POST", f"/api/v1/agents/me/tasks/{task_id}/start", None)
+    def start_task(self, task_id: str, prompt_sha: str | None = None) -> RuntimeTask:
+        # S-PROMPT WP5 run-audit: the runtime reports the composed-prompt
+        # sha (or "env_legacy") it is running under so the control plane
+        # persists it on the execution row (ADR-0011 D5).
+        body = {"prompt_sha": prompt_sha} if prompt_sha is not None else None
+        payload = self._json("POST", f"/api/v1/agents/me/tasks/{task_id}/start", body)
         return runtime_task(payload)
 
     def complete_task(
@@ -1814,6 +1818,26 @@ def run_task_once(
         state.task_claimed(task)
     LOGGER.info("agent task claimed", extra={"task_id": task.id, "squad_id": task.squad_id})
     control_plane.heartbeat("busy", task)
+    # S-PROMPT WP5 run-audit (ADR-0011 D5): resolve the wake's
+    # composed-prompt sha before any work happens and report it to the
+    # control plane on the task-start call, so "what did the agent see
+    # for run X" is one server-side query. Flag-off / legacy fallback
+    # reports "env_legacy"; a fetch failure fails the wake loudly
+    # (ADR-0011 D4) — never a silent degraded run.
+    prompt_runtime = PromptedRuntime(config)
+    try:
+        prompt_sha = prompt_runtime.prompt_sha
+    except PromptFetchError as exc:
+        LOGGER.error(
+            "prompt fetch failed; blocking task (ADR-0011 D4)",
+            extra={"task_id": task.id, "error": str(exc)},
+        )
+        final_task = control_plane.block_task(task, summary=f"prompt fetch failed: {exc}")
+        control_plane.heartbeat("idle")
+        if state is not None:
+            state.task_failed(task.id, str(exc))
+        return final_task
+    control_plane.start_task(task.id, prompt_sha)
     resumed = False
     if config.workspace_enabled:
         # S-139: disk-full guard BEFORE any workspace work. Running a
@@ -1834,23 +1858,10 @@ def run_task_once(
             if task_dir is not None:
                 resumed = task_dir_has_prior_state(task_dir)
                 init_journal(task_dir, task.id, resumed=resumed)
-                # S-PROMPT WP3 / ADR-0011 D5: record prompt provenance in
-                # the run journal. Fetch happens here — before the handler
-                # makes its first LLM call. A loud failure blocks the task
-                # with a clear summary rather than running on a degraded
-                # prompt.
-                try:
-                    prompt_sha = PromptedRuntime(config).prompt_sha
-                except PromptFetchError as exc:
-                    LOGGER.error(
-                        "prompt fetch failed; blocking task (ADR-0011 D4)",
-                        extra={"task_id": task.id, "error": str(exc)},
-                    )
-                    final_task = control_plane.block_task(task, summary=f"prompt fetch failed: {exc}")
-                    control_plane.heartbeat("idle")
-                    if state is not None:
-                        state.task_failed(task.id, str(exc))
-                    return final_task
+                # S-PROMPT WP3 / ADR-0011 D5: the wake's prompt sha was
+                # already resolved (and reported to the control plane)
+                # right after the claim; mirror it into the local journal
+                # for crash-resume forensics.
                 record_prompt_provenance(task_dir, prompt_sha)
                 os.environ["SKQUAD_TASK_DIR"] = str(task_dir)
                 os.environ["SKQUAD_TASK_RESUMED"] = "1" if resumed else "0"
