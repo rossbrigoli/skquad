@@ -141,7 +141,12 @@ export function ToolCard({
   return (
     <div className="card" style={{ marginBottom: "var(--space-4)" }}>
       <div className="section-head">
-        <h3>{TOOL_LABELS[tool.name]}</h3>
+        <h3>
+          {TOOL_LABELS[tool.name]}{" "}
+          <span className="entity-meta">
+            ({form.enabled ? "status: ENABLED" : "status: disabled"})
+          </span>
+        </h3>
         <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <input
             type="checkbox"
@@ -150,7 +155,7 @@ export function ToolCard({
             onChange={(e) => setField("enabled", e.target.checked)}
             aria-label={`Enable ${tool.name}`}
           />
-          <span>{form.enabled ? "Enabled" : "Disabled"}</span>
+          <span>Enable this tool</span>
         </label>
       </div>
       <p className="entity-meta" style={{ marginTop: 0 }}>

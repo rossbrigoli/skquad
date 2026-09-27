@@ -18,6 +18,7 @@ import re
 import socket
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping
 from urllib import error, request
 
@@ -139,6 +140,20 @@ class ExecTool:
 
         timeout = int(self.policy.get("timeoutSeconds", 60))
         max_bytes = int(self.policy.get("maxOutputBytes", 65536))
+        # The working directory may not exist yet: chat runs (and agents
+        # with no git workspace) never go through the task-workspace setup
+        # that creates per-task dirs, so a missing base here killed the
+        # shell with ENOENT before any command could run. Create it lazily.
+        try:
+            Path(self.context.workspace_dir).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return ToolResult(
+                content=(
+                    f"exec failed to start: cannot create workspace dir "
+                    f"{self.context.workspace_dir!r}: {exc}"
+                ),
+                ok=False,
+            )
         try:
             proc = subprocess.run(
                 ["/bin/sh", "-c", command],
