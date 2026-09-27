@@ -49,6 +49,8 @@ spec:
               value: {{ .Values.agent.maxLLMSteps | quote }}
             - name: SKQUAD_AGENT_TASK_SUMMARY_MAX_CHARS
               value: {{ .Values.agent.taskSummaryMaxChars | quote }}
+            - name: SKQUAD_AGENT_PROMPT_FETCH_ENABLED
+              value: {{ .Values.agent.promptFetchEnabled | default "false" | quote }}
             - name: SKQUAD_API_SERVER_SERVICE_ACCOUNT_NAME
               value: {{ include "skquad.apiServerName" . | quote }}
             - name: SKQUAD_MAX_AGENT_STORAGE
