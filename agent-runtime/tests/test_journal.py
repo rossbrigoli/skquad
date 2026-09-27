@@ -27,6 +27,9 @@ from tests.test_runtime import (
     fake_task,
 )
 
+# BT-RUNTIME: unittest discover (CI) skips conftest.py — see test_runtime.py.
+os.environ.setdefault("SKQUAD_BUILTIN_TOOLS_ENABLED", "false")
+
 
 class WorkspaceGrantClient(FakeControlPlaneClient):
     """Fake control plane that grants a git workspace resource."""
