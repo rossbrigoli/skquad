@@ -338,6 +338,7 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Delete(routeAgent, s.deleteAgent)
 			r.Post("/agents/{agentID}/chat", s.createAgentChatMessage)
 			r.Get("/agents/{agentID}/chat", s.listAgentChatMessages)
+			r.Post("/agents/{agentID}/wake", s.wakeAgent)
 			r.Post("/agents/{agentID}/identity", s.createAgentIdentity)
 			r.Post("/agents/{agentID}/identity/rotate", s.rotateAgentIdentity)
 			r.Get("/agents/{agentID}/permissions", s.listAgentPermissions)
@@ -3216,6 +3217,28 @@ func (s *Server) createAgentChatMessage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusCreated, created)
+}
+
+// wakeAgent pre-warms a scaled-to-zero agent (S-154). The chat UI calls it
+// when the user starts typing so the runtime pod is already coming up by
+// the time the message is actually sent. Idempotent and cheap: it only
+// flips an *idle* agent to busy (which drives the Agent CR's
+// desiredActive via the outbox); any other status is reported back
+// untouched so we never clobber error/paused/busy state.
+func (s *Server) wakeAgent(w http.ResponseWriter, r *http.Request) {
+	target, ok := s.loadAgentForAction(w, r, "talk")
+	if !ok {
+		return
+	}
+	if target.Status != domain.AgentIdle {
+		writeJSON(w, http.StatusOK, map[string]any{"waking": false, "status": string(target.Status)})
+		return
+	}
+	if err := s.setAgentStatusAndMirror(r.Context(), target.ID, domain.AgentBusy); err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"waking": true, "status": string(domain.AgentBusy)})
 }
 
 func (s *Server) listAgentChatMessages(w http.ResponseWriter, r *http.Request) {
