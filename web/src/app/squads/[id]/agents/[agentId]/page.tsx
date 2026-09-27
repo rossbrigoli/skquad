@@ -10,6 +10,8 @@ import { AppShell } from "../../../../../components/AppShell";
 import { Collapsible } from "../../../../../components/Collapsible";
 import { ConfirmDialog } from "../../../../../components/ConfirmDialog";
 import { EmptyState } from "../../../../../components/EmptyState";
+import { EffectivePromptPanel } from "../../../../../components/EffectivePromptPanel";
+import { PromptRevisionsPanel } from "../../../../../components/PromptRevisionsPanel";
 import { MetricTile } from "../../../../../components/MetricTile";
 import { Modal, ModalForm } from "../../../../../components/Modal";
 import { SquadRail } from "../../../../../components/SquadRail";
@@ -226,6 +228,9 @@ export default function AgentProfilePage() {
   const [granting, setGranting] = useState(false);
   const [identityBusy, setIdentityBusy] = useState(false);
   const [identityError, setIdentityError] = useState("");
+  // S-PROMPT WP4: effective-prompt preview modal + revision restore.
+  const [previewEffective, setPreviewEffective] = useState(false);
+  const [restorePrompt, setRestorePrompt] = useState<string | null>(null);
 
   const agent = (agents.data || []).find((a) => a.id === agentId);
   const squad = (squads.data || []).find((s) => s.id === squadId);
@@ -325,6 +330,41 @@ export default function AgentProfilePage() {
           )}
         </section>
 
+        {/* S-PROMPT WP4: layer-4 prompt section — edit (via the agent
+            form, with meter + validation), read-only effective-prompt
+            preview (all four tiers), and append-only revision history
+            with restore-into-editor. */}
+        <section style={{ marginTop: "var(--space-5)" }}>
+          <div className="section-head">
+            <h2>Prompt</h2>
+            <div style={{ display: "flex", gap: "var(--space-2)" }}>
+              <button type="button" className="btn btn-sm" onClick={() => setEditing(true)} disabled={!agent}>
+                Edit agent prompt
+              </button>
+              <button type="button" className="btn btn-sm" onClick={() => setPreviewEffective(true)} disabled={!agent}>
+                Preview effective prompt
+              </button>
+            </div>
+          </div>
+          <p className="field-hint" style={{ marginBottom: "var(--space-3)" }}>
+            The agent prompt is layer 4 — your agent&rsquo;s identity and personality. It cannot
+            relax anything in the platform, organization, or squad layers above it.
+          </p>
+          <Collapsible id={`agent-current-prompt-${agentId}`} title="Current agent prompt">
+            <pre className="prompt-tier-content">{agent?.system_prompt || "(empty)"}</pre>
+          </Collapsible>
+          <div style={{ marginTop: "var(--space-4)" }}>
+            <PromptRevisionsPanel
+              scope="agent"
+              scopeId={agentId}
+              onRestore={(content) => {
+                setRestorePrompt(content);
+                setEditing(true);
+              }}
+            />
+          </div>
+        </section>
+
         <GrantedResourcesSection
           grants={resourceGrants}
           agentId={agentId}
@@ -369,8 +409,11 @@ export default function AgentProfilePage() {
           <AgentFormModal
             title={`Edit ${agent.name}`}
             submitLabel="Save changes"
-            initial={agent}
-            onClose={() => setEditing(false)}
+            initial={{ ...agent, system_prompt: restorePrompt ?? agent.system_prompt }}
+            onClose={() => {
+              setEditing(false);
+              setRestorePrompt(null);
+            }}
             onSubmit={async (values) => {
               await apiPatch<Agent>(`/agents/${agentId}`, token, values);
               setEditing(false);
@@ -403,6 +446,12 @@ export default function AgentProfilePage() {
               perms.refresh();
             }}
           />
+        ) : null}
+
+        {previewEffective && agent ? (
+          <Modal title={`Effective prompt — ${agent.name}`} onClose={() => setPreviewEffective(false)}>
+            <EffectivePromptPanel agentId={agentId} />
+          </Modal>
         ) : null}
       </AppShell>
     </AuthGate>

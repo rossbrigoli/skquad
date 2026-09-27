@@ -1812,3 +1812,161 @@ dialog.modal-backdrop::backdrop {
 .about-muted {
   color: var(--ink-faint);
 }
+
+/* ============================================================
+   S-PROMPT WP4 — prompt tier editors, token meter, trust badges
+   ============================================================ */
+
+.token-meter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
+}
+
+.token-meter-track {
+  position: relative;
+  flex: 1;
+  height: 8px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.token-meter-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--status-done);
+  transition: width var(--motion-base) var(--ease-out);
+}
+
+.meter-warn .token-meter-fill {
+  background: var(--status-paused);
+}
+
+.meter-over .token-meter-fill {
+  background: var(--status-error);
+}
+
+.meter-checking .token-meter-fill {
+  opacity: 0.55;
+}
+
+.token-meter-soft-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--line-strong);
+}
+
+.token-meter-label {
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.token-meter-flag {
+  color: var(--status-paused);
+}
+
+.meter-over .token-meter-flag {
+  color: var(--status-error);
+}
+
+.prompt-textarea {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.tier-badge {
+  display: inline-block;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-right: var(--space-2);
+  vertical-align: middle;
+}
+
+.tier-badge.tier-platform {
+  color: var(--status-running);
+  background: var(--status-running-bg);
+}
+
+.tier-badge.tier-organization {
+  color: var(--status-over-budget);
+  background: var(--status-over-budget-bg);
+}
+
+.tier-badge.tier-squad {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.tier-badge.tier-agent {
+  color: var(--status-idle);
+  background: var(--status-idle-bg);
+}
+
+.tier-badge.tier-unknown {
+  color: var(--status-blocked);
+  background: var(--status-blocked-bg);
+}
+
+.prompt-tier-block {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2);
+}
+
+.prompt-tier-block .collapsible {
+  margin-top: 0;
+}
+
+.prompt-tier-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.tier-trust {
+  color: var(--ink-faint);
+  font-size: var(--text-xs);
+}
+
+.tier-tokens {
+  color: var(--ink-muted);
+  margin-left: auto;
+}
+
+.prompt-tier-content {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.prompt-revision-row {
+  flex-wrap: wrap;
+}
+
+.prompt-revision-content {
+  flex-basis: 100%;
+}
+
+.effective-prompt-summary {
+  margin-bottom: var(--space-3);
+}

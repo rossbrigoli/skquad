@@ -11,6 +11,7 @@ export function SquadRail({ squadId, squadName }: { squadId: string; squadName: 
     { href: `/squads/${squadId}`, label: "Overview" },
     { href: `/squads/${squadId}/board`, label: "Board" },
     { href: `/squads/${squadId}/agents`, label: "Agents" },
+    { href: `/squads/${squadId}/prompt`, label: "Prompt" },
     { href: `/squads/${squadId}/cost`, label: "Cost" },
   ];
   return (

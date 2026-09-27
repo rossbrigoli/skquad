@@ -45,6 +45,7 @@ export function ThemeProvider({ children }: { readonly children: ReactNode }) {
   // Hydrate from localStorage after mount; the pre-paint inline script has
   // already set the attribute so there is no flash.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate stored theme once after mount
     setMode(readStoredTheme());
     setSysDark(systemPrefersDark());
   }, []);
