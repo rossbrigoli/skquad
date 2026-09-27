@@ -245,6 +245,11 @@ func agentEnv(agent *skquadv1.Agent) []corev1.EnvVar {
 		{Name: "SKQUAD_TASK_TIMEOUT_SECONDS", Value: envOrDefault("SKQUAD_AGENT_TASK_TIMEOUT_SECONDS", "900")},
 		{Name: "SKQUAD_MAX_LLM_STEPS", Value: envOrDefault("SKQUAD_AGENT_MAX_LLM_STEPS", "8")},
 		{Name: "SKQUAD_TASK_SUMMARY_MAX_CHARS", Value: envOrDefault("SKQUAD_AGENT_TASK_SUMMARY_MAX_CHARS", "4000")},
+		// S-PROMPT WP3 flag: when true the runtime fetches the composed
+		// four-tier prompt from the control-plane at wake instead of the
+		// legacy SKQUAD_AGENT_SYSTEM_PROMPT env. Operator-level default so
+		// the fleet can be flipped without touching the CRD.
+		{Name: "SKQUAD_PROMPT_FETCH_ENABLED", Value: envOrDefault("SKQUAD_AGENT_PROMPT_FETCH_ENABLED", "false")},
 	}
 	// S-139 (S-136 follow-up): tell the runtime where the workspace PVC
 	// is actually mounted so its auto-resolution matches the real mount

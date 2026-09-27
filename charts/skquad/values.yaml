@@ -76,6 +76,10 @@ agent:
   taskTimeoutSeconds: "900"
   maxLLMSteps: "8"
   taskSummaryMaxChars: "4000"
+  # S-PROMPT: "true" makes agents fetch the composed four-tier prompt
+  # (platform > org > squad > agent) from the control-plane at wake.
+  # "false" keeps the legacy env prompt path.
+  promptFetchEnabled: "false"
 
 operator:
   leaderElection: true
