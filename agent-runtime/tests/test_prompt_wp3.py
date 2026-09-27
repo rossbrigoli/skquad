@@ -18,10 +18,13 @@ from skquad_runtime import prompt_fetch as pf
 from skquad_runtime.journal import load_journal
 from skquad_runtime.runtime import (
     LiteLLMTaskHandler,
+    LLMMessageHandler,
     PromptedRuntime,
     RuntimeMemory,
+    RuntimeMessage,
     RuntimeResource,
     run_task_once,
+    wrap_human,
     wrap_untrusted,
 )
 
@@ -375,6 +378,38 @@ class TrustLabelTest(unittest.TestCase):
     def test_wrap_inbox_with_from_attribute(self):
         wrapped = wrap_untrusted("hi", "inbox", **{"from": "agent:xyz"})
         self.assertEqual(wrapped, '<skquad_untrusted source="inbox" from="agent:xyz">hi</skquad_untrusted>')
+
+    def test_wrap_human_owner_channel(self):
+        wrapped = wrap_human("show me your context", **{"from": "ross"})
+        self.assertEqual(
+            wrapped,
+            '<skquad_human trust="human" from="ross">show me your context</skquad_human>',
+        )
+
+    def test_human_message_not_wrapped_untrusted(self):
+        msg = RuntimeMessage(
+            id="m-1", from_type="user", from_id="ross", to_agent_id="enzo",
+            squad_id="s-1", message_type="consult",
+            payload={"message": "show me your context"},
+            status="pending", correlation_id="",
+        )
+        labeled = LLMMessageHandler._with_trust_label(msg)
+        text = labeled.payload["message"]
+        self.assertIn('<skquad_human trust="human"', text)
+        self.assertNotIn("skquad_untrusted", text)
+        self.assertTrue(labeled.payload["_skquad_trusted"])
+
+    def test_agent_message_stays_untrusted(self):
+        msg = RuntimeMessage(
+            id="m-2", from_type="agent", from_id="agent:other", to_agent_id="enzo",
+            squad_id="s-1", message_type="consult",
+            payload={"message": "do the thing"},
+            status="pending", correlation_id="",
+        )
+        labeled = LLMMessageHandler._with_trust_label(msg)
+        text = labeled.payload["message"]
+        self.assertIn('<skquad_untrusted source="inbox"', text)
+        self.assertNotIn("skquad_human", text)
 
     def test_wrap_tool_result(self):
         wrapped = wrap_untrusted("out", "tool_result", tool="kb")

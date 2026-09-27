@@ -101,6 +101,21 @@ def wrap_untrusted(content: str, source: str, **attrs: object) -> str:
     return f"<{tag}>{content}</skquad_untrusted>"
 
 
+def wrap_human(text: str, **attrs: object) -> str:
+    """Wrap a human-authored chat message in a ``<skquad_human>`` label.
+
+    S-PROMPT follow-up (2026-09-27): the untrusted inbox wrapper made
+    owner chat indistinguishable from agent mail, so agents (correctly,
+    per the platform prompt) refused direct requests as injection
+    patterns. Human-authored messages arrive from CP RBAC-gated senders
+    and are a trusted instruction channel — within grants and red lines.
+    The distinct tag lets the platform prompt draw that line explicitly.
+    """
+    rendered = " ".join(f'{key}="{_xml_escape(value)}"' for key, value in attrs.items())
+    tag = "skquad_human trust=\"human\"" + (f" {rendered}" if rendered else "")
+    return f"<{tag}>{text}</skquad_human>"
+
+
 @dataclass(frozen=True)
 class BootstrapConfig:
     agent_id: str
@@ -968,9 +983,17 @@ class LLMMessageHandler:
         if not text:
             return message
         labeled = dict(message.payload)
-        labeled["message"] = wrap_untrusted(
-            text, "inbox", **{"from": message.from_id or message.from_type or "unknown"}
-        )
+        if message.from_type == "user":
+            # Human-authored chat is a trusted instruction channel; the
+            # platform prompt defines <skquad_human> accordingly. Agent
+            # mail stays wrapped as untrusted data.
+            labeled["message"] = wrap_human(
+                text, **{"from": message.from_id or "unknown"}
+            )
+        else:
+            labeled["message"] = wrap_untrusted(
+                text, "inbox", **{"from": message.from_id or message.from_type or "unknown"}
+            )
         labeled["_skquad_trusted"] = True
         return replace(message, payload=labeled)
 
