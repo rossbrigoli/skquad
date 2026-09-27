@@ -20,6 +20,8 @@ spec:
         # SKQUAD_BREAKGLASS_ENABLED actually needs to do.
         checksum/breakglass-config: {{ include (print $.Template.BasePath "/breakglass-configmap.yaml") . | sha256sum | quote }}
         checksum/breakglass-secret: {{ include (print $.Template.BasePath "/breakglass-secret.yaml") . | sha256sum | quote }}
+        # S-152/BT-5a: roll the api-server when the search provider keys change.
+        checksum/search-secret: {{ include (print $.Template.BasePath "/search-secret.yaml") . | sha256sum | quote }}
       labels:
         {{- include "skquad.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api-server
@@ -110,6 +112,22 @@ spec:
               value: {{ .Values.apiServer.memoryEmbeddings.enabled | quote }}
             - name: SKQUAD_MEMORY_EMBEDDING_MODEL
               value: {{ .Values.apiServer.memoryEmbeddings.model | quote }}
+            # S-152/BT-5a (ADR-0012): search provider keys for the CP search
+            # proxy. Optional so a duckduckgo-only (keyless) deployment never
+            # blocks on a missing Secret. These stay control-plane-only and are
+            # never injected into agent pods.
+            - name: SKQUAD_SEARCH_BRAVE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.apiServer.search.secretName | default "skquad-search-keys" | quote }}
+                  key: brave-api-key
+                  optional: true
+            - name: SKQUAD_SEARCH_PERPLEXITY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.apiServer.search.secretName | default "skquad-search-keys" | quote }}
+                  key: perplexity-api-key
+                  optional: true
             - name: SKQUAD_DEFAULT_IDLE_TIMEOUT
               value: {{ .Values.agent.idleTimeout | quote }}
             {{- if .Values.apiServer.databaseUrlSecret.name }}

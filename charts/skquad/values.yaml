@@ -80,6 +80,12 @@ agent:
   # (platform > org > squad > agent) from the control-plane at wake.
   # "false" keeps the legacy env prompt path.
   promptFetchEnabled: "false"
+  # S-152/BT-5a (ADR-0012): default for the agent-pod built-in tools kill
+  # switch (SKQUAD_BUILTIN_TOOLS_ENABLED). "true" = enabled (runtime
+  # default); set "false" to disable exec/web_fetch/web_search fleet-wide
+  # regardless of control-plane config. Flows to the operator as
+  # SKQUAD_AGENT_BUILTIN_TOOLS_ENABLED, which injects it into every agent pod.
+  builtinToolsEnabled: "true"
 
 operator:
   leaderElection: true
@@ -130,6 +136,17 @@ apiServer:
   databaseUrlSecret:
     name: ""
     key: database-url
+  # S-152/BT-5a (ADR-0012): web search provider keys for the control-plane
+  # search proxy. CONTROL-PLANE ONLY — these never reach agent pods (the runtime
+  # calls POST /api/v1/tools/web_search and never sees the keys). The default
+  # provider (duckduckgo) needs no key. For brave/perplexity either supply an
+  # inline value (dev only; rendered into a Secret by this chart) or manage the
+  # Secret externally (GitOps/SealedSecret) under the same secretName with keys
+  # `brave-api-key` and `perplexity-api-key`.
+  search:
+    secretName: skquad-search-keys
+    braveApiKey: ""
+    perplexityApiKey: ""
   oidc:
     issuer: ""
     audience: ""

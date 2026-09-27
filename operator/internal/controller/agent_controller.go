@@ -250,6 +250,14 @@ func agentEnv(agent *skquadv1.Agent) []corev1.EnvVar {
 		// legacy SKQUAD_AGENT_SYSTEM_PROMPT env. Operator-level default so
 		// the fleet can be flipped without touching the CRD.
 		{Name: "SKQUAD_PROMPT_FETCH_ENABLED", Value: envOrDefault("SKQUAD_AGENT_PROMPT_FETCH_ENABLED", "false")},
+		// S-152/BT-5a (ADR-0012): operator-level kill switch for the
+		// built-in platform tools (exec, web_fetch, web_search). Default
+		// "true" keeps the runtime default (enabled); set the operator env
+		// SKQUAD_AGENT_BUILTIN_TOOLS_ENABLED=false to disable the whole
+		// feature fleet-wide regardless of control-plane config. The
+		// runtime treats false/0/no as disabled; per-tool enablement and
+		// policies still come from the control plane at wake.
+		{Name: "SKQUAD_BUILTIN_TOOLS_ENABLED", Value: envOrDefault("SKQUAD_AGENT_BUILTIN_TOOLS_ENABLED", "true")},
 	}
 	// S-139 (S-136 follow-up): tell the runtime where the workspace PVC
 	// is actually mounted so its auto-resolution matches the real mount
