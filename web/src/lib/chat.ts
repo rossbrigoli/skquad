@@ -108,3 +108,24 @@ export function prettyToolArgs(args: unknown, max = 2000): string {
 export function formatContextTokens(value: number): string {
   return value.toLocaleString("en-US");
 }
+
+// S-154: if an agent never replies (crash, lost message), the composer must
+// not stay locked forever — the pending-turn lock expires after this window.
+export const CHAT_TURN_LOCK_MS = 5 * 60 * 1000;
+
+/** True while the agent's turn for the newest user message is still in
+ *  flight: the chronologically-last message is from a user (no agent
+ *  reply after it) and it is younger than `lockWindowMs`. Pure so it is
+ *  unit-testable; callers pass `Date.now()` explicitly. */
+export function agentTurnPending(
+  messages: Message[],
+  nowMs: number,
+  lockWindowMs: number = CHAT_TURN_LOCK_MS,
+): boolean {
+  const sorted = sortChatMessages(messages);
+  const last = sorted[sorted.length - 1];
+  if (!last || last.from_type !== "user") return false;
+  const sentAt = Date.parse(last.created_at ?? "");
+  if (!Number.isFinite(sentAt)) return false;
+  return nowMs - sentAt < lockWindowMs;
+}

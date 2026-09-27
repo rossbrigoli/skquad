@@ -38,6 +38,7 @@ import {
 } from "../../../../../lib/api";
 import { formatCost, formatRelativeTime, formatTokens, leaseState } from "../../../../../lib/format";
 import {
+  agentTurnPending,
   chatContextTokens,
   chatToolCalls,
   formatContextTokens,
@@ -485,8 +486,23 @@ function ChatThread({
   const [error, setError] = useState("");
   const { user } = useAuth();
   const scrollRef = useRef<HTMLDivElement>(null);
+  // S-154: throttle for the wake-on-typing ping (once a minute max).
+  const lastWakeAt = useRef(0);
 
   const sorted = useMemo(() => sortChatMessages(messages), [messages]);
+  // S-154: while the newest message is the user's (no agent reply yet),
+  // the agent's turn is still in flight — lock the composer and show the
+  // "Combobulating…" indicator. The lock self-expires (CHAT_TURN_LOCK_MS)
+  // so a crashed agent can't disable the box forever; the interval
+  // re-checks so the box unlocks even without a fresh poll.
+  const [generating, setGenerating] = useState(false);
+  useEffect(() => {
+    const check = () => setGenerating(agentTurnPending(sorted, Date.now()));
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    check();
+    const timer = window.setInterval(check, 5000);
+    return () => window.clearInterval(timer);
+  }, [sorted]);
   // S-122: tiny context-size bar — the prompt-token count the runtime
   // recorded on the most recent agent reply (the real context size of the
   // last LLM call, not an estimate).
@@ -560,6 +576,21 @@ function ChatThread({
             );
           })
         )}
+        {generating ? (
+          <div className="chat-row theirs chat-typing-row" aria-live="polite">
+            <div className="chat-avatar agent" aria-hidden="true">
+              {initials(agentName)}
+            </div>
+            <div className="chat-bubble chat-typing-bubble">
+              <span className="chat-typing-dots" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </span>
+              <span className="chat-typing-label">Combobulating…</span>
+            </div>
+          </div>
+        ) : null}
       </div>
       <output className="chat-context-bar" aria-live="polite">
         {contextTokens === null
@@ -577,11 +608,21 @@ function ChatThread({
         <textarea
           value={draft}
           rows={1}
+          disabled={generating}
           onChange={(e) => {
+            // S-154: start warming a scaled-to-zero agent as soon as the
+            // user begins typing, so the pod is up by send time.
+            if (draft === "" && e.target.value !== "" && !generating) {
+              const now = Date.now();
+              if (now - lastWakeAt.current > 60_000) {
+                lastWakeAt.current = now;
+                apiPost(`/agents/${agentId}/wake`, token, {}).catch(() => undefined);
+              }
+            }
             setDraft(e.target.value);
             autoGrow(e.target);
           }}
-          placeholder={`Message ${agentName}…`}
+          placeholder={generating ? `Waiting for ${agentName} to finish…` : `Message ${agentName}…`}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -592,7 +633,7 @@ function ChatThread({
         <button
           type="submit"
           className="chat-send"
-          disabled={busy || draft.trim() === ""}
+          disabled={busy || generating || draft.trim() === ""}
           aria-label="Send message"
           title="Send"
         >

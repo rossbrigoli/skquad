@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Message } from "./api";
 import {
+  agentTurnPending,
   chatContextTokens,
   chatToolCalls,
+  CHAT_TURN_LOCK_MS,
   formatContextTokens,
   prettyToolArgs,
   sortChatMessages,
@@ -214,5 +216,44 @@ describe("prettyToolArgs", () => {
 describe("formatContextTokens", () => {
   it("groups thousands", () => {
     expect(formatContextTokens(1234567)).toBe("1,234,567");
+  });
+});
+
+describe("agentTurnPending", () => {
+  const now = Date.parse("2026-09-28T00:05:00Z");
+
+  it("is false for an empty thread", () => {
+    expect(agentTurnPending([], now)).toBe(false);
+  });
+
+  it("is false when the newest message is from the agent", () => {
+    const msgs = [
+      message({ id: "u1", from_type: "user", created_at: "2026-09-28T00:01:00Z" }),
+      message({ id: "a1", from_type: "agent", created_at: "2026-09-28T00:02:00Z" }),
+    ];
+    expect(agentTurnPending(msgs, now)).toBe(false);
+  });
+
+  it("is true when the newest message is a recent user message", () => {
+    const msgs = [
+      message({ id: "a0", from_type: "agent", created_at: "2026-09-28T00:00:00Z" }),
+      message({ id: "u1", from_type: "user", created_at: "2026-09-28T00:04:30Z" }),
+    ];
+    expect(agentTurnPending(msgs, now)).toBe(true);
+  });
+
+  it("expires once the user message is older than the lock window", () => {
+    const msgs = [
+      message({ id: "u1", from_type: "user", created_at: "2026-09-28T00:00:00Z" }),
+    ];
+    // 5 minutes after send = lock released (crashed-agent escape hatch).
+    expect(agentTurnPending(msgs, now, CHAT_TURN_LOCK_MS)).toBe(false);
+    // Just inside the window it stays locked.
+    expect(agentTurnPending(msgs, now - 1000, CHAT_TURN_LOCK_MS)).toBe(true);
+  });
+
+  it("is false for missing or unparseable timestamps", () => {
+    expect(agentTurnPending([message({ created_at: undefined })], now)).toBe(false);
+    expect(agentTurnPending([message({ created_at: "not-a-date" })], now)).toBe(false);
   });
 });
