@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
@@ -116,13 +117,19 @@ func webFetchPolicyOf(cfg *domain.BuiltinToolConfig) fetchPolicy {
 // and re-validated (Control fires per hop).
 func guardedHTTPClient(p fetchPolicy) *http.Client {
 	dialer := &net.Dialer{Timeout: time.Duration(p.timeoutSeconds) * time.Second}
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			if !p.allowPrivateNetwork && blockedDestAddr(address) {
-				return nil, fmt.Errorf("ssrf_guard: blocked dial to %s", address)
+	// Control runs AFTER DNS resolution, immediately before connect, and
+	// sees the actual resolved IP:port — the canonical Go SSRF hook.
+	// (Checking in DialContext sees only the pre-resolution hostname.)
+	if !p.allowPrivateNetwork {
+		dialer.Control = func(network, address string, c syscall.RawConn) error {
+			if blockedDestAddr(address) {
+				return fmt.Errorf("ssrf_guard: blocked dial to %s", address)
 			}
-			return dialer.DialContext(ctx, network, address)
-		},
+			return nil
+		}
+	}
+	transport := &http.Transport{
+		DialContext: dialer.DialContext,
 	}
 	return &http.Client{
 		Transport: transport,
