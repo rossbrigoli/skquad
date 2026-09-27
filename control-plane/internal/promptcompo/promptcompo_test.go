@@ -165,8 +165,8 @@ func TestTemplateCannotSmuggleReserved(t *testing.T) {
 }
 
 func TestTokenCaps(t *testing.T) {
-	// org tier hard cap 2000 → 9000 bytes ≈ 2250 tokens → rejected
-	if _, err := Compose("", strings.Repeat("a", 9000), "", "", testFacts); err == nil {
+	// org tier hard cap 4000 (S-148) → 16001 bytes ≈ 4001 tokens → rejected
+	if _, err := Compose("", strings.Repeat("a", 16001), "", "", testFacts); err == nil {
 		t.Error("oversized org prompt accepted")
 	} else {
 		var ce *CapError
@@ -175,9 +175,19 @@ func TestTokenCaps(t *testing.T) {
 		}
 	}
 
+	// org tier: 4k hard cap (S-148) accepts what the old 2k cap rejected
+	org4k := strings.Repeat("d", 4*4000) // exactly 4000 tokens: over soft 3k, at hard 4k
+	c, err := Compose("", org4k, "", "", testFacts)
+	if err != nil {
+		t.Fatalf("org prompt at 4k hard cap rejected: %v", err)
+	}
+	if len(c.Warnings) == 0 {
+		t.Error("expected soft warning above 3k org tokens")
+	}
+
 	// agent tier: 8k hard cap accepts what the old 2k cap would have rejected
 	agent8k := strings.Repeat("b", 7*4000) // ~7000 tokens: over soft 6k, under hard 8k
-	c, err := Compose("", "", "", agent8k, testFacts)
+	c, err = Compose("", "", "", agent8k, testFacts)
 	if err != nil {
 		t.Fatalf("agent tier under 8k hard cap rejected: %v", err)
 	}
