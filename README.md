@@ -89,6 +89,23 @@ detail.
 | [`web/`](web/) | Next.js | User interface with an authenticated shell plus squad, agent, task, registry, grant, admin, identity, and chat workflows. |
 | [`charts/skquad/`](charts/skquad/) | Helm | Installs the control plane, CRDs, operator, gateway, web app, and optional PostgreSQL. |
 
+## Built-in Tools
+
+Skquad ships three first-class platform tools (no external plugins required), available to agents when the platform admin enables them:
+
+- **`exec`** — run terminal commands in the agent's environment.
+- **`web_fetch`** — fetch a URL and extract readable content.
+- **`web_search`** — web search (Brave/Perplexity backends).
+
+Key properties:
+
+- **Admin-only configuration.** Tools are enabled and policy-tuned exclusively by platform admins via the admin UI (backed by `GET/PATCH /api/v1/admin/tools`; every change is audit-logged). Agents read their effective config from `GET /api/v1/agents/me/tools` — never containing secrets.
+- **Kill switch.** The operator-level `SKQUAD_AGENT_BUILTIN_TOOLS_ENABLED` flag disables the whole built-in tools feature across the deployment, independent of per-tool config.
+- **Search keys are control-plane-only.** Brave/Perplexity API keys live in the control plane and are used server-side; they are never sent to agents.
+- All tools default to **disabled** until an admin turns them on.
+
+See [ADR-0012: Built-in Platform Tools](docs/adr/0012-builtin-platform-tools.md) for the full contract.
+
 ## Current status
 
 The repository currently implements:
