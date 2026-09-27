@@ -11,6 +11,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -77,6 +78,38 @@ func checkPromptDraft(scope promptcompo.TierName, content string) (int, []string
 		warnings = append(warnings, fmt.Sprintf("%s prompt: %d tokens exceeds soft limit %d", scope, tokens, caps.Soft))
 	}
 	return tokens, warnings, nil
+}
+
+// validRunPromptSHA accepts the two shapes the WP5 run-audit path may
+// report: a lowercase hex sha256 of the composed prompt, or the literal
+// "env_legacy" marker for the pre-composition fallback path.
+func validRunPromptSHA(s string) bool {
+	if s == "env_legacy" {
+		return true
+	}
+	if len(s) != 64 || s != strings.ToLower(s) {
+		return false // lowercase only: sha256 hex digests are canonical lowercase
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
+// messageContentSanityCheck rejects agent-authored message content that
+// carries reserved prompt delimiters (S-PROMPT WP5, cross-agent inbox
+// injection). Every text surface of the request is checked: the message
+// body, the title, and the raw JSON payload (delegated task titles and
+// descriptions are materialized from these, so a rejection here stops
+// the forgery before any task row exists).
+func messageContentSanityCheck(req *messageRequest) error {
+	for _, text := range []string{req.Message, req.Title, string(req.Payload)} {
+		if text == "" {
+			continue
+		}
+		if err := promptcompo.Sanitize(text); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // writePromptFailure emits the standard error envelope, extended with the

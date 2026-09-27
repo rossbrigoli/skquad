@@ -128,6 +128,14 @@ type TaskStore interface {
 	// apart from "stalled".
 	ListBoardTaskExecutions(ctx context.Context, boardID string) ([]*domain.TaskExecution, error)
 	HeartbeatTaskExecution(ctx context.Context, agentID string, executionID string, fencingToken string, leaseFor time.Duration) (*domain.TaskExecution, error)
+	// SetTaskExecutionPromptSHA records the composed-prompt sha on the
+	// agent's active execution for a task (S-PROMPT WP5 run-audit).
+	// ErrNotFound when no active execution exists for that agent+task.
+	SetTaskExecutionPromptSHA(ctx context.Context, agentID string, taskID string, promptSHA string) (*domain.TaskExecution, error)
+	// GetLatestTaskExecution returns the most recent execution row for a
+	// task regardless of status (task-detail run-audit). ErrNotFound
+	// when the task has never executed.
+	GetLatestTaskExecution(ctx context.Context, taskID string) (*domain.TaskExecution, error)
 	CompleteTaskExecution(ctx context.Context, agentID string, taskID string, executionID string, fencingToken string, status domain.TaskStatus, summary string) (*domain.Task, error)
 	// ReapExpiredTaskExecutions marks active executions whose lease expired
 	// before cutoff as expired and re-queues their tasks (in-progress → todo)

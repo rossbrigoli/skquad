@@ -233,13 +233,18 @@ type Task struct {
 	// Workspace linkage: set when the task ran against a granted git
 	// workspace. WorkspaceResourceID points at the registry resource, and
 	// Branch/CommitSHA record what the runtime pushed (audit trail).
-	WorkspaceResourceID string    `json:"workspace_resource_id,omitempty"`
-	WorkspaceBranch     string    `json:"workspace_branch,omitempty"`
-	WorkspaceCommitSHA  string    `json:"workspace_commit_sha,omitempty"`
-	ExecutionID         string    `json:"execution_id,omitempty"`
-	WorkerID            string    `json:"worker_id,omitempty"`
-	FencingToken        string    `json:"fencing_token,omitempty"`
-	LeaseExpiresAt      time.Time `json:"lease_expires_at,omitempty"`
+	WorkspaceResourceID string `json:"workspace_resource_id,omitempty"`
+	WorkspaceBranch     string `json:"workspace_branch,omitempty"`
+	WorkspaceCommitSHA  string `json:"workspace_commit_sha,omitempty"`
+	// PromptSHA is the composed-prompt sha of the task's latest execution
+	// attempt (S-PROMPT WP5 run-audit; "env_legacy" for the fallback
+	// path, "" when unknown/older runtime). Attached from the execution
+	// row by read paths — never stored on the task itself.
+	PromptSHA      string    `json:"prompt_sha,omitempty"`
+	ExecutionID    string    `json:"execution_id,omitempty"`
+	WorkerID       string    `json:"worker_id,omitempty"`
+	FencingToken   string    `json:"fencing_token,omitempty"`
+	LeaseExpiresAt time.Time `json:"lease_expires_at,omitempty"`
 }
 
 // TaskExecutionStatus is the lifecycle of one runtime attempt for a task.
@@ -264,9 +269,14 @@ type TaskExecution struct {
 	LeaseExpiresAt time.Time           `json:"lease_expires_at"`
 	ResultStatus   TaskStatus          `json:"result_status,omitempty"`
 	ResultSummary  string              `json:"result_summary,omitempty"`
-	StartedAt      time.Time           `json:"started_at"`
-	CompletedAt    time.Time           `json:"completed_at,omitempty"`
-	UpdatedAt      time.Time           `json:"updated_at"`
+	// PromptSHA is the sha256 of the composed effective prompt the
+	// runtime used for this attempt, reported at task start
+	// (S-PROMPT WP5, ADR-0011 D5). 'env_legacy' marks the fallback
+	// path; '' means the runtime predates run-audit reporting.
+	PromptSHA   string    `json:"prompt_sha,omitempty"`
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // AgentMemory is a scoped long-term memory row for an agent. Squad-scoped

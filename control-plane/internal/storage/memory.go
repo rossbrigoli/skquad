@@ -1434,6 +1434,41 @@ func (m *MemoryStore) HeartbeatTaskExecution(_ context.Context, agentID string, 
 	return cloneTaskExecution(exec), nil
 }
 
+// SetTaskExecutionPromptSHA records the composed-prompt sha on the agent's
+// active execution for a task (S-PROMPT WP5 run-audit, ADR-0011 D5).
+func (m *MemoryStore) SetTaskExecutionPromptSHA(_ context.Context, agentID string, taskID string, promptSHA string) (*domain.TaskExecution, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, exec := range m.taskExecs {
+		if exec.AgentID == agentID && exec.TaskID == taskID && exec.Status == domain.TaskExecutionActive {
+			exec.PromptSHA = promptSHA
+			exec.UpdatedAt = time.Now().UTC()
+			return cloneTaskExecution(exec), nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+// GetLatestTaskExecution returns the most recent execution row for a task
+// regardless of status (S-PROMPT WP5 task-detail run-audit).
+func (m *MemoryStore) GetLatestTaskExecution(_ context.Context, taskID string) (*domain.TaskExecution, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var latest *domain.TaskExecution
+	for _, exec := range m.taskExecs {
+		if exec.TaskID != taskID {
+			continue
+		}
+		if latest == nil || exec.StartedAt.After(latest.StartedAt) {
+			latest = exec
+		}
+	}
+	if latest == nil {
+		return nil, ErrNotFound
+	}
+	return cloneTaskExecution(latest), nil
+}
+
 func (m *MemoryStore) CompleteTaskExecution(ctx context.Context, agentID string, taskID string, executionID string, fencingToken string, status domain.TaskStatus, summary string) (*domain.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

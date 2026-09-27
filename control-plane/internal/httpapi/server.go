@@ -2473,6 +2473,7 @@ func attachExecutionState(tasks []*domain.Task, executions []*domain.TaskExecuti
 		task.ExecutionID = exec.ID
 		task.WorkerID = exec.WorkerID
 		task.LeaseExpiresAt = exec.LeaseExpiresAt
+		task.PromptSHA = exec.PromptSHA
 		// FencingToken is deliberately not copied: it authorises runtime
 		// heartbeat/complete calls, so it belongs to the claiming worker and must
 		// not leak to everyone who can read the board.
@@ -2988,6 +2989,16 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "bad_request", msgTypeInvalid)
 		return
 	}
+	// S-PROMPT WP5 red-team control: agent-authored message content is
+	// checked for reserved prompt delimiters at save time. A compromised
+	// agent must not be able to plant forged <skquad_*> blocks in another
+	// agent's inbox (cross-agent injection surface, ADR-0011 D3). Same
+	// code as the prompt-tier rejection so clients can handle both alike.
+	if err := messageContentSanityCheck(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "prompt_contains_reserved_tokens",
+			"message content contains reserved <skquad_ block delimiters")
+		return
+	}
 	target, err := s.store.GetAgent(r.Context(), targetID)
 	if err != nil {
 		writeStorageError(w, err)
@@ -3434,7 +3445,36 @@ func (s *Server) recordWakeLatency(ctx context.Context, agent *domain.Agent, tas
 }
 
 func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
-	s.setCurrentAgentTaskStatus(w, r, domain.TaskInProgress, domain.AgentBusy, "task.start")
+	// S-PROMPT WP5 run-audit: the runtime reports the composed-prompt
+	// sha it is running under (or "env_legacy") in the start body so
+	// "what did the agent see for run X" is one server-side query.
+	// Old runtimes send no body — that stays valid (sha stays "").
+	var req struct {
+		PromptSHA string `json:"prompt_sha"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+	}
+	promptSHA := strings.TrimSpace(req.PromptSHA)
+	if promptSHA != "" && !validRunPromptSHA(promptSHA) {
+		writeError(w, http.StatusBadRequest, "invalid_prompt_sha", "prompt_sha must be a 64-char hex sha256 or the literal env_legacy")
+		return
+	}
+	updated, ok := s.updateCurrentAgentTaskStatus(w, r, domain.TaskInProgress, domain.AgentBusy, "task.start")
+	if !ok {
+		return
+	}
+	if promptSHA != "" {
+		principal := currentAgent(r.Context())
+		if _, err := s.store.SetTaskExecutionPromptSHA(r.Context(), principal.Agent.ID, updated.ID, promptSHA); err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		updated.PromptSHA = promptSHA
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 // parseClaimStartedAt leniently extracts a started_at timestamp from the
@@ -3713,14 +3753,6 @@ func (s *Server) resolveHeartbeatStatus(ctx context.Context, w http.ResponseWrit
 	return status, true
 }
 
-func (s *Server) setCurrentAgentTaskStatus(w http.ResponseWriter, r *http.Request, taskStatus domain.TaskStatus, agentStatus domain.AgentStatus, action string) {
-	updated, ok := s.updateCurrentAgentTaskStatus(w, r, taskStatus, agentStatus, action)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, updated)
-}
-
 func (s *Server) updateCurrentAgentTaskStatus(w http.ResponseWriter, r *http.Request, taskStatus domain.TaskStatus, agentStatus domain.AgentStatus, action string) (*domain.Task, bool) {
 	principal := currentAgent(r.Context())
 	task, err := s.store.GetTask(r.Context(), chi.URLParam(r, "taskID"))
@@ -3754,6 +3786,15 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	task, ok := s.loadAccessibleTask(w, r)
 	if !ok {
 		return
+	}
+	// S-PROMPT WP5 run-audit: attach the latest execution attempt so a
+	// single task-detail query answers "what prompt sha did this run
+	// use". FencingToken stays private to the claiming worker.
+	if exec, err := s.store.GetLatestTaskExecution(r.Context(), task.ID); err == nil {
+		task.ExecutionID = exec.ID
+		task.WorkerID = exec.WorkerID
+		task.LeaseExpiresAt = exec.LeaseExpiresAt
+		task.PromptSHA = exec.PromptSHA
 	}
 	writeJSON(w, http.StatusOK, task)
 }
