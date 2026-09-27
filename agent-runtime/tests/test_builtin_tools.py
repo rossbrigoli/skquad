@@ -86,11 +86,12 @@ class BuiltinToolsTestBase(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.tmp_path = pathlib.Path(self._tmp.name)
 
-    def ctx(self, control_plane_url="http://control-plane", credential="cred-1"):
+    def ctx(self, control_plane_url="http://control-plane", credential="cred-1", agent_id="agent-xyz"):
         return bt.BuiltinToolContext(
             workspace_dir=str(self.tmp_path / "ws"),
             control_plane_url=control_plane_url,
             agent_credential=credential,
+            agent_id=agent_id,
         )
 
 
@@ -403,6 +404,7 @@ class WebSearchToolTests(BuiltinToolsTestBase):
         def fake_urlopen(req, timeout=None):
             captured["url"] = req.full_url
             captured["auth"] = req.headers.get("Authorization")
+            captured["agent_id"] = req.headers.get("X-skquad-agent-id")
             captured["content_type"] = req.headers.get("Content-type")
             captured["body"] = json.loads(req.data.decode("utf-8"))
             return FakeHTTPResponse(
@@ -483,6 +485,23 @@ class BuiltinToolsConfigCacheTests(unittest.TestCase):
         assert calls[0].full_url == "http://cp/api/v1/agents/me/tools"
         assert calls[0].headers["Authorization"] == "Bearer cred"
         assert "If-None-Match" not in calls[0].headers
+
+    def test_cache_sends_agent_id_header_regression(self):
+        # authenticateAgent requires X-Skquad-Agent-ID alongside the bearer;
+        # without it every tools fetch 401s and chat wakes die (live incident).
+        calls = []
+
+        def opener(req):
+            calls.append(req)
+            return FakeHTTPResponse(200, _tools_body(), etag='"v1"')
+
+        cache = btc.BuiltinToolsConfigCache(
+            "http://cp", "cred", agent_id="agent-42", opener=opener
+        )
+        result = cache.fetch()
+        assert result.status == btc.OK
+        headers = {k.lower(): v for k, v in calls[0].headers.items()}
+        assert headers.get("x-skquad-agent-id") == "agent-42"
 
     def test_cache_second_call_sends_if_none_match_and_304_reuses_cache(self):
         calls = []

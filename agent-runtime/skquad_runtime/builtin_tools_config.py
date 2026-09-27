@@ -89,10 +89,12 @@ class BuiltinToolsConfigCache:
         self,
         control_plane_url: str,
         agent_credential: str,
+        agent_id: str = "",
         opener=None,
     ) -> None:
         self.control_plane_url = control_plane_url.rstrip("/")
         self.agent_credential = agent_credential
+        self.agent_id = agent_id
         self._opener = opener or urllib.request.urlopen
         self._lock = threading.Lock()
         self._etag: str = ""
@@ -124,6 +126,10 @@ class BuiltinToolsConfigCache:
         etag, cached_tools = self.snapshot()
         headers = {
             "Authorization": f"Bearer {self.agent_credential}",
+            # authenticateAgent requires the agent id header alongside the
+            # bearer token (same as prompt_fetch) — without it every fetch
+            # 401s and chat wakes die loudly.
+            "X-Skquad-Agent-ID": self.agent_id,
             "Accept": "application/json",
         }
         if etag:
