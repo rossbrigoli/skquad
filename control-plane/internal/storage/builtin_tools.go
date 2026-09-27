@@ -92,7 +92,10 @@ func (p *PostgresStore) UpdateBuiltinTool(ctx context.Context, name string, enab
 	}
 	updated.Policy = json.RawMessage(storedPolicy)
 
-	if err := p.writePendingAuditsTx(ctx, tx, updated.Name); err != nil {
+	// resourceID fallback must stay empty: audit_log.resource_id is a uuid
+	// column and built-in tool names are not uuids (the fallback would
+	// re-inject "exec" etc. and fail the cast — see fix/bt-audit-uuid).
+	if err := p.writePendingAuditsTx(ctx, tx, ""); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
