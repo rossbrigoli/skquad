@@ -60,11 +60,15 @@ type MemoryStore struct {
 	// history. Revisions are never pruned (retention: forever).
 	instanceSettings *domain.InstanceSettings
 	promptRevisions  []*domain.PromptRevision
+
+	// BT-2 (ADR-0012): built-in platform tool config, mirroring the
+	// Postgres builtin_tools_config table. Seeded disabled.
+	builtinTools map[string]*domain.BuiltinToolConfig
 }
 
 // NewMemoryStore creates an empty development store.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{
+	store := &MemoryStore{
 		users:            map[string]*domain.User{},
 		usersByEmail:     map[string]string{},
 		usersByOIDC:      map[string]string{},
@@ -93,7 +97,10 @@ func NewMemoryStore() *MemoryStore {
 		k8sOutbox:        map[string]*domain.KubernetesOutboxEvent{},
 		instanceSettings: &domain.InstanceSettings{},
 		promptRevisions:  []*domain.PromptRevision{},
+		builtinTools:     map[string]*domain.BuiltinToolConfig{},
 	}
+	store.seedBuiltinToolsLocked()
+	return store
 }
 
 func (m *MemoryStore) enqueueKubernetesOutboxLocked(aggregateType, aggregateID, operation string, payload domain.KubernetesOutboxPayload) {
