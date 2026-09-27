@@ -122,6 +122,11 @@ type Server struct {
 	// breakGlass is the OIDC-independent admin path. nil or disabled means the
 	// endpoints return 404 and no break-glass bearer is ever accepted.
 	breakGlass *breakglass.Auth
+	// platformPrompt is the operator platform-tier prompt override loaded
+	// once at startup from SKQUAD_PLATFORM_PROMPT_FILE ("" => embedded
+	// default). WP2's composePromptForAgent passes it as the composer's
+	// platformOverride argument (see platform_prompt.go).
+	platformPrompt string
 }
 
 // OIDCAuthenticator authenticates OIDC Authorization headers.
@@ -206,6 +211,15 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 		llmGateway = gw
 	}
 	s := &Server{cfg: cfg, store: store, oidcAuth: oidcAuth, crWriter: crWriter, llmGateway: llmGateway}
+
+	// Platform-prompt override is loaded at startup and fails loudly: an
+	// operator who configured a platform prompt must never silently get
+	// the embedded default instead (ADR-0011 D4).
+	platformPrompt, err := loadPlatformPromptOverride()
+	if err != nil {
+		panic(fmt.Sprintf("platform prompt override is configured but unusable: %v", err))
+	}
+	s.platformPrompt = platformPrompt
 
 	// Break-glass is built at startup. If it is ENABLED but misconfigured we fail
 	// loudly here rather than quietly running with a broken emergency path — a

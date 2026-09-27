@@ -282,6 +282,19 @@ def set_resume_note(task_dir: str | Path, note: str) -> None:
     save_journal(task_dir, data)
 
 
+def record_prompt_provenance(task_dir: str | Path, prompt_sha: str) -> bool:
+    """Record the composed-prompt sha in the run journal (S-PROMPT WP3).
+
+    ADR-0011 D5: "what did this agent actually see" must be a queryable
+    fact per run. ``prompt_sha`` is the control-plane composition sha256,
+    or ``"env_legacy"`` when the transitional env fallback was used.
+    Best-effort like the rest of the journal (never raises).
+    """
+    data = _ensure_lists(load_journal(task_dir) or {})
+    data["prompt_sha"] = prompt_sha
+    return save_journal(task_dir, data)
+
+
 def read_resume_note(task_dir: str | Path) -> str:
     """Read the persisted resume note (handler-side); '' when absent."""
     data = load_journal(task_dir)
