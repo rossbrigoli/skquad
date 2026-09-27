@@ -8,6 +8,7 @@ tests flip it on explicitly to exercise the composed path.
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,6 +28,9 @@ from skquad_runtime.runtime import (
     wrap_human,
     wrap_untrusted,
 )
+
+# BT-RUNTIME: unittest discover (CI) skips conftest.py — see test_runtime.py.
+os.environ.setdefault("SKQUAD_BUILTIN_TOOLS_ENABLED", "false")
 
 COMPOSED = "<skquad_platform trust=\"platform\">platform rules</skquad_platform>"
 SHA = "ab" * 32

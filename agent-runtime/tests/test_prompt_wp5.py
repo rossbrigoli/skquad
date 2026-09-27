@@ -11,6 +11,7 @@ Covers the WP5 runtime contract:
 """
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,6 +34,9 @@ from test_prompt_wp3 import (
     opener_ok,
     wp3_config,
 )
+
+# BT-RUNTIME: unittest discover (CI) skips conftest.py — see test_runtime.py.
+os.environ.setdefault("SKQUAD_BUILTIN_TOOLS_ENABLED", "false")
 
 
 class StartTaskPayloadTest(unittest.TestCase):

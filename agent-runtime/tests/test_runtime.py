@@ -38,6 +38,13 @@ from skquad_runtime.runtime import (
     usage_prompt_tokens,
 )
 
+# BT-RUNTIME: CI runs ``unittest discover``, which does NOT load pytest's
+# conftest.py. Legacy tests must default the builtin-tools kill switch off
+# here too, or fetch-at-wake (production default: enabled) would try to
+# reach a control plane these tests do not have. test_builtin_tools.py
+# (pytest-only) opts in explicitly.
+os.environ.setdefault("SKQUAD_BUILTIN_TOOLS_ENABLED", "false")
+
 
 class RuntimeBootstrapTest(unittest.TestCase):
     def test_load_bootstrap_config_from_environment(self):

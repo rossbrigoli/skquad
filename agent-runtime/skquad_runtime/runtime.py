@@ -48,6 +48,11 @@ from .prompt_fetch import (
     PromptFetcher,
     prompt_fetch_enabled,
 )
+from .builtin_tools_config import (
+    OK as BUILTIN_TOOLS_OK,
+    BuiltinToolsConfigCache,
+    BuiltinToolsFetchError,
+)
 
 
 DEFAULT_CREDENTIALS_DIR = Path("/var/run/skquad/credentials")
@@ -1069,7 +1074,20 @@ class LLMMessageHandler:
     ) -> tuple[MessageResult | None, object, list[dict[str, object]]]:
         chat_messages = self._build_chat_messages(message, config, prompted)
         completion = self._completion or self._default_completion()
-        tools = self.tool_schemas()
+        # BT-RUNTIME: builtin tools (when enabled) join the chat tool list.
+        # A fetch failure fails the turn loudly — never answer with a
+        # partially-known tool set.
+        from .builtin_tools import compose_builtin_and_plugins
+
+        try:
+            plugins = compose_builtin_and_plugins(load_builtin_tools(config), self.plugins)
+        except BuiltinToolsFetchError as exc:
+            return (
+                MessageResult(ok=False, summary=f"builtin-tools fetch failed: {exc}"),
+                None,
+                [],
+            )
+        tools = self.tool_schemas(plugins)
         tool_calls_log: list[dict[str, object]] = []
         max_steps = max(1, self.max_tool_steps or DEFAULT_CHAT_TOOL_STEPS)
         response: object = None
@@ -1096,7 +1114,9 @@ class LLMMessageHandler:
                     response,
                     tool_calls_log,
                 )
-            self._append_tool_results(chat_messages, assistant, calls, config, tool_calls_log)
+            self._append_tool_results(
+                chat_messages, assistant, calls, config, tool_calls_log, plugins
+            )
         return None, response, tool_calls_log
 
     def _append_tool_results(
@@ -1106,12 +1126,13 @@ class LLMMessageHandler:
         calls: list[ToolCall],
         config: BootstrapConfig,
         tool_calls_log: list[dict[str, object]],
+        plugins: list[RuntimePlugin] | None = None,
     ) -> None:
         chat_messages.append(
             assistant_message(str(message_value(assistant, "content") or ""), calls)
         )
         for call in calls:
-            result = invoke_plugin_tool(call, config, self.plugins)
+            result = invoke_plugin_tool(call, config, self.plugins if plugins is None else plugins)
             tool_calls_log.append(
                 {
                     "name": call.name,
@@ -1159,9 +1180,9 @@ class LLMMessageHandler:
 
         return MessageResult(ok=True, summary="replied to user chat message", model_used=model_used)
 
-    def tool_schemas(self) -> list[Mapping[str, object]]:
+    def tool_schemas(self, plugins: list[RuntimePlugin] | None = None) -> list[Mapping[str, object]]:
         schemas: list[Mapping[str, object]] = []
-        for plugin in self.plugins:
+        for plugin in (self.plugins if plugins is None else plugins):
             schemas.extend(plugin.tools())
         return schemas
 
@@ -1236,6 +1257,13 @@ class LiteLLMTaskHandler:
         resources = context.resources if context is not None else self.available_resources(config)
         memories = context.memory if context is not None else []
         plugins = self.available_plugins(resources)
+        # BT-RUNTIME: platform builtins are prepended AFTER the per-agent
+        # resource-grant filtering, so resource grants can never strip an
+        # enabled builtin. BuiltinToolsFetchError propagates out of the
+        # handler — the wake fails loudly (ADR-0011 D4 pattern).
+        from .builtin_tools import compose_builtin_and_plugins
+
+        plugins = compose_builtin_and_plugins(load_builtin_tools(config), plugins)
         resume_note = self._resume_note(config, task)
         # S-PROMPT WP3: fetch-at-wake. The system message is the
         # control-plane composed prompt; a fetch failure raises before any
@@ -1427,6 +1455,64 @@ def invoke_plugin_tool(
         return ToolResult(content=str(result))
     except Exception as exc:
         return ToolResult(content=f"tool {call.name!r} failed: {exc}", ok=False)
+
+
+# --- BT-RUNTIME: builtin-tools wiring (ADR-0012) ---------------------------
+# One shared, ETag-aware config cache per process, built lazily from the
+# same control-plane URL + agent credential the composed-prompt fetch
+# uses (PromptedRuntime._agent_credential / BootstrapConfig). The
+# builtin_tools module is imported lazily inside the loader because it
+# imports this module (module-level import would be circular).
+
+_BUILTIN_TOOLS_CACHE: BuiltinToolsConfigCache | None = None
+_BUILTIN_TOOLS_CACHE_LOCK = threading.Lock()
+
+
+def builtin_tools_cache(config: BootstrapConfig) -> BuiltinToolsConfigCache:
+    """Process-shared builtin-tools config cache (built once, lazily)."""
+    global _BUILTIN_TOOLS_CACHE
+    with _BUILTIN_TOOLS_CACHE_LOCK:
+        if _BUILTIN_TOOLS_CACHE is None:
+            _BUILTIN_TOOLS_CACHE = BuiltinToolsConfigCache(
+                config.control_plane_url,
+                read_secret_value(config.agent_credential_path) or "",
+            )
+        return _BUILTIN_TOOLS_CACHE
+
+
+def load_builtin_tools(config: BootstrapConfig) -> list:
+    """Enabled builtin tools for this wake, or [] (BT-RUNTIME).
+
+    - Kill switch ``SKQUAD_BUILTIN_TOOLS_ENABLED`` false -> [] with no
+      fetch at all (plugins unchanged).
+    - ``LEGACY_NO_ENDPOINT`` (404) -> [] (control plane predates the
+      endpoint; plugins unchanged).
+    - Network/5xx/malformed -> :class:`BuiltinToolsFetchError` propagates;
+      callers must fail the wake loudly, never run with a partially-known
+      tool set (mirrors the ADR-0011 D4 prompt policy).
+    """
+    from .builtin_tools import BuiltinToolContext, build_builtin_tools
+    from .builtin_tools_config import builtin_tools_enabled
+
+    if not builtin_tools_enabled():
+        LOGGER.info("builtin_tools disabled (SKQUAD_BUILTIN_TOOLS_ENABLED=false)")
+        return []
+    if not config.control_plane_url:
+        raise BuiltinToolsFetchError(
+            "SKQUAD_CONTROL_PLANE_URL is required to fetch the builtin-tools config"
+        )
+    result = builtin_tools_cache(config).fetch()
+    if result.status != BUILTIN_TOOLS_OK:
+        # LEGACY_NO_ENDPOINT: no builtins, plugins unchanged.
+        return []
+    context = BuiltinToolContext(
+        # Agent-level workspace base (PVC-aware), same resolution the
+        # task dirs are built on.
+        workspace_dir=str(resolve_workspace_base(config.workspace_base)),
+        control_plane_url=config.control_plane_url,
+        agent_credential=read_secret_value(config.agent_credential_path) or "",
+    )
+    return build_builtin_tools({"tools": result.tools}, context)
 
 
 def load_runtime_plugins(
