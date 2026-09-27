@@ -37,6 +37,7 @@ type Store interface {
 	AuditStore
 	WorkNotificationStore
 	PromptTierStore
+	BuiltinToolStore
 }
 
 // PromptTierStore persists the stored prompt tiers (organization via

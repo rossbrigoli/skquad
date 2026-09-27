@@ -27,6 +27,7 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/config"
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 	"github.com/rossbrigoli/skquad/control-plane/internal/promptcompo"
+	"github.com/rossbrigoli/skquad/control-plane/internal/search"
 	"github.com/rossbrigoli/skquad/control-plane/internal/storage"
 )
 
@@ -112,6 +113,7 @@ type Store interface {
 	storage.InboxStore
 	storage.WorkNotificationStore
 	storage.PromptTierStore
+	storage.BuiltinToolStore
 }
 
 // Server owns HTTP routing and request-scoped dependencies.
@@ -129,6 +131,11 @@ type Server struct {
 	// default). WP2's composePromptForAgent passes it as the composer's
 	// platformOverride argument (see platform_prompt.go).
 	platformPrompt string
+	// searchProviders backs the BT-2 web_search proxy (ADR-0012 §3).
+	// Built at startup from control-plane secrets; keyed by provider name
+	// (duckduckgo is always present — keyless). A provider whose API key
+	// is unset is absent, which the proxy maps to 502.
+	searchProviders map[string]search.Provider
 }
 
 // OIDCAuthenticator authenticates OIDC Authorization headers.
@@ -185,22 +192,30 @@ func New(cfg *config.Config, store Store) http.Handler {
 // NewWithCRWriter returns an HTTP handler that mirrors squad/agent mutations
 // to Kubernetes CRs.
 func NewWithCRWriter(cfg *config.Config, store Store, crWriter CRWriter) http.Handler {
-	return newServer(cfg, store, nil, crWriter)
+	return newServer(cfg, store, nil, crWriter, nil)
 }
 
 // NewWithDependencies returns an HTTP handler with explicit optional
 // integrations for tests and production startup.
 func NewWithDependencies(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter) http.Handler {
-	return newServer(cfg, store, oidcAuth, crWriter)
+	return newServer(cfg, store, oidcAuth, crWriter, nil)
 }
 
 // NewWithOIDCAuthenticator returns an HTTP handler using oidcAuth when
 // SKQUAD_AUTH_MODE=oidc.
 func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator) http.Handler {
-	return newServer(cfg, store, oidcAuth, nil)
+	return newServer(cfg, store, oidcAuth, nil, nil)
 }
 
-func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter) http.Handler {
+// NewWithSearchProviders returns an HTTP handler whose web_search proxy
+// uses the given providers (BT-2). A nil map builds the production set
+// from config secrets (duckduckgo always; brave/perplexity only when
+// their API keys are set). Tests inject stub providers here.
+func NewWithSearchProviders(cfg *config.Config, store Store, providers map[string]search.Provider) http.Handler {
+	return newServer(cfg, store, nil, nil, providers)
+}
+
+func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, searchProviders map[string]search.Provider) http.Handler {
 	if crWriter == nil {
 		crWriter = noopCRWriter{}
 	}
@@ -213,6 +228,10 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 		llmGateway = gw
 	}
 	s := &Server{cfg: cfg, store: store, oidcAuth: oidcAuth, crWriter: crWriter, llmGateway: llmGateway}
+	if searchProviders == nil {
+		searchProviders = defaultSearchProviders(cfg)
+	}
+	s.searchProviders = searchProviders
 
 	// Platform-prompt override is loaded at startup and fails loudly: an
 	// operator who configured a platform prompt must never silently get
@@ -275,6 +294,15 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			// S-PROMPT WP2: composed effective prompt for the runtime
 			// (ETag = composition sha256, ADR-0011 D4).
 			r.Get("/prompt", s.getMyComposedPrompt)
+			// BT-2: built-in tools config for the runtime (ETag, ADR-0012 §2).
+			r.Get("/tools", s.getMyBuiltinTools)
+		})
+
+		// BT-2: built-in tool proxies (agent-credential auth). Keys stay
+		// server-side; the runtime only ever sees results.
+		r.Route("/tools", func(r chi.Router) {
+			r.Use(s.authenticateAgent)
+			r.Post("/web_search", s.agentWebSearch)
 		})
 
 		r.Group(func(r chi.Router) {
@@ -361,6 +389,11 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/metering/summary", s.getMeteringSummary)
 			r.Get("/audit", s.listAudit)
 			r.Post("/admin/gateway/keys/reconcile", s.reconcileGatewayKeys)
+
+			// BT-2: built-in platform tools admin surface (platform_admin
+			// only, ADR-0012 §2).
+			r.Get("/admin/tools", s.listBuiltinToolsAdmin)
+			r.Patch("/admin/tools/{name}", s.patchBuiltinTool)
 
 			// S-PROMPT WP2: prompt tier APIs (ADR-0011 §3).
 			r.Get("/settings/prompt", s.getOrgPrompt)
@@ -4397,6 +4430,27 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+// defaultSearchProviders builds the production provider set from
+// control-plane secrets (BT-2, ADR-0012 §3): duckduckgo is always
+// available (keyless); brave/perplexity are registered only when their
+// API key is present. A selected-but-absent provider maps to 502 at
+// request time — keys never leave this process.
+func defaultSearchProviders(cfg *config.Config) map[string]search.Provider {
+	providers := map[string]search.Provider{
+		"duckduckgo": search.NewDuckDuckGo(&http.Client{Timeout: 30 * time.Second}),
+	}
+	if cfg == nil {
+		return providers
+	}
+	if cfg.SearchBraveAPIKey != "" {
+		providers["brave"] = search.NewBrave(&http.Client{Timeout: 30 * time.Second}, cfg.SearchBraveAPIKey)
+	}
+	if cfg.SearchPerplexityAPIKey != "" {
+		providers["perplexity"] = search.NewPerplexity(&http.Client{Timeout: 60 * time.Second}, cfg.SearchPerplexityAPIKey)
+	}
+	return providers
 }
 
 func namespaceFor(name string) string {

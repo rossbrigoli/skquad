@@ -72,6 +72,13 @@ type Config struct {
 	LiteLLMMasterKey     string // LiteLLM proxy admin key used for virtual-key provisioning
 	GatewayCallbackToken string // internal bearer token for gateway callbacks into the API
 
+	// Built-in web_search providers (BT-2, ADR-0012 §3). SECRETS: they
+	// must come from a SealedSecret on the control-plane deployment and
+	// never cross to the agent runtime. Empty key = provider unavailable
+	// (selected provider without a key → 502 at request time).
+	SearchBraveAPIKey      string // SKQUAD_SEARCH_BRAVE_API_KEY - SECRET
+	SearchPerplexityAPIKey string // SKQUAD_SEARCH_PERPLEXITY_API_KEY - SECRET
+
 	// Memory
 	MemoryEmbeddingsEnabled bool   // semantic memory retrieval uses embeddings only when true
 	MemoryEmbeddingModel    string // embedding model name for generated vectors
@@ -133,6 +140,8 @@ func Load() (*Config, error) {
 		LiteLLMAdminURL:         os.Getenv("SKQUAD_LITELLM_ADMIN_URL"),
 		LiteLLMMasterKey:        os.Getenv("SKQUAD_LITELLM_MASTER_KEY"),
 		GatewayCallbackToken:    os.Getenv("SKQUAD_GATEWAY_CALLBACK_TOKEN"),
+		SearchBraveAPIKey:       strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_BRAVE_API_KEY")),
+		SearchPerplexityAPIKey:  strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_PERPLEXITY_API_KEY")),
 		MemoryEmbeddingsEnabled: envBool("SKQUAD_MEMORY_EMBEDDINGS_ENABLED", false),
 		MemoryEmbeddingModel:    os.Getenv("SKQUAD_MEMORY_EMBEDDING_MODEL"),
 		DefaultIdleTimeout:      envDuration("SKQUAD_DEFAULT_IDLE_TIMEOUT", 5*time.Minute),
