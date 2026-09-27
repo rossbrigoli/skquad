@@ -45,6 +45,7 @@ class BuiltinToolContext:
     workspace_dir: str
     control_plane_url: str
     agent_credential: str
+    agent_id: str = ""
 
 
 def _scrubbed_env() -> dict[str, str]:
@@ -356,6 +357,7 @@ class WebSearchTool:
             method="POST",
             headers={
                 "Authorization": f"Bearer {self.context.agent_credential}",
+                "X-Skquad-Agent-ID": self.context.agent_id,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },

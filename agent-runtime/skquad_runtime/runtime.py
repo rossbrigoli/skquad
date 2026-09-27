@@ -1476,6 +1476,7 @@ def builtin_tools_cache(config: BootstrapConfig) -> BuiltinToolsConfigCache:
             _BUILTIN_TOOLS_CACHE = BuiltinToolsConfigCache(
                 config.control_plane_url,
                 read_secret_value(config.agent_credential_path) or "",
+                agent_id=config.agent_id,
             )
         return _BUILTIN_TOOLS_CACHE
 
@@ -1511,6 +1512,7 @@ def load_builtin_tools(config: BootstrapConfig) -> list:
         workspace_dir=str(resolve_workspace_base(config.workspace_base)),
         control_plane_url=config.control_plane_url,
         agent_credential=read_secret_value(config.agent_credential_path) or "",
+        agent_id=config.agent_id,
     )
     return build_builtin_tools({"tools": result.tools}, context)
 
