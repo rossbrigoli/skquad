@@ -16,11 +16,13 @@ type Caps struct {
 }
 
 // DefaultCaps returns the ADR-0011 D6 budgets (decided by Ross 2026-09-27:
-// agent tier 8k hard; composed total raised to 16k to accommodate).
+// agent tier 8k hard; composed total raised to 16k to accommodate.
+// S-148, 2026-09-28: organization tier raised to 4k hard, soft scaled to
+// 3k to keep the ~75% soft/hard ratio used by the other tiers).
 func DefaultCaps() map[TierName]Caps {
 	return map[TierName]Caps{
 		TierPlatform:     {Soft: 3000, Hard: 4000},
-		TierOrganization: {Soft: 1500, Hard: 2000},
+		TierOrganization: {Soft: 3000, Hard: 4000},
 		TierSquad:        {Soft: 1500, Hard: 2000},
 		TierAgent:        {Soft: 6000, Hard: 8000},
 		TierComposed:     {Soft: 12000, Hard: 16000},

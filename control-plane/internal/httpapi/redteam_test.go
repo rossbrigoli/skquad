@@ -181,8 +181,8 @@ func TestRedTeamTemplateEscape(t *testing.T) {
 	require.Contains(t, env.Error.Message, "agent.credentials")
 }
 
-// Case 6: over-cap save — a 10k-token org prompt against the 2k hard cap
-// returns 400 WITH the token report.
+// Case 6: over-cap save — a 10k-token org prompt against the 4k hard cap
+// (S-148) returns 400 WITH the token report.
 func TestRedTeamOverCapOrgPrompt(t *testing.T) {
 	t.Parallel()
 	handler := New(testConfig(), storage.NewMemoryStore())
@@ -194,7 +194,7 @@ func TestRedTeamOverCapOrgPrompt(t *testing.T) {
 		map[string]any{"org_prompt": huge}, http.StatusBadRequest, &env)
 	require.Equal(t, "prompt_token_cap_exceeded", env.Error.Code)
 	require.Greater(t, env.Error.Tokens, 10_000, "token report must show the attempted size")
-	require.Equal(t, 2000, env.Error.Hard, "token report must show the hard cap")
+	require.Equal(t, 4000, env.Error.Hard, "token report must show the hard cap")
 }
 
 // Split-token trick: the attack string is assembled from two halves so no

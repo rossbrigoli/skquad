@@ -68,6 +68,34 @@ func TestOrgPromptPutRequiresOrgPromptField(t *testing.T) {
 	require.Equal(t, "bad_request", body["error"]["code"])
 }
 
+// S-148: organization tier hard cap raised from 2,000 to 4,000 tokens.
+// Exactly 4,000 tokens (16,000 ASCII bytes) must save; 4,001 must be rejected.
+func TestOrgPromptCapRaisedTo4000(t *testing.T) {
+	t.Parallel()
+	handler := oidcAdminUserHandler(t)
+
+	atCap := strings.Repeat("a", 4*4000) // 16,000 bytes → exactly 4000 tokens
+	var saved orgPromptResponse
+	doJSONAuth(t, handler, authAdmin, http.MethodPut, pathOrgPrompt, map[string]any{"org_prompt": atCap}, http.StatusOK, &saved)
+	require.Equal(t, 4000, saved.Tokens)
+	require.Equal(t, 4000, saved.HardCap)
+	require.Equal(t, 3000, saved.SoftWarn)
+	require.NotEmpty(t, saved.Warnings, "expected soft warning above 3k org tokens")
+
+	overCap := strings.Repeat("a", 4*4000+1) // 4001 tokens > hard cap
+	var body struct {
+		Error struct {
+			Code   string `json:"code"`
+			Tokens int    `json:"tokens"`
+			Hard   int    `json:"hard_cap"`
+		} `json:"error"`
+	}
+	doJSONAuth(t, handler, authAdmin, http.MethodPut, pathOrgPrompt, map[string]any{"org_prompt": overCap}, http.StatusBadRequest, &body)
+	require.Equal(t, "prompt_token_cap_exceeded", body.Error.Code)
+	require.Equal(t, 4001, body.Error.Tokens)
+	require.Equal(t, 4000, body.Error.Hard)
+}
+
 func TestSquadPromptForgeryRejected(t *testing.T) {
 	t.Parallel()
 	handler := New(testConfig(), storage.NewMemoryStore())
@@ -211,7 +239,8 @@ func TestValidatePromptDryRun(t *testing.T) {
 
 	var overCap map[string]any
 	doJSON(t, handler, http.MethodPost, pathPromptValidate, map[string]any{
-		"scope": "organization", "content": strings.Repeat("b", 8001),
+		// 16,001 ASCII bytes → 4001 tokens > org hard cap 4000 (S-148).
+		"scope": "organization", "content": strings.Repeat("b", 16001),
 	}, http.StatusOK, &overCap)
 	require.Equal(t, false, overCap["valid"])
 

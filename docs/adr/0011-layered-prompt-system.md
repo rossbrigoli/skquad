@@ -102,7 +102,7 @@ text; `len(content)/3.5` conservative for mixed) — no live tokenizer call:
 | Tier | Soft warn | Hard cap |
 |------|-----------|----------|
 | Platform override | 3,000 tok | 4,000 tok |
-| Organization | 1,500 tok | 2,000 tok |
+| Organization | 3,000 tok | 4,000 tok |
 | Squad | 1,500 tok | 2,000 tok |
 | Agent | 6,000 tok | 8,000 tok |
 | Composed total | 12,000 tok | 16,000 tok |
@@ -110,6 +110,12 @@ text; `len(content)/3.5` conservative for mixed) — no live tokenizer call:
 > Decided by Ross 2026-09-27: agent tier raised to 8,000 tok hard. The
 > composed total was raised to 16,000 tok accordingly (4k platform + 2k org
 > + 2k squad + 8k agent = 16k worst case).
+>
+> Decided by Ross 2026-09-28 (S-148): organization tier raised to 4,000 tok
+> hard (soft 3,000, keeping the ~75% soft/hard ratio). Note: with every tier
+> simultaneously maxed the worst-case composed size is 18k against the 16k
+> composed hard cap; the composed cap was intentionally left unchanged —
+> operators can raise it via `SKQUAD_PROMPT_MAX_TOKENS_COMPOSED` if needed.
 
 Caps are operator-configurable via env (`SKQUAD_PROMPT_MAX_TOKENS_*`).
 Exceeding hard cap → HTTP 400; soft warn surfaced in UI.
