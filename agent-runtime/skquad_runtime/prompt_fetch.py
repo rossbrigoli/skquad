@@ -101,7 +101,12 @@ class ComposedPromptCache:
 
 
 def prompt_fetch_enabled(environ: Mapping[str, str] | None = None) -> bool:
-    """Transitional feature flag (SKQUAD_PROMPT_FETCH_ENABLED, default true).
+    """Transitional feature flag (SKQUAD_PROMPT_FETCH_ENABLED, default FALSE).
+
+    Opt-in: the composed-prompt path is only taken when the operator
+    explicitly enables it (Helm env after the control-plane endpoint is
+    live). Unset means the legacy env prompt path — safe for staged
+    rollout and keeps pre-WP3 behaviour as the default.
 
     Read at call time from the live environment so operators can pin an
     agent to the legacy env prompt path without a config-schema change.
@@ -111,8 +116,8 @@ def prompt_fetch_enabled(environ: Mapping[str, str] | None = None) -> bool:
     env = environ if environ is not None else os.environ
     raw = env.get("SKQUAD_PROMPT_FETCH_ENABLED")
     if raw is None:
-        return True
-    return raw.strip().lower() not in ("0", "false", "no", "off")
+        return False
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 class PromptFetcher:

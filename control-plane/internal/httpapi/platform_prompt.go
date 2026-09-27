@@ -19,6 +19,7 @@ package httpapi
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/promptcompo"
@@ -34,6 +35,12 @@ func loadPlatformPromptOverride() (string, error) {
 	if path == "" {
 		return "", nil
 	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("SKQUAD_PLATFORM_PROMPT_FILE=%s must be an absolute path", path)
+	}
+	// #nosec G703 -- path is the operator-controlled SKQUAD_PLATFORM_PROMPT_FILE
+	// env var (Helm-rendered at deploy time), required absolute above; it is
+	// never derived from user/request input.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("SKQUAD_PLATFORM_PROMPT_FILE=%s is unreadable: %w", path, err)
