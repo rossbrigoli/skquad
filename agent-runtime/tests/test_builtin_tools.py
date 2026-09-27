@@ -164,6 +164,34 @@ class ExecToolTests(BuiltinToolsTestBase):
         assert "hello" in result.content
         assert run.call_args.kwargs["cwd"] == str(self.tmp_path / "ws")
 
+    def test_exec_creates_missing_workspace_dir(self):
+        # Regression (chat e2e): the chat path never runs task-workspace setup,
+        # so the workspace base may not exist; exec must create it instead of
+        # dying with ENOENT before the command runs.
+        missing = self.tmp_path / "ws" / "nested" / "deeper"
+        tool = bt.ExecTool({}, self.ctx())
+        tool.context.workspace_dir = str(missing)
+        result = tool.invoke(
+            ToolCall(id="c", name="exec", arguments={"command": "echo hello"}), None
+        )
+        assert result.ok is True, result.content
+        assert "hello" in result.content
+        assert missing.is_dir()
+
+    def test_exec_uncreatable_workspace_dir_fails_loudly(self):
+        # If the workspace dir cannot be created, report it instead of a raw
+        # subprocess ENOENT (and never run the command).
+        blocker = self.tmp_path / "ws"
+        blocker.write_text("not a dir")  # mkdir(parents=True) must fail: ENOTDIR
+        tool = bt.ExecTool({}, self.ctx())
+        tool.context.workspace_dir = str(blocker / "child")
+        result = tool.invoke(
+            ToolCall(id="c", name="exec", arguments={"command": "echo nope"}), None
+        )
+        assert result.ok is False
+        assert "cannot create workspace dir" in result.content
+        assert "nope" not in result.content
+
     def test_exec_timeout_fails(self):
         tool = bt.ExecTool({"timeoutSeconds": 2}, self.ctx())
         with mock.patch(
