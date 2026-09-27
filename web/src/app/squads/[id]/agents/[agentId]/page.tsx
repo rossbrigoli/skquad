@@ -10,6 +10,7 @@ import { AppShell } from "../../../../../components/AppShell";
 import { Collapsible } from "../../../../../components/Collapsible";
 import { ConfirmDialog } from "../../../../../components/ConfirmDialog";
 import { EmptyState } from "../../../../../components/EmptyState";
+import { MarkdownMessage } from "../../../../../components/MarkdownMessage";
 import { EffectivePromptPanel } from "../../../../../components/EffectivePromptPanel";
 import { PromptRevisionsPanel } from "../../../../../components/PromptRevisionsPanel";
 import { MetricTile } from "../../../../../components/MetricTile";
@@ -530,7 +531,11 @@ function ChatThread({
                     <span className="chat-time">{formatRelativeTime(msg.created_at)}</span>
                     {!fromUser && msg.status ? <span className="chat-status mono">{msg.status}</span> : null}
                   </div>
-                  <div className="chat-text">{msg.payload?.message || "(no text)"}</div>
+                  {msg.payload?.message ? (
+                    <MarkdownMessage text={msg.payload.message} />
+                  ) : (
+                    <div className="chat-text">(no text)</div>
+                  )}
                   {toolCalls.length > 0 ? (
                     <div className="chat-tools">
                       {toolCalls.map((call, idx) => (
