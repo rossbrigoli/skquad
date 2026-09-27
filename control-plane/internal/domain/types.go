@@ -44,9 +44,13 @@ const (
 // Squad is a team of agents with a mission and operating model. It maps to a
 // Kubernetes namespace (see docs/domain-model.md).
 type Squad struct {
-	ID             string          `json:"id"`
-	Name           string          `json:"name"`
-	Mission        string          `json:"mission"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Mission string `json:"mission"`
+	// Prompt is the layer-3 squad prompt (ADR-0011). Mission stays the
+	// short listing summary; Prompt is the full tier text composed between
+	// the organization and agent blocks.
+	Prompt         string          `json:"prompt,omitempty"`
 	OperatingModel json.RawMessage `json:"operating_model"`
 	OwnerID        string          `json:"owner_id"`
 	Namespace      string          `json:"namespace"`
@@ -67,12 +71,12 @@ const (
 // Agent is a member of a squad. It runs in its own pod and has its own
 // identity, credentials, and permission set.
 type Agent struct {
-	ID              string `json:"id"`
-	SquadID         string `json:"squad_id"`
-	Name            string `json:"name"`
-	Role            string `json:"role"`
-	SystemPrompt    string `json:"system_prompt,omitempty"`
-	IdentityID      string `json:"identity_id,omitempty"`
+	ID           string `json:"id"`
+	SquadID      string `json:"squad_id"`
+	Name         string `json:"name"`
+	Role         string `json:"role"`
+	SystemPrompt string `json:"system_prompt,omitempty"`
+	IdentityID   string `json:"identity_id,omitempty"`
 	// AIModelID is the bound primary model (ADR-0010 D4). Nullable until the
 	// WP8 backfill makes it required; must be granted to the agent's owner.
 	AIModelID string `json:"ai_model_id,omitempty"`
@@ -86,11 +90,11 @@ type Agent struct {
 	// outbox writer. StorageClass is deliberately NOT part of this surface:
 	// tenant-selectable storage classes are a portability/cost footgun, so
 	// only the platform (Helm/env at the control plane) may set it.
-	StorageEnabled bool   `json:"storage_enabled"`
-	StorageSize    string `json:"storage_size,omitempty"`
-	Status            AgentStatus     `json:"status"`
-	CreatedAt         time.Time       `json:"created_at"`
-	UpdatedAt         time.Time       `json:"updated_at"`
+	StorageEnabled bool        `json:"storage_enabled"`
+	StorageSize    string      `json:"storage_size,omitempty"`
+	Status         AgentStatus `json:"status"`
+	CreatedAt      time.Time   `json:"created_at"`
+	UpdatedAt      time.Time   `json:"updated_at"`
 	// WorkspaceSecrets is derived from the agent's project_workspace grants at
 	// CR-write time (outbox worker); it is NOT persisted on the agents table.
 	// See ADR-0009 and the operator WorkspaceSecret spec.
@@ -391,17 +395,17 @@ const (
 
 // LLMProvider is a model endpoint registered in the registry (BYOM).
 type LLMProvider struct {
-	ID           string          `json:"id"`
-	Name         string          `json:"name"`
-	Kind         string          `json:"kind"` // openai, anthropic, ollama, ...
-	BaseURL      string          `json:"base_url"`
-	APIKeyRef    string         `json:"api_key_ref"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind"` // openai, anthropic, ollama, ...
+	BaseURL   string `json:"base_url"`
+	APIKeyRef string `json:"api_key_ref"`
 	// WP8 (0014): legacy default_model / models / pricing fields removed.
 	// Model configuration lives exclusively on ai_models rows bound via
 	// agents.ai_model_id (ADR-0010).
 	Status       ResourceStatus `json:"status"`
-	RegisteredBy string          `json:"registered_by"`
-	CreatedAt    time.Time       `json:"created_at"`
+	RegisteredBy string         `json:"registered_by"`
+	CreatedAt    time.Time      `json:"created_at"`
 }
 
 // AIModel is an admin-registered, grantable model (ADR-0010 D1). It
@@ -552,4 +556,44 @@ type AuditEntry struct {
 	SquadID      string          `json:"squad_id,omitempty"`
 	Metadata     json.RawMessage `json:"metadata"`
 	Timestamp    time.Time       `json:"timestamp"`
+}
+
+// Prompt tier scopes (S-PROMPT WP2, ADR-0011). The platform tier is not
+// stored here: it is embedded in the binary / operator-file overridden at
+// deploy time, so it never appears in prompt_revisions.
+const (
+	PromptScopeOrganization = "organization"
+	PromptScopeSquad        = "squad"
+	PromptScopeAgent        = "agent"
+)
+
+// ValidPromptScope reports whether scope is a stored prompt tier.
+func ValidPromptScope(scope string) bool {
+	switch scope {
+	case PromptScopeOrganization, PromptScopeSquad, PromptScopeAgent:
+		return true
+	}
+	return false
+}
+
+// InstanceSettings is the single-row organization-level configuration
+// (layer 2 of the prompt hierarchy). Seeded by migration 0016.
+type InstanceSettings struct {
+	OrgName   string    `json:"org_name"`
+	OrgPrompt string    `json:"org_prompt"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UpdatedBy string    `json:"updated_by"`
+}
+
+// PromptRevision is one append-only entry in the prompt revision history.
+// Retention is forever (ADR-0011 D5): rows are never updated or deleted.
+type PromptRevision struct {
+	ID      string    `json:"id"`
+	Scope   string    `json:"scope"`
+	ScopeID string    `json:"scope_id"`
+	Content string    `json:"content"`
+	Tokens  int       `json:"tokens"`
+	SHA256  string    `json:"sha256"`
+	SavedBy string    `json:"saved_by"`
+	SavedAt time.Time `json:"saved_at"`
 }

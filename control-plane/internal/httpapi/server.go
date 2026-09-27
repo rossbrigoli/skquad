@@ -26,6 +26,7 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/breakglass"
 	"github.com/rossbrigoli/skquad/control-plane/internal/config"
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
+	"github.com/rossbrigoli/skquad/control-plane/internal/promptcompo"
 	"github.com/rossbrigoli/skquad/control-plane/internal/storage"
 )
 
@@ -110,6 +111,7 @@ type Store interface {
 	storage.MessageStore
 	storage.InboxStore
 	storage.WorkNotificationStore
+	storage.PromptTierStore
 }
 
 // Server owns HTTP routing and request-scoped dependencies.
@@ -256,6 +258,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Post("/tasks/{taskID}/block", s.blockCurrentAgentTask)
 			r.Post("/tasks/{taskID}/workspace", s.reportCurrentAgentTaskWorkspace)
 			r.Post("/heartbeat", s.currentAgentHeartbeat)
+			// S-PROMPT WP2: composed effective prompt for the runtime
+			// (ETag = composition sha256, ADR-0011 D4).
+			r.Get("/prompt", s.getMyComposedPrompt)
 		})
 
 		r.Group(func(r chi.Router) {
@@ -342,6 +347,13 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/metering/summary", s.getMeteringSummary)
 			r.Get("/audit", s.listAudit)
 			r.Post("/admin/gateway/keys/reconcile", s.reconcileGatewayKeys)
+
+			// S-PROMPT WP2: prompt tier APIs (ADR-0011 §3).
+			r.Get("/settings/prompt", s.getOrgPrompt)
+			r.Put("/settings/prompt", s.putOrgPrompt)
+			r.Get("/prompt/effective", s.getEffectivePrompt)
+			r.Get("/prompt/revisions", s.listPromptRevisions)
+			r.Post("/prompt/validate", s.validatePrompt)
 		})
 	})
 
@@ -373,7 +385,9 @@ func (noopLLMGateway) ProvisionAgentKey(context.Context, GatewayKeyRequest) (str
 
 func (noopLLMGateway) UpdateAgentKey(context.Context, string, GatewayKeyRequest) error { return nil }
 func (noopLLMGateway) RevokeAgentKey(context.Context, string) error                    { return nil }
-func (noopLLMGateway) FindKeyByAlias(context.Context, string) (string, bool, error)    { return "", false, nil }
+func (noopLLMGateway) FindKeyByAlias(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
 
 type principalKey struct{}
 type agentPrincipalKey struct{}
@@ -1168,6 +1182,7 @@ func (s *Server) updateSquad(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name           *string          `json:"name"`
 		Mission        *string          `json:"mission"`
+		Prompt         *string          `json:"prompt"`
 		OperatingModel *json.RawMessage `json:"operating_model"`
 	}
 	if !decodeJSON(w, r, &req) {
@@ -1184,11 +1199,32 @@ func (s *Server) updateSquad(w http.ResponseWriter, r *http.Request) {
 	if req.Mission != nil {
 		squad.Mission = *req.Mission
 	}
+	// S-PROMPT WP2: the squad tier gets sanitize + template-var + budget
+	// validation, and the save carries a revision intent so the history row
+	// commits with the squad update.
+	var promptIntent *storage.PromptRevisionIntent
+	if req.Prompt != nil {
+		prompt := strings.TrimSpace(*req.Prompt)
+		if _, _, failure := checkPromptDraft(promptcompo.TierSquad, prompt); failure != nil {
+			writePromptFailure(w, failure)
+			return
+		}
+		squad.Prompt = prompt
+		promptIntent = &storage.PromptRevisionIntent{
+			Scope:   domain.PromptScopeSquad,
+			ScopeID: squad.ID,
+			SavedBy: currentUser(r.Context()).ID,
+		}
+	}
 	if req.OperatingModel != nil {
 		squad.OperatingModel = *req.OperatingModel
 	}
 
-	updated, err := s.store.UpdateSquad(s.pendingUserAuditCtx(r, "squad.update", "squad", squad.ID, squad.ID, nil), squad)
+	ctx := s.pendingUserAuditCtx(r, "squad.update", "squad", squad.ID, squad.ID, nil)
+	if promptIntent != nil {
+		ctx = storage.WithPromptRevision(ctx, *promptIntent)
+	}
+	updated, err := s.store.UpdateSquad(ctx, squad)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -1486,6 +1522,15 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "name is required")
 		return
 	}
+	// S-PROMPT WP2: fail closed at the create door too — an agent must not
+	// be born with a forged or over-cap prompt.
+	req.SystemPrompt = strings.TrimSpace(req.SystemPrompt)
+	if req.SystemPrompt != "" {
+		if _, _, failure := checkPromptDraft(promptcompo.TierAgent, req.SystemPrompt); failure != nil {
+			writePromptFailure(w, failure)
+			return
+		}
+	}
 	if len(req.Permissions) == 0 {
 		req.Permissions = json.RawMessage(`[]`)
 	}
@@ -1515,7 +1560,15 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		StorageEnabled: storageEnabled,
 		StorageSize:    storageSize,
 	}
-	created, err := s.store.CreateAgent(s.pendingUserAuditCtx(r, "agent.create", "agent", "", squad.ID, nil), agent)
+	createCtx := s.pendingUserAuditCtx(r, "agent.create", "agent", "", squad.ID, nil)
+	if agent.SystemPrompt != "" {
+		createCtx = storage.WithPromptRevision(createCtx, storage.PromptRevisionIntent{
+			Scope:   domain.PromptScopeAgent,
+			ScopeID: "", // store fills the new agent id into the revision
+			SavedBy: currentUser(r.Context()).ID,
+		})
+	}
+	created, err := s.store.CreateAgent(createCtx, agent)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -1706,6 +1759,14 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	// S-PROMPT WP2: the agent tier gets the same sanitize + template-var +
+	// budget battery as the other editable tiers before anything is applied.
+	if req.SystemPrompt != nil {
+		if _, _, failure := checkPromptDraft(promptcompo.TierAgent, strings.TrimSpace(*req.SystemPrompt)); failure != nil {
+			writePromptFailure(w, failure)
+			return
+		}
+	}
 	// Captured before any mutation so a post-gateway persist failure can
 	// roll the virtual key back to the pre-request binding.
 	prevPrimary, prevFallback := agent.AIModelID, agent.FallbackAIModelID
@@ -1721,7 +1782,15 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		bindingTouched = true
 	}
 
-	updated, err := s.store.UpdateAgent(s.pendingUserAuditCtx(r, "agent.update", "agent", agent.ID, agent.SquadID, nil), agent)
+	agentCtx := s.pendingUserAuditCtx(r, "agent.update", "agent", agent.ID, agent.SquadID, nil)
+	if req.SystemPrompt != nil {
+		agentCtx = storage.WithPromptRevision(agentCtx, storage.PromptRevisionIntent{
+			Scope:   domain.PromptScopeAgent,
+			ScopeID: agent.ID,
+			SavedBy: currentUser(r.Context()).ID,
+		})
+	}
+	updated, err := s.store.UpdateAgent(agentCtx, agent)
 	if err != nil {
 		// If the binding converged at the gateway but the row failed to
 		// persist, roll the key back to the previous binding best-effort;

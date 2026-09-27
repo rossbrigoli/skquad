@@ -54,37 +54,45 @@ type MemoryStore struct {
 	messages        map[string]*domain.Message
 	inbox           map[string]*domain.InboxMessage
 	k8sOutbox       map[string]*domain.KubernetesOutboxEvent
+
+	// S-PROMPT WP2: organization tier settings (single-row, mirroring
+	// the Postgres instance_settings table) and the append-only revision
+	// history. Revisions are never pruned (retention: forever).
+	instanceSettings *domain.InstanceSettings
+	promptRevisions  []*domain.PromptRevision
 }
 
 // NewMemoryStore creates an empty development store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		users:           map[string]*domain.User{},
-		usersByEmail:    map[string]string{},
-		usersByOIDC:     map[string]string{},
-		squads:          map[string]*domain.Squad{},
-		agents:          map[string]*domain.Agent{},
-		identities:      map[string]*domain.AgentIdentity{},
-		identityAgent:   map[string]string{},
-		boards:          map[string]*domain.Board{},
-		boardsBySquad:   map[string]string{},
-		grants:          map[string]*domain.AccessGrant{},
-		llmProviders:    map[string]*domain.LLMProvider{},
-		aiModels:        map[string]*domain.AIModel{},
-		userModelGrants: map[string]*domain.UserModelGrant{},
-		grantPair:       map[string]string{},
-		resources:       map[string]*domain.RegistryResource{},
-		permissions:     map[string]*domain.AgentPermission{},
-		metering:        map[string]*domain.MeteringEvent{},
-		wakeLatency:     map[string]*domain.WakeLatencyEvent{},
-		wakeLatencyKey:  map[string]string{},
-		auditLog:        map[string]*domain.AuditEntry{},
-		tasks:           map[string]*domain.Task{},
-		taskExecs:       map[string]*domain.TaskExecution{},
-		agentMemory:     map[string]*domain.AgentMemory{},
-		messages:        map[string]*domain.Message{},
-		inbox:           map[string]*domain.InboxMessage{},
-		k8sOutbox:       map[string]*domain.KubernetesOutboxEvent{},
+		users:            map[string]*domain.User{},
+		usersByEmail:     map[string]string{},
+		usersByOIDC:      map[string]string{},
+		squads:           map[string]*domain.Squad{},
+		agents:           map[string]*domain.Agent{},
+		identities:       map[string]*domain.AgentIdentity{},
+		identityAgent:    map[string]string{},
+		boards:           map[string]*domain.Board{},
+		boardsBySquad:    map[string]string{},
+		grants:           map[string]*domain.AccessGrant{},
+		llmProviders:     map[string]*domain.LLMProvider{},
+		aiModels:         map[string]*domain.AIModel{},
+		userModelGrants:  map[string]*domain.UserModelGrant{},
+		grantPair:        map[string]string{},
+		resources:        map[string]*domain.RegistryResource{},
+		permissions:      map[string]*domain.AgentPermission{},
+		metering:         map[string]*domain.MeteringEvent{},
+		wakeLatency:      map[string]*domain.WakeLatencyEvent{},
+		wakeLatencyKey:   map[string]string{},
+		auditLog:         map[string]*domain.AuditEntry{},
+		tasks:            map[string]*domain.Task{},
+		taskExecs:        map[string]*domain.TaskExecution{},
+		agentMemory:      map[string]*domain.AgentMemory{},
+		messages:         map[string]*domain.Message{},
+		inbox:            map[string]*domain.InboxMessage{},
+		k8sOutbox:        map[string]*domain.KubernetesOutboxEvent{},
+		instanceSettings: &domain.InstanceSettings{},
+		promptRevisions:  []*domain.PromptRevision{},
 	}
 }
 
@@ -280,6 +288,9 @@ func (m *MemoryStore) UpdateSquad(ctx context.Context, s *domain.Squad) (*domain
 	updated.Namespace = existing.Namespace
 	updated.CreatedAt = existing.CreatedAt
 	updated.UpdatedAt = time.Now().UTC()
+	if intent := DrainPromptRevision(ctx); intent != nil && existing.Prompt != updated.Prompt {
+		m.appendPromptRevisionLocked(intent, updated.Prompt)
+	}
 	m.squads[s.ID] = updated
 	m.enqueueSquadOutboxLocked(domain.KubernetesOpUpsertSquad, updated)
 	m.drainPendingAuditsLocked(ctx, updated.ID)
@@ -379,6 +390,12 @@ func (m *MemoryStore) CreateAgent(ctx context.Context, a *domain.Agent) (*domain
 	}
 	created.CreatedAt = now
 	created.UpdatedAt = now
+	// S-PROMPT WP2: an agent born with a prompt records its first revision
+	// alongside the row insert.
+	if intent := DrainPromptRevision(ctx); intent != nil && created.SystemPrompt != "" {
+		intent.ScopeID = created.ID
+		m.appendPromptRevisionLocked(intent, created.SystemPrompt)
+	}
 	m.agents[created.ID] = created
 	m.enqueueAgentOutboxLocked(domain.KubernetesOpUpsertAgent, created)
 	m.drainPendingAuditsLocked(ctx, created.ID)
@@ -414,6 +431,9 @@ func (m *MemoryStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*domain
 	updated.SquadID = existing.SquadID
 	updated.CreatedAt = existing.CreatedAt
 	updated.UpdatedAt = time.Now().UTC()
+	if intent := DrainPromptRevision(ctx); intent != nil && existing.SystemPrompt != updated.SystemPrompt {
+		m.appendPromptRevisionLocked(intent, updated.SystemPrompt)
+	}
 	m.agents[a.ID] = updated
 	m.enqueueAgentOutboxLocked(domain.KubernetesOpUpsertAgent, updated)
 	m.drainPendingAuditsLocked(ctx, updated.ID)

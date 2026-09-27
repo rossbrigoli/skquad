@@ -378,10 +378,10 @@ func (p *PostgresStore) CreateSquad(ctx context.Context, s *domain.Squad) (*doma
 	defer tx.Rollback(ctx)
 
 	row := tx.QueryRow(ctx, `
-		INSERT INTO squads (name, mission, operating_model, owner_id, namespace, status)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id::text, name, mission, operating_model, owner_id::text, namespace, status, created_at, updated_at
-	`, s.Name, s.Mission, defaultJSON(s.OperatingModel, "{}"), s.OwnerID, s.Namespace, defaultSquadStatus(s.Status))
+		INSERT INTO squads (name, mission, prompt, operating_model, owner_id, namespace, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
+	`, s.Name, s.Mission, s.Prompt, defaultJSON(s.OperatingModel, "{}"), s.OwnerID, s.Namespace, defaultSquadStatus(s.Status))
 	created, err := scanSquad(row)
 	if err != nil {
 		return nil, err
@@ -407,7 +407,7 @@ func (p *PostgresStore) CreateSquad(ctx context.Context, s *domain.Squad) (*doma
 
 func (p *PostgresStore) GetSquad(ctx context.Context, id string) (*domain.Squad, error) {
 	row := p.pool.QueryRow(ctx, `
-		SELECT id::text, name, mission, operating_model, owner_id::text, namespace, status, created_at, updated_at
+		SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
 		FROM squads
 		WHERE id = $1
 	`, id)
@@ -416,7 +416,7 @@ func (p *PostgresStore) GetSquad(ctx context.Context, id string) (*domain.Squad,
 
 func (p *PostgresStore) GetSquadByName(ctx context.Context, ownerID, name string) (*domain.Squad, error) {
 	row := p.pool.QueryRow(ctx, `
-		SELECT id::text, name, mission, operating_model, owner_id::text, namespace, status, created_at, updated_at
+		SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
 		FROM squads
 		WHERE owner_id = $1 AND lower(name) = lower($2)
 	`, ownerID, name)
@@ -430,16 +430,25 @@ func (p *PostgresStore) UpdateSquad(ctx context.Context, s *domain.Squad) (*doma
 	}
 	defer tx.Rollback(ctx)
 
+	// S-PROMPT WP2: a declared prompt revision lands in the same
+	// transaction as the squad row update (append-only history).
+	if intent := DrainPromptRevision(ctx); intent != nil {
+		if err := p.appendPromptRevisionTx(ctx, tx, intent, `SELECT prompt FROM squads WHERE id = $1`, s.Prompt, s.ID); err != nil {
+			return nil, err
+		}
+	}
+
 	row := tx.QueryRow(ctx, `
 		UPDATE squads
 		SET name = $2,
 		    mission = $3,
-		    operating_model = $4,
-		    status = $5,
+		    prompt = $4,
+		    operating_model = $5,
+		    status = $6,
 		    updated_at = now()
 		WHERE id = $1
-		RETURNING id::text, name, mission, operating_model, owner_id::text, namespace, status, created_at, updated_at
-	`, s.ID, s.Name, s.Mission, defaultJSON(s.OperatingModel, "{}"), defaultSquadStatus(s.Status))
+		RETURNING id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
+	`, s.ID, s.Name, s.Mission, s.Prompt, defaultJSON(s.OperatingModel, "{}"), defaultSquadStatus(s.Status))
 	updated, err := scanSquad(row)
 	if err != nil {
 		return nil, err
@@ -464,7 +473,7 @@ func (p *PostgresStore) DeleteSquad(ctx context.Context, id string) error {
 	defer tx.Rollback(ctx)
 
 	row := tx.QueryRow(ctx, `
-		SELECT id::text, name, mission, operating_model, owner_id::text, namespace, status, created_at, updated_at
+		SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
 		FROM squads
 		WHERE id = $1
 	`, id)
@@ -520,13 +529,13 @@ func (p *PostgresStore) ListSquads(ctx context.Context, ownerID string) ([]*doma
 	var err error
 	if ownerID == "" {
 		rows, err = p.pool.Query(ctx, `
-			SELECT id::text, name, mission, operating_model, owner_id::text, namespace, status, created_at, updated_at
+			SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
 			FROM squads
 			ORDER BY name
 		`)
 	} else {
 		rows, err = p.pool.Query(ctx, `
-			SELECT id::text, name, mission, operating_model, owner_id::text, namespace, status, created_at, updated_at
+			SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
 			FROM squads
 			WHERE owner_id = $1
 			ORDER BY name
@@ -568,6 +577,15 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 	if err != nil {
 		return nil, err
 	}
+	// S-PROMPT WP2: an agent born with a prompt records its first revision
+	// in the same transaction as the row insert.
+	if intent := DrainPromptRevision(ctx); intent != nil && created.SystemPrompt != "" {
+		rev := buildPromptRevision(intent, created.SystemPrompt)
+		rev.ScopeID = created.ID
+		if err := insertPromptRevisionTx(ctx, tx, rev); err != nil {
+			return nil, err
+		}
+	}
 	if err := p.enqueueAgentOutboxTx(ctx, tx, domain.KubernetesOpUpsertAgent, created); err != nil {
 		return nil, err
 	}
@@ -599,6 +617,14 @@ func (p *PostgresStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*doma
 		return nil, mapPgErr(err)
 	}
 	defer tx.Rollback(ctx)
+
+	// S-PROMPT WP2: the agent tier's revision lands in the same
+	// transaction as the agent row update.
+	if intent := DrainPromptRevision(ctx); intent != nil {
+		if err := p.appendPromptRevisionTx(ctx, tx, intent, `SELECT system_prompt FROM agents WHERE id = $1`, a.SystemPrompt, a.ID); err != nil {
+			return nil, err
+		}
+	}
 
 	row := tx.QueryRow(ctx, `
 		UPDATE agents
@@ -2831,6 +2857,7 @@ func scanSquad(row scanner) (*domain.Squad, error) {
 		&s.ID,
 		&s.Name,
 		&s.Mission,
+		&s.Prompt,
 		&s.OperatingModel,
 		&s.OwnerID,
 		&s.Namespace,
