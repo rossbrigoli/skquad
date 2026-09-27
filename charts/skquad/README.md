@@ -92,6 +92,23 @@ are configured through `agent.taskTimeoutSeconds`, `agent.maxLLMSteps`, and
 the operator injects the corresponding `SKQUAD_*` env vars into generated agent
 pods.
 
+### Built-in platform tools (S-152/BT-5a, ADR-0012)
+
+- `agent.builtinToolsEnabled` (default `"true"`): default for the agent-pod
+  kill switch `SKQUAD_BUILTIN_TOOLS_ENABLED`, passed to the operator as
+  `SKQUAD_AGENT_BUILTIN_TOOLS_ENABLED` and injected into every agent pod.
+  Set `"false"` to disable exec/web_fetch/web_search fleet-wide regardless of
+  control-plane config (runtime treats `false`/`0`/`no` as disabled).
+- `apiServer.search.secretName` (default `skquad-search-keys`),
+  `apiServer.search.braveApiKey`, `apiServer.search.perplexityApiKey`
+  (default `""`): web search provider keys for the control-plane search
+  proxy (`SKQUAD_SEARCH_BRAVE_API_KEY` /
+  `SKQUAD_SEARCH_PERPLEXITY_API_KEY` on the api-server only — never agent
+  pods). Inline values render a chart-managed Secret (dev only); for GitOps,
+  leave them empty and manage a SealedSecret named `search.secretName` with
+  keys `brave-api-key` and/or `perplexity-api-key`. The default provider
+  (duckduckgo) needs no key, so both refs are `optional: true`.
+
 `web.apiBaseUrl` configures `NEXT_PUBLIC_SKQUAD_API_BASE_URL` for browser API
 calls. The default `/api/v1` matches the chart ingress routing where `/api`
 goes to the API server and `/` goes to the web app.

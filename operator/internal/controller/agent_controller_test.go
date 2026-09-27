@@ -173,6 +173,11 @@ func verifyAgentRuntimeEnv(t *testing.T, container corev1.Container, agent *skqu
 	if got := envValue(container.Env, "SKQUAD_TASK_LOOP_ENABLED"); got != "true" {
 		t.Fatalf("task loop enabled env = %q, want true", got)
 	}
+	// S-152/BT-5a (ADR-0012): built-in platform tools kill switch defaults
+	// to enabled; the operator env can flip the whole fleet.
+	if got := envValue(container.Env, "SKQUAD_BUILTIN_TOOLS_ENABLED"); got != "true" {
+		t.Fatalf("builtin tools enabled env = %q, want true", got)
+	}
 	if got := envValue(container.Env, "SKQUAD_TASK_POLL_INTERVAL_SECONDS"); got != "30" {
 		t.Fatalf("task poll interval env = %q, want 30", got)
 	}
@@ -380,6 +385,16 @@ func envValue(env []corev1.EnvVar, name string) string {
 		}
 	}
 	return ""
+}
+
+// S-152/BT-5a (ADR-0012): the operator-level env SKQUAD_AGENT_BUILTIN_TOOLS_ENABLED
+// flips the agent-pod kill switch (SKQUAD_BUILTIN_TOOLS_ENABLED) without touching the CRD.
+func TestAgentEnvBuiltinToolsKillSwitch(t *testing.T) {
+	t.Setenv("SKQUAD_AGENT_BUILTIN_TOOLS_ENABLED", "false")
+	env := agentEnv(&skquadv1.Agent{})
+	if got := envValue(env, "SKQUAD_BUILTIN_TOOLS_ENABLED"); got != "false" {
+		t.Fatalf("SKQUAD_BUILTIN_TOOLS_ENABLED = %q, want false", got)
+	}
 }
 
 func testScheme(t *testing.T) *runtime.Scheme {

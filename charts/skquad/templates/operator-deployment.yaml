@@ -51,6 +51,16 @@ spec:
               value: {{ .Values.agent.taskSummaryMaxChars | quote }}
             - name: SKQUAD_AGENT_PROMPT_FETCH_ENABLED
               value: {{ .Values.agent.promptFetchEnabled | default "false" | quote }}
+            # S-152/BT-5a (ADR-0012): operator-level default for the agent-pod
+            # built-in tools kill switch (SKQUAD_BUILTIN_TOOLS_ENABLED).
+            # Bool-aware: `false | default "true"` would wrongly yield "true",
+            # so a real boolean is rendered via ternary.
+            - name: SKQUAD_AGENT_BUILTIN_TOOLS_ENABLED
+              {{- if kindIs "bool" .Values.agent.builtinToolsEnabled }}
+              value: {{ ternary "true" "false" .Values.agent.builtinToolsEnabled | quote }}
+              {{- else }}
+              value: {{ default "true" .Values.agent.builtinToolsEnabled | quote }}
+              {{- end }}
             - name: SKQUAD_API_SERVER_SERVICE_ACCOUNT_NAME
               value: {{ include "skquad.apiServerName" . | quote }}
             - name: SKQUAD_MAX_AGENT_STORAGE
