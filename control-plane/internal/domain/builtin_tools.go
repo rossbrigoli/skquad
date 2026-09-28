@@ -1,8 +1,13 @@
 package domain
 
-// Built-in platform tools (BT-2, ADR-0012). The three tool names are the
+// Built-in platform tools (BT-2, ADR-0012). The tool names are the
 // complete universe enforced by the builtin_tools_config CHECK constraint;
 // policy validation below mirrors the schemas pinned in ADR-0012 §3.
+// send_message was added for S-164 (agent-to-agent messaging within the
+// squad); migration 0023 widens the constraint and seeds it ENABLED —
+// unlike the three original builtins, intra-squad messaging is the core
+// squad primitive and is governed control-plane-side (same-squad always
+// allowed, cross-squad needs access grants).
 
 import (
 	"bytes"
@@ -14,13 +19,24 @@ import (
 )
 
 const (
-	BuiltinToolExec      = "exec"
-	BuiltinToolWebFetch  = "web_fetch"
-	BuiltinToolWebSearch = "web_search"
+	BuiltinToolExec        = "exec"
+	BuiltinToolWebFetch    = "web_fetch"
+	BuiltinToolWebSearch   = "web_search"
+	BuiltinToolSendMessage = "send_message"
 )
 
 // BuiltinToolNames lists the built-in tools in canonical order.
-var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch}
+var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage}
+
+// BuiltinToolDefaultEnabled reports whether a built-in ships enabled when
+// seeded. The original three are security-sensitive and ship disabled
+// (ADR-0012 §1). send_message ships enabled: it is the S-164 squad
+// primitive, its blast radius is bounded by squad isolation plus the
+// correlation-chain budget, and disabling it by default would make the
+// card's feature invisible until an admin noticed the toggle.
+func BuiltinToolDefaultEnabled(name string) bool {
+	return name == BuiltinToolSendMessage
+}
 
 // SearchProviderNames lists the accepted web_search policy providers.
 // duckduckgo is keyless and the default; brave/perplexity need a
@@ -37,7 +53,7 @@ type BuiltinToolConfig struct {
 	UpdatedBy string          `json:"updated_by"`
 }
 
-// IsBuiltinToolName reports whether name is one of the three built-ins.
+// IsBuiltinToolName reports whether name is one of the built-in tools.
 func IsBuiltinToolName(name string) bool {
 	for _, n := range BuiltinToolNames {
 		if n == name {
@@ -90,6 +106,14 @@ func ValidateBuiltinPolicy(name string, policy json.RawMessage) []string {
 			"timeoutSeconds": requirePositiveInt,
 			"maxResults":     requirePositiveInt,
 			"provider":       requireSearchProvider,
+		}
+	case BuiltinToolSendMessage:
+		// S-164: timeoutSeconds bounds the peers-fetch and send round trips.
+		// maxMessageChars caps the message body so one agent cannot flood a
+		// peer's context with a novel.
+		allowed = map[string]func(string, json.RawMessage) []string{
+			"timeoutSeconds":  requirePositiveInt,
+			"maxMessageChars": requirePositiveInt,
 		}
 	default:
 		return []string{fmt.Sprintf("unknown built-in tool %q", name)}

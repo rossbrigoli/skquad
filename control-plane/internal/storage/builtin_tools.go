@@ -113,7 +113,7 @@ func (m *MemoryStore) seedBuiltinToolsLocked() {
 	for _, name := range domain.BuiltinToolNames {
 		m.builtinTools[name] = &domain.BuiltinToolConfig{
 			Name:      name,
-			Enabled:   false,
+			Enabled:   domain.BuiltinToolDefaultEnabled(name),
 			Policy:    json.RawMessage(`{}`),
 			UpdatedAt: now,
 			UpdatedBy: "",

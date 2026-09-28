@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Mapping
 from urllib import error, request
 
-from .runtime import ToolCall, ToolResult
+from .runtime import A2A_CORRELATION, ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -364,10 +364,208 @@ class WebSearchTool:
         return ToolResult(content="\n\n".join(lines), ok=True)
 
 
+class SendMessageTool:
+    """S-164: agent-to-agent messaging inside the squad.
+
+    The model calls ``send_message`` like any other tool; the tool resolves
+    the target by name against the squad roster
+    (``GET /api/v1/agents/me/peers``) and posts through the existing
+    control-plane queue (``POST /api/v1/agents/me/messages``), so same-
+    squad permission, delegate materialization, chain budget, and audit
+    all stay control-plane-side. The runtime never talks to a peer pod
+    directly.
+
+    Correlation: when the tool is invoked while the agent is processing an
+    inbox message, an omitted ``correlation_id`` inherits the correlation
+    of the message being processed (``A2A_CORRELATION`` contextvar) so a
+    follow-up stays on the same thread and the chain budget applies.
+    """
+
+    name = "send_message"
+
+    ALLOWED_TYPES = ("consult", "delegate", "ping", "reply")
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        self.policy = policy or {}
+        self.context = context
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "send_message",
+                    "description": (
+                        "Send a message to another agent in your squad. "
+                        "Messages are queued: a busy recipient is never "
+                        "interrupted and answers when it becomes free. "
+                        "consult asks a question (answered asynchronously), "
+                        "delegate hands over work (creates a task for the "
+                        "recipient), ping is a notification."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "target_agent": {
+                                "type": "string",
+                                "description": (
+                                    "Name of the squad-mate to message "
+                                    '(e.g. "Mary").'
+                                ),
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": "Message text for the recipient.",
+                            },
+                            "type": {
+                                "type": "string",
+                                "enum": ["consult", "delegate", "ping"],
+                                "description": "Message type. Defaults to consult.",
+                            },
+                            "correlation_id": {
+                                "type": "string",
+                                "description": (
+                                    "Thread id (UUID) continuing an existing "
+                                    "conversation. Usually omit it and the "
+                                    "current thread is inherited."
+                                ),
+                            },
+                        },
+                        "required": ["target_agent", "message"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, config) -> ToolResult:  # noqa: ANN001
+        target = str(call.arguments.get("target_agent", "")).strip()
+        text = str(call.arguments.get("message", "")).strip()
+        mtype = str(call.arguments.get("type", "") or "consult").strip()
+        if not target:
+            return ToolResult(content="send_message: target_agent is required", ok=False)
+        if not text:
+            return ToolResult(content="send_message: message is required", ok=False)
+        if mtype not in self.ALLOWED_TYPES:
+            return ToolResult(
+                content=(
+                    "send_message: type must be one of "
+                    + ", ".join(self.ALLOWED_TYPES)
+                ),
+                ok=False,
+            )
+        max_chars = int(self.policy.get("maxMessageChars", 8000))
+        if len(text) > max_chars:
+            return ToolResult(
+                content=f"send_message: message exceeds {max_chars} characters", ok=False
+            )
+        correlation = str(call.arguments.get("correlation_id", "") or "").strip()
+        if not correlation:
+            correlation = A2A_CORRELATION.get()
+
+        peers, err = self._list_peers()
+        if err:
+            return ToolResult(content=err, ok=False)
+        resolved = self._resolve_peer(peers, target)
+        if resolved is None:
+            names = ", ".join(str(p.get("name", "?")) for p in peers) or "(none)"
+            return ToolResult(
+                content=(
+                    f"send_message: no squad-mate named {target!r} found. "
+                    f"Squad roster: {names}"
+                ),
+                ok=False,
+            )
+
+        body: dict[str, object] = {
+            "to_agent_id": str(resolved.get("id", "")),
+            "type": mtype,
+            "payload": {"message": text},
+        }
+        if correlation:
+            body["correlation_id"] = correlation
+        data, err = self._post_message(body)
+        if err:
+            return ToolResult(content=f"send_message: {err}", ok=False)
+        message_id = str(data.get("id", "")) if isinstance(data, dict) else ""
+        return ToolResult(
+            content=(
+                f"sent {mtype} message to {resolved.get('name', target)}"
+                + (f" (message {message_id})" if message_id else "")
+            ),
+            ok=True,
+        )
+
+    # -- control-plane round trips -------------------------------------------
+
+    def _request(self, method: str, path: str, body: dict | None = None):
+        url = self.context.control_plane_url.rstrip("/") + path
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+        req = request.Request(
+            url,
+            data=payload,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {self.context.agent_credential}",
+                "X-Skquad-Agent-ID": self.context.agent_id,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        timeout = int(self.policy.get("timeoutSeconds", 15))
+        with request.urlopen(req, timeout=timeout) as response:
+            raw = response.read()
+        if not raw:
+            return {}
+        return json.loads(raw.decode("utf-8"))
+
+    def _list_peers(self) -> tuple[list, str]:
+        try:
+            data = self._request("GET", "/api/v1/agents/me/peers")
+        except error.HTTPError as exc:
+            return [], f"send_message: peers lookup failed: HTTP {exc.code}"
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return [], f"send_message: peers lookup failed: {exc}"
+        if not isinstance(data, list):
+            return [], "send_message: peers lookup returned an unexpected shape"
+        return data, ""
+
+    def _post_message(self, body: dict) -> tuple[dict, str]:
+        try:
+            data = self._request("POST", "/api/v1/agents/me/messages", body)
+        except error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = json.loads(exc.read().decode("utf-8")).get("error", "")
+            except Exception:  # noqa: BLE001 — error body is best-effort
+                pass
+            suffix = f" — {detail}" if detail else ""
+            return {}, f"send failed: HTTP {exc.code}{suffix}"
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return {}, f"send failed: {exc}"
+        return data if isinstance(data, dict) else {}, ""
+
+    @staticmethod
+    def _resolve_peer(peers: list[Mapping[str, object]], target: str) -> Mapping[str, object] | None:
+        """Exact (case-insensitive) name match, then a unique prefix match."""
+        lowered = target.lower()
+        for peer in peers:
+            if str(peer.get("name", "")).lower() == lowered:
+                return peer
+        prefixed = [
+            peer
+            for peer in peers
+            if str(peer.get("name", "")).lower().startswith(lowered)
+        ]
+        if len(prefixed) == 1:
+            return prefixed[0]
+        return None
+
+
 _BUILTIN_REGISTRY: dict[str, type] = {
     "exec": ExecTool,
     "web_fetch": WebFetchTool,
     "web_search": WebSearchTool,
+    "send_message": SendMessageTool,
 }
 
 
