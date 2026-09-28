@@ -1892,15 +1892,59 @@ func (m *MemoryStore) ListAgentMessageHistory(_ context.Context, agentID string)
 		return nil, ErrNotFound
 	}
 	now := time.Now().UTC()
+	resetAt := m.agents[agentID].ChatResetAt
 	out := []*domain.Message{}
 	for _, msg := range m.messages {
 		expireMessageIfDue(msg, now)
-		if msg.ToAgentID == agentID {
-			out = append(out, cloneMessage(msg))
+		if msg.ToAgentID != agentID {
+			continue
 		}
+		// S-162: respect the chat reset boundary.
+		if !resetAt.IsZero() && !msg.CreatedAt.After(resetAt) {
+			continue
+		}
+		out = append(out, cloneMessage(msg))
 	}
 	sortMessages(out)
 	return out, nil
+}
+
+// ResetAgentChat (S-162) mirrors the Postgres implementation: archive
+// the transcript into agent memory and move the boundary to now.
+func (m *MemoryStore) ResetAgentChat(_ context.Context, agentID, squadID, transcript string, metadata json.RawMessage) (int, time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	agent, ok := m.agents[agentID]
+	if !ok {
+		return 0, time.Time{}, ErrNotFound
+	}
+	resetAt := time.Now().UTC()
+	archived := 0
+	for _, msg := range m.messages {
+		if msg.ToAgentID != agentID {
+			continue
+		}
+		if !agent.ChatResetAt.IsZero() && !msg.CreatedAt.After(agent.ChatResetAt) {
+			continue
+		}
+		archived++
+	}
+	if archived > 0 {
+		mem := &domain.AgentMemory{
+			ID:         uuid.NewString(),
+			AgentID:    agentID,
+			SquadID:    squadID,
+			Content:    transcript,
+			TrustLevel: "distilled",
+			Provenance: "chat_reset",
+			ReviewStatus: "approved",
+			Metadata:   defaultJSON(metadata, "{}"),
+			CreatedAt:  resetAt,
+		}
+		m.agentMemory[mem.ID] = mem
+	}
+	agent.ChatResetAt = resetAt
+	return archived, resetAt, nil
 }
 
 func (m *MemoryStore) AckMessage(ctx context.Context, agentID string, messageID string) (*domain.Message, error) {

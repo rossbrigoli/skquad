@@ -92,7 +92,12 @@ type Agent struct {
 	// only the platform (Helm/env at the control plane) may set it.
 	StorageEnabled bool        `json:"storage_enabled"`
 	StorageSize    string      `json:"storage_size,omitempty"`
-	Status         AgentStatus `json:"status"`
+	// ChatResetAt (S-162) marks the instant the user reset the chat
+	// thread. Messages created at or before it are excluded from the
+	// chat history and the runtime context; the transcript is archived
+	// to agent_memory first. NULL/zero = never reset.
+	ChatResetAt time.Time   `json:"chat_reset_at,omitempty"`
+	Status      AgentStatus `json:"status"`
 	CreatedAt      time.Time   `json:"created_at"`
 	UpdatedAt      time.Time   `json:"updated_at"`
 	// WorkspaceSecrets is derived from the agent's project_workspace grants at

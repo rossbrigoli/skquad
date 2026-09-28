@@ -249,6 +249,19 @@ The shipped message handler (`LLMMessageHandler`) powers the agent chat window:
   recent agent reply's `context_tokens` — the real context size of the last
   LLM turn, not an estimate. It is absent until a runtime that reports usage
   answers, in which case the UI shows a waiting placeholder.
+- **Reset thread (S-162):** `POST /api/v1/agents/:id/chat/reset` moves the
+  agent's `chat_reset_at` boundary to now. Messages created at or before it
+  stop being returned by the chat history API and stop being included in the
+  runtime's contextual prompt. Before the boundary moves, the visible
+  transcript is archived into `agent_memory` (provenance `chat_reset`,
+  trust `distilled`) so the agent can still recall it semantically. The
+  web chat exposes this as a "Reset chat" button with a confirm.
+- **Restart agent (S-162):** `POST /api/v1/agents/:id/restart` deletes the
+  agent's pods by the `skquad.io/agent-id` label through the Kubernetes API
+  (same raw-HTTP + projected-token pattern as the provider-key Secret
+  store); the owning Deployment recreates them. Used when an agent is stuck
+  or crashed. The web chat exposes it as a "Restart agent" button. Requires
+  the api-server Role to have `pods` list/delete (namespace-scoped).
 - **Agent-authored messages** (`ping`, `reply`, `consult` — including the
   replies this handler posts) are acknowledged without an LLM call, so a reply
   never triggers another reply.

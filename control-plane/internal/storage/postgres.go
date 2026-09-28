@@ -255,7 +255,7 @@ func (p *PostgresStore) enqueueAgentOutboxTx(ctx context.Context, tx pgx.Tx, ope
 func getAgentTx(ctx context.Context, tx pgx.Tx, id string) (*domain.Agent, error) {
 	row := tx.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, chat_reset_at, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -483,7 +483,7 @@ func (p *PostgresStore) DeleteSquad(ctx context.Context, id string) error {
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, chat_reset_at, status, created_at, updated_at
 		FROM agents
 		WHERE squad_id = $1
 		ORDER BY name
@@ -571,7 +571,7 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 		INSERT INTO agents (squad_id, name, role, system_prompt, ai_model_id, fallback_ai_model_id, permissions, idle_timeout_sec, status, storage_enabled, storage_size)
 		VALUES ($1, $2, $3, $4, nullif($5, '')::uuid, nullif($6, '')::uuid, $7, $8, $9, $10, $11)
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
+		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, chat_reset_at, status, created_at, updated_at
 	`, a.SquadID, a.Name, a.Role, a.SystemPrompt, a.AIModelID, a.FallbackAIModelID, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status), a.StorageEnabled, defaultStorageSize(a.StorageSize))
 	created, err := scanAgent(row)
 	if err != nil {
@@ -601,7 +601,7 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 func (p *PostgresStore) GetAgent(ctx context.Context, id string) (*domain.Agent, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, chat_reset_at, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -641,7 +641,7 @@ func (p *PostgresStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*doma
 		    updated_at = now()
 		WHERE id = $1
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
+		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, chat_reset_at, status, created_at, updated_at
 	`, a.ID, a.Name, a.Role, a.SystemPrompt, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status), a.AIModelID, a.FallbackAIModelID, a.StorageEnabled, defaultStorageSize(a.StorageSize))
 	updated, err := scanAgent(row)
 	if err != nil {
@@ -668,7 +668,7 @@ func (p *PostgresStore) DeleteAgent(ctx context.Context, id string) error {
 
 	row := tx.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, chat_reset_at, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -695,7 +695,7 @@ func (p *PostgresStore) DeleteAgent(ctx context.Context, id string) error {
 func (p *PostgresStore) ListAgents(ctx context.Context, squadID string) ([]*domain.Agent, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, chat_reset_at, status, created_at, updated_at
 		FROM agents
 		WHERE squad_id = $1
 		ORDER BY name
@@ -728,7 +728,7 @@ func (p *PostgresStore) SetAgentStatus(ctx context.Context, id string, status do
 		SET status = $2, updated_at = now()
 		WHERE id = $1
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
+		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, chat_reset_at, status, created_at, updated_at
 	`, id, status)
 	agent, err := scanAgent(row)
 	if err != nil {
@@ -846,7 +846,7 @@ func (p *PostgresStore) SetAgentIdentityGatewayKey(ctx context.Context, agentID 
 func (p *PostgresStore) ListAllAgents(ctx context.Context) ([]*domain.Agent, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, storage_enabled, storage_size, chat_reset_at, status, created_at, updated_at
 		FROM agents
 		ORDER BY name
 	`)
@@ -2548,19 +2548,74 @@ func (p *PostgresStore) ListAgentMessageHistory(ctx context.Context, agentID str
 	if err := p.expireMessagesForAgent(ctx, agentID); err != nil {
 		return nil, err
 	}
+	// S-162: messages at or before the agent's chat_reset_at boundary are
+	// excluded — the thread was archived to agent_memory and the user
+	// cleared it. chat_reset_at IS NULL means "never reset".
 	rows, err := p.pool.Query(ctx, `
-		SELECT id::text, from_type, from_id::text, to_agent_id::text, squad_id::text,
-		       type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
-		       next_retry_at, expires_at, terminal_reason, created_at, delivered_at
-		FROM messages
-		WHERE to_agent_id = $1
-		ORDER BY created_at, id
+		SELECT m.id::text, m.from_type, m.from_id::text, m.to_agent_id::text, m.squad_id::text,
+		       m.type, m.payload, m.status, coalesce(m.correlation_id::text, ''), m.attempts, m.max_attempts,
+		       m.next_retry_at, m.expires_at, m.terminal_reason, m.created_at, m.delivered_at
+		FROM messages m
+		JOIN agents a ON a.id = m.to_agent_id
+		WHERE m.to_agent_id = $1
+		  AND (a.chat_reset_at IS NULL OR m.created_at > a.chat_reset_at)
+		ORDER BY m.created_at, m.id
 	`, agentID)
 	if err != nil {
 		return nil, mapPgErr(err)
 	}
 	defer rows.Close()
 	return scanMessages(rows)
+}
+
+// ResetAgentChat (S-162) archives the current chat transcript into
+// agent_memory and moves the agent's chat_reset_at boundary to now, in
+// one transaction. Returns the number of messages archived (i.e. those
+// at or before the new boundary) and the boundary timestamp. The
+// transcript text is rendered by the caller; memory carries it with
+// provenance 'chat_reset' so the agent can still recall it semantically.
+func (p *PostgresStore) ResetAgentChat(ctx context.Context, agentID, squadID, transcript string, metadata json.RawMessage) (int, time.Time, error) {
+	resetAt := time.Now().UTC()
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return 0, time.Time{}, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	var archived int
+	err = tx.QueryRow(ctx, `
+		SELECT count(*)
+		FROM messages m
+		JOIN agents a ON a.id = m.to_agent_id
+		WHERE m.to_agent_id = $1
+		  AND (a.chat_reset_at IS NULL OR m.created_at > a.chat_reset_at)
+	`, agentID).Scan(&archived)
+	if err != nil {
+		return 0, time.Time{}, mapPgErr(err)
+	}
+
+	if archived > 0 {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO agent_memory (
+				agent_id, squad_id, content, raw_content, trust_level, provenance,
+				review_status, embedding, embedding_model, source_task_id, metadata
+			)
+			VALUES (
+				nullif($1, '')::uuid, nullif($2, '')::uuid, $3, '', 'distilled', 'chat_reset',
+				'approved', NULL, '', NULL, $4
+			)`, agentID, squadID, transcript, defaultJSON(metadata, "{}"))
+		if err != nil {
+			return 0, time.Time{}, mapPgErr(err)
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `UPDATE agents SET chat_reset_at = $2, updated_at = now() WHERE id = $1`, agentID, resetAt); err != nil {
+		return 0, time.Time{}, mapPgErr(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, time.Time{}, mapPgErr(err)
+	}
+	return archived, resetAt, nil
 }
 
 func (p *PostgresStore) AckMessage(ctx context.Context, agentID string, messageID string) (*domain.Message, error) {
@@ -2873,6 +2928,7 @@ func scanSquad(row scanner) (*domain.Squad, error) {
 
 func scanAgent(row scanner) (*domain.Agent, error) {
 	var a domain.Agent
+	var chatResetAt sql.NullTime
 	if err := row.Scan(
 		&a.ID,
 		&a.SquadID,
@@ -2886,11 +2942,15 @@ func scanAgent(row scanner) (*domain.Agent, error) {
 		&a.IdleTimeoutSec,
 		&a.StorageEnabled,
 		&a.StorageSize,
+		&chatResetAt,
 		&a.Status,
 		&a.CreatedAt,
 		&a.UpdatedAt,
 	); err != nil {
 		return nil, mapPgErr(err)
+	}
+	if chatResetAt.Valid {
+		a.ChatResetAt = chatResetAt.Time
 	}
 	return &a, nil
 }
