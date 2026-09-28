@@ -43,6 +43,9 @@ export function AgentFormModal({
   onClose: () => void;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
+  // S-156: names are immutable after creation (K8s namespace/deployment
+  // names are derived from them). Edit mode renders the name read-only.
+  const nameLocked = Boolean(initial?.name);
   const [role, setRole] = useState(initial?.role ?? "");
   const [systemPrompt, setSystemPrompt] = useState(initial?.system_prompt ?? "");
   const [idleTimeout, setIdleTimeout] = useState(String(initial?.idle_timeout_sec ?? 300));
@@ -95,7 +98,18 @@ export function AgentFormModal({
       >
         <label className="field">
           <span>Name</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. coder-1" autoFocus />
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. coder-1"
+            autoFocus={!nameLocked}
+            readOnly={nameLocked}
+          />
+          {nameLocked && (
+            <small className="field-hint">
+              Agent names cannot be renamed after creation — the Kubernetes deployment name is derived from it.
+            </small>
+          )}
         </label>
         <div className="field-row">
           <label className="field">

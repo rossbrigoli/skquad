@@ -36,10 +36,10 @@ type CRWriter struct {
 	// empty means storageClassName is omitted from spec.storage so the
 	// cluster default applies. defaultStorageSize backsfills an empty
 	// agent.StorageSize (matches the CRD default "2Gi").
-	storageClass        string
+	storageClass       string
 	defaultStorageSize string
-	token           string
-	client          *http.Client
+	token              string
+	client             *http.Client
 }
 
 // NewCRWriter creates a Kubernetes REST writer from config.
@@ -53,16 +53,16 @@ func NewCRWriter(cfg *config.Config) (*CRWriter, error) {
 		return nil, err
 	}
 	return &CRWriter{
-		baseURL:         strings.TrimRight(cfg.K8sAPIBase, "/"),
-		namespace:       cfg.K8sNamespace,
-		groupVersion:    cfg.K8sGroupVersion,
-		agentImage:      cfg.AgentImage,
-		controlPlaneURL: cfg.ControlPlaneURL,
-		llmGatewayURL:   cfg.LLMGatewayURL,
-		storageClass:        strings.TrimSpace(cfg.StorageClass),
-		defaultStorageSize:  strings.TrimSpace(cfg.DefaultAgentStorageSize),
-		token:           strings.TrimSpace(string(token)),
-		client:          client,
+		baseURL:            strings.TrimRight(cfg.K8sAPIBase, "/"),
+		namespace:          cfg.K8sNamespace,
+		groupVersion:       cfg.K8sGroupVersion,
+		agentImage:         cfg.AgentImage,
+		controlPlaneURL:    cfg.ControlPlaneURL,
+		llmGatewayURL:      cfg.LLMGatewayURL,
+		storageClass:       strings.TrimSpace(cfg.StorageClass),
+		defaultStorageSize: strings.TrimSpace(cfg.DefaultAgentStorageSize),
+		token:              strings.TrimSpace(string(token)),
+		client:             client,
 	}, nil
 }
 
@@ -113,6 +113,11 @@ func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identit
 		"permissions":       rawJSON(agent.Permissions, []any{}),
 		"idleTimeout":       fmt.Sprintf("%ds", agent.IdleTimeoutSec),
 		"desiredActive":     agent.Status == domain.AgentBusy,
+	}
+	// S-156: deterministic Deployment name (skquad-<owner>-agent-<agent>).
+	// Older agents without one keep the operator's CR-name fallback.
+	if strings.TrimSpace(agent.DeploymentName) != "" {
+		spec["deploymentName"] = agent.DeploymentName
 	}
 	// Durable workspace PVC (S-138): emitted only when the agent opted in.
 	// storageClass rides along solely when the platform set it; the CRD

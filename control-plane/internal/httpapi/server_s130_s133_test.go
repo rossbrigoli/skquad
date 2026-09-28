@@ -42,12 +42,17 @@ func TestPlatformAdminCanEditAndDeleteForeignSquadAndAgent(t *testing.T) {
 	}, http.StatusOK, &editedSquad)
 	require.Equal(t, "renamed by platform admin", editedSquad.Mission)
 
-	// Admin edits an agent they do not own (S-133).
+	// Admin edits an agent they do not own (S-133). S-156: the name is
+	// immutable, so the edit uses role, and a rename must be rejected.
+	recRename := doRaw(t, handler, http.MethodPatch, pathAgentsPrefix+agent.ID, `{"name":"renamed agent"}`, authAdmin)
+	require.Equal(t, http.StatusBadRequest, recRename.Code, recRename.Body.String())
+	require.Contains(t, recRename.Body.String(), "name_immutable")
 	var editedAgent domain.Agent
 	doJSONAuth(t, handler, authAdmin, http.MethodPatch, pathAgentsPrefix+agent.ID, map[string]any{
-		"name": "renamed agent",
+		"role": "renamed-role-by-platform-admin",
 	}, http.StatusOK, &editedAgent)
-	require.Equal(t, "renamed agent", editedAgent.Name)
+	require.Equal(t, "renamed-role-by-platform-admin", editedAgent.Role)
+	require.Equal(t, "test agent", editedAgent.Name)
 
 	// Admin deletes the foreign agent, then the foreign squad (S-133).
 	rec := doRaw(t, handler, http.MethodDelete, pathAgentsPrefix+agent.ID, "", authAdmin)

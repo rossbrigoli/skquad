@@ -81,6 +81,10 @@ type SquadStore interface {
 	CreateSquad(ctx context.Context, s *domain.Squad) (*domain.Squad, error)
 	GetSquad(ctx context.Context, id string) (*domain.Squad, error)
 	GetSquadByName(ctx context.Context, ownerID, name string) (*domain.Squad, error)
+	// SquadNamespaceExists reports whether ANY user already owns the given
+	// namespace (S-156: two users with the same display name creating the
+	// same squad name must not collide).
+	SquadNamespaceExists(ctx context.Context, namespace string) (bool, error)
 	UpdateSquad(ctx context.Context, s *domain.Squad) (*domain.Squad, error)
 	DeleteSquad(ctx context.Context, id string) error
 	ListSquads(ctx context.Context, ownerID string) ([]*domain.Squad, error) // ownerID "" = all
@@ -90,6 +94,10 @@ type SquadStore interface {
 type AgentStore interface {
 	CreateAgent(ctx context.Context, a *domain.Agent) (*domain.Agent, error)
 	GetAgent(ctx context.Context, id string) (*domain.Agent, error)
+	// GetAgentByNameForOwner returns an agent with the given name owned by
+	// the given user (via its squad), any squad. S-156: agent names are
+	// unique per user, not just per squad.
+	GetAgentByNameForOwner(ctx context.Context, ownerID, name string) (*domain.Agent, error)
 	UpdateAgent(ctx context.Context, a *domain.Agent) (*domain.Agent, error)
 	DeleteAgent(ctx context.Context, id string) error
 	ListAgents(ctx context.Context, squadID string) ([]*domain.Agent, error)

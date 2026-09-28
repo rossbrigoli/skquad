@@ -52,6 +52,9 @@ spec:
                   type: string
                 image:
                   type: string
+                deploymentName:
+                  type: string
+                  description: "S-156 deterministic Deployment name (skquad-<owner>-agent-<agent>); operator falls back to the CR name when absent."
                 credentialSecret:
                   type: string
                 virtualKeySecret:
