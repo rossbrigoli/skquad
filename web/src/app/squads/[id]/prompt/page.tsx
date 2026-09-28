@@ -51,7 +51,7 @@ export default function SquadPromptPage() {
       <AppShell>
         <div className="section-head">
           <h1 className="page-title" style={{ margin: 0 }}>
-            Squad prompt
+            Squad Context
           </h1>
         </div>
         <p className="field-hint" style={{ marginBottom: "var(--space-4)" }}>
@@ -63,7 +63,7 @@ export default function SquadPromptPage() {
 
         <PromptTierEditor
           scope="squad"
-          label="Squad prompt"
+          label="Squad context"
           content={prompt}
           onChange={setPrompt}
           onSave={save}
