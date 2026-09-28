@@ -216,7 +216,10 @@ func agentEnv(agent *skquadv1.Agent) []corev1.EnvVar {
 		{Name: "SKQUAD_AGENT_ID", Value: agent.Spec.AgentID},
 		{Name: "SKQUAD_SQUAD_ID", Value: agent.Spec.SquadID},
 		{Name: "SKQUAD_AGENT_ROLE", Value: agent.Spec.Role},
-		{Name: "SKQUAD_AGENT_SYSTEM_PROMPT", Value: agent.Spec.SystemPrompt},
+		// S-147 (WP6): SKQUAD_AGENT_SYSTEM_PROMPT is no longer injected.
+		// The runtime fetches the composed four-tier prompt from the
+		// control plane at wake (ADR-0011 D4); spec.systemPrompt remains
+		// only as a deprecated passthrough field (one release).
 		// WP8 step-4 cutover: SKQUAD_DEFAULT_PROVIDER_ID is gone — the
 		// legacy provider-uuid env is no longer injected. SKQUAD_DEFAULT_MODEL
 		// now carries ONLY the resolved bound AI Model name (control-plane
@@ -245,11 +248,8 @@ func agentEnv(agent *skquadv1.Agent) []corev1.EnvVar {
 		{Name: "SKQUAD_TASK_TIMEOUT_SECONDS", Value: envOrDefault("SKQUAD_AGENT_TASK_TIMEOUT_SECONDS", "900")},
 		{Name: "SKQUAD_MAX_LLM_STEPS", Value: envOrDefault("SKQUAD_AGENT_MAX_LLM_STEPS", "8")},
 		{Name: "SKQUAD_TASK_SUMMARY_MAX_CHARS", Value: envOrDefault("SKQUAD_AGENT_TASK_SUMMARY_MAX_CHARS", "4000")},
-		// S-PROMPT WP3 flag: when true the runtime fetches the composed
-		// four-tier prompt from the control-plane at wake instead of the
-		// legacy SKQUAD_AGENT_SYSTEM_PROMPT env. Operator-level default so
-		// the fleet can be flipped without touching the CRD.
-		{Name: "SKQUAD_PROMPT_FETCH_ENABLED", Value: envOrDefault("SKQUAD_AGENT_PROMPT_FETCH_ENABLED", "false")},
+		// S-147 (WP6): SKQUAD_PROMPT_FETCH_ENABLED removed. The composed
+		// prompt fetch is now mandatory — there is no legacy env path.
 		// S-152/BT-5a (ADR-0012): operator-level kill switch for the
 		// built-in platform tools (exec, web_fetch, web_search). Default
 		// "true" keeps the runtime default (enabled); set the operator env

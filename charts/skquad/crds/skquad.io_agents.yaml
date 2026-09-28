@@ -43,6 +43,7 @@ spec:
                   type: string
                 systemPrompt:
                   type: string
+                  description: "Deprecated (S-147/WP6): no longer delivered to the agent pod as env; the runtime fetches the composed four-tier prompt at wake. Retained one release for backward compatibility."
                 defaultModel:
                   type: string
                 aiModelId:

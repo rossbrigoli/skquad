@@ -1,11 +1,9 @@
-"""Test-suite defaults for S-PROMPT WP3 and BT-RUNTIME.
+"""Test-suite defaults for BT-RUNTIME and WP6.
 
-Pre-WP3 tests exercise the legacy env prompt path (they fake the
-control-plane client but not the composed-prompt HTTP layer). WP3 makes
-fetch-at-wake the default and loud-failing, so the suite defaults to
-``SKQUAD_PROMPT_FETCH_ENABLED=false`` here. The WP3 prompt tests
-(``tests/test_prompt_wp3.py``) explicitly enable the flag and mock the
-HTTP opener, so they always exercise the composed path.
+S-147 (WP6): the SKQUAD_PROMPT_FETCH_ENABLED flag and the legacy env
+prompt path are removed — the composed-prompt fetch is mandatory. Tests
+that don't drive the real fetcher stub it themselves (see
+``tests/test_runtime.py``); WP3/WP5 restore the real one.
 
 BT-RUNTIME builtin tools follow the same discipline: the legacy suite
 neither runs a control plane with ``/api/v1/agents/me/tools`` nor mocks
@@ -20,12 +18,9 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _default_legacy_prompt_path(monkeypatch):
-    # Only default when the test hasn't chosen a mode itself (WP3 tests
-    # set SKQUAD_PROMPT_FETCH_ENABLED=true in their config env).
-    if "SKQUAD_PROMPT_FETCH_ENABLED" not in os.environ:
-        monkeypatch.setenv("SKQUAD_PROMPT_FETCH_ENABLED", "false")
-    # BT-RUNTIME: same pattern for builtin tools (see module docstring).
+def _default_builtin_tools_off(monkeypatch):
+    # BT-RUNTIME: same pattern as the old prompt flag (see module
+    # docstring). Builtin-tools tests opt in explicitly.
     if "SKQUAD_BUILTIN_TOOLS_ENABLED" not in os.environ:
         monkeypatch.setenv("SKQUAD_BUILTIN_TOOLS_ENABLED", "false")
     yield
