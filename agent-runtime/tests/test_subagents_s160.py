@@ -290,5 +290,99 @@ def _task_config():
     return load_bootstrap_config(env)
 
 
+class TransparencyCaptureTest(unittest.TestCase):
+    """S-163: thread/turn/step capture on the ToolResult details."""
+
+    def test_thread_turns_and_steps_captured(self):
+        echo = EchoPlugin()
+        responses = [
+            tool_call_response("echo", {"text": "hello"}),
+            content_response("final"),
+        ]
+
+        def completion(**kwargs):
+            return responses.pop(0)
+
+        plugin = make_plugin(completion, plugins=[echo])
+        result = plugin.invoke(
+            ToolCall(id="s1", name=SUBAGENT_TOOL_NAME, arguments={"task": "do it"}), None
+        )
+        self.assertTrue(result.ok)
+        sub = result.details["subagent"]
+        self.assertEqual(sub["turns"], 2)
+        self.assertEqual(sub["steps"], ["echo"])
+        roles = [e["role"] for e in sub["thread"]]
+        self.assertEqual(roles, ["user", "assistant", "tool"])
+        self.assertEqual(sub["thread"][0]["content"], "do it")
+        self.assertEqual(sub["thread"][1]["tool_calls"][0]["name"], "echo")
+        self.assertEqual(sub["thread"][2]["name"], "echo")
+        self.assertTrue(sub["thread"][2]["ok"])
+        self.assertEqual(sub["thread"][2]["content"], "echo:hello")
+
+    def test_thread_items_size_capped(self):
+        class BigPlugin:
+            name = "big"
+
+            def tools(self):
+                return [{"type": "function", "function": {"name": "big"}}]
+
+            def invoke(self, call, config):
+                return ToolResult(content="Z" * 50000, ok=True)
+
+        responses = [tool_call_response("big", {"q": "N" * 9000}), content_response("f")]
+
+        def completion(**kwargs):
+            return responses.pop(0)
+
+        plugin = make_plugin(completion, plugins=[BigPlugin()])
+        result = plugin.invoke(
+            ToolCall(id="s1", name=SUBAGENT_TOOL_NAME, arguments={"task": "t" * 100000}), None
+        )
+        thread = result.details["subagent"]["thread"]
+        for entry in thread:
+            self.assertLessEqual(len(str(entry)), 2100)
+        total = sum(len(str(e)) for e in thread)
+        self.assertLessEqual(total, 24000 + 400)
+
+    def test_cap_thread_keeps_newest_and_marks_drops(self):
+        from skquad_runtime.subagents import _cap_thread
+
+        thread = [{"role": "user", "content": "TASK"}] + [
+            {"role": "tool", "name": "t", "ok": True, "content": "x" * 3000}
+            for _ in range(20)
+        ]
+        capped = _cap_thread(thread)
+        self.assertEqual(capped[0]["content"], "TASK")
+        self.assertIn("dropped", str(capped[1]["content"]))
+        self.assertLess(len(capped), len(thread))
+        self.assertLessEqual(sum(len(str(e)) for e in capped), 24000 + 400)
+
+    def test_chat_log_entry_carries_subagent(self):
+        from skquad_runtime.runtime import LLMMessageHandler, assistant_message
+
+        class DetailPlugin:
+            name = SUBAGENT_TOOL_NAME
+
+            def tools(self):
+                return [{"type": "function", "function": {"name": SUBAGENT_TOOL_NAME}}]
+
+            def invoke(self, call, config):
+                return ToolResult(
+                    content="final", ok=True, details={"subagent": {"thread": [], "turns": 1, "steps": []}}
+                )
+
+        handler = LLMMessageHandler(
+            completion=lambda **kw: content_response("x"), plugins=[DetailPlugin()]
+        )
+        chat_messages: list = []
+        log: list = []
+        call = ToolCall(id="c1", name=SUBAGENT_TOOL_NAME, arguments={})
+        assistant = assistant_message("", [call])
+        handler._append_tool_results(chat_messages, assistant, [call], None, log, [DetailPlugin()])
+        self.assertEqual(len(log), 1)
+        self.assertIn("subagent", log[0])
+        self.assertEqual(log[0]["subagent"]["turns"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

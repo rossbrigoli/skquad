@@ -6,8 +6,10 @@ import {
   chatToolCalls,
   CHAT_TURN_LOCK_MS,
   formatContextTokens,
+  parseSubagent,
   prettyToolArgs,
   sortChatMessages,
+  subagentSummary,
   summarizeToolArgs,
   truncateText,
 } from "./chat";
@@ -255,5 +257,83 @@ describe("agentTurnPending", () => {
   it("is false for missing or unparseable timestamps", () => {
     expect(agentTurnPending([message({ created_at: undefined })], now)).toBe(false);
     expect(agentTurnPending([message({ created_at: "not-a-date" })], now)).toBe(false);
+  });
+});
+
+// S-163: subagent transparency parsing + summary.
+describe("parseSubagent (S-163)", () => {
+  it("parses a well-formed subagent payload", () => {
+    const info = parseSubagent({
+      thread: [
+        { role: "user", content: "do it" },
+        { role: "assistant", content: "thinking", tool_calls: [{ name: "exec", arguments: "{}" }] },
+        { role: "tool", name: "exec", ok: true, content: "ran" },
+      ],
+      turns: 2,
+      steps: ["exec"],
+    });
+    expect(info).not.toBeNull();
+    expect(info!.turns).toBe(2);
+    expect(info!.steps).toEqual(["exec"]);
+    expect(info!.thread.map((e) => e.role)).toEqual(["user", "assistant", "tool"]);
+    expect(info!.thread[1].tool_calls).toEqual([{ name: "exec", arguments: "{}" }]);
+  });
+
+  it("skips unknown roles and junk entries", () => {
+    const info = parseSubagent({
+      thread: [{ role: "banana", content: "x" }, "junk", { role: "notice", content: "dropped" }],
+      turns: 1,
+      steps: [],
+    });
+    expect(info!.thread).toEqual([{ role: "notice", content: "dropped" }]);
+  });
+
+  it("returns null for unusable payloads", () => {
+    expect(parseSubagent(null)).toBeNull();
+    expect(parseSubagent("nope")).toBeNull();
+    expect(parseSubagent({ thread: [], steps: [] })).toBeNull();
+  });
+
+  it("chatToolCalls attaches subagent only when present", () => {
+    const msg = message({
+      from_type: "agent",
+      payload: {
+        message: "done",
+        tool_calls: [
+          { name: "echo", arguments: {}, ok: true, result: "e" },
+          {
+            name: "spawn_subagent",
+            arguments: { task: "dig" },
+            ok: true,
+            result: "found it",
+            subagent: { thread: [{ role: "user", content: "dig" }], turns: 3, steps: ["exec"] },
+          },
+        ],
+      },
+    });
+    const calls = chatToolCalls(msg);
+    expect(calls[0].subagent).toBeUndefined();
+    expect(calls[1].subagent).toBeDefined();
+    expect(calls[1].subagent!.turns).toBe(3);
+  });
+});
+
+describe("subagentSummary (S-163)", () => {
+  it("formats steps and turns", () => {
+    expect(subagentSummary({ thread: [], turns: 4, steps: ["exec", "web_fetch", "read_file"] })).toBe(
+      "3 steps (exec → web_fetch → read_file), 4 turns"
+    );
+  });
+
+  it("handles singular and empty steps", () => {
+    expect(subagentSummary({ thread: [], turns: 1, steps: ["exec"] })).toBe("1 step (exec), 1 turn");
+    expect(subagentSummary({ thread: [], turns: 2, steps: [] })).toBe("no tool steps, 2 turns");
+  });
+
+  it("truncates long step lists", () => {
+    const steps = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    const summary = subagentSummary({ thread: [], turns: 9, steps });
+    expect(summary).toContain("8 steps");
+    expect(summary).toContain("…");
   });
 });

@@ -370,6 +370,9 @@ class ToolCall:
 class ToolResult:
     content: str
     ok: bool = True
+    # S-163: optional structured side-channel for UI transparency
+    # (e.g. the full subagent thread). Never rendered as tool output.
+    details: Mapping[str, object] | None = None
 
 
 class TaskHandler(Protocol):
@@ -1116,14 +1119,17 @@ class LLMMessageHandler:
         )
         for call in calls:
             result = invoke_plugin_tool(call, config, self.plugins if plugins is None else plugins)
-            tool_calls_log.append(
-                {
-                    "name": call.name,
-                    "arguments": call.arguments,
-                    "ok": result.ok,
-                    "result": trim_text(result.content, CHAT_TOOL_RESULT_MAX_CHARS),
-                }
-            )
+            entry: dict[str, object] = {
+                "name": call.name,
+                "arguments": call.arguments,
+                "ok": result.ok,
+                "result": trim_text(result.content, CHAT_TOOL_RESULT_MAX_CHARS),
+            }
+            # S-163: subagent transparency — carry the captured thread
+            # so the UI can render the full subagent conversation.
+            if isinstance(result.details, Mapping) and "subagent" in result.details:
+                entry["subagent"] = result.details["subagent"]
+            tool_calls_log.append(entry)
             chat_messages.append(
                 {
                     "role": "tool",

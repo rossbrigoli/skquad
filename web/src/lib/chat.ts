@@ -8,6 +8,23 @@ export type ChatToolCall = {
   arguments: unknown;
   ok: boolean;
   result: string;
+  // S-163: subagent transparency — the full captured thread when the
+  // tool is spawn_subagent (emitted by the runtime since S-163).
+  subagent?: SubagentInfo;
+};
+
+export type SubagentThreadEntry = {
+  role: "user" | "assistant" | "tool" | "notice";
+  content: string;
+  name?: string;
+  ok?: boolean;
+  tool_calls?: { name: string; arguments?: unknown }[];
+};
+
+export type SubagentInfo = {
+  thread: SubagentThreadEntry[];
+  turns: number;
+  steps: string[];
 };
 
 /** Chronological order (oldest first); the chat box anchors the newest at the
@@ -26,14 +43,66 @@ export function chatToolCalls(msg: Message): ChatToolCall[] {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const entry = item as Record<string, unknown>;
     const name = typeof entry.name === "string" && entry.name.trim() !== "" ? entry.name.trim() : "tool";
-    calls.push({
+    const call: ChatToolCall = {
       name,
       arguments: entry.arguments ?? {},
       ok: entry.ok !== false,
       result: typeof entry.result === "string" ? entry.result : "",
-    });
+    };
+    const sub = parseSubagent(entry.subagent);
+    if (sub) call.subagent = sub;
+    calls.push(call);
   }
   return calls;
+}
+
+/** Lenient parse of the S-163 `subagent` payload; returns null when the
+ *  shape is unusable (older runtimes, truncated payloads, junk). */
+export function parseSubagent(raw: unknown): SubagentInfo | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  const rawThread = Array.isArray(value.thread) ? value.thread : [];
+  const thread: SubagentThreadEntry[] = [];
+  for (const item of rawThread) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const entry = item as Record<string, unknown>;
+    const role = entry.role;
+    if (role !== "user" && role !== "assistant" && role !== "tool" && role !== "notice") continue;
+    const parsed: SubagentThreadEntry = {
+      role,
+      content: typeof entry.content === "string" ? entry.content : "",
+    };
+    if (typeof entry.name === "string") parsed.name = entry.name;
+    if (typeof entry.ok === "boolean") parsed.ok = entry.ok;
+    if (Array.isArray(entry.tool_calls)) {
+      parsed.tool_calls = entry.tool_calls
+        .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+        .map((c) => ({
+          name: typeof c.name === "string" ? c.name : "tool",
+          arguments: c.arguments,
+        }));
+    }
+    thread.push(parsed);
+  }
+  const turns = typeof value.turns === "number" && Number.isFinite(value.turns) ? value.turns : 0;
+  const steps = Array.isArray(value.steps)
+    ? value.steps.filter((s): s is string => typeof s === "string")
+    : [];
+  if (thread.length === 0 && steps.length === 0) return null;
+  return { thread, turns, steps };
+}
+
+/** One-line summary for the subagent chip: "3 steps (a → b → c), 4 turns". */
+export function subagentSummary(info: SubagentInfo): string {
+  const parts: string[] = [];
+  if (info.steps.length > 0) {
+    const shown = info.steps.length > 6 ? info.steps.slice(0, 6).concat("…") : info.steps;
+    parts.push(`${info.steps.length} step${info.steps.length === 1 ? "" : "s"} (${shown.join(" → ")})`);
+  } else {
+    parts.push("no tool steps");
+  }
+  parts.push(`${info.turns} turn${info.turns === 1 ? "" : "s"}`);
+  return parts.join(", ");
 }
 
 /** Last-known context size (prompt tokens) for this conversation: the
