@@ -12,9 +12,9 @@
 
 import { ApiError } from "./api";
 
-export type BuiltinToolName = "exec" | "web_fetch" | "web_search";
+export type BuiltinToolName = "exec" | "web_fetch" | "web_search" | "send_message";
 
-export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = ["exec", "web_fetch", "web_search"];
+export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = ["exec", "web_fetch", "web_search", "send_message"];
 
 export const SEARCH_PROVIDERS: readonly string[] = ["duckduckgo", "brave", "perplexity"];
 
@@ -44,6 +44,8 @@ export type ToolFormValues = {
   // web_search only
   provider: string;
   maxResults: string;
+  // send_message only (S-164)
+  maxMessageChars: string;
 };
 
 // Contract defaults (ADR-0012 §3). Used as empty-form placeholders and
@@ -52,11 +54,13 @@ export const TOOL_DEFAULTS: Record<BuiltinToolName, { timeoutSeconds: number }> 
   exec: { timeoutSeconds: 60 },
   web_fetch: { timeoutSeconds: 30 },
   web_search: { timeoutSeconds: 20 },
+  send_message: { timeoutSeconds: 15 },
 };
 
 const EXEC_DEFAULTS = { timeoutSeconds: 60, maxOutputBytes: 65536 };
 const WEB_FETCH_DEFAULTS = { timeoutSeconds: 30, maxBytes: 262144 };
 const WEB_SEARCH_DEFAULTS = { timeoutSeconds: 20, maxResults: 8, provider: "duckduckgo" };
+const SEND_MESSAGE_DEFAULTS = { timeoutSeconds: 15, maxMessageChars: 8000 };
 
 export function isBuiltinToolName(name: string): name is BuiltinToolName {
   return (BUILTIN_TOOL_NAMES as readonly string[]).includes(name);
@@ -82,6 +86,7 @@ export function emptyToolForm(name: BuiltinToolName): ToolFormValues {
     allowPrivateNetwork: false,
     provider: WEB_SEARCH_DEFAULTS.provider,
     maxResults: String(WEB_SEARCH_DEFAULTS.maxResults),
+    maxMessageChars: String(SEND_MESSAGE_DEFAULTS.maxMessageChars),
   };
 }
 
@@ -106,6 +111,9 @@ export function formFromTool(tool: BuiltinTool): ToolFormValues {
     base.maxResults = num(policy.maxResults, base.maxResults);
     base.provider = str(policy.provider, base.provider);
   }
+  if (tool.name === "send_message") {
+    base.maxMessageChars = num(policy.maxMessageChars, base.maxMessageChars);
+  }
   return base;
 }
 
@@ -126,6 +134,12 @@ export function buildToolPolicy(name: BuiltinToolName, form: ToolFormValues): Re
       timeoutSeconds: timeout,
       maxBytes: Number(form.maxBytes),
       allowPrivateNetwork: form.allowPrivateNetwork,
+    };
+  }
+  if (name === "send_message") {
+    return {
+      timeoutSeconds: timeout,
+      maxMessageChars: Number(form.maxMessageChars),
     };
   }
   return {
@@ -167,6 +181,9 @@ export function validateToolForm(name: BuiltinToolName, form: ToolFormValues): s
   }
   if (name === "web_fetch") {
     return checkPositiveInt(form.maxBytes, "maxBytes");
+  }
+  if (name === "send_message") {
+    return checkPositiveInt(form.maxMessageChars, "maxMessageChars");
   }
   const resultsErr = checkPositiveInt(form.maxResults, "maxResults");
   if (resultsErr) return resultsErr;

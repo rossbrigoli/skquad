@@ -99,7 +99,7 @@ func serve(handler http.Handler, req *http.Request) *httptest.ResponseRecorder {
 
 // --- admin surface ------------------------------------------------------
 
-func TestAdminToolsListShowsThreeDisabledTools(t *testing.T) {
+func TestAdminToolsListShowsSeededTools(t *testing.T) {
 	t.Parallel()
 	handler, _ := toolsHandler(t, nil)
 
@@ -107,15 +107,17 @@ func TestAdminToolsListShowsThreeDisabledTools(t *testing.T) {
 		Tools []builtinToolAdminView `json:"tools"`
 	}
 	doJSON(t, handler, http.MethodGet, pathAdminTools, nil, http.StatusOK, &resp)
-	require.Len(t, resp.Tools, 3)
-	names := make([]string, 0, 3)
+	// S-164 added send_message as a fourth builtin, seeded ENABLED; the
+	// original three stay disabled-by-default (ADR-0012 §1).
+	require.Len(t, resp.Tools, 4)
+	names := make([]string, 0, 4)
 	for _, tool := range resp.Tools {
 		names = append(names, tool.Name)
-		require.False(t, tool.Enabled)
+		require.Equal(t, tool.Name == "send_message", tool.Enabled, "tool %s enabled-by-default mismatch", tool.Name)
 		require.JSONEq(t, "{}", string(tool.Policy))
 		require.NotEmpty(t, tool.UpdatedAt)
 	}
-	require.Equal(t, []string{"exec", "web_fetch", "web_search"}, names)
+	require.Equal(t, []string{"exec", "web_fetch", "web_search", "send_message"}, names)
 }
 
 func TestAdminToolsRBAC(t *testing.T) {
@@ -138,7 +140,7 @@ func TestAdminToolsRBAC(t *testing.T) {
 		Tools []builtinToolAdminView `json:"tools"`
 	}
 	doJSONAuth(t, handler, authAdmin, http.MethodGet, pathAdminTools, nil, http.StatusOK, &ok)
-	require.Len(t, ok.Tools, 3)
+	require.Len(t, ok.Tools, 4)
 }
 
 func TestAdminPatchMergeSemantics(t *testing.T) {
@@ -196,11 +198,13 @@ func TestAdminPatchPolicyValidation(t *testing.T) {
 		require.Contains(t, body["error"]["message"], tc.msg)
 	}
 
-	// Nothing was persisted by the rejected writes.
+	// Nothing was persisted by the rejected writes: policies stay empty
+	// and enabled flags stay at their seeded defaults (S-164: send_message
+	// ships enabled, the rest disabled).
 	var tools struct{ Tools []builtinToolAdminView }
 	doJSON(t, handler, http.MethodGet, pathAdminTools, nil, http.StatusOK, &tools)
 	for _, tool := range tools.Tools {
-		require.False(t, tool.Enabled)
+		require.Equal(t, tool.Name == "send_message", tool.Enabled, "tool %s enabled changed by rejected write", tool.Name)
 		require.JSONEq(t, "{}", string(tool.Policy))
 	}
 }
@@ -257,9 +261,10 @@ func TestAgentToolsETagRound(t *testing.T) {
 		Tools []builtinToolAgentView `json:"tools"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Len(t, resp.Tools, 3)
+	require.Len(t, resp.Tools, 4)
 	for _, tool := range resp.Tools {
-		require.False(t, tool.Enabled)
+		// S-164: send_message is enabled by default; the rest are not.
+		require.Equal(t, tool.Name == "send_message", tool.Enabled, "tool %s enabled mismatch", tool.Name)
 	}
 
 	// Same ETag → 304, empty body.
@@ -281,7 +286,9 @@ func TestAgentToolsETagRound(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(rec3.Body.Bytes(), &resp3))
 	for _, tool := range resp3.Tools {
-		require.Equal(t, tool.Name == domain.BuiltinToolWebSearch, tool.Enabled)
+		// web_search was just enabled; send_message is enabled by default (S-164).
+		wantEnabled := tool.Name == domain.BuiltinToolWebSearch || tool.Name == domain.BuiltinToolSendMessage
+		require.Equal(t, wantEnabled, tool.Enabled, "tool %s enabled mismatch", tool.Name)
 	}
 }
 

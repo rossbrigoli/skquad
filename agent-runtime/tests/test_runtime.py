@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+from skquad_runtime import runtime as rt
 from skquad_runtime.runtime import (
     ControlPlaneClient,
     DefaultMessageHandler,
@@ -1539,13 +1540,20 @@ def ready_config(tmp):
 
 
 class FakeChatClient(FakeControlPlaneClient):
-    def __init__(self, claimed_task, messages=None, history=None):
+    def __init__(self, claimed_task, messages=None, history=None, peers=None):
         super().__init__(claimed_task, messages=messages)
         self.history = history or []
         self.replies = []
+        # S-164: squad roster returned by GET /agents/me/peers.
+        self.peers = peers if peers is not None else []
+        self.peer_calls = 0
 
     def list_message_history(self):
         return self.history
+
+    def list_peers(self):
+        self.peer_calls += 1
+        return list(self.peers)
 
     def send_chat_reply(self, text, correlation_id="", to_agent_id="", extra=None):
         self.replies.append((text, correlation_id, to_agent_id, extra))
@@ -1928,6 +1936,202 @@ class LLMMessageHandlerTest(unittest.TestCase):
             logged = client.replies[-1][3]["tool_calls"][0]
             self.assertTrue(logged["result"].endswith("[truncated]"))
             self.assertLess(len(logged["result"]), 600)
+
+
+def peer_consult(message_id, text, correlation_id="", sender="agent-mary"):
+    return RuntimeMessage(
+        id=message_id,
+        from_type="agent",
+        from_id=sender,
+        to_agent_id="agent-1",
+        squad_id="squad-1",
+        message_type="consult",
+        payload={"message": text},
+        status="pending",
+        correlation_id=correlation_id,
+    )
+
+
+class A2AReceiveFlowS164Test(unittest.TestCase):
+    """S-164 receive side: peer consults get answered, replies/pings get
+    processed for visibility, self-authored mail never reaches the LLM."""
+
+    def _config(self, tmp, **extra):
+        credential = Path(tmp) / "agent"
+        credential.write_text("credential", encoding="utf-8")
+        virtual = Path(tmp) / "llm-gateway"
+        virtual.write_text("virtual-key", encoding="utf-8")
+        env = {
+            "SKQUAD_AGENT_ID": "agent-1",
+            "SKQUAD_SQUAD_ID": "squad-1",
+            "SKQUAD_AGENT_CREDENTIAL_PATH": str(credential),
+            "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH": str(virtual),
+            "SKQUAD_LLM_GATEWAY_URL": "http://llm-gateway:4000",
+            "SKQUAD_DEFAULT_MODEL": "gpt-4o",
+            "SKQUAD_TASK_LOOP_ENABLED": "false",
+        }
+        env.update(extra)
+        return load_bootstrap_config(env)
+
+    def test_peer_consult_is_answered_back_to_the_sender(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            seen = {}
+
+            def fake_completion(**kwargs):
+                seen.update(kwargs)
+                return fake_completion_response("Diff looks good, ship it.")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=fake_completion, client=client)
+
+            result = handler.handle_message(
+                peer_consult("c-1", "Can you review my diff?"), config
+            )
+
+            self.assertTrue(result.ok)
+            self.assertIn("answered consult", result.summary)
+            # Reply routed to the consulting agent, correlated to the consult.
+            self.assertEqual(
+                client.replies,
+                [("Diff looks good, ship it.", "c-1", "agent-mary", None)],
+            )
+            # The consult arrived wrapped as untrusted data (WP3 preserved).
+            user_turns = [m for m in seen["messages"] if m["role"] == "user"]
+            self.assertIn('skquad_untrusted source="inbox"', user_turns[-1]["content"])
+            self.assertIn("agent-mary", user_turns[-1]["content"])
+
+    def test_consult_correlation_is_carried_by_the_reply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+
+            def fake_completion(**kwargs):
+                return fake_completion_response("answered")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=fake_completion, client=client)
+
+            result = handler.handle_message(
+                peer_consult("c-2", "follow-up?", correlation_id="thread-9"), config
+            )
+
+            self.assertTrue(result.ok)
+            self.assertEqual(client.replies[0][1], "thread-9")
+            self.assertEqual(client.replies[0][2], "agent-mary")
+
+    def test_peer_reply_is_processed_without_correlation_on_the_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+
+            def fake_completion(**kwargs):
+                return fake_completion_response("Noted, thanks Mary.")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=fake_completion, client=client)
+
+            incoming = replace(
+                peer_consult("r-1", "review done: all green", correlation_id="thread-9"),
+                message_type="reply",
+            )
+            result = handler.handle_message(incoming, config)
+
+            self.assertTrue(result.ok)
+            self.assertIn("processed reply", result.summary)
+            # Transcript copy lands in own chat (to_agent_id "" -> self)
+            # WITHOUT a correlation so it cannot eat the chain budget.
+            self.assertEqual(len(client.replies), 1)
+            text, correlation, to_agent, _extra = client.replies[0]
+            self.assertEqual(text, "Noted, thanks Mary.")
+            self.assertEqual(correlation, "")
+            self.assertEqual(to_agent, "")
+
+    def test_self_authored_message_never_reaches_the_llm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            calls = []
+
+            def fake_completion(**kwargs):
+                calls.append(kwargs)
+                return fake_completion_response("should not run")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=fake_completion, client=client)
+
+            self_mail = peer_consult("e-1", "echo echo", sender="agent-1")
+            result = handler.handle_message(self_mail, config)
+
+            self.assertTrue(result.ok)
+            self.assertIn("self-authored", result.summary)
+            self.assertEqual(calls, [])
+            self.assertEqual(client.replies, [])
+
+    def test_correlation_contextvar_is_set_during_the_turn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            observed = {}
+
+            def fake_completion(**kwargs):
+                observed["correlation"] = rt.A2A_CORRELATION.get()
+                return fake_completion_response("thinking with context")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=fake_completion, client=client)
+
+            handler.handle_message(
+                peer_consult("c-3", "threaded question", correlation_id="thread-42"),
+                config,
+            )
+
+            self.assertEqual(observed["correlation"], "thread-42")
+            # Reset after the turn: no leak into unrelated work.
+            self.assertEqual(rt.A2A_CORRELATION.get(), "")
+
+    def test_squad_roster_is_injected_into_chat_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            seen = {}
+
+            def fake_completion(**kwargs):
+                seen.update(kwargs)
+                return fake_completion_response("I know my squad")
+
+            client = FakeChatClient(
+                claimed_task=None,
+                messages=[],
+                peers=[
+                    {"id": "peer-mary", "name": "Mary", "role": "reviewer", "status": "idle"},
+                    {"id": "peer-max", "name": "Max", "role": "", "status": "idle"},
+                ],
+            )
+            handler = LLMMessageHandler(completion=fake_completion, client=client)
+
+            result = handler.handle_message(user_msg("m-9", "who can I ask?"), config)
+
+            self.assertTrue(result.ok)
+            system = seen["messages"][0]
+            self.assertEqual(system["role"], "system")
+            self.assertIn("Mary (reviewer)", system["content"])
+            self.assertIn("Max", system["content"])
+            self.assertIn("send_message", system["content"])
+
+    def test_roster_fetch_failure_is_not_fatal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+
+            def fake_completion(**kwargs):
+                return fake_completion_response("still fine")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+
+            def boom():
+                raise RuntimeError("peers endpoint down")
+
+            client.list_peers = boom
+            handler = LLMMessageHandler(completion=fake_completion, client=client)
+
+            result = handler.handle_message(user_msg("m-10", "hi"), config)
+            self.assertTrue(result.ok)
+
 
 class ModelUsedObservabilityTest(unittest.TestCase):
     """WP5 / ADR-0010 Risk 3: the runtime must record which model

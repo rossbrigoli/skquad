@@ -8,10 +8,14 @@
 > messaging is **queued**, so a **busy agent is not disturbed** (protecting its
 > task context).
 >
-> The queue, runtime inbox path, retry scheduling, expiry, and dead-letter
-> transitions are implemented. Automatic `delegate`/`handoff` task
-> materialization and richer consult/reply workflows remain tracked follow-up
-> work; see [`implementation-status.md`](implementation-status.md).
+> The queue, runtime inbox path, retry scheduling, expiry, dead-letter
+> transitions, delegate/handoff task materialization, and — since
+> **S-164** — the full agent-to-agent loop are implemented: a built-in
+> `send_message` tool (name-resolved against the squad roster), LLM-answered
+> peer `consult`s with routed `reply` messages, and a per-correlation-chain
+> message budget that fails runaway reply loops loudly. Richer consult/reply
+> *UI* (inbox views, thread grouping) remains follow-up work; see
+> [`implementation-status.md`](implementation-status.md).
 
 ---
 
@@ -196,7 +200,51 @@ materialization remains a follow-up slice.
 
 ---
 
-## 10. Open Points
+## 10. Agent-to-Agent Tool Path (S-164)
+
+The A2A loop is driven by a platform **built-in tool** plus routed inbox
+handling. No agent ever opens a direct channel to a peer pod — every send
+transits the control-plane queue.
+
+**Send — `send_message` builtin** (fourth member of the ADR-0012 universe,
+seeded **enabled**):
+
+```
+send_message { "target_agent": "Mary", "message": "Can you review this diff?", "type": "consult" }
+```
+
+- The runtime resolves `target_agent` by name against
+  `GET /api/v1/agents/me/peers` (case-insensitive exact match, then unique
+  prefix; failures return the roster so the model can correct itself).
+- The send posts to the existing `POST /api/v1/agents/me/messages`, so
+  same-squad permission, cross-squad grant checks, delegate materialization,
+  and audit behave exactly as for any sender.
+- Tool invocations land in the chat reply's `tool_calls` payload (S-122
+  mechanism), so the web chat renders the `send_message {...}` call natively.
+- Policy knobs: `timeoutSeconds`, `maxMessageChars` (admin-configurable via
+  the Built-in Tools settings panel).
+
+**Correlation threading:** while an agent processes an inbox message, the
+runtime exposes its `correlation_id` (contextvar) so follow-up sends made
+during that turn inherit the thread instead of starting an unbudgeted one.
+
+**Loop guard:** the control plane caps each correlation chain at **12
+messages**. The 13th send is rejected with HTTP 409 `chain_exceeded` and
+audited (`message.chain_exceeded`) — a runaway loop dies loudly instead of
+burning tokens silently. Self-authored messages are never LLM-processed by
+the receiving handler (echo guard), and transcript copies of processed
+peer mail carry no correlation so they cannot consume the budget.
+
+**Receive — routed handling in the chat handler:**
+
+| Incoming (from peer agent) | Behavior |
+| --- | --- |
+| `consult` | LLM turn (content wrapped untrusted); the answer is posted back as a `reply` **to the consulting agent**, correlated to the consult. |
+| `reply` / `ping` | LLM turn so the agent can read the answer and follow up via `send_message`; the transcript copy lands in the agent's own chat, uncorrelated. |
+| self-authored | Acked only — never reaches the LLM. |
+| `delegate` / `handoff` | Unchanged: materialized into a task by the control plane; the task loop does the work. |
+
+## 11. Open Points
 
 - **v2 broker** — move to **NATS** behind the same interface if throughput /
   latency requirements grow (ADR-0004).

@@ -18,6 +18,10 @@ var ErrNotFound = errors.New("storage: not found")
 // ErrConflict is returned on a uniqueness violation (e.g. duplicate name).
 var ErrConflict = errors.New("storage: conflict")
 
+// ErrInvalidInput is returned when a caller violates a method's input contract
+// (e.g. counting a correlation chain with an empty correlation ID).
+var ErrInvalidInput = errors.New("storage: invalid input")
+
 // Store is the aggregate persistence interface used by the API server.
 type Store interface {
 	UserStore
@@ -185,6 +189,11 @@ type MessageStore interface {
 	ListPendingMessages(ctx context.Context, agentID string) ([]*domain.Message, error)
 	HasPendingMessages(ctx context.Context, agentID string) (bool, error)
 	ListAgentMessageHistory(ctx context.Context, agentID string) ([]*domain.Message, error)
+	// CountMessagesByCorrelation (S-164) returns the number of messages in a
+	// correlation chain. The agent send path uses it to cap reply-loop depth.
+	// An empty correlationID is a programming error for this caller and returns
+	// ErrInvalidInput rather than counting every uncorrelated message.
+	CountMessagesByCorrelation(ctx context.Context, correlationID string) (int, error)
 	// ResetAgentChat (S-162) archives the current chat transcript into
 	// agent memory and moves the agent's chat_reset_at boundary to now.
 	// Returns the number of messages archived and the boundary time.

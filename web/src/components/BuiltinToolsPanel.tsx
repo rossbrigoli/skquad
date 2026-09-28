@@ -1,7 +1,8 @@
 "use client";
 
 // BT-4 (S-151): "Built-in Tools" admin settings panel.
-// One card per built-in tool (exec / web_fetch / web_search) with an
+// One card per built-in tool (exec / web_fetch / web_search /
+// send_message) with an
 // enable toggle, the tool's pinned policy form (ADR-0012 §3), inline
 // validation errors from the server (400), success feedback, and the
 // per-tool updatedAt/updatedBy line. Rendered only for platform_admin —
@@ -32,12 +33,14 @@ const TOOL_LABELS: Record<BuiltinToolName, string> = {
   exec: "exec — run terminal commands",
   web_fetch: "web_fetch — fetch a URL",
   web_search: "web_search — web search",
+  send_message: "send_message — agent-to-agent messaging",
 };
 
 const TOOL_HINTS: Record<BuiltinToolName, string> = {
   exec: "Runs inside the agent pod (the container is the sandbox). Denied patterns are regexes matched against the full command before execution.",
   web_fetch: "GET only, ≤3 redirects with an SSRF re-check per hop. Private-network targets stay blocked unless explicitly allowed.",
   web_search: "Provider API keys live only in the control plane; agents call the search proxy and never see credentials.",
+  send_message: "Queued through the control plane: same-squad always allowed, cross-squad needs an access grant. Reply threads are capped at 12 messages per correlation chain (S-164).",
 };
 
 export function BuiltinToolsPanel() {
@@ -194,6 +197,18 @@ export function ToolCard({
               value={form.maxBytes}
               disabled={busy}
               onChange={(e) => setField("maxBytes", e.target.value)}
+            />
+          </label>
+        ) : null}
+        {tool.name === "send_message" ? (
+          <label className="field">
+            <span>Max message chars</span>
+            <input
+              type="number"
+              min={1}
+              value={form.maxMessageChars}
+              disabled={busy}
+              onChange={(e) => setField("maxMessageChars", e.target.value)}
             />
           </label>
         ) : null}

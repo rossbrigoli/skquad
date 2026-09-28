@@ -45,11 +45,12 @@ describe("gating (platform_admin only)", () => {
     expect(isPlatformAdmin("")).toBe(false);
   });
 
-  it("knows exactly the three contract tool names", () => {
-    expect([...BUILTIN_TOOL_NAMES]).toEqual(["exec", "web_fetch", "web_search"]);
+  it("knows exactly the four contract tool names", () => {
+    expect([...BUILTIN_TOOL_NAMES]).toEqual(["exec", "web_fetch", "web_search", "send_message"]);
     expect(isBuiltinToolName("exec")).toBe(true);
     expect(isBuiltinToolName("web_fetch")).toBe(true);
     expect(isBuiltinToolName("web_search")).toBe(true);
+    expect(isBuiltinToolName("send_message")).toBe(true);
     expect(isBuiltinToolName("something_else")).toBe(false);
   });
 });
@@ -177,6 +178,16 @@ describe("validation", () => {
     for (const name of BUILTIN_TOOL_NAMES) {
       expect(validateToolForm(name, emptyToolForm(name))).toBeNull();
     }
+  });
+
+  it("send_message: policy carries timeoutSeconds + maxMessageChars only (S-164)", () => {
+    const payload = buildToolPayload(
+      "send_message",
+      form("send_message", { timeoutSeconds: "9", maxMessageChars: "1200" }),
+    );
+    expect(payload.policy).toEqual({ timeoutSeconds: 9, maxMessageChars: 1200 });
+    expect(validateToolForm("send_message", form("send_message", { maxMessageChars: "0" }))).toMatch(/maxMessageChars/);
+    expect(validateToolForm("send_message", form("send_message", { maxMessageChars: "abc" }))).toMatch(/maxMessageChars/);
   });
 });
 

@@ -9,6 +9,7 @@ import importlib
 import logging
 import threading
 import uuid
+import contextvars
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -16,6 +17,15 @@ from pathlib import Path
 from time import monotonic, sleep as default_sleep
 from typing import Callable, Mapping, Protocol
 from urllib import error, request
+
+# S-164: correlation of the inbox message an agent turn is currently
+# processing. The send_message builtin reads it so a follow-up sent during
+# a consult/reply exchange stays on the same thread — which is what makes
+# the control-plane chain budget able to stop a runaway reply loop.
+# ContextVar (not a global) so concurrent turns never cross-contaminate.
+A2A_CORRELATION: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "skquad_a2a_correlation", default=""
+)
 
 from .workspace import (
     DEFAULT_MIN_FREE_BYTES,
@@ -529,6 +539,11 @@ class ControlPlaneClient:
         payload = self._json("GET", "/api/v1/agents/me/messages/history", None)
         return [runtime_message(item) for item in (payload or [])]
 
+    def list_peers(self) -> list[dict[str, object]]:
+        """Squad-mates (S-164): id/name/role/status of the other agents."""
+        payload = self._json("GET", "/api/v1/agents/me/peers", None)
+        return [item for item in (payload or []) if isinstance(item, dict)]
+
     def send_chat_reply(
         self,
         text: str,
@@ -887,6 +902,22 @@ class LLMMessageHandler:
         # shows *what the agent actually did* during the turn.
         self.plugins = plugins or []
         self.max_tool_steps = max_tool_steps
+        # S-164: squad roster cache (60s TTL) so the chat context can tell
+        # the model whom it may message without a fetch per turn.
+        self._peers_cache: list[dict[str, object]] = []
+        self._peers_expires: float = 0.0
+
+    def _squad_roster(self, config: BootstrapConfig) -> list[dict[str, object]]:
+        now = monotonic()
+        if now < self._peers_expires:
+            return self._peers_cache
+        try:
+            peers = self._control_plane(config).list_peers()
+        except Exception:  # noqa: BLE001 — roster is advisory, never fatal
+            return self._peers_cache
+        self._peers_cache = peers
+        self._peers_expires = now + 60.0
+        return peers
 
     def _control_plane(self, config: BootstrapConfig) -> "ControlPlaneClient":
         if self._client is not None:
@@ -894,10 +925,24 @@ class LLMMessageHandler:
         return ControlPlaneClient.from_bootstrap(config)
 
     def handle_message(self, message: RuntimeMessage, config: BootstrapConfig) -> MessageResult:
-        early_result = self._non_user_result(message)
+        early_result = self._non_user_result(message, config)
         if early_result is not None:
             return early_result
 
+        # S-164: expose the thread this turn is processing so a send_message
+        # tool call made during the turn inherits the correlation instead of
+        # silently starting a new (unbudgeted) chain.
+        correlation_token = A2A_CORRELATION.set(
+            message.correlation_id or message.id
+        )
+        try:
+            return self._handle_message_inner(message, config)
+        finally:
+            A2A_CORRELATION.reset(correlation_token)
+
+    def _handle_message_inner(
+        self, message: RuntimeMessage, config: BootstrapConfig
+    ) -> MessageResult:
         # S-PROMPT WP3: the wake resolves the composed prompt before the
         # first LLM call. A fetch failure raises out of the handler — the
         # inbox runner fails the message loudly rather than answering from
@@ -956,7 +1001,9 @@ class LLMMessageHandler:
         labeled["_skquad_trusted"] = True
         return replace(message, payload=labeled)
 
-    def _non_user_result(self, message: RuntimeMessage) -> MessageResult | None:
+    def _non_user_result(
+        self, message: RuntimeMessage, config: BootstrapConfig
+    ) -> MessageResult | None:
         if message.from_type == "user":
             return None
         if message.message_type in ("delegate", "handoff"):
@@ -964,10 +1011,20 @@ class LLMMessageHandler:
                 ok=False,
                 summary=f"message type {message.message_type!r} requires a specialized handler",
             )
-        return MessageResult(
-            ok=True,
-            summary=f"acked {message.from_type} message ({message.message_type})",
-        )
+        if message.from_id and message.from_id == config.agent_id:
+            # Self-authored echo (e.g. our own reply posted into our own
+            # chat history): ack only. Answering it would be talking to
+            # ourselves with an LLM bill attached.
+            return MessageResult(
+                ok=True,
+                summary=f"acked self-authored message ({message.message_type})",
+            )
+        # S-164: agent consult/reply/ping from a peer now gets a real LLM
+        # turn. A consult is answered back to its sender; a reply/ping is
+        # processed so the agent can read the answer and follow up via
+        # send_message. Reply-loop risk is bounded control-plane-side by the
+        # correlation-chain budget, and self-echo by the guard above.
+        return None
 
     def _chat_prerequisites(
         self, message: RuntimeMessage, config: BootstrapConfig
@@ -1152,6 +1209,19 @@ class LLMMessageHandler:
         if not reply_text:
             return MessageResult(ok=False, summary="LLM returned an empty reply")
 
+        # S-164 routing: an answer to a peer's consult goes back to the
+        # consulting agent (queued, never interrupting); everything else
+        # (human chat, and the transcript copy of processing a peer's
+        # reply/ping) lands in this agent's own chat history. The
+        # transcript copy deliberately carries no correlation_id so it
+        # cannot eat the correlation-chain budget that bounds real
+        # agent-to-agent sends.
+        a2a_consult = message.from_type == "agent" and message.message_type == "consult"
+        to_agent_id = message.from_id if a2a_consult else ""
+        correlation_id = ""
+        if a2a_consult or message.from_type == "user":
+            correlation_id = message.correlation_id or message.id
+
         try:
             extra: dict[str, object] = {}
             if tool_calls_log:
@@ -1161,12 +1231,25 @@ class LLMMessageHandler:
                 extra["context_tokens"] = context_tokens
             self._control_plane(config).send_chat_reply(
                 reply_text,
-                correlation_id=message.correlation_id or message.id,
+                correlation_id=correlation_id,
+                to_agent_id=to_agent_id,
                 extra=extra or None,
             )
         except Exception as exc:
             return MessageResult(ok=False, summary=f"failed to post chat reply: {exc}")
 
+        if a2a_consult:
+            return MessageResult(
+                ok=True,
+                summary=f"answered consult from agent {message.from_id}",
+                model_used=model_used,
+            )
+        if message.from_type == "agent":
+            return MessageResult(
+                ok=True,
+                summary=f"processed {message.message_type} from agent {message.from_id}",
+                model_used=model_used,
+            )
         return MessageResult(ok=True, summary="replied to user chat message", model_used=model_used)
 
     def tool_schemas(self, plugins: list[RuntimePlugin] | None = None) -> list[Mapping[str, object]]:
@@ -1198,8 +1281,21 @@ class LLMMessageHandler:
         # prompt. The current message arrives already trust-labeled by
         # the wake entry point.
         runtime = prompted or PromptedRuntime(config)
+        system_content = runtime.chat_system_prompt()
+        # S-164: tell the model who its squad-mates are so send_message
+        # targets are grounded in the real roster, not invented names.
+        roster = self._squad_roster(config)
+        if roster:
+            names = ", ".join(
+                str(p.get("name", "?"))
+                + (f" ({p.get('role')})" if p.get("role") else "")
+                for p in roster
+            )
+            system_content += (
+                "\n\nSquad mates you can message with send_message: " + names
+            )
         chat: list[dict[str, object]] = [
-            {"role": "system", "content": runtime.chat_system_prompt()}
+            {"role": "system", "content": system_content}
         ]
         for item in prior:
             role = "user" if item.from_type == "user" else "assistant"

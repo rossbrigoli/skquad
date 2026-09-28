@@ -694,5 +694,273 @@ class LoadBuiltinToolsTests(BuiltinToolsTestBase):
                     rt.load_builtin_tools(self.bt_config())
 
 
+# --------------------------------------------------------------------------
+# SendMessageTool (S-164) — agent-to-agent messaging inside the squad
+# --------------------------------------------------------------------------
+
+
+def peers_payload():
+    return [
+        {"id": "peer-mary", "name": "Mary", "role": "reviewer", "status": "idle"},
+        {"id": "peer-max", "name": "Max", "role": "builder", "status": "busy"},
+    ]
+
+
+class SendMessageToolTests(BuiltinToolsTestBase):
+    """Fake HTTP: GET /peers returns the roster; POST /messages is captured."""
+
+    def fake_urlopen(self, captured, post_status=201, post_body=None, post_error_body=None):
+        def fake(req, timeout=None):
+            url = req.full_url
+            method = req.get_method()
+            if method == "GET" and url.endswith("/api/v1/agents/me/peers"):
+                captured["peers_url"] = url
+                captured["auth"] = req.headers.get("Authorization")
+                return FakeHTTPResponse(
+                    200, json.dumps(peers_payload()).encode("utf-8"), "application/json"
+                )
+            if method == "POST" and url.endswith("/api/v1/agents/me/messages"):
+                captured["post_url"] = url
+                captured["post_body"] = json.loads(req.data.decode("utf-8"))
+                if post_status != 201:
+                    raise error.HTTPError(
+                        url,
+                        post_status,
+                        "nope",
+                        {},
+                        io.BytesIO(json.dumps(post_error_body or {}).encode("utf-8")),
+                    )
+                return FakeHTTPResponse(
+                    post_status,
+                    json.dumps(post_body or {"id": "msg-1"}).encode("utf-8"),
+                    "application/json",
+                )
+            raise AssertionError(f"unexpected request {method} {url}")
+
+        return fake
+
+    def patch_http(self, fake):
+        return mock.patch(
+            "skquad_runtime.builtin_tools.request.urlopen", side_effect=fake
+        )
+
+    def test_registry_contains_send_message(self):
+        assert "send_message" in bt._BUILTIN_REGISTRY
+
+    def test_resolves_peer_by_name_case_insensitive(self):
+        tool = bt.SendMessageTool({}, self.ctx(credential="cred-a2a"))
+        captured = {}
+        with self.patch_http(self.fake_urlopen(captured)):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_message",
+                    arguments={"target_agent": "mary", "message": "review my diff?"},
+                ),
+                None,
+            )
+        assert result.ok is True
+        assert captured["auth"] == "Bearer cred-a2a"
+        assert captured["post_body"]["to_agent_id"] == "peer-mary"
+        assert captured["post_body"]["type"] == "consult"
+        assert captured["post_body"]["payload"]["message"] == "review my diff?"
+        assert "correlation_id" not in captured["post_body"]
+        assert "Mary" in result.content
+
+    def test_unique_prefix_match_resolves(self):
+        tool = bt.SendMessageTool({}, self.ctx())
+        captured = {}
+        with self.patch_http(self.fake_urlopen(captured)):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_message",
+                    arguments={"target_agent": "Mar", "message": "hi"},
+                ),
+                None,
+            )
+        assert result.ok is True
+        assert captured["post_body"]["to_agent_id"] == "peer-mary"
+
+    def test_ambiguous_prefix_rejected(self):
+        tool = bt.SendMessageTool({}, self.ctx())
+        captured = {}
+        with self.patch_http(self.fake_urlopen(captured)):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_message",
+                    arguments={"target_agent": "Ma", "message": "hi"},
+                ),
+                None,
+            )
+        assert result.ok is False
+        assert "post_url" not in captured
+        assert "Mary" in result.content and "Max" in result.content
+
+    def test_unknown_target_lists_roster(self):
+        tool = bt.SendMessageTool({}, self.ctx())
+        captured = {}
+        with self.patch_http(self.fake_urlopen(captured)):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_message",
+                    arguments={"target_agent": "Bobbot", "message": "hi"},
+                ),
+                None,
+            )
+        assert result.ok is False
+        assert "post_url" not in captured
+        assert "Mary" in result.content
+
+    def test_correlation_inherited_from_contextvar(self):
+        tool = bt.SendMessageTool({}, self.ctx())
+        captured = {}
+        token = rt.A2A_CORRELATION.set("thread-77")
+        try:
+            with self.patch_http(self.fake_urlopen(captured)):
+                result = tool.invoke(
+                    ToolCall(
+                        id="c1",
+                        name="send_message",
+                        arguments={"target_agent": "Mary", "message": "follow-up"},
+                    ),
+                    None,
+                )
+        finally:
+            rt.A2A_CORRELATION.reset(token)
+        assert result.ok is True
+        assert captured["post_body"]["correlation_id"] == "thread-77"
+
+    def test_explicit_correlation_wins_over_contextvar(self):
+        tool = bt.SendMessageTool({}, self.ctx())
+        captured = {}
+        token = rt.A2A_CORRELATION.set("thread-77")
+        try:
+            with self.patch_http(self.fake_urlopen(captured)):
+                result = tool.invoke(
+                    ToolCall(
+                        id="c1",
+                        name="send_message",
+                        arguments={
+                            "target_agent": "Mary",
+                            "message": "new thread",
+                            "correlation_id": "explicit-1",
+                        },
+                    ),
+                    None,
+                )
+        finally:
+            rt.A2A_CORRELATION.reset(token)
+        assert result.ok is True
+        assert captured["post_body"]["correlation_id"] == "explicit-1"
+
+    def test_delegate_type_passes_through(self):
+        tool = bt.SendMessageTool({}, self.ctx())
+        captured = {}
+        with self.patch_http(self.fake_urlopen(captured)):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_message",
+                    arguments={
+                        "target_agent": "Max",
+                        "message": "build this",
+                        "type": "delegate",
+                    },
+                ),
+                None,
+            )
+        assert result.ok is True
+        assert captured["post_body"]["type"] == "delegate"
+
+    def test_invalid_type_rejected_without_http(self):
+        tool = bt.SendMessageTool({}, self.ctx())
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen") as urlopen:
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_message",
+                    arguments={"target_agent": "Mary", "message": "x", "type": "shout"},
+                ),
+                None,
+            )
+        assert result.ok is False
+        urlopen.assert_not_called()
+
+    def test_max_message_chars_policy_enforced(self):
+        tool = bt.SendMessageTool({"maxMessageChars": 10}, self.ctx())
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen") as urlopen:
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_message",
+                    arguments={"target_agent": "Mary", "message": "x" * 4000},
+                ),
+                None,
+            )
+        assert result.ok is False
+        assert "10" in result.content
+        urlopen.assert_not_called()
+
+    def test_missing_fields_rejected(self):
+        tool = bt.SendMessageTool({}, self.ctx())
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen") as urlopen:
+            no_target = tool.invoke(
+                ToolCall(id="c1", name="send_message", arguments={"message": "x"}), None
+            )
+            no_text = tool.invoke(
+                ToolCall(id="c2", name="send_message", arguments={"target_agent": "Mary"}), None
+            )
+        assert no_target.ok is False and no_text.ok is False
+        urlopen.assert_not_called()
+
+    def test_chain_budget_409_surfaces_detail(self):
+        tool = bt.SendMessageTool({}, self.ctx())
+        captured = {}
+        fake = self.fake_urlopen(
+            captured,
+            post_status=409,
+            post_error_body={"error": "correlation chain message budget exhausted"},
+        )
+        with self.patch_http(fake):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_message",
+                    arguments={
+                        "target_agent": "Mary",
+                        "message": "again?",
+                        "correlation_id": "thread-loop",
+                    },
+                ),
+                None,
+            )
+        assert result.ok is False
+        assert "409" in result.content
+        assert "budget" in result.content
+
+    def test_peers_fetch_failure_fails_without_post(self):
+        tool = bt.SendMessageTool({}, self.ctx())
+
+        def fake(req, timeout=None):
+            raise error.URLError("control plane down")
+
+        with mock.patch(
+            "skquad_runtime.builtin_tools.request.urlopen", side_effect=fake
+        ):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_message",
+                    arguments={"target_agent": "Mary", "message": "hi"},
+                ),
+                None,
+            )
+        assert result.ok is False
+        assert "peers lookup failed" in result.content
+
+
 if __name__ == "__main__":
     unittest.main()
