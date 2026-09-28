@@ -21,7 +21,7 @@ import (
 
 // ProviderSecretKey is the data key holding the provider API key inside
 // the managed Secret.
-const ProviderSecretKey = "***"
+const ProviderSecretKey = "api-key"
 
 // SecretStore reads/writes provider API-key Secrets through the
 // Kubernetes API (same raw-HTTP + projected-token pattern as CRWriter —
