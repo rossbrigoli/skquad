@@ -132,6 +132,7 @@ completing the same task after a lease has moved on.
 |--------|------|-------------|
 | `POST` | `/api/v1/agents/:id/chat` | Send a message to an agent (owner or `talk` grant). |
 | `GET` | `/api/v1/agents/:id/chat` | Get the chat history with an agent (owner or `read` grant). |
+| `POST` | `/api/v1/agents/:id/chat/cancel` | Stop the agent's in-flight chat turn (owner or `talk` grant). Marks the newest unanswered user message `cancelled`; returns `{cancelled, message_id?}`. |
 
 > Chat is a **lightweight, non-task** interaction. It does not reset the task
 > context. Enforced by scoped access grants for non-owners.
@@ -153,6 +154,7 @@ completing the same task after a lease has moved on.
 | `GET` | `/api/v1/agents/me/messages/history` | Full chat history for this agent (all statuses, oldest first). Used by the runtime to build LLM chat context. |
 | `POST` | `/api/v1/agents/me/messages/:id/ack` | Acknowledge a delivered message. |
 | `POST` | `/api/v1/agents/me/messages/:id/fail` | Report handler failure; schedules retry or dead-letters after attempts expire. |
+| `GET` | `/api/v1/agents/me/messages/:id` | Fetch one message addressed to this agent (S-175: the runtime polls the status to notice user cancels). |
 | `GET` | `/api/v1/agents/me/work/wait?timeout_seconds=N` | Long-poll for this agent's assigned task or ready inbox changes. Backed by Postgres `LISTEN/NOTIFY`; returns `{ work_available }` and falls back to timeout. |
 
 - **Cross-squad** messages are rejected (and audited) without an access grant:

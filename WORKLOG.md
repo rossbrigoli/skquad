@@ -1,5 +1,12 @@
 # WORKLOG
 
+## 2026-09-28 23:50:04 ACST
+
+- objective: S-175 — stop button in the agent chat that cancels the in-flight agent turn, plus auto-scroll fix so the "Combobulating…" row is visible without manual scrolling.
+- files changed: `control-plane/internal/domain/types.go` (new `cancelled` MessageStatus), `control-plane/internal/storage/storage.go` + `memory.go` + `postgres.go` (`CancelChatTurn`, `GetMessage`), `control-plane/internal/storage/migrations/0024_chat_cancel.sql` (widen messages status CHECK), `control-plane/internal/httpapi/chat_cancel.go` + `server.go` (routes: `POST /agents/{id}/chat/cancel`, `GET /agents/me/messages/{id}`), `agent-runtime/skquad_runtime/runtime.py` (`ControlPlaneClient.message_status`, `_turn_cancelled` polled at every tool-loop step boundary and before posting the reply), `agent-runtime/tests/test_runtime.py` (cancel tests + fake client support), `web/src/lib/chat.ts` (`agentTurnPending` false for cancelled/dead/expired), `web/src/app/squads/[id]/agents/[agentId]/page.tsx` (send→stop button, optimistic stop state, cancelled chip, stick-to-bottom auto-scroll incl. typing row), `web/src/app/globals.css` (`.chat-send.stop`, `.chat-status.cancelled`), `web/src/lib/chat.test.ts` (S-175 pending tests), `docs/api-design.md`, `WORKLOG.md`.
+- command/test run: `go build ./... && go vet ./...` and `go test ./... -count=1` in `control-plane/`; `python3 -m py_compile` + `python3 -m unittest discover -s tests` in `agent-runtime/` (260 tests; only pre-existing `test_empty_user_text_fails` litellm-missing env error, verified failing on base commit too); `npx tsc --noEmit`, `npm run lint` (1 pre-existing AuthGate warning), `npm test` (336 passed), `NEXT_TELEMETRY_DISABLED=1 npm run build` in `web/`.
+- result: Real cancellation wired end-to-end: stop button → CP marks newest live (pending/delivered, unanswered, post-reset) user chat message `cancelled` → runtime polls `GET /agents/me/messages/{id}` between LLM/tool steps and before replying, abandons the turn (acked, no retry, no reply) so tokens stop burning from the next step boundary. UI unlocks immediately (optimistic), shows a "cancelled" chip on the stopped message, and auto-scrolls to the newest message/typing indicator only when already near the bottom. Limitation: an already-in-flight LLM call cannot be interrupted mid-stream; cancellation lands at the next step boundary and the reply is dropped before posting.
+
 ## 2026-09-13 07:50:40 ACST
 
 - objective: Fix the deployed Inbox page/API mismatch and tighten inbox listing semantics.

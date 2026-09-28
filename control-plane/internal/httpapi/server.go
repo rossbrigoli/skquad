@@ -335,6 +335,8 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Post("/notify-owner", s.notifyOwnerFromAgent)
 			r.Post("/messages/{messageID}/ack", s.ackCurrentAgentMessage)
 			r.Post("/messages/{messageID}/fail", s.failCurrentAgentMessage)
+			// S-175: the runtime polls a turn's status to notice user cancels.
+			r.Get("/messages/{messageID}", s.getCurrentAgentMessage)
 			r.Get("/work/wait", s.waitCurrentAgentWork)
 			r.Post("/tasks/claim", s.claimCurrentAgentTask)
 			r.Get("/tasks/{taskID}/context", s.getCurrentAgentTaskContext)
@@ -390,6 +392,8 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Delete(routeAgent, s.deleteAgent)
 			r.Post("/agents/{agentID}/chat", s.createAgentChatMessage)
 			r.Get("/agents/{agentID}/chat", s.listAgentChatMessages)
+			// S-175: stop button — cancel the agent's in-flight chat turn.
+			r.Post("/agents/{agentID}/chat/cancel", s.cancelAgentChatTurn)
 			// S-162: reset the chat thread / restart the agent pod.
 			r.Post("/agents/{agentID}/chat/reset", s.resetAgentChat)
 			r.Post("/agents/{agentID}/restart", s.restartAgent)

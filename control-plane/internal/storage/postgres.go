@@ -2694,6 +2694,63 @@ func (p *PostgresStore) ResetAgentChat(ctx context.Context, agentID, squadID, tr
 	return archived, resetAt, nil
 }
 
+// CancelChatTurn (S-175) marks the newest still-live user chat message for
+// the agent as cancelled. "Live" = pending/delivered, after the chat-reset
+// boundary, and not yet answered by the agent (a human-chat reply carries
+// the trigger message id as its correlation_id). Returns ErrNotFound when
+// there is no live turn.
+func (p *PostgresStore) CancelChatTurn(ctx context.Context, agentID string) (*domain.Message, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
+		UPDATE messages
+		SET status = $2, terminal_reason = $3
+		WHERE id = (
+			SELECT m.id FROM messages m
+			JOIN agents a ON a.id = m.to_agent_id
+			WHERE m.to_agent_id = $1
+			  AND m.from_type = 'user'
+			  AND m.status IN ($4, $5)
+			  AND (a.chat_reset_at IS NULL OR m.created_at > a.chat_reset_at)
+			  AND NOT EXISTS (
+				SELECT 1 FROM messages r
+				WHERE r.from_type = 'agent' AND r.correlation_id = m.id
+			  )
+			ORDER BY m.created_at DESC, m.id DESC
+			LIMIT 1
+		)
+		RETURNING id::text, from_type, from_id::text, to_agent_id::text, squad_id::text,
+		          type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
+		          next_retry_at, expires_at, terminal_reason, created_at, delivered_at
+	`, agentID, domain.MessageCancelled, "cancelled by user", domain.MessagePending, domain.MessageDelivered)
+	updated, err := scanMessage(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, updated.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return updated, nil
+}
+
+func (p *PostgresStore) GetMessage(ctx context.Context, messageID string) (*domain.Message, error) {
+	row := p.pool.QueryRow(ctx, `
+		SELECT id::text, from_type, from_id::text, to_agent_id::text, squad_id::text,
+		       type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
+		       next_retry_at, expires_at, terminal_reason, created_at, delivered_at
+		FROM messages
+		WHERE id = $1
+	`, messageID)
+	return scanMessage(row)
+}
+
 func (p *PostgresStore) AckMessage(ctx context.Context, agentID string, messageID string) (*domain.Message, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {

@@ -1675,6 +1675,21 @@ button.squad-tab.active {
   filter: saturate(0.55);
 }
 
+/* S-175: stop button — the send button while a turn is in flight. */
+.chat-send.stop {
+  background: var(--status-blocked);
+  color: #fff;
+}
+
+.chat-send.stop:hover {
+  background: #b02525;
+}
+
+/* S-175: "cancelled" chip on stopped user turns. */
+.chat-status.cancelled {
+  color: var(--status-blocked);
+}
+
 .chat-hint {
   text-align: center;
   font-size: var(--text-xs);

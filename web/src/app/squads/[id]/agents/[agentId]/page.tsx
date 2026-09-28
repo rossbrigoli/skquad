@@ -786,10 +786,18 @@ function ChatThread({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // S-175: stop button — suppress the pending-turn indicator from the
+  // moment cancel is requested, without waiting for the chat poll to
+  // catch the new "cancelled" status. Cleared on the next send.
+  const [stopRequested, setStopRequested] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
   // S-163: subagent transparency — the thread shown in the side panel.
   const [openSubagent, setOpenSubagent] = useState<SubagentInfo | null>(null);
   const { user } = useAuth();
   const scrollRef = useRef<HTMLDivElement>(null);
+  // S-175: auto-scroll only while the user is already near the bottom, so
+  // reading history never gets yanked around. Set on scroll, forced on send.
+  const stickToBottom = useRef(true);
   // S-154: throttle for the wake-on-typing ping (once a minute max).
   const lastWakeAt = useRef(0);
 
@@ -801,17 +809,26 @@ function ChatThread({
   // re-checks so the box unlocks even without a fresh poll.
   const [generating, setGenerating] = useState(false);
   useEffect(() => {
-    const check = () => setGenerating(agentTurnPending(sorted, Date.now()));
+    const check = () =>
+      setGenerating(!stopRequested && agentTurnPending(sorted, Date.now()));
     check();
     const timer = window.setInterval(check, 5000);
     return () => window.clearInterval(timer);
-  }, [sorted]);
+  }, [sorted, stopRequested]);
 
-  // Keep the newest message in view (S-105).
+  // Keep the newest message in view (S-105). S-175: also re-run when the
+  // "Combobulating…" row appears/disappears so it is never below the
+  // fold, and only while stuck to the bottom (S-175 scroll fix).
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [sorted.length]);
+    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
+  }, [sorted.length, generating]);
+
+  function trackStickToBottom() {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }
 
   function autoGrow(node: HTMLTextAreaElement | null) {
     if (!node) return;
@@ -822,7 +839,7 @@ function ChatThread({
   return (
     <div className={openSubagent ? "chat-layout with-side" : "chat-layout"}>
     <div className="chat">
-      <div className="chat-scroll" ref={scrollRef}>
+      <div className="chat-scroll" ref={scrollRef} onScroll={trackStickToBottom}>
         {sorted.length === 0 ? (
           <div className="chat-empty">
             <div className="chat-avatar agent">{initials(agentName)}</div>
@@ -846,6 +863,10 @@ function ChatThread({
                     <span className="chat-name">{fromUser ? "You" : agentName}</span>
                     <span className="chat-time">{formatRelativeTime(msg.created_at)}</span>
                     {!fromUser && msg.status ? <span className="chat-status mono">{msg.status}</span> : null}
+                    {/* S-175: surface cancelled user turns; other user statuses stay quiet. */}
+                    {fromUser && msg.status === "cancelled" ? (
+                      <span className="chat-status mono cancelled">cancelled</span>
+                    ) : null}
                   </div>
                   {msg.payload?.message ? (
                     <MarkdownMessage text={msg.payload.message} />
@@ -945,17 +966,36 @@ function ChatThread({
             }
           }}
         />
-        <button
-          type="submit"
-          className="chat-send"
-          disabled={busy || generating || draft.trim() === ""}
-          aria-label="Send message"
-          title="Send"
-        >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="M2 14L14 2M14 2H5M14 2V11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
+        {generating ? (
+          /* S-175: while a turn is in flight the send button becomes a
+             STOP button — cancels the active chat turn server-side. */
+          <button
+            type="button"
+            className="chat-send stop"
+            disabled={cancelBusy}
+            onClick={() => {
+              void cancelTurn();
+            }}
+            aria-label="Stop agent turn"
+            title="Stop — cancel this turn"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" />
+            </svg>
+          </button>
+        ) : (
+          <button
+            type="submit"
+            className="chat-send"
+            disabled={busy || draft.trim() === ""}
+            aria-label="Send message"
+            title="Send"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M2 14L14 2M14 2H5M14 2V11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
       </form>
       <div className="chat-hint">Enter to send · Shift+Enter for a new line</div>
     </div>
@@ -969,6 +1009,10 @@ function ChatThread({
     if (draft.trim() === "") return;
     setBusy(true);
     setError("");
+    // S-175: a fresh send re-arms the pending-turn indicator and forces
+    // the thread to scroll to the new message.
+    setStopRequested(false);
+    stickToBottom.current = true;
     try {
       await apiPost(`/agents/${agentId}/chat`, token, { message: draft.trim() });
       setDraft("");
@@ -977,6 +1021,24 @@ function ChatThread({
       setError(err instanceof Error ? err.message : "send failed");
     } finally {
       setBusy(false);
+    }
+  }
+
+  // S-175: stop the in-flight agent turn. The control plane marks the
+  // newest live user message cancelled; the runtime notices between LLM
+  // steps and stops replying. Locally we drop the pending indicator right
+  // away so the composer unlocks without waiting for the poll.
+  async function cancelTurn() {
+    setCancelBusy(true);
+    setError("");
+    try {
+      await apiPost(`/agents/${agentId}/chat/cancel`, token, {});
+      setStopRequested(true);
+      onSent();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "cancel failed");
+    } finally {
+      setCancelBusy(false);
     }
   }
 }

@@ -258,6 +258,33 @@ describe("agentTurnPending", () => {
     expect(agentTurnPending([message({ created_at: undefined })], now)).toBe(false);
     expect(agentTurnPending([message({ created_at: "not-a-date" })], now)).toBe(false);
   });
+
+  // S-175: a cancelled turn must not keep the composer locked.
+  it("is false when the newest user message was cancelled", () => {
+    const msgs = [
+      message({ id: "a0", from_type: "agent", created_at: "2026-09-28T00:00:00Z" }),
+      message({ id: "u1", from_type: "user", status: "cancelled", created_at: "2026-09-28T00:04:30Z" }),
+    ];
+    expect(agentTurnPending(msgs, now)).toBe(false);
+  });
+
+  it("is false when the newest user message is dead or expired", () => {
+    expect(
+      agentTurnPending([message({ from_type: "user", status: "dead", created_at: "2026-09-28T00:04:30Z" })], now),
+    ).toBe(false);
+    expect(
+      agentTurnPending([message({ from_type: "user", status: "expired", created_at: "2026-09-28T00:04:30Z" })], now),
+    ).toBe(false);
+  });
+
+  it("stays true for pending/delivered user messages inside the window", () => {
+    expect(
+      agentTurnPending([message({ from_type: "user", status: "pending", created_at: "2026-09-28T00:04:30Z" })], now),
+    ).toBe(true);
+    expect(
+      agentTurnPending([message({ from_type: "user", status: "delivered", created_at: "2026-09-28T00:04:30Z" })], now),
+    ).toBe(true);
+  });
 });
 
 // S-163: subagent transparency parsing + summary.
