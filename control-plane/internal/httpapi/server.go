@@ -142,6 +142,10 @@ type Server struct {
 	// nil elsewhere (dev without a cluster). Creating/updating a provider
 	// with a key while nil returns 503 rather than storing plaintext.
 	providerKeys ProviderKeyStore
+	// podRestarter is the S-162 restart path: deletes agent pods by
+	// label through the K8s API. Built at startup when K8s connection
+	// config is present; nil elsewhere (dev). Restart while nil → 503.
+	podRestarter PodRestarter
 }
 
 // OIDCAuthenticator authenticates OIDC Authorization headers.
@@ -198,19 +202,24 @@ func New(cfg *config.Config, store Store) http.Handler {
 // NewWithCRWriter returns an HTTP handler that mirrors squad/agent mutations
 // to Kubernetes CRs.
 func NewWithCRWriter(cfg *config.Config, store Store, crWriter CRWriter) http.Handler {
-	return newServer(cfg, store, nil, crWriter, nil, nil)
+	return newServer(cfg, store, nil, crWriter, nil, nil, nil)
 }
 
 // NewWithDependencies returns an HTTP handler with explicit optional
 // integrations for tests and production startup.
 func NewWithDependencies(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, providerKeys ProviderKeyStore) http.Handler {
-	return newServer(cfg, store, oidcAuth, crWriter, nil, providerKeys)
+	return newServer(cfg, store, oidcAuth, crWriter, nil, providerKeys, nil)
+}
+
+// NewWithPodRestarter wires an explicit PodRestarter (S-162 tests).
+func NewWithPodRestarter(cfg *config.Config, store Store, restarter PodRestarter) http.Handler {
+	return newServer(cfg, store, nil, nil, nil, nil, restarter)
 }
 
 // NewWithOIDCAuthenticator returns an HTTP handler using oidcAuth when
 // SKQUAD_AUTH_MODE=oidc.
 func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator) http.Handler {
-	return newServer(cfg, store, oidcAuth, nil, nil, nil)
+	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil)
 }
 
 // NewWithSearchProviders returns an HTTP handler whose web_search proxy
@@ -218,7 +227,7 @@ func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuth
 // from config secrets (duckduckgo always; brave/perplexity only when
 // their API keys are set). Tests inject stub providers here.
 func NewWithSearchProviders(cfg *config.Config, store Store, providers map[string]search.Provider) http.Handler {
-	return newServer(cfg, store, nil, nil, providers, nil)
+	return newServer(cfg, store, nil, nil, providers, nil, nil)
 }
 
 // NewWithProviderKeyStore returns an HTTP handler whose pasted provider
@@ -226,10 +235,10 @@ func NewWithSearchProviders(cfg *config.Config, store Store, providers map[strin
 // this to inject a fake; production builds the store from config inside
 // newServer.
 func NewWithProviderKeyStore(cfg *config.Config, store Store, keys ProviderKeyStore) http.Handler {
-	return newServer(cfg, store, nil, nil, nil, keys)
+	return newServer(cfg, store, nil, nil, nil, keys, nil)
 }
 
-func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, searchProviders map[string]search.Provider, providerKeys ProviderKeyStore) http.Handler {
+func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, searchProviders map[string]search.Provider, providerKeys ProviderKeyStore, restarter PodRestarter) http.Handler {
 	if crWriter == nil {
 		crWriter = noopCRWriter{}
 	}
@@ -254,6 +263,19 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 		}
 	}
 	s.providerKeys = providerKeys
+	// S-162: pod restarter for the Restart Agent button. Explicit
+	// argument wins (tests); otherwise build from in-cluster K8s config.
+	// Guard against the typed-nil trap: newPodRestarter returns a nil
+	// *kube.PodRestarter when config is absent, which must not be
+	// assigned to the non-nil PodRestarter interface.
+	if restarter == nil {
+		if built, err := newPodRestarter(cfg); err != nil {
+			log.Printf("pod restarter unavailable (restart agent disabled): %v", err)
+		} else if built != nil {
+			restarter = built
+		}
+	}
+	s.podRestarter = restarter
 	if searchProviders == nil {
 		searchProviders = defaultSearchProviders(cfg)
 	}
@@ -364,6 +386,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Delete(routeAgent, s.deleteAgent)
 			r.Post("/agents/{agentID}/chat", s.createAgentChatMessage)
 			r.Get("/agents/{agentID}/chat", s.listAgentChatMessages)
+			// S-162: reset the chat thread / restart the agent pod.
+			r.Post("/agents/{agentID}/chat/reset", s.resetAgentChat)
+			r.Post("/agents/{agentID}/restart", s.restartAgent)
 			r.Post("/agents/{agentID}/wake", s.wakeAgent)
 			r.Post("/agents/{agentID}/identity", s.createAgentIdentity)
 			r.Post("/agents/{agentID}/identity/rotate", s.rotateAgentIdentity)

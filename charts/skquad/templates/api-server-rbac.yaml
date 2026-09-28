@@ -20,6 +20,15 @@ rules:
       - update
       - patch
       - delete
+  # S-162: the Restart Agent button deletes the agent's pods by label
+  # (skquad.io/agent-id); the owning Deployment recreates them.
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - delete
+      - list
   - apiGroups:
       - skquad.io
     resources:

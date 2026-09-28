@@ -484,6 +484,9 @@ function ChatThread({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // S-162: reset/restart action feedback + in-flight guard.
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionNote, setActionNote] = useState("");
   const { user } = useAuth();
   const scrollRef = useRef<HTMLDivElement>(null);
   // S-154: throttle for the wake-on-typing ping (once a minute max).
@@ -597,6 +600,51 @@ function ChatThread({
           ? "context: — tokens (waiting for the agent's first reply)"
           : `context ≈ ${formatContextTokens(contextTokens)} tokens · last agent turn`}
       </output>
+      {/* S-162: reset the thread / restart the agent pod. */}
+      <div className="chat-actions" style={{ display: "flex", gap: "var(--space-2)", padding: "0 var(--space-3)", alignItems: "center" }}>
+        <button
+          type="button"
+          className="btn ghost small"
+          disabled={actionBusy || sorted.length === 0}
+          onClick={async () => {
+            if (!window.confirm("Reset this chat thread? Earlier turns stop being included in the agent's context. The transcript is saved to the agent's memory.")) return;
+            setActionBusy(true);
+            setActionNote("");
+            try {
+              const res = await apiPost<{ archived: number }>(`/agents/${agentId}/chat/reset`, token, {});
+              setActionNote(`Thread reset · ${res?.archived ?? 0} earlier message(s) archived to memory`);
+              onSent();
+            } catch (err) {
+              setActionNote(err instanceof Error ? err.message : "reset failed");
+            } finally {
+              setActionBusy(false);
+            }
+          }}
+        >
+          Reset chat
+        </button>
+        <button
+          type="button"
+          className="btn ghost small"
+          disabled={actionBusy}
+          onClick={async () => {
+            if (!window.confirm("Restart the agent? Its pod is evicted and a fresh one starts. Use this if the agent seems stuck.")) return;
+            setActionBusy(true);
+            setActionNote("");
+            try {
+              const res = await apiPost<{ pods: number }>(`/agents/${agentId}/restart`, token, {});
+              setActionNote(`Restarting agent (${res?.pods ?? 0} pod(s) evicted)`);
+            } catch (err) {
+              setActionNote(err instanceof Error ? err.message : "restart failed");
+            } finally {
+              setActionBusy(false);
+            }
+          }}
+        >
+          Restart agent
+        </button>
+        {actionNote ? <span className="chat-action-note" style={{ fontSize: "0.8rem", opacity: 0.8 }}>{actionNote}</span> : null}
+      </div>
       {error ? <div className="notice error" style={{ margin: "var(--space-2) var(--space-3) 0" }}>{error}</div> : null}
       <form
         className="chat-composer"

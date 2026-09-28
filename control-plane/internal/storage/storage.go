@@ -159,6 +159,10 @@ type MessageStore interface {
 	ListPendingMessages(ctx context.Context, agentID string) ([]*domain.Message, error)
 	HasPendingMessages(ctx context.Context, agentID string) (bool, error)
 	ListAgentMessageHistory(ctx context.Context, agentID string) ([]*domain.Message, error)
+	// ResetAgentChat (S-162) archives the current chat transcript into
+	// agent memory and moves the agent's chat_reset_at boundary to now.
+	// Returns the number of messages archived and the boundary time.
+	ResetAgentChat(ctx context.Context, agentID, squadID, transcript string, metadata json.RawMessage) (int, time.Time, error)
 	AckMessage(ctx context.Context, agentID string, messageID string) (*domain.Message, error)
 	FailMessage(ctx context.Context, agentID string, messageID string, reason string) (*domain.Message, error)
 	// UpdateMessagePayload replaces a message's payload and status (used to
