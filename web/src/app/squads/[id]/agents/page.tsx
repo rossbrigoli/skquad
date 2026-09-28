@@ -71,6 +71,8 @@ export default function SquadAgentsPage() {
           <AgentFormModal
             title="New agent"
             submitLabel="Create agent"
+            models={myModels.data ?? []}
+            modelsLoading={myModels.loading}
             onClose={() => setCreating(false)}
             onSubmit={async (values) => {
               await apiPost<Agent>(`/squads/${squadId}/agents`, token, values);

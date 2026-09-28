@@ -11,10 +11,23 @@ import { apiPost } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { useApi } from "../../lib/useApi";
 import type { Squad } from "../../lib/api";
+import { squadDisplayLabel } from "../../lib/menu";
 
 export default function SquadsPage() {
-  const { token } = useAuth();
-  const squads = useApi<Squad[]>("/squads");
+  const { token, user } = useAuth();
+  // S-166: platform admins see every squad, labelled with its owner.
+  const isAdmin = user?.role === "platform_admin";
+  const squads = useApi<Squad[]>(isAdmin ? "/squads?all=true" : "/squads");
+  const allUsers = useApi<{ id: string; name?: string; email?: string }[]>(isAdmin ? "/users" : "");
+  const ownerLabels = isAdmin
+    ? {
+        meId: user?.id,
+        nameFor: (ownerId: string) => {
+          const u = (allUsers.data ?? []).find((x) => x.id === ownerId);
+          return u?.name || u?.email?.split("@")[0] || undefined;
+        },
+      }
+    : undefined;
   const items = squads.data || [];
   const [creating, setCreating] = useState(false);
 
@@ -46,7 +59,7 @@ export default function SquadsPage() {
               <EntityRow
                 key={squad.id}
                 href={`/squads/${squad.id}`}
-                title={squad.name}
+                title={squadDisplayLabel(squad, ownerLabels)}
                 meta={squad.mission || "no mission set"}
                 side={squad.namespace ? <span className="mono">{squad.namespace}</span> : undefined}
               />
@@ -117,15 +130,15 @@ function SquadCreateModal({
         </label>
         <PromptTemplatePicker target="squad" onApply={(content) => setPrompt(content)} />
         <label className="field">
-          <span>Squad prompt (optional)</span>
+          <span>Squad context (optional)</span>
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             placeholder="Operating instructions for every agent in this squad"
           />
           <small className="field-hint">
-            Optional. Sits between the organization and agent prompt layers; you can keep editing it later on the
-            squad&rsquo;s Prompt tab.
+            Optional. Sits between the organization and agent context layers; you can keep editing it later on the
+            squad&rsquo;s Squad Context tab.
           </small>
         </label>
       </ModalForm>

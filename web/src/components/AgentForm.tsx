@@ -7,6 +7,8 @@ import { PromptTemplatePicker } from "./PromptTemplatePicker";
 import { usePromptValidation } from "../lib/usePromptValidation";
 import { promptUserMessage, saveBlockedByValidation } from "../lib/prompt";
 import type { Agent } from "../lib/api";
+import type { AIModel } from "../lib/aimodels";
+import { modelLabel } from "../lib/agentLlm";
 import {
   DEFAULT_AGENT_STORAGE_SIZE,
   STORAGE_PRESETS,
@@ -15,8 +17,11 @@ import {
 
 // WP8 step-4 cutover: the legacy default_provider_id / default_model
 // fields are gone from this form. Model binding is done exclusively via
-// the agent's LLM model tab (WP7) against the ai_models registry —
-// creating or editing an agent here no longer touches legacy fields.
+// the ai_models registry — but S-170 moved the PRIMARY model choice back
+// into creation: picking it here lets the control plane auto-provision
+// the agent's runtime identity in the same step (no "Provision Identity"
+// button afterwards). Fallback stays a post-creation concern (LLM model
+// section on the agent screen).
 //
 // S-138 adds durable workspace storage: owners choose whether the agent
 // gets a persistent PVC and how large. storageClass is platform-admin
@@ -28,22 +33,28 @@ export type AgentFormValues = {
   idle_timeout_sec: number;
   storage_enabled: boolean;
   storage_size: string;
+  ai_model_id: string;
 };
 
 export function AgentFormModal({
   initial,
   title,
   submitLabel,
+  models,
+  modelsLoading,
   onSubmit,
   onClose,
 }: {
   initial?: Partial<Agent>;
   title: string;
   submitLabel: string;
+  models?: AIModel[];
+  modelsLoading?: boolean;
   onSubmit: (values: AgentFormValues) => Promise<void>;
   onClose: () => void;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
+  const [aiModelId, setAiModelId] = useState(initial?.ai_model_id ?? "");
   // S-156: names are immutable after creation (K8s namespace/deployment
   // names are derived from them). Edit mode renders the name read-only.
   const nameLocked = Boolean(initial?.name);
@@ -71,6 +82,7 @@ export function AgentFormModal({
         submitLabel={submitLabel}
         submitDisabled={
           name.trim() === "" ||
+          (aiModelId === "" && !initial?.name) ||
           (storageEnabled && !isValidStorageSize(storageSize)) ||
           saveBlockedByValidation(promptCheck)
         }
@@ -90,6 +102,7 @@ export function AgentFormModal({
               idle_timeout_sec: Number(idleTimeout) > 0 ? Number(idleTimeout) : 300,
               storage_enabled: storageEnabled,
               storage_size: storageEnabled ? storageSize.trim() : "",
+              ai_model_id: aiModelId,
             });
           } catch (err) {
             setError(err instanceof Error ? err.message : "submit failed");
@@ -163,6 +176,32 @@ export function AgentFormModal({
             {w}
           </div>
         ))}
+        {!initial?.name ? (
+          <label className="field">
+            <span>Primary model</span>
+            <select value={aiModelId} onChange={(e) => setAiModelId(e.target.value)}>
+              <option value="">
+                {modelsLoading ? "loading models…" : "— pick a model —"}
+              </option>
+              {(models ?? []).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {modelLabel(m)}
+                </option>
+              ))}
+            </select>
+            <span className="field-hint">
+              Required. The agent&apos;s runtime identity (credentials + gateway key) is
+              provisioned automatically at creation with this model. You can rebind the model
+              or add a fallback later on the agent&apos;s Configuration tab.
+            </span>
+            {(models ?? []).length === 0 && !modelsLoading ? (
+              <p className="field-hint" style={{ color: "var(--danger, #c0392b)" }}>
+                You have no granted AI models — ask a platform admin to grant you one in
+                Settings → Access before creating an agent.
+              </p>
+            ) : null}
+          </label>
+        ) : null}
         <div className="field">
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
             <input
@@ -205,10 +244,6 @@ export function AgentFormModal({
             the storage class is managed by your platform admin.
           </p>
         </div>
-        <p className="field-hint">
-          Model binding: set the primary (and optional fallback) AI model on the agent&apos;s page after saving —
-          the LLM model section binds models from the admin registry.
-        </p>
       </ModalForm>
     </Modal>
   );

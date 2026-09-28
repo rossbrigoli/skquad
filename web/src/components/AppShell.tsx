@@ -13,6 +13,7 @@ import type { DashboardPayload } from "../lib/dashboard";
 import { ThemeToggle } from "./ThemeToggle";
 import { UserMenu } from "./UserMenu";
 import { IconAbout, IconAgents, IconCosts, IconDashboard, IconInbox, IconSettings, IconSquads } from "./icons";
+import type { ComponentType } from "react";
 import { agentIdFromPath, breadcrumbsForPath } from "../lib/breadcrumbs";
 import { buildInfo, versionLabel } from "../lib/buildInfo";
 import { SquadTabs } from "./SquadTabs";
@@ -74,13 +75,27 @@ function TopBar({ crumbs }: { readonly crumbs: ReturnType<typeof breadcrumbsForP
   );
 }
 
-function NavSubLink({ pathname, link }: { readonly pathname: string; readonly link: NavItem }) {
+// S-172: nav sub-items carry icons like their parents. The icon is a
+// presentation concern, so it is passed here (by nav context) rather
+// than baked into the pure menu builders in lib/menu.ts.
+function NavSubLink({
+  pathname,
+  link,
+  Icon,
+}: {
+  readonly pathname: string;
+  readonly link: NavItem;
+  readonly Icon?: ComponentType<{ size?: number }>;
+}) {
   return (
     <Link
       href={link.href}
       className={isSubitemActive(pathname, link.href) ? "nav-item nav-subitem active" : "nav-item nav-subitem"}
     >
-      {link.label}
+      <span className="nav-item-main">
+        {Icon ? <Icon size={13} /> : null}
+        {link.label}
+      </span>
     </Link>
   );
 }
@@ -122,7 +137,7 @@ function SquadsNavGroup({
       {expanded ? (
         <div className="nav-sub" aria-label="Squads">
           {items.map((link) => (
-            <NavSubLink key={link.href} pathname={pathname} link={link} />
+            <NavSubLink key={link.href} pathname={pathname} link={link} Icon={IconSquads} />
           ))}
           {items.length === 0 ? (
             <div className="nav-sub-empty">{loading ? "loading…" : "no squads yet"}</div>
@@ -144,9 +159,11 @@ function AgentNavItems({
   // every agent the user can see, grouped by squad.
   return agentGroups.map((group) => (
     <div key={group.squadId} className="nav-subgroup">
-      <div className="nav-subgroup-label">{group.squadName}</div>
+      <div className="nav-subgroup-label">
+        <IconSquads size={12} /> {group.squadName}
+      </div>
       {group.items.map((link) => (
-        <NavSubLink key={link.href} pathname={pathname} link={link} />
+        <NavSubLink key={link.href} pathname={pathname} link={link} Icon={IconAgents} />
       ))}
     </div>
   ));
@@ -306,7 +323,20 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
   const [groupToggles, setGroupToggles] = useState<Record<string, boolean>>({});
 
   const squadContextId = squadIdFromPath(pathname);
-  const squads = useApi<Squad[]>("/squads");
+  // S-166: platform admins see ALL squads (backend ?all=true), each
+  // labelled with its owner; regular users keep the owner-scoped list.
+  const isAdmin = user?.role === "platform_admin";
+  const squads = useApi<Squad[]>(isAdmin ? "/squads?all=true" : "/squads");
+  const allUsers = useApi<{ id: string; name?: string; email?: string }[]>(isAdmin ? "/users" : "");
+  const ownerLabels = isAdmin
+    ? {
+        meId: user?.id,
+        nameFor: (ownerId: string) => {
+          const u = (allUsers.data ?? []).find((x) => x.id === ownerId);
+          return u?.name || u?.email?.split("@")[0] || undefined;
+        },
+      }
+    : undefined;
   // Agent-name hint for breadcrumbs on agent pages.
   const agentId = agentIdFromPath(pathname);
   const squadAgents = useApi<Agent[]>(
@@ -336,7 +366,7 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
     : undefined;
   const breadcrumbs = breadcrumbsForPath(pathname, { squadName: squadHint, agentName: agentHint });
 
-  const squadSubitems = buildSquadSubitems(squads.data);
+  const squadSubitems = buildSquadSubitems(squads.data, ownerLabels);
   const agentGroups = buildGlobalAgentGroups(globalDashboard.data);
 
   // Navigating closes the drawer so you never land on a covered page.

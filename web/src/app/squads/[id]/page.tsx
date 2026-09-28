@@ -9,14 +9,13 @@ import { ConfirmDialog } from "../../../components/ConfirmDialog";
 import { Modal, ModalForm } from "../../../components/Modal";
 import { AuthGate } from "../../../components/AuthGate";
 import { AppShell } from "../../../components/AppShell";
-import { EmptyState } from "../../../components/EmptyState";
 import { MetricTile } from "../../../components/MetricTile";
 import { StatusChip } from "../../../components/StatusChip";
 import { useApi } from "../../../lib/useApi";
 import { useAuth } from "../../../lib/auth";
 import { apiDelete, apiPatch } from "../../../lib/api";
 import { formatCost, formatRelativeTime, leaseState } from "../../../lib/format";
-import { agentStatus, taskStatus } from "../../../lib/status";
+import { agentStatus } from "../../../lib/status";
 import type { Agent, BoardPayload, MeteringSummary, Squad, AuditEntry } from "../../../lib/api";
 
 export default function SquadCockpitPage() {
@@ -100,31 +99,12 @@ export default function SquadCockpitPage() {
           <MetricTile label="Tasks done" value={done.length} sub={`of ${tasks.length} total`} />
         </div>
 
-        <section>
-          <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>Live runs</h2>
-          {running.length === 0 ? (
-            <EmptyState
-              title={stalled.length > 0 ? "Nothing running — stalled work needs attention" : "No agents working right now"}
-              hint={stalled.length > 0 ? `${stalled.length} task(s) lost their worker heartbeat.` : "Assign a task and the squad picks it up."}
-            />
-          ) : (
-            <div className="entity-list">
-              {running.map((task) => (
-                <Link key={task.id} href={taskHref(task.id)} className="entity-row">
-                  <div className="entity-main">
-                    <span className="entity-title">{task.title}</span>
-                    <span className="entity-meta">
-                      {agentName(task.assignee_agent_id)} · lease expires {formatRelativeTime(task.lease_expires_at)}
-                    </span>
-                  </div>
-                  <div className="entity-side">
-                    <StatusChip status={taskStatus(task)} />
-                  </div>
-                </Link>
-              ))}
-            </div>
-          )}
-        </section>
+        {/* S-170: the "Live runs" section was removed. It only ever
+            tracked board-task leases — chat turns never create task
+            executions, so it read "empty" while agents were visibly
+            talking, and the "Work in flight" tile above already carries
+            the running count. The Stalled section below stays because it
+            is actionable (expired leases need a human). */}
 
         {stalled.length > 0 ? (
           <section style={{ marginTop: "var(--space-5)" }}>

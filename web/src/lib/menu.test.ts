@@ -9,6 +9,7 @@ import {
   buildSquadSubitems,
   effectiveExpanded,
   isSubitemActive,
+  squadDisplayLabel,
   squadIdFromPath,
 } from "./menu";
 
@@ -57,6 +58,29 @@ describe("buildSquadSubitems", () => {
   it("handles null/empty", () => {
     expect(buildSquadSubitems(null)).toEqual([]);
     expect(buildSquadSubitems([])).toEqual([]);
+  });
+
+  // S-166: platform-admin labels carry the owner; own squads say "(me)".
+  it("appends owner suffixes when owner context is given", () => {
+    const withOwner = (id: string, name: string, ownerId: string): Squad => ({ id, name, owner_id: ownerId });
+    const items = buildSquadSubitems(
+      [withOwner("s1", "Skquad Engineering", "u-me"), withOwner("s2", "Test Squad", "u-them")],
+      { meId: "u-me", nameFor: (id) => (id === "u-them" ? "christianriconalla-uz" : undefined) },
+    );
+    expect(items).toEqual([
+      { href: "/squads/s1", label: "Skquad Engineering (me)" },
+      { href: "/squads/s2", label: "Test Squad (christianriconalla-uz)" },
+    ]);
+  });
+
+  it("falls back to the raw owner id when the name is unknown", () => {
+    const withOwner = (id: string, name: string, ownerId: string): Squad => ({ id, name, owner_id: ownerId });
+    expect(squadDisplayLabel(withOwner("s1", "X", "zz"), { meId: "u-me" })).toBe("X (zz)");
+  });
+
+  it("keeps bare names without owner context (regular users)", () => {
+    const withOwner = (id: string, name: string, ownerId: string): Squad => ({ id, name, owner_id: ownerId });
+    expect(squadDisplayLabel(withOwner("s1", "X", "zz"))).toBe("X");
   });
 });
 

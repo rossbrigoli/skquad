@@ -196,7 +196,7 @@ function RuntimeIdentitySection({
           </button>
         ) : (
           <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={() => onAction().catch(() => undefined)}>
-            Provision identity
+            Provision identity now
           </button>
         )}
       </div>
@@ -204,7 +204,7 @@ function RuntimeIdentitySection({
       <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)", margin: 0 }}>
         {hasIdentity
           ? "Identity provisioned — credentials live in the squad namespace as projected secrets. Rotating invalidates the previous credential."
-          : "This agent has no runtime identity yet. It cannot connect to the control plane until an identity is provisioned. Bind a primary model in the LLM model section above so provisioning can issue the agent's gateway key."}
+          : "This agent predates auto-provisioning (S-170): new agents get their identity automatically at creation. This one needs a one-time provision — make sure a primary model is bound above, then use the button."}
       </p>
     </section>
   );
