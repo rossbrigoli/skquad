@@ -64,6 +64,10 @@ type MemoryStore struct {
 	// BT-2 (ADR-0012): built-in platform tool config, mirroring the
 	// Postgres builtin_tools_config table. Seeded disabled.
 	builtinTools map[string]*domain.BuiltinToolConfig
+
+	// S-158: admin-managed prompt templates, mirroring the Postgres
+	// prompt_templates table.
+	promptTemplates map[string]*domain.PromptTemplate
 }
 
 // NewMemoryStore creates an empty development store.
@@ -98,6 +102,7 @@ func NewMemoryStore() *MemoryStore {
 		instanceSettings: &domain.InstanceSettings{},
 		promptRevisions:  []*domain.PromptRevision{},
 		builtinTools:     map[string]*domain.BuiltinToolConfig{},
+		promptTemplates:  map[string]*domain.PromptTemplate{},
 	}
 	store.seedBuiltinToolsLocked()
 	return store
@@ -252,6 +257,12 @@ func (m *MemoryStore) CreateSquad(ctx context.Context, s *domain.Squad) (*domain
 	board := &domain.Board{ID: uuid.NewString(), SquadID: created.ID, CreatedAt: now}
 	m.boards[board.ID] = board
 	m.boardsBySquad[created.ID] = board.ID
+	// S-158: a squad born with a prompt (e.g. from a template) records its
+	// first revision alongside the row insert.
+	if intent := DrainPromptRevision(ctx); intent != nil && created.Prompt != "" {
+		intent.ScopeID = created.ID
+		m.appendPromptRevisionLocked(intent, created.Prompt)
+	}
 	m.enqueueSquadOutboxLocked(domain.KubernetesOpUpsertSquad, created)
 	m.drainPendingAuditsLocked(ctx, created.ID)
 	return cloneSquad(created), nil
@@ -2455,4 +2466,84 @@ func (m *MemoryStore) drainPendingAuditsLocked(ctx context.Context, resourceID s
 		}
 		m.auditLog[created.ID] = created
 	}
+}
+
+// --- S-158: prompt templates -------------------------------------------------
+
+func clonePromptTemplate(t *domain.PromptTemplate) *domain.PromptTemplate {
+	if t == nil {
+		return nil
+	}
+	copied := *t
+	return &copied
+}
+
+func (m *MemoryStore) CreatePromptTemplate(_ context.Context, t *domain.PromptTemplate) (*domain.PromptTemplate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, existing := range m.promptTemplates {
+		if strings.EqualFold(existing.Name, t.Name) {
+			return nil, ErrConflict
+		}
+	}
+	now := time.Now().UTC()
+	created := clonePromptTemplate(t)
+	created.ID = uuid.NewString()
+	created.CreatedAt = now
+	created.UpdatedAt = now
+	m.promptTemplates[created.ID] = created
+	return clonePromptTemplate(created), nil
+}
+
+func (m *MemoryStore) ListPromptTemplates(_ context.Context) ([]*domain.PromptTemplate, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*domain.PromptTemplate, 0, len(m.promptTemplates))
+	for _, t := range m.promptTemplates {
+		out = append(out, clonePromptTemplate(t))
+	}
+	slices.SortFunc(out, func(a, b *domain.PromptTemplate) int {
+		return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
+	})
+	return out, nil
+}
+
+func (m *MemoryStore) GetPromptTemplate(_ context.Context, id string) (*domain.PromptTemplate, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	t, ok := m.promptTemplates[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return clonePromptTemplate(t), nil
+}
+
+func (m *MemoryStore) UpdatePromptTemplate(_ context.Context, t *domain.PromptTemplate) (*domain.PromptTemplate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	existing, ok := m.promptTemplates[t.ID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	for _, other := range m.promptTemplates {
+		if other.ID != t.ID && strings.EqualFold(other.Name, t.Name) {
+			return nil, ErrConflict
+		}
+	}
+	updated := clonePromptTemplate(t)
+	updated.CreatedBy = existing.CreatedBy
+	updated.CreatedAt = existing.CreatedAt
+	updated.UpdatedAt = time.Now().UTC()
+	m.promptTemplates[t.ID] = updated
+	return clonePromptTemplate(updated), nil
+}
+
+func (m *MemoryStore) DeletePromptTemplate(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.promptTemplates[id]; !ok {
+		return ErrNotFound
+	}
+	delete(m.promptTemplates, id)
+	return nil
 }

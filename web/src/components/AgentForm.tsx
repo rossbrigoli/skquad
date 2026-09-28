@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Modal, ModalForm } from "./Modal";
 import { TokenMeter } from "./TokenMeter";
+import { PromptTemplatePicker } from "./PromptTemplatePicker";
 import { usePromptValidation } from "../lib/usePromptValidation";
 import { promptUserMessage, saveBlockedByValidation } from "../lib/prompt";
 import type { Agent } from "../lib/api";
@@ -125,6 +126,12 @@ export function AgentFormModal({
             />
           </label>
         </div>
+        {!initial?.name ? (
+          <PromptTemplatePicker
+            target="agent"
+            onApply={(content) => setSystemPrompt(content)}
+          />
+        ) : null}
         <label className="field">
           <span>Agent prompt (layer 4 — your agent&rsquo;s identity and personality)</span>
           <textarea

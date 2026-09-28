@@ -393,6 +393,15 @@ func (p *PostgresStore) CreateSquad(ctx context.Context, s *domain.Squad) (*doma
 	`, created.ID); err != nil {
 		return nil, mapPgErr(err)
 	}
+	// S-158: a squad born with a prompt (e.g. from a template) records its
+	// first revision in the same transaction as the row insert.
+	if intent := DrainPromptRevision(ctx); intent != nil && created.Prompt != "" {
+		rev := buildPromptRevision(intent, created.Prompt)
+		rev.ScopeID = created.ID
+		if err := insertPromptRevisionTx(ctx, tx, rev); err != nil {
+			return nil, err
+		}
+	}
 	if err := p.enqueueSquadOutboxTx(ctx, tx, domain.KubernetesOpUpsertSquad, created); err != nil {
 		return nil, err
 	}
@@ -3467,4 +3476,91 @@ func nullableTimeText(value time.Time) string {
 		return ""
 	}
 	return value.UTC().Format(time.RFC3339Nano)
+}
+
+// --- S-158: prompt templates -------------------------------------------------
+
+const promptTemplateColumns = `id::text, name, description, content, applies_to, created_by::text, created_at, updated_at`
+
+func scanPromptTemplate(row scanner) (*domain.PromptTemplate, error) {
+	var t domain.PromptTemplate
+	if err := row.Scan(
+		&t.ID,
+		&t.Name,
+		&t.Description,
+		&t.Content,
+		&t.AppliesTo,
+		&t.CreatedBy,
+		&t.CreatedAt,
+		&t.UpdatedAt,
+	); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return &t, nil
+}
+
+func (p *PostgresStore) CreatePromptTemplate(ctx context.Context, t *domain.PromptTemplate) (*domain.PromptTemplate, error) {
+	row := p.pool.QueryRow(ctx, `
+		INSERT INTO prompt_templates (name, description, content, applies_to, created_by)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING `+promptTemplateColumns,
+		t.Name, t.Description, t.Content, t.AppliesTo, t.CreatedBy)
+	created, err := scanPromptTemplate(row)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	return created, nil
+}
+
+func (p *PostgresStore) ListPromptTemplates(ctx context.Context) ([]*domain.PromptTemplate, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT `+promptTemplateColumns+`
+		FROM prompt_templates
+		ORDER BY lower(name)`)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+	out := make([]*domain.PromptTemplate, 0)
+	for rows.Next() {
+		t, err := scanPromptTemplate(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, mapPgErr(rows.Err())
+}
+
+func (p *PostgresStore) GetPromptTemplate(ctx context.Context, id string) (*domain.PromptTemplate, error) {
+	row := p.pool.QueryRow(ctx, `
+		SELECT `+promptTemplateColumns+`
+		FROM prompt_templates
+		WHERE id = $1`, id)
+	return scanPromptTemplate(row)
+}
+
+func (p *PostgresStore) UpdatePromptTemplate(ctx context.Context, t *domain.PromptTemplate) (*domain.PromptTemplate, error) {
+	row := p.pool.QueryRow(ctx, `
+		UPDATE prompt_templates
+		SET name = $2, description = $3, content = $4, applies_to = $5, updated_at = now()
+		WHERE id = $1
+		RETURNING `+promptTemplateColumns,
+		t.ID, t.Name, t.Description, t.Content, t.AppliesTo)
+	updated, err := scanPromptTemplate(row)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	return updated, nil
+}
+
+func (p *PostgresStore) DeletePromptTemplate(ctx context.Context, id string) error {
+	res, err := p.pool.Exec(ctx, `DELETE FROM prompt_templates WHERE id = $1`, id)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

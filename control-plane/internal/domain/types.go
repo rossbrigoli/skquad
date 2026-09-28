@@ -600,6 +600,38 @@ func ValidPromptScope(scope string) bool {
 	return false
 }
 
+// PromptTemplate is an admin-managed reusable starting point for squad or
+// agent system prompts (S-158). Selecting a template COPIES its content
+// into the new squad/agent prompt field — templates are authoring aids,
+// not live references, so editing a template never rewrites existing
+// squads or agents.
+type PromptTemplate struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Content     string `json:"content"`
+	// AppliesTo is one of PromptTemplateAppliesSquad / ...Agent / ...Both.
+	AppliesTo string    `json:"applies_to"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+const (
+	PromptTemplateAppliesSquad = "squad"
+	PromptTemplateAppliesAgent = "agent"
+	PromptTemplateAppliesBoth  = "both"
+)
+
+// ValidPromptTemplateAppliesTo reports whether appliesTo is a known value.
+func ValidPromptTemplateAppliesTo(appliesTo string) bool {
+	switch appliesTo {
+	case PromptTemplateAppliesSquad, PromptTemplateAppliesAgent, PromptTemplateAppliesBoth:
+		return true
+	}
+	return false
+}
+
 // InstanceSettings is the single-row organization-level configuration
 // (layer 2 of the prompt hierarchy). Seeded by migration 0016.
 type InstanceSettings struct {

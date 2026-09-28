@@ -114,6 +114,7 @@ type Store interface {
 	storage.InboxStore
 	storage.WorkNotificationStore
 	storage.PromptTierStore
+	storage.PromptTemplateStore
 	storage.BuiltinToolStore
 }
 
@@ -456,6 +457,14 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/prompt/effective", s.getEffectivePrompt)
 			r.Get("/prompt/revisions", s.listPromptRevisions)
 			r.Post("/prompt/validate", s.validatePrompt)
+
+			// S-158: prompt templates. Every authenticated user may list
+			// them (create-time picker); only platform admins may mutate.
+			r.Get("/prompt-templates", s.listPromptTemplates)
+			r.Get("/prompt-templates/{templateID}", s.getPromptTemplate)
+			r.Post("/prompt-templates", s.createPromptTemplate)
+			r.Patch("/prompt-templates/{templateID}", s.updatePromptTemplate)
+			r.Delete("/prompt-templates/{templateID}", s.deletePromptTemplate)
 		})
 	})
 
@@ -1286,6 +1295,7 @@ func (s *Server) createSquad(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name           string          `json:"name"`
 		Mission        string          `json:"mission"`
+		Prompt         string          `json:"prompt"`
 		OperatingModel json.RawMessage `json:"operating_model"`
 	}
 	if !decodeJSON(w, r, &req) {
@@ -1295,6 +1305,16 @@ func (s *Server) createSquad(w http.ResponseWriter, r *http.Request) {
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "name is required")
 		return
+	}
+	// S-158: an optional squad prompt (optionally pre-populated from a
+	// prompt template) is accepted at creation, with the same squad-tier
+	// validation as the squad prompt editor.
+	req.Prompt = strings.TrimSpace(req.Prompt)
+	if req.Prompt != "" {
+		if _, _, failure := checkPromptDraft(promptcompo.TierSquad, req.Prompt); failure != nil {
+			writePromptFailure(w, failure)
+			return
+		}
 	}
 	if len(req.OperatingModel) == 0 {
 		req.OperatingModel = json.RawMessage(`{}`)
@@ -1320,12 +1340,21 @@ func (s *Server) createSquad(w http.ResponseWriter, r *http.Request) {
 	squad := &domain.Squad{
 		Name:           req.Name,
 		Mission:        req.Mission,
+		Prompt:         req.Prompt,
 		OperatingModel: req.OperatingModel,
 		OwnerID:        u.ID,
 		Namespace:      namespace,
 		Status:         domain.SquadActive,
 	}
-	created, err := s.store.CreateSquad(s.pendingUserAuditCtx(r, "squad.create", "squad", "", "", nil), squad)
+	createCtx := s.pendingUserAuditCtx(r, "squad.create", "squad", "", "", nil)
+	if req.Prompt != "" {
+		createCtx = storage.WithPromptRevision(createCtx, storage.PromptRevisionIntent{
+			Scope:   domain.PromptScopeSquad,
+			ScopeID: "", // store fills the new squad id into the revision
+			SavedBy: u.ID,
+		})
+	}
+	created, err := s.store.CreateSquad(createCtx, squad)
 	if err != nil {
 		writeStorageError(w, err)
 		return

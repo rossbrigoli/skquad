@@ -47,6 +47,8 @@ import {
 import { kindOptionsFor } from "../../lib/providerKinds";
 import { OrganizationPromptTab } from "../../components/PromptSettingsTab";
 import { BuiltinToolsPanel } from "../../components/BuiltinToolsPanel";
+import { PromptTemplatesPanel } from "../../components/PromptTemplatesPanel";
+import type { PromptTemplate } from "../../lib/promptTemplates";
 
 type DeleteUsage = { agent_id: string; agent_name: string; squad_id: string };
 
@@ -62,7 +64,7 @@ function resolveSettingsTab(tab: Tab, isAdmin: boolean): Tab {
   // (mirrors requirePlatformAdmin on PUT /settings/prompt).
   // BT-4 (S-151): built-in tools settings is platform-admin only
   // (mirrors requirePlatformAdmin on /admin/tools).
-  return tab === "ai-models" || tab === "access" || tab === "prompt" || tab === "builtin-tools" ? "providers" : tab;
+  return tab === "ai-models" || tab === "access" || tab === "prompt" || tab === "builtin-tools" || tab === "templates" ? "providers" : tab;
 }
 
 // TabButton: one settings tab button (S-126 / S3358: keeps the ternary
@@ -169,7 +171,7 @@ function DeleteResourceButton({
 // S-117: "appearance" and "session" tabs removed — theme switching lives
 // in the top-right ThemeToggle and session details/sign-out in the
 // bottom-left UserMenu popover, both available on every page.
-type Tab = "providers" | "resources" | "ai-models" | "access" | "prompt" | "builtin-tools";
+type Tab = "providers" | "resources" | "ai-models" | "access" | "prompt" | "builtin-tools" | "templates";
 
 const RESOURCE_TABS: { key: string; label: string }[] = [
   { key: "skills", label: "Skills" },
@@ -216,6 +218,13 @@ export default function SettingsPage() {
               onClick={() => setTab("builtin-tools")}
             />
           ) : null}
+          {isAdmin ? (
+            <TabButton
+              active={activeTab === "templates"}
+              label="Prompt Templates"
+              onClick={() => setTab("templates")}
+            />
+          ) : null}
         </div>
 
         {!isAdmin ? (
@@ -231,9 +240,16 @@ export default function SettingsPage() {
         {isAdmin && activeTab === "access" ? <AccessTab /> : null}
         {isAdmin && activeTab === "prompt" ? <OrganizationPromptTab /> : null}
         {isAdmin && activeTab === "builtin-tools" ? <BuiltinToolsPanel /> : null}
+        {isAdmin && activeTab === "templates" ? <PromptTemplatesTab /> : null}
       </AppShell>
     </AuthGate>
   );
+}
+
+// S-158: admin-managed prompt templates.
+function PromptTemplatesTab() {
+  const list = useApi<PromptTemplate[]>("/prompt-templates", 0);
+  return <PromptTemplatesPanel templates={list.data ?? []} />;
 }
 
 function ProvidersTab({ isAdmin }: { readonly isAdmin: boolean }) {
