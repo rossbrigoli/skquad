@@ -61,16 +61,25 @@ jobs:
         env:
           # Enables the Postgres-backed store tests; without it they skip.
           SKQUAD_TEST_DATABASE_URL: postgres://skquad:skquad-ci-db@127.0.0.1:5432/skquad?sslmode=disable
-        run: go test ./... -coverpkg=./... -coverprofile=coverage.out
+        run: |
+          set -o pipefail
+          go test ./... -coverpkg=./... -covermode=atomic -coverprofile=coverage.out -json | tee go-test.json
       - name: Coverage report and gate
         working-directory: control-plane
         run: |
           go tool cover -func=coverage.out | tail -n 25
           python3 ../scripts/go-coverage-gate.py coverage.out --min 62
+      - name: Convert test results for SonarQube (S-171)
+        working-directory: control-plane
+        run: python3 ../scripts/testreport-to-sonar.py gojson --prefix control-plane --out ../test-results/control-plane.xml go-test.json
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-control-plane
           path: control-plane/coverage.out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tests-control-plane
+          path: test-results/control-plane.xml
 
   operator:
     name: Operator
@@ -86,16 +95,25 @@ jobs:
         run: go vet ./...
       - name: Go test
         working-directory: operator
-        run: go test ./... -coverpkg=./... -coverprofile=coverage.out
+        run: |
+          set -o pipefail
+          go test ./... -coverpkg=./... -covermode=atomic -coverprofile=coverage.out -json | tee go-test.json
       - name: Coverage report and gate
         working-directory: operator
         run: |
           go tool cover -func=coverage.out | tail -n 25
           python3 ../scripts/go-coverage-gate.py coverage.out --min 78
+      - name: Convert test results for SonarQube (S-171)
+        working-directory: operator
+        run: python3 ../scripts/testreport-to-sonar.py gojson --prefix operator --out ../test-results/operator.xml go-test.json
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-operator
           path: operator/coverage.out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tests-operator
+          path: test-results/operator.xml
 
   agent-runtime:
     name: Agent runtime
@@ -112,11 +130,11 @@ jobs:
           python -m pip install -e .
       - name: Install coverage tooling
         working-directory: agent-runtime
-        run: python -m pip install coverage
+        run: python -m pip install coverage unittest-xml-reporting
       - name: Unit tests with coverage
         working-directory: agent-runtime
         run: |
-          python -m coverage run --source=skquad_runtime -m unittest discover -s tests
+          python -m coverage run --source=skquad_runtime -m xmlrunner discover -s tests -o test-results
           python -m coverage report
           python -m coverage xml -o coverage.xml
       - name: Coverage gate
@@ -126,6 +144,13 @@ jobs:
         with:
           name: coverage-agent-runtime
           path: agent-runtime/coverage.xml
+      - name: Convert test results for SonarQube (S-171)
+        working-directory: agent-runtime
+        run: python3 ../scripts/testreport-to-sonar.py junit --prefix agent-runtime --out ../test-results/agent-runtime.xml test-results/*.xml
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tests-agent-runtime
+          path: test-results/agent-runtime.xml
       - name: Compile Python
         working-directory: agent-runtime
         run: python -m py_compile skquad_runtime/*.py tests/*.py
@@ -172,11 +197,11 @@ jobs:
           PY
       - name: Install coverage tooling
         working-directory: llm-gateway
-        run: python -m pip install --quiet coverage
+        run: python -m pip install --quiet coverage unittest-xml-reporting
       - name: Callback unit tests with coverage
         working-directory: llm-gateway
         run: |
-          python -m coverage run --source=skquad_litellm_callbacks -m unittest discover -s tests -t tests
+          python -m coverage run --source=skquad_litellm_callbacks -m xmlrunner discover -s tests -t tests -o test-results
           python -m coverage report
           python -m coverage xml -o coverage.xml
       - name: Coverage gate
@@ -186,6 +211,13 @@ jobs:
         with:
           name: coverage-llm-gateway
           path: llm-gateway/coverage.xml
+      - name: Convert test results for SonarQube (S-171)
+        working-directory: llm-gateway
+        run: python3 ../scripts/testreport-to-sonar.py junit --prefix llm-gateway --out ../test-results/llm-gateway.xml test-results/*.xml
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tests-llm-gateway
+          path: test-results/llm-gateway.xml
       - name: Build gateway image
         run: docker build -t skquad-llm-gateway-ci ./llm-gateway
       - name: Callback unit tests against real LiteLLM
@@ -359,7 +391,14 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-web
-          path: web/coverage/lcov.info
+          path: web/coverage
+      - name: Convert test results for SonarQube (S-171)
+        working-directory: web
+        run: python3 ../scripts/testreport-to-sonar.py junit --prefix web --out ../test-results/web.xml coverage/junit.xml
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tests-web
+          path: test-results/web.xml
       - name: Build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
@@ -426,6 +465,26 @@ jobs:
         with:
           name: coverage-web
           path: web/coverage
+      - uses: actions/download-artifact@v7
+        with:
+          name: tests-control-plane
+          path: test-results
+      - uses: actions/download-artifact@v7
+        with:
+          name: tests-operator
+          path: test-results
+      - uses: actions/download-artifact@v7
+        with:
+          name: tests-agent-runtime
+          path: test-results
+      - uses: actions/download-artifact@v7
+        with:
+          name: tests-llm-gateway
+          path: test-results
+      - uses: actions/download-artifact@v7
+        with:
+          name: tests-web
+          path: test-results
       - name: Run SonarQube analysis
         env:
           SONAR_SCANNER_OPTS: "-Xmx1g"

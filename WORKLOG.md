@@ -781,3 +781,19 @@
   - Verified: deploy/skquad-web-v2 1/1 Running (bc4d635), rollout ok. `http://skquad-v2.lab/` → 200 Next.js v2 HTML; `/api/v1/squads` → 200 through v2 host; v1 `skquad.lab` unchanged 200.
 - **Note:** `/api/healthz` 404 is expected — health is `/healthz` on api-server, not routed via ingress hosts (same as v1).
 - **Needs Ross:** Cloudflare Tunnel mapping `skquad-v2.rossbrigoli.com` → `skquad-v2.lab` (per standard expose procedure) for external A/B.
+
+## 2026-09-29 00:30–01:00 ACST — S-171: fix 0% SonarQube coverage + publish test results
+
+- **Objective:** SonarQube reported 0% coverage / no test metrics for `skquad`. Diagnose and fix so ALL coverage AND test-execution data reach SQ.
+- **Root cause:** `sonar.coverage.exclusions=**/*` in `sonar-project.properties` excluded every file from coverage (coverage reports were produced and mapped correctly but then discarded). Additionally, test execution results were never wired to SQ (no xunit/generic test report paths), so `tests`/`test_errors`/`skipped_tests` were absent.
+- **Changes:**
+  - `sonar-project.properties`: removed `sonar.coverage.exclusions=**/*`; added `sonar.tests` (agent-runtime/tests, llm-gateway/tests, control-plane, operator, web/src, tests) + `sonar.test.inclusions` (`**/*_test.go,**/*.test.ts,**/*.test.tsx,**/tests/test_*.py`) and matching main-source exclusions so the generic test-execution importer sees disjoint main/test sets (importer only accepts files indexed as TEST); added `sonar.testExecutionReportPaths` (explicit file list — wildcards unsupported, missing listed file fails scan).
+  - `scripts/testreport-to-sonar.py` (new): converts `go test -json` and JUnit XML (vitest, unittest-xml-reporting) into SonarQube generic testExecutions format; Go tests attributed to exact `*_test.go` via top-level `func TestXxx(` scan.
+  - `.github/workflows/ci.yml`: Go jobs now `-covermode=atomic` + `-json | tee go-test.json` + convert + `tests-<comp>` artifacts; Python jobs switched `unittest` → `xmlrunner` (unittest-xml-reporting) producing JUnit, converted to generic; web job adds vitest junit reporter (`coverage/junit.xml`) and uploads whole `web/coverage`; `security-sonar` downloads all `tests-*` artifacts into `test-results/`.
+  - `web/vitest.config.ts`: junit reporter + `outputFile.junit`.
+  - `.gitignore`: local scan/test artifacts.
+- **Docs verified (SQ 24.12.0.100206):** generic test data format + Go coverage via `sonar.go.coverage.reportPaths`:
+  - https://docs.sonarsource.com/sonarqube-server/analyzing-source-code/test-coverage/generic-test-data
+  - https://docs.sonarsource.com/sonarqube-server/analyzing-source-code/test-coverage/go-test-coverage
+- **Commands/tests run:** converter unit checks (gojson/junit, real test names); local `npm run test:coverage` (333 tests, lcov+junit); local agent-runtime `coverage run -m xmlrunner` (258 tests OK); local `sonar-scanner` against `http://sonarqube.lab` with temp key `skquad-s171-verify` (properties-only run: EXECUTION SUCCESS, imported 9+21+1 report files).
+- **Result (temp project `skquad-s171-verify`):** tests=600, test_failures=0, test_errors=0, skipped_tests=9, coverage=18.8% (partial locally — Go coverage not generated locally; agent-runtime 90.2%, web 11.0% per-dir). Before: skquad had no coverage/tests measures at all.

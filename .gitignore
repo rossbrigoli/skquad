@@ -41,3 +41,12 @@ coverage/
 .coverage/
 .coverage
 *.tsbuildinfo
+
+# Local SonarQube scan + test-report artifacts (S-171)
+.scannerwork/
+temp/
+**/test-results/
+agent-runtime/coverage.xml
+llm-gateway/coverage.xml
+web/coverage/
+**/*.egg-info/
