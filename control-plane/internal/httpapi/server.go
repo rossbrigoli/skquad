@@ -2719,7 +2719,7 @@ func (s *Server) getSquadMetering(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	usage, err := s.store.SumMetering(r.Context(), squad.ID, "")
+	usage, err := s.store.SumMetering(r.Context(), squad.ID, "", time.Time{})
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -2732,7 +2732,18 @@ func (s *Server) getAgentMetering(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	usage, err := s.store.SumMetering(r.Context(), "", agent.ID)
+	// S-169: optional ?since=<RFC3339> restricts the sum (month-to-date
+	// spend chip). Absent = lifetime, preserving the old contract.
+	since := time.Time{}
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_since", "since must be an RFC3339 timestamp")
+			return
+		}
+		since = parsed
+	}
+	usage, err := s.store.SumMetering(r.Context(), "", agent.ID, since)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -2744,7 +2755,7 @@ func (s *Server) getMeteringSummary(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
 	}
-	usage, err := s.store.SumMetering(r.Context(), "", "")
+	usage, err := s.store.SumMetering(r.Context(), "", "", time.Time{})
 	if err != nil {
 		writeStorageError(w, err)
 		return

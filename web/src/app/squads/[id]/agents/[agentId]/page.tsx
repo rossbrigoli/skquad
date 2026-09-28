@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityFeed } from "../../../../../components/ActivityFeed";
-import { AgentFormModal } from "../../../../../components/AgentForm";
 import { AuthGate } from "../../../../../components/AuthGate";
 import { AppShell } from "../../../../../components/AppShell";
 import { Collapsible } from "../../../../../components/Collapsible";
@@ -13,10 +12,11 @@ import { EmptyState } from "../../../../../components/EmptyState";
 import { MarkdownMessage } from "../../../../../components/MarkdownMessage";
 import { EffectivePromptPanel } from "../../../../../components/EffectivePromptPanel";
 import { PromptRevisionsPanel } from "../../../../../components/PromptRevisionsPanel";
-import { MetricTile } from "../../../../../components/MetricTile";
+import { PromptTierEditor } from "../../../../../components/PromptTierEditor";
 import { Modal, ModalForm } from "../../../../../components/Modal";
 import { StatusChip } from "../../../../../components/StatusChip";
-import { storageDisplay } from "../../../../../lib/agentStorage";
+import { DEFAULT_AGENT_STORAGE_SIZE, STORAGE_PRESETS, isValidStorageSize, storageDisplay } from "../../../../../lib/agentStorage";
+import { monthStartISO } from "../../../../../lib/metering";
 import { useApi } from "../../../../../lib/useApi";
 import { useAuth } from "../../../../../lib/auth";
 import {
@@ -34,7 +34,7 @@ import {
   type ResourceType,
   type Task,
 } from "../../../../../lib/api";
-import { formatCost, formatRelativeTime, formatTokens, leaseState } from "../../../../../lib/format";
+import { formatCost, formatRelativeTime, leaseState } from "../../../../../lib/format";
 import {
   agentTurnPending,
   chatContextTokens,
@@ -220,17 +220,29 @@ export default function AgentProfilePage() {
   const agents = useApi<Agent[]>(`/squads/${squadId}/agents`, 30000);
   const board = useApi<BoardPayload>(`/squads/${squadId}/board`, 15000);
   const metering = useApi<MeteringSummary>(`/agents/${agentId}/metering`, 30000);
+  // S-169 item 10: month-to-date spend — same endpoint, windowed by the
+  // viewer's local month start (CP gained ?since= for this).
+  const meteringMtd = useApi<MeteringSummary>(`/agents/${agentId}/metering?since=${monthStartISO()}`, 30000);
   const perms = useApi<AgentPermission[]>(`/agents/${agentId}/permissions`, 60000);
   const audit = useApi<AuditEntry[]>(`/squads/${squadId}/audit?limit=50`, 30000);
   const chat = useApi<Message[]>(`/agents/${agentId}/chat`, 10000);
-  const [editing, setEditing] = useState(false);
+  // S-169: Talk-first layout — Chat is the default tab, Configuration holds
+  // everything the old Edit modal + stacked sections carried.
+  const [tab, setTab] = useState<"chat" | "config">("chat");
   const [deleting, setDeleting] = useState(false);
   const [granting, setGranting] = useState(false);
   const [identityBusy, setIdentityBusy] = useState(false);
   const [identityError, setIdentityError] = useState("");
-  // S-PROMPT WP4: effective-prompt preview modal + revision restore.
   const [previewEffective, setPreviewEffective] = useState(false);
-  const [restorePrompt, setRestorePrompt] = useState<string | null>(null);
+  // Bumped after a successful config save so the form remounts with the
+  // server's fresh values — no manual state reconciliation.
+  const [savedTick, setSavedTick] = useState(0);
+  // S-162 actions relocated by S-169 items 9a/9b: reset lives in the chat
+  // header now, restart sits next to the page title.
+  const [chatActionBusy, setChatActionBusy] = useState(false);
+  const [chatNote, setChatNote] = useState("");
+  const [restartBusy, setRestartBusy] = useState(false);
+  const [restartNote, setRestartNote] = useState("");
 
   const agent = (agents.data || []).find((a) => a.id === agentId);
   const tasks = (board.data?.tasks || []).filter((t) => t.assignee_agent_id === agentId);
@@ -241,6 +253,38 @@ export default function AgentProfilePage() {
   // grantable and the LLM tab supersedes them, so hide any surviving
   // llm_provider rows from the permissions surface (WP8 drops the type).
   const resourceGrants = (perms.data || []).filter((p) => p.resource_type !== "llm_provider");
+  // S-169 item 12: the context-window stat moved from under the chat box
+  // up into the compact chip row.
+  const contextTokens = useMemo(() => chatContextTokens(chat.data || []), [chat.data]);
+
+  async function resetChat() {
+    if (!window.confirm("Reset this chat thread? Earlier turns stop being included in the agent's context. The transcript is saved to the agent's memory.")) return;
+    setChatActionBusy(true);
+    setChatNote("");
+    try {
+      const res = await apiPost<{ archived: number }>(`/agents/${agentId}/chat/reset`, token, {});
+      setChatNote(`Thread reset · ${res?.archived ?? 0} earlier message(s) archived to memory`);
+      chat.refresh();
+    } catch (err) {
+      setChatNote(err instanceof Error ? err.message : "reset failed");
+    } finally {
+      setChatActionBusy(false);
+    }
+  }
+
+  async function restartAgent() {
+    if (!window.confirm("Restart the agent? Its pod is evicted and a fresh one starts. Use this if the agent seems stuck.")) return;
+    setRestartBusy(true);
+    setRestartNote("");
+    try {
+      const res = await apiPost<{ pods: number }>(`/agents/${agentId}/restart`, token, {});
+      setRestartNote(`Restarting agent (${res?.pods ?? 0} pod(s) evicted)`);
+    } catch (err) {
+      setRestartNote(err instanceof Error ? err.message : "restart failed");
+    } finally {
+      setRestartBusy(false);
+    }
+  }
 
   if (!agent && !agents.loading) {
     return (
@@ -256,16 +300,25 @@ export default function AgentProfilePage() {
     <AuthGate>
       <AppShell>
         <div className="section-head">
-          <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-3)" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-3)", flexWrap: "wrap" }}>
             <h1 className="page-title" style={{ margin: 0 }}>
               {agent?.name || "Agent"}
             </h1>
             {agent ? <StatusChip status={agentStatus(agent)} /> : null}
+            {/* S-169 item 9b: restart lives beside the page title now. */}
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={!agent || restartBusy}
+              onClick={() => {
+                void restartAgent();
+              }}
+            >
+              {restartBusy ? "Restarting…" : "Restart agent"}
+            </button>
+            {restartNote ? <span className="field-hint">{restartNote}</span> : null}
           </div>
           <div style={{ display: "flex", gap: "var(--space-2)" }}>
-            <button type="button" className="btn btn-sm" onClick={() => setEditing(true)} disabled={!agent}>
-              Edit
-            </button>
             <button type="button" className="btn btn-sm btn-danger" onClick={() => setDeleting(true)} disabled={!agent}>
               Delete
             </button>
@@ -275,147 +328,128 @@ export default function AgentProfilePage() {
           {agent?.role || "no role set"} · <span className="mono">{agentId.slice(0, 12)}</span>
         </p>
 
-        <div className="metric-grid" style={{ marginTop: "var(--space-4)" }}>
-          <MetricTile
-            label="Current lease"
-            value={live.length > 0 ? "1 task" : "none"}
-            sub={leaseSub(live, stalled)}
-            attention={stalled.length > 0}
-          />
-          <MetricTile
-            label="Lifetime spend"
-            value={metering.loading ? "…" : formatCost(metering.data)}
-            sub={metering.error ? "owner and platform admins only" : formatTokens(metering.data)}
-          />
-          <MetricTile label="Assigned tasks" value={tasks.length} sub={`${live.length} running now`} />
-          <MetricTile
-            label="Granted resources"
-            value={resourceGrants.length}
-            sub={resourceGrants.length === 0 ? "no resource grants" : "see below"}
-          />
-          <MetricTile
-            label="Workspace storage"
-            value={storageDisplay(agent?.storage_enabled, agent?.storage_size)}
-            sub={agent?.storage_enabled ? "durable, survives restarts" : "ephemeral workspace"}
-          />
+        {/* S-169 items 11+12: one compact chip row replaces the big metric
+            grid; MTD spend replaces lifetime spend; context tokens moved up. */}
+        <div className="metric-chips" style={{ marginTop: "var(--space-4)" }}>
+          <span className={stalled.length > 0 ? "metric-chip attention" : "metric-chip"}>
+            <span className="metric-chip-label">Current lease</span>
+            <span className="metric-chip-value">{live.length > 0 ? "1 task" : "none"}</span>
+            <span className="metric-chip-sub">{leaseSub(live, stalled)}</span>
+          </span>
+          <span className="metric-chip">
+            <span className="metric-chip-label">MTD spend</span>
+            <span className="metric-chip-value">{meteringMtd.loading ? "…" : formatCost(meteringMtd.data)}</span>
+            <span className="metric-chip-sub">
+              {meteringMtd.error ? "owner and platform admins only" : `lifetime ${formatCost(metering.data)}`}
+            </span>
+          </span>
+          <span className="metric-chip">
+            <span className="metric-chip-label">Tasks</span>
+            <span className="metric-chip-value">{tasks.length}</span>
+            <span className="metric-chip-sub">{live.length} running now</span>
+          </span>
+          <span className="metric-chip">
+            <span className="metric-chip-label">Grants</span>
+            <span className="metric-chip-value">{resourceGrants.length}</span>
+            <span className="metric-chip-sub">{resourceGrants.length === 0 ? "none" : "resource grants"}</span>
+          </span>
+          <span className="metric-chip">
+            <span className="metric-chip-label">Workspace</span>
+            <span className="metric-chip-value">{storageDisplay(agent?.storage_enabled, agent?.storage_size)}</span>
+            <span className="metric-chip-sub">{agent?.storage_enabled ? "durable" : "ephemeral"}</span>
+          </span>
+          <span className="metric-chip">
+            <span className="metric-chip-label">Context</span>
+            <span className="metric-chip-value">{contextTokens === null ? "—" : formatContextTokens(contextTokens)}</span>
+            <span className="metric-chip-sub">tokens · last agent turn</span>
+          </span>
         </div>
 
-        <TaskListSection title="Working on" tasks={live} squadId={squadId} status="running" leaseLabel="lease expires" />
+        <nav className="squad-tabs agent-tabs" aria-label="Agent sections" style={{ marginTop: "var(--space-4)" }}>
+          <button
+            type="button"
+            className={tab === "chat" ? "squad-tab active" : "squad-tab"}
+            aria-current={tab === "chat" ? "page" : undefined}
+            onClick={() => setTab("chat")}
+          >
+            Chat
+          </button>
+          <button
+            type="button"
+            className={tab === "config" ? "squad-tab active" : "squad-tab"}
+            aria-current={tab === "config" ? "page" : undefined}
+            onClick={() => setTab("config")}
+          >
+            Configuration
+          </button>
+        </nav>
 
-        <TaskListSection title="Stalled work" tasks={stalled} squadId={squadId} status="stalled" leaseLabel="lease expired" />
-
-        <section style={{ marginTop: "var(--space-5)" }}>
-          <div className="section-head">
-            <h2>Talk to {agent?.name || "this agent"}</h2>
-          </div>
-          <ChatThread messages={chat.data || []} agentName={agent?.name || "agent"} onSent={() => chat.refresh()} agentId={agentId} token={token} />
-        </section>
-
-        <section style={{ marginTop: "var(--space-5)" }}>
-          <div className="section-head">
-            <h2>LLM model</h2>
-          </div>
-          {agent ? (
-            <LlmBindingSection
-              key={`${agent.id}:${agent.ai_model_id ?? ""}:${agent.fallback_ai_model_id ?? ""}`}
-              agentId={agentId}
-              token={token}
-              primaryId={agent.ai_model_id ?? ""}
-              fallbackId={agent.fallback_ai_model_id ?? ""}
-              onSaved={() => agents.refresh()}
-            />
-          ) : (
-            <div className="notice">Loading agent…</div>
-          )}
-        </section>
-
-        {/* S-PROMPT WP4: layer-4 prompt section — edit (via the agent
-            form, with meter + validation), read-only effective-prompt
-            preview (all four tiers), and append-only revision history
-            with restore-into-editor. */}
-        <section style={{ marginTop: "var(--space-5)" }}>
-          <div className="section-head">
-            <h2>Agent Context</h2>
-            <div style={{ display: "flex", gap: "var(--space-2)" }}>
-              <button type="button" className="btn btn-sm" onClick={() => setEditing(true)} disabled={!agent}>
-                Edit agent prompt
-              </button>
-              <button type="button" className="btn btn-sm" onClick={() => setPreviewEffective(true)} disabled={!agent}>
-                Preview effective prompt
+        {tab === "chat" ? (
+          <section style={{ marginTop: "var(--space-4)" }}>
+            <div className="section-head">
+              <h2>Talk to {agent?.name || "this agent"}</h2>
+              {/* S-169 item 9a: Reset chat sits in the chat header now. */}
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={chatActionBusy || (chat.data || []).length === 0}
+                onClick={() => {
+                  void resetChat();
+                }}
+              >
+                Reset chat
               </button>
             </div>
-          </div>
-          <p className="field-hint" style={{ marginBottom: "var(--space-3)" }}>
-            The agent prompt is layer 4 — your agent&rsquo;s identity and personality. It cannot
-            relax anything in the platform, organization, or squad layers above it.
-          </p>
-          <Collapsible id={`agent-current-prompt-${agentId}`} title="Current agent prompt">
-            <pre className="prompt-tier-content">{agent?.system_prompt || "(empty)"}</pre>
-          </Collapsible>
-          <div style={{ marginTop: "var(--space-4)" }}>
-            <PromptRevisionsPanel
-              scope="agent"
-              scopeId={agentId}
-              onRestore={(content) => {
-                setRestorePrompt(content);
-                setEditing(true);
-              }}
+            {chatNote ? <p className="field-hint">{chatNote}</p> : null}
+            <ChatThread
+              messages={chat.data || []}
+              agentName={agent?.name || "agent"}
+              onSent={() => chat.refresh()}
+              agentId={agentId}
+              token={token}
             />
-          </div>
-        </section>
+            {/* Task lists kept under the chat (S-169: chat is the star; the
+                lists stay reachable without crowding the header). */}
+            <TaskListSection title="Working on" tasks={live} squadId={squadId} status="running" leaseLabel="lease expires" />
+            <TaskListSection title="Stalled work" tasks={stalled} squadId={squadId} status="stalled" leaseLabel="lease expired" />
+          </section>
+        ) : null}
 
-        <GrantedResourcesSection
-          grants={resourceGrants}
-          onGrantClick={() => setGranting(true)}
-          onRevoke={async (next) => {
-            await apiPut(`/agents/${agentId}/permissions`, token, next);
-            perms.refresh();
-          }}
-        />
-
-        <RuntimeIdentitySection
-          hasIdentity={!!agent?.identity_id}
-          busy={identityBusy}
-          error={identityError}
-          onAction={async () => {
-            setIdentityBusy(true);
-            setIdentityError("");
-            try {
-              await apiPost(agent?.identity_id ? `/agents/${agentId}/identity/rotate` : `/agents/${agentId}/identity`, token, {});
-              agents.refresh();
-            } catch (err) {
-              const fallbackMsg = agent?.identity_id ? "rotate failed" : "provision failed";
-              setIdentityError(err instanceof Error ? err.message : fallbackMsg);
-            } finally {
-              setIdentityBusy(false);
-            }
-          }}
-        />
-
-        {/* S-120: collapsed by default, reusing the S-118 Collapsible with a
-            session key distinct from the squad page's key. */}
-        <Collapsible id="agent-recent-activity" title="Recent activity">
-          <ActivityFeed
+        {tab === "config" && agent ? (
+          <AgentConfigPane
+            key={`${agentId}:${savedTick}`}
+            agent={agent}
+            token={token}
             squadId={squadId}
-            entries={agentActivity}
-            emptyTitle="No recorded activity for this agent"
-            emptyHint="Assignments, status changes and identity events show up here."
-          />
-        </Collapsible>
-
-        {editing && agent ? (
-          <AgentFormModal
-            title={`Edit ${agent.name}`}
-            submitLabel="Save changes"
-            initial={{ ...agent, system_prompt: restorePrompt ?? agent.system_prompt }}
-            onClose={() => {
-              setEditing(false);
-              setRestorePrompt(null);
+            grants={resourceGrants}
+            activityEntries={agentActivity}
+            identityBusy={identityBusy}
+            identityError={identityError}
+            onGrantClick={() => setGranting(true)}
+            onRevoke={async (next) => {
+              await apiPut(`/agents/${agentId}/permissions`, token, next);
+              perms.refresh();
             }}
-            onSubmit={async (values) => {
-              await apiPatch<Agent>(`/agents/${agentId}`, token, values);
-              setEditing(false);
+            onIdentityAction={async () => {
+              setIdentityBusy(true);
+              setIdentityError("");
+              try {
+                await apiPost(agent?.identity_id ? `/agents/${agentId}/identity/rotate` : `/agents/${agentId}/identity`, token, {});
+                agents.refresh();
+              } catch (err) {
+                const fallbackMsg = agent?.identity_id ? "rotate failed" : "provision failed";
+                setIdentityError(err instanceof Error ? err.message : fallbackMsg);
+              } finally {
+                setIdentityBusy(false);
+              }
+            }}
+            onPreviewEffective={() => setPreviewEffective(true)}
+            onSaved={() => {
+              setSavedTick((t) => t + 1);
               agents.refresh();
+              perms.refresh();
+              metering.refresh();
+              meteringMtd.refresh();
             }}
           />
         ) : null}
@@ -456,6 +490,278 @@ export default function AgentProfilePage() {
   );
 }
 
+// S-169: the Configuration tab. The old Edit-modal fields are inlined as
+// sections with ONE Save for the whole form (items 5–7): role, idle
+// timeout, storage, agent prompt and the LLM binding all ride a single
+// PATCH /agents/{id}. Grants and runtime identity stay immediate-action
+// sections (they were never part of the modal); recent activity closes the
+// tab.
+function AgentConfigPane({
+  agent,
+  token,
+  squadId,
+  grants,
+  activityEntries,
+  identityBusy,
+  identityError,
+  onGrantClick,
+  onRevoke,
+  onIdentityAction,
+  onPreviewEffective,
+  onSaved,
+}: {
+  readonly agent: Agent;
+  readonly token: string;
+  readonly squadId: string;
+  readonly grants: AgentPermission[];
+  readonly activityEntries: AuditEntry[];
+  readonly identityBusy: boolean;
+  readonly identityError: string;
+  readonly onGrantClick: () => void;
+  readonly onRevoke: (next: { resource_type: string; resource_id: string }[]) => Promise<void>;
+  readonly onIdentityAction: () => Promise<void>;
+  readonly onPreviewEffective: () => void;
+  readonly onSaved: () => void;
+}) {
+  const [role, setRole] = useState(agent.role ?? "");
+  const [idleTimeout, setIdleTimeout] = useState(String(agent.idle_timeout_sec ?? 300));
+  const [storageEnabled, setStorageEnabled] = useState(agent.storage_enabled ?? false);
+  const [storageSize, setStorageSize] = useState(agent.storage_size || DEFAULT_AGENT_STORAGE_SIZE);
+  const [prompt, setPrompt] = useState(agent.system_prompt ?? "");
+  const [primary, setPrimary] = useState(agent.ai_model_id ?? "");
+  const [fallback, setFallback] = useState(agent.fallback_ai_model_id ?? "");
+  const [promptBlocked, setPromptBlocked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [savedNote, setSavedNote] = useState("");
+
+  const storageInvalid = storageEnabled && !isValidStorageSize(storageSize);
+  const dirty =
+    role !== (agent.role ?? "") ||
+    prompt !== (agent.system_prompt ?? "") ||
+    Number(idleTimeout) !== (agent.idle_timeout_sec ?? 300) ||
+    storageEnabled !== (agent.storage_enabled ?? false) ||
+    (storageEnabled ? storageSize.trim() !== (agent.storage_size || DEFAULT_AGENT_STORAGE_SIZE) : false) ||
+    primary !== (agent.ai_model_id ?? "") ||
+    fallback !== (agent.fallback_ai_model_id ?? "");
+
+  async function saveAll() {
+    setBusy(true);
+    setError("");
+    setSavedNote("");
+    try {
+      // buildBindingPayload throws on an empty/colliding primary — caught
+      // here and surfaced like any other save error.
+      const binding = buildBindingPayload(primary, fallback);
+      const body: Record<string, unknown> = {
+        role,
+        system_prompt: prompt,
+        idle_timeout_sec: Number(idleTimeout) > 0 ? Number(idleTimeout) : 300,
+        storage_enabled: storageEnabled,
+        storage_size: storageEnabled ? storageSize.trim() : "",
+        ai_model_id: binding.ai_model_id,
+        fallback_ai_model_id: binding.fallback_ai_model_id,
+      };
+      await apiPatch(`/agents/${agent.id}`, token, body);
+      setSavedNote("Configuration saved.");
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="config-pane">
+      <section style={{ marginTop: "var(--space-4)" }}>
+        <div className="section-head">
+          <h2>Basics</h2>
+        </div>
+        <div className="field-row">
+          <label className="field">
+            <span>Name</span>
+            <input value={agent.name} readOnly />
+            <span className="field-hint">
+              Names are immutable — the Kubernetes deployment name is derived from it.
+            </span>
+          </label>
+          <label className="field">
+            <span>Role</span>
+            <input
+              value={role}
+              onChange={(e) => {
+                setRole(e.target.value);
+                setSavedNote("");
+              }}
+              placeholder="e.g. implementer"
+            />
+          </label>
+          <label className="field">
+            <span>Idle timeout (sec)</span>
+            <input
+              value={idleTimeout}
+              onChange={(e) => {
+                setIdleTimeout(e.target.value.replace(/[^0-9]/g, ""));
+                setSavedNote("");
+              }}
+              inputMode="numeric"
+            />
+          </label>
+        </div>
+        <div className="field">
+          <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={storageEnabled}
+              onChange={(e) => {
+                setStorageEnabled(e.target.checked);
+                setSavedNote("");
+              }}
+            />
+            <span>Durable workspace storage</span>
+          </label>
+          {storageEnabled ? (
+            <>
+              <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.5rem", flexWrap: "wrap" }}>
+                {STORAGE_PRESETS.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    className={`btn btn-sm${storageSize === preset ? " btn-primary" : ""}`}
+                    onClick={() => {
+                      setStorageSize(preset);
+                      setSavedNote("");
+                    }}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+              <input
+                value={storageSize}
+                onChange={(e) => {
+                  setStorageSize(e.target.value);
+                  setSavedNote("");
+                }}
+                placeholder="custom, e.g. 3Gi"
+                style={{ marginTop: "0.5rem" }}
+                aria-label="Storage size"
+              />
+              {storageInvalid ? (
+                <p className="field-hint" style={{ color: "var(--danger, #c0392b)" }}>
+                  Must be a positive quantity like 1Gi, 2Gi or 500M.
+                </p>
+              ) : null}
+            </>
+          ) : null}
+          <p className="field-hint">
+            Durable workspace storage that survives restarts. The platform caps the maximum size;
+            the storage class is managed by your platform admin.
+          </p>
+        </div>
+      </section>
+
+      <section style={{ marginTop: "var(--space-5)" }}>
+        <div className="section-head">
+          <h2>LLM model</h2>
+        </div>
+        <LlmBindingFields
+          primary={primary}
+          fallback={fallback}
+          onPrimaryChange={(id) => {
+            setPrimary(id);
+            // A model cannot be its own fallback — clear it if it collides.
+            if (id === fallback) setFallback("");
+            setSavedNote("");
+          }}
+          onFallbackChange={(id) => {
+            setFallback(id);
+            setSavedNote("");
+          }}
+        />
+      </section>
+
+      <section style={{ marginTop: "var(--space-5)" }}>
+        <div className="section-head">
+          <h2>Agent Context</h2>
+          <button type="button" className="btn btn-sm" onClick={onPreviewEffective}>
+            Preview effective prompt
+          </button>
+        </div>
+        <p className="field-hint" style={{ marginBottom: "var(--space-3)" }}>
+          The agent prompt is layer 4 — your agent&rsquo;s identity and personality. It cannot
+          relax anything in the platform, organization, or squad layers above it.
+        </p>
+        <PromptTierEditor
+          scope="agent"
+          label="Agent prompt"
+          content={prompt}
+          onChange={(v) => {
+            setPrompt(v);
+            setSavedNote("");
+          }}
+          onSave={saveAll}
+          showSaveButton={false}
+          onBlockedChange={setPromptBlocked}
+        />
+        <div style={{ marginTop: "var(--space-4)" }}>
+          <PromptRevisionsPanel
+            scope="agent"
+            scopeId={agent.id}
+            onRestore={(content) => {
+              setPrompt(content);
+              setSavedNote("");
+            }}
+          />
+        </div>
+      </section>
+
+      <div className="config-save-bar">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!dirty || busy || promptBlocked || storageInvalid || primary === ""}
+          onClick={() => {
+            void saveAll();
+          }}
+        >
+          {busy ? "Saving…" : "Save configuration"}
+        </button>
+        {savedNote && !dirty ? <span className="field-hint">{savedNote}</span> : null}
+        {promptBlocked ? <span className="entity-meta">Fix the prompt errors above before saving.</span> : null}
+        {storageInvalid ? <span className="entity-meta">Storage size is invalid.</span> : null}
+        {primary === "" ? <span className="entity-meta">A primary model is required.</span> : null}
+      </div>
+      {error ? (
+        <div className="notice error" role="alert">
+          {error}
+        </div>
+      ) : null}
+
+      <GrantedResourcesSection grants={grants} onGrantClick={onGrantClick} onRevoke={onRevoke} />
+
+      <RuntimeIdentitySection
+        hasIdentity={!!agent.identity_id}
+        busy={identityBusy}
+        error={identityError}
+        onAction={onIdentityAction}
+      />
+
+      {/* S-120: collapsed by default, reusing the S-118 Collapsible with a
+          session key distinct from the squad page's key. */}
+      <Collapsible id="agent-recent-activity" title="Recent activity">
+        <ActivityFeed
+          squadId={squadId}
+          entries={activityEntries}
+          emptyTitle="No recorded activity for this agent"
+          emptyHint="Assignments, status changes and identity events show up here."
+        />
+      </Collapsible>
+    </div>
+  );
+}
+
 // Initials for chat avatars: first + last initial of a name (S-105).
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -482,9 +788,6 @@ function ChatThread({
   const [error, setError] = useState("");
   // S-163: subagent transparency — the thread shown in the side panel.
   const [openSubagent, setOpenSubagent] = useState<SubagentInfo | null>(null);
-  // S-162: reset/restart action feedback + in-flight guard.
-  const [actionBusy, setActionBusy] = useState(false);
-  const [actionNote, setActionNote] = useState("");
   const { user } = useAuth();
   const scrollRef = useRef<HTMLDivElement>(null);
   // S-154: throttle for the wake-on-typing ping (once a minute max).
@@ -499,15 +802,10 @@ function ChatThread({
   const [generating, setGenerating] = useState(false);
   useEffect(() => {
     const check = () => setGenerating(agentTurnPending(sorted, Date.now()));
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     check();
     const timer = window.setInterval(check, 5000);
     return () => window.clearInterval(timer);
   }, [sorted]);
-  // S-122: tiny context-size bar — the prompt-token count the runtime
-  // recorded on the most recent agent reply (the real context size of the
-  // last LLM call, not an estimate).
-  const contextTokens = useMemo(() => chatContextTokens(messages), [messages]);
 
   // Keep the newest message in view (S-105).
   useEffect(() => {
@@ -614,56 +912,6 @@ function ChatThread({
           </div>
         ) : null}
       </div>
-      <output className="chat-context-bar" aria-live="polite">
-        {contextTokens === null
-          ? "context: — tokens (waiting for the agent's first reply)"
-          : `context ≈ ${formatContextTokens(contextTokens)} tokens · last agent turn`}
-      </output>
-      {/* S-162: reset the thread / restart the agent pod. */}
-      <div className="chat-actions" style={{ display: "flex", gap: "var(--space-2)", padding: "0 var(--space-3)", alignItems: "center" }}>
-        <button
-          type="button"
-          className="btn ghost small"
-          disabled={actionBusy || sorted.length === 0}
-          onClick={async () => {
-            if (!window.confirm("Reset this chat thread? Earlier turns stop being included in the agent's context. The transcript is saved to the agent's memory.")) return;
-            setActionBusy(true);
-            setActionNote("");
-            try {
-              const res = await apiPost<{ archived: number }>(`/agents/${agentId}/chat/reset`, token, {});
-              setActionNote(`Thread reset · ${res?.archived ?? 0} earlier message(s) archived to memory`);
-              onSent();
-            } catch (err) {
-              setActionNote(err instanceof Error ? err.message : "reset failed");
-            } finally {
-              setActionBusy(false);
-            }
-          }}
-        >
-          Reset chat
-        </button>
-        <button
-          type="button"
-          className="btn ghost small"
-          disabled={actionBusy}
-          onClick={async () => {
-            if (!window.confirm("Restart the agent? Its pod is evicted and a fresh one starts. Use this if the agent seems stuck.")) return;
-            setActionBusy(true);
-            setActionNote("");
-            try {
-              const res = await apiPost<{ pods: number }>(`/agents/${agentId}/restart`, token, {});
-              setActionNote(`Restarting agent (${res?.pods ?? 0} pod(s) evicted)`);
-            } catch (err) {
-              setActionNote(err instanceof Error ? err.message : "restart failed");
-            } finally {
-              setActionBusy(false);
-            }
-          }}
-        >
-          Restart agent
-        </button>
-        {actionNote ? <span className="chat-action-note" style={{ fontSize: "0.8rem", opacity: 0.8 }}>{actionNote}</span> : null}
-      </div>
       {error ? <div className="notice error" style={{ margin: "var(--space-2) var(--space-3) 0" }}>{error}</div> : null}
       <form
         className="chat-composer"
@@ -733,29 +981,26 @@ function ChatThread({
   }
 }
 
-// WP7 (S-112) — LLM model binding section (ADR-0010 D4): primary is
+// WP7 (S-112) — LLM model binding fields (ADR-0010 D4): primary is
 // required, fallback optional. Options come from the caller's granted+
 // active models (/models/me); the selected primary is excluded from the
-// fallback list. Warnings are soft — Save is never disabled by them.
-function LlmBindingSection({
-  agentId,
-  token,
-  primaryId,
-  fallbackId,
-  onSaved,
+// fallback list. Warnings are soft — never blocking.
+//
+// S-169: converted to a controlled component. The Configuration tab owns
+// the values and the single Save; this renders selects + soft warnings
+// only (the old "Save binding" button folded into "Save configuration").
+function LlmBindingFields({
+  primary,
+  fallback,
+  onPrimaryChange,
+  onFallbackChange,
 }: {
-  readonly agentId: string;
-  readonly token: string;
-  readonly primaryId: string;
-  readonly fallbackId: string;
-  readonly onSaved: () => void;
+  readonly primary: string;
+  readonly fallback: string;
+  readonly onPrimaryChange: (id: string) => void;
+  readonly onFallbackChange: (id: string) => void;
 }) {
   const myModels = useApi<AIModel[]>("/models/me", 60000);
-  const [primary, setPrimary] = useState(primaryId);
-  const [fallback, setFallback] = useState(fallbackId);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [saved, setSaved] = useState(false);
 
   const models = myModels.data ?? [];
   const primaryOpts = withCurrentOption(selectableModels(models), models, primary);
@@ -763,22 +1008,6 @@ function LlmBindingSection({
   const primaryModel = findModelById(models, primary);
   const fallbackModel = findModelById(models, fallback);
   const warnings = bindingWarnings(primaryModel, fallbackModel);
-  const dirty = primary !== primaryId || fallback !== fallbackId;
-
-  async function save() {
-    setBusy(true);
-    setError("");
-    setSaved(false);
-    try {
-      await apiPatch(`/agents/${agentId}`, token, buildBindingPayload(primary, fallback));
-      setSaved(true);
-      onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "save failed");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
     <div style={{ display: "grid", gap: "var(--space-3)" }}>
@@ -795,10 +1024,7 @@ function LlmBindingSection({
           <select
             value={primary}
             onChange={(e) => {
-              setPrimary(e.target.value);
-              setSaved(false);
-              // A model cannot be its own fallback — clear it if it collides.
-              if (e.target.value === fallback) setFallback("");
+              onPrimaryChange(e.target.value);
             }}
           >
             <option value="">— choose a model —</option>
@@ -822,8 +1048,7 @@ function LlmBindingSection({
           <select
             value={fallback}
             onChange={(e) => {
-              setFallback(e.target.value);
-              setSaved(false);
+              onFallbackChange(e.target.value);
             }}
           >
             <option value="">— none —</option>
@@ -849,23 +1074,9 @@ function LlmBindingSection({
         </div>
       ) : null}
 
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
-        <button
-          type="button"
-          className="btn btn-sm btn-primary"
-          disabled={busy || primary === ""}
-          onClick={() => {
-            save();
-          }}
-        >
-          {busy ? "Saving…" : "Save binding"}
-        </button>
-        {saved && !dirty ? <span className="field-hint">Binding saved.</span> : null}
-        <span className="field-hint">
-          Changing the binding re-provisions the agent&apos;s gateway key immediately.
-        </span>
-      </div>
-      {error ? <div className="notice error">{error}</div> : null}
+      <span className="field-hint">
+        Saving the configuration re-provisions the agent&apos;s gateway key immediately.
+      </span>
     </div>
   );
 }

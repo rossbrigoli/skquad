@@ -1094,6 +1094,78 @@ dialog.modal-backdrop::backdrop {
   border-bottom-color: var(--accent);
 }
 
+/* S-167 tabs are links on squad screens; S-169 reuses the strip with
+   buttons on the agent screen — normalise the button chrome away. */
+button.squad-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm, 0.875rem);
+  font-weight: 600;
+}
+
+button.squad-tab.active {
+  border-bottom-color: var(--accent);
+}
+
+/* S-169 items 11+12: compact metric chips (one row, small font) replace
+   the big MetricTile grid on the agent screen. */
+.metric-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.metric-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  min-width: 96px;
+}
+
+.metric-chip.attention {
+  border-color: var(--warn, #d08700);
+}
+
+.metric-chip-label {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-muted);
+}
+
+.metric-chip-value {
+  font-size: 0.85rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-chip-sub {
+  font-size: 0.65rem;
+  color: var(--ink-muted);
+}
+
+/* S-169 item 7: the Configuration tab's single Save row. */
+.config-save-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+}
+
 /* S-163: subagent transparency — chat + side-by-side thread panel. */
 .chat-layout {
   display: grid;
