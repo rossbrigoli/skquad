@@ -173,6 +173,32 @@ def convert_junit(args: argparse.Namespace) -> None:
     _write_generic(files, Path(args.out))
 
 
+def convert_cobertura_prefix(args: argparse.Namespace) -> None:
+    """Rewrite Cobertura filename="..." attributes to be repo-root-relative.
+
+    coverage.py emits filenames relative to the component dir with an absolute
+    <sources> entry pointing at the *build* machine. The scanner runs on a
+    different host (self-hosted runner), so those absolute paths never resolve
+    ("Cannot resolve the file path ... does not exist in all 'source'").
+    Prefixing filenames with the component dir and neutralising <sources> to
+    '.' makes the report portable across machines.
+    """
+    text = Path(args.report).read_text(encoding="utf-8")
+    text = re.sub(
+        r'filename="(?!' + re.escape(args.prefix) + r'/)',
+        'filename="' + args.prefix + '/',
+        text,
+    )
+    text = re.sub(
+        r"<sources>.*?</sources>",
+        "<sources><source>.</source></sources>",
+        text,
+        flags=re.S,
+    )
+    Path(args.report).write_text(text, encoding="utf-8")
+    print(f"[testreport-to-sonar] {args.report}: filenames prefixed with {args.prefix}/")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="kind", required=True)
@@ -189,6 +215,14 @@ def main() -> None:
     p_junit.add_argument("--prefix", required=True, help="repo-relative component dir")
     p_junit.add_argument("--out", required=True)
     p_junit.set_defaults(func=convert_junit)
+
+    p_cov = sub.add_parser(
+        "cobertura-prefix",
+        help="make coverage.py Cobertura portable: prefix filename attrs with the component dir",
+    )
+    p_cov.add_argument("report")
+    p_cov.add_argument("--prefix", required=True, help="repo-relative component dir")
+    p_cov.set_defaults(func=convert_cobertura_prefix)
 
     args = parser.parse_args()
     args.func(args)
