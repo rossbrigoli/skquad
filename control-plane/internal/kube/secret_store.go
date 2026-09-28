@@ -66,7 +66,7 @@ func ProviderSecretName(providerID string) string {
 		if r == '-' && lastDash {
 			continue
 		}
-		b.WriteByte(byte(r))
+		b.WriteRune(r)
 		lastDash = r == '-'
 	}
 	name := strings.Trim(b.String(), "-")
