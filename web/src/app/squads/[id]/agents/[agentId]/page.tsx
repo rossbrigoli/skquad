@@ -15,7 +15,6 @@ import { EffectivePromptPanel } from "../../../../../components/EffectivePromptP
 import { PromptRevisionsPanel } from "../../../../../components/PromptRevisionsPanel";
 import { MetricTile } from "../../../../../components/MetricTile";
 import { Modal, ModalForm } from "../../../../../components/Modal";
-import { SquadRail } from "../../../../../components/SquadRail";
 import { StatusChip } from "../../../../../components/StatusChip";
 import { storageDisplay } from "../../../../../lib/agentStorage";
 import { useApi } from "../../../../../lib/useApi";
@@ -33,7 +32,6 @@ import {
   type MeteringSummary,
   type RegistryResource,
   type ResourceType,
-  type Squad,
   type Task,
 } from "../../../../../lib/api";
 import { formatCost, formatRelativeTime, formatTokens, leaseState } from "../../../../../lib/format";
@@ -122,12 +120,10 @@ function TaskListSection({
 
 function GrantedResourcesSection({
   grants,
-  agentId,
   onGrantClick,
   onRevoke,
 }: Readonly<{
   grants: AgentPermission[];
-  agentId: string;
   onGrantClick: () => void;
   onRevoke: (next: { resource_type: string; resource_id: string }[]) => Promise<void>;
 }>) {
@@ -222,7 +218,6 @@ export default function AgentProfilePage() {
   const { token } = useAuth();
 
   const agents = useApi<Agent[]>(`/squads/${squadId}/agents`, 30000);
-  const squads = useApi<Squad[]>("/squads");
   const board = useApi<BoardPayload>(`/squads/${squadId}/board`, 15000);
   const metering = useApi<MeteringSummary>(`/agents/${agentId}/metering`, 30000);
   const perms = useApi<AgentPermission[]>(`/agents/${agentId}/permissions`, 60000);
@@ -238,7 +233,6 @@ export default function AgentProfilePage() {
   const [restorePrompt, setRestorePrompt] = useState<string | null>(null);
 
   const agent = (agents.data || []).find((a) => a.id === agentId);
-  const squad = (squads.data || []).find((s) => s.id === squadId);
   const tasks = (board.data?.tasks || []).filter((t) => t.assignee_agent_id === agentId);
   const live = tasks.filter((t) => leaseState(t) === "running");
   const stalled = tasks.filter((t) => leaseState(t) === "stalled");
@@ -251,7 +245,7 @@ export default function AgentProfilePage() {
   if (!agent && !agents.loading) {
     return (
       <AuthGate>
-        <AppShell secondary={<SquadRail squadId={squadId} squadName={squad?.name || "Squad"} />}>
+        <AppShell>
           <EmptyState title="Agent not found" hint="It may have been removed from this squad." />
         </AppShell>
       </AuthGate>
@@ -260,7 +254,7 @@ export default function AgentProfilePage() {
 
   return (
     <AuthGate>
-      <AppShell secondary={<SquadRail squadId={squadId} squadName={squad?.name || "…"} />}>
+      <AppShell>
         <div className="section-head">
           <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-3)" }}>
             <h1 className="page-title" style={{ margin: 0 }}>
@@ -372,7 +366,6 @@ export default function AgentProfilePage() {
 
         <GrantedResourcesSection
           grants={resourceGrants}
-          agentId={agentId}
           onGrantClick={() => setGranting(true)}
           onRevoke={async (next) => {
             await apiPut(`/agents/${agentId}/permissions`, token, next);

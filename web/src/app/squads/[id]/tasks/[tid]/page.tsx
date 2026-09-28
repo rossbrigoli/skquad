@@ -9,11 +9,10 @@ import { ConfirmDialog } from "../../../../../components/ConfirmDialog";
 import { Modal, ModalForm } from "../../../../../components/Modal";
 import { AppShell } from "../../../../../components/AppShell";
 import { EmptyState } from "../../../../../components/EmptyState";
-import { SquadRail } from "../../../../../components/SquadRail";
 import { StatusChip } from "../../../../../components/StatusChip";
 import { useApi } from "../../../../../lib/useApi";
 import { useAuth } from "../../../../../lib/auth";
-import { apiDelete, apiPatch, apiPost, type Agent, type AuditEntry, type Message, type Squad, type Task } from "../../../../../lib/api";
+import { apiDelete, apiPatch, apiPost, type Agent, type AuditEntry, type Message, type Task } from "../../../../../lib/api";
 import { formatRelativeTime, leaseState, messageText } from "../../../../../lib/format";
 import { taskStatus } from "../../../../../lib/status";
 
@@ -35,7 +34,6 @@ export default function TaskDetailPage() {
   const task = useApi<Task>(`/tasks/${taskId}`, 15000);
   const thread = useApi<Message[]>(`/tasks/${taskId}/messages`, 15000);
   const agents = useApi<Agent[]>(`/squads/${squadId}/agents`, 60000);
-  const squads = useApi<Squad[]>("/squads");
   const audit = useApi<AuditEntry[]>(`/squads/${squadId}/audit?limit=50`, 30000);
 
   const [draft, setDraft] = useState("");
@@ -47,7 +45,6 @@ export default function TaskDetailPage() {
 
   const current = task.data;
   const assignee = (agents.data || []).find((a) => a.id === current?.assignee_agent_id);
-  const squad = (squads.data || []).find((s) => s.id === squadId);
   const messages = thread.data || [];
   const timeline = (audit.data || []).filter((entry) => entry.resource_id === taskId);
 
@@ -101,7 +98,7 @@ export default function TaskDetailPage() {
   if (task.error) {
     return (
       <AuthGate>
-        <AppShell secondary={<SquadRail squadId={squadId} squadName={squad?.name || "Squad"} />}>
+        <AppShell>
           <EmptyState title="Task not found" hint={task.error} />
         </AppShell>
       </AuthGate>
@@ -111,7 +108,7 @@ export default function TaskDetailPage() {
   if (!current) {
     return (
       <AuthGate>
-        <AppShell secondary={<SquadRail squadId={squadId} squadName={squad?.name || "Squad"} />}>
+        <AppShell>
           <EmptyState title="Loading task…" hint="Fetching task, thread and history." />
         </AppShell>
       </AuthGate>
@@ -120,7 +117,7 @@ export default function TaskDetailPage() {
 
   return (
     <AuthGate>
-      <AppShell secondary={<SquadRail squadId={squadId} squadName={squad?.name || "…"} />}>
+      <AppShell>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "var(--space-3)" }}>
           <h1 className="page-title">{current.title}</h1>
           <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
