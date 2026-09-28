@@ -50,6 +50,7 @@ from .builtin_tools_config import (
     BuiltinToolsConfigCache,
     BuiltinToolsFetchError,
 )
+from .context_compaction import ContextCompactor
 
 
 DEFAULT_CREDENTIALS_DIR = Path("/var/run/skquad/credentials")
@@ -1041,7 +1042,19 @@ class LLMMessageHandler:
         tool_calls_log: list[dict[str, object]] = []
         max_steps = max(1, self.max_tool_steps or DEFAULT_CHAT_TOOL_STEPS)
         response: object = None
+        # S-161: tiered context compaction before each LLM call.
+        compactor = ContextCompactor()
         for step in range(max_steps):
+            chat_messages, compaction = compactor.maybe_compact(chat_messages)
+            if compaction.changed:
+                LOGGER.info(
+                    "S-161 chat compaction: tier=%d tokens %d->%d evicted=%d clipped=%d",
+                    compaction.tier,
+                    compaction.tokens_before,
+                    compaction.tokens_after,
+                    compaction.evicted_turns,
+                    compaction.clipped_messages,
+                )
             completion_kwargs = self._completion_kwargs(
                 message, config, chat_messages, virtual_key, model
             )
@@ -1238,7 +1251,21 @@ class LiteLLMTaskHandler:
         last_model_used = model
 
         max_steps = max(1, self.max_steps or config.max_llm_steps)
+        # S-161: tiered context compaction before each LLM call.
+        compactor = ContextCompactor()
         for _ in range(max_steps):
+            messages, compaction = compactor.maybe_compact(messages)
+            if compaction.changed:
+                LOGGER.info(
+                    "S-161 task compaction: tier=%d tokens %d->%d evicted=%d clipped=%d agent=%s task=%s",
+                    compaction.tier,
+                    compaction.tokens_before,
+                    compaction.tokens_after,
+                    compaction.evicted_turns,
+                    compaction.clipped_messages,
+                    config.agent_id,
+                    task.id,
+                )
             response = completion(
                 **self._completion_kwargs(model, messages, config, virtual_key, task.id, tools)
             )
