@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ApiError } from "../lib/api";
 import {
   extractPromptError,
@@ -27,6 +27,8 @@ export function PromptTierEditor({
   placeholder = "",
   hint,
   disabled = false,
+  showSaveButton = true,
+  onBlockedChange,
 }: {
   readonly scope: PromptScope;
   readonly label: string;
@@ -37,6 +39,11 @@ export function PromptTierEditor({
   readonly placeholder?: string;
   readonly hint?: string;
   readonly disabled?: boolean;
+  // S-169: the agent Configuration tab owns a single Save for the whole
+  // form, so the editor's own button can be hidden; `onBlockedChange`
+  // lets that outer Save mirror the editor's blocked state.
+  readonly showSaveButton?: boolean;
+  readonly onBlockedChange?: (blocked: boolean) => void;
 }) {
   const { result, validating } = usePromptValidation(scope, content);
   const [busy, setBusy] = useState(false);
@@ -49,6 +56,10 @@ export function PromptTierEditor({
   const blocked = saveBlockedByValidation(result);
   const softWarn = result?.soft_warn ?? 0;
   const hardCap = result?.hard_cap ?? 0;
+
+  useEffect(() => {
+    onBlockedChange?.(blocked);
+  }, [blocked, onBlockedChange]);
 
   return (
     <div className="prompt-editor">
@@ -93,35 +104,37 @@ export function PromptTierEditor({
       ) : null}
 
       <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={disabled || busy || blocked}
-          onClick={() => {
-            setBusy(true);
-            setSaveError("");
-            setSavedNote("");
-            onSave()
-              .then(() => {
-                setSavedNote("Saved.");
-              })
-              .catch((err: unknown) => {
-                const promptErr = extractPromptError(err instanceof ApiError ? err : undefined);
-                setSaveError(
-                  promptErr
-                    ? promptUserMessage(promptErr)
-                    : err instanceof Error
-                      ? err.message
-                      : "save failed",
-                );
-              })
-              .finally(() => {
-                setBusy(false);
-              });
-          }}
-        >
-          {busy ? "Saving…" : saveLabel}
-        </button>
+        {showSaveButton ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={disabled || busy || blocked}
+            onClick={() => {
+              setBusy(true);
+              setSaveError("");
+              setSavedNote("");
+              onSave()
+                .then(() => {
+                  setSavedNote("Saved.");
+                })
+                .catch((err: unknown) => {
+                  const promptErr = extractPromptError(err instanceof ApiError ? err : undefined);
+                  setSaveError(
+                    promptErr
+                      ? promptUserMessage(promptErr)
+                      : err instanceof Error
+                        ? err.message
+                        : "save failed",
+                  );
+                })
+                .finally(() => {
+                  setBusy(false);
+                });
+            }}
+          >
+            {busy ? "Saving…" : saveLabel}
+          </button>
+        ) : null}
         {blocked ? <span className="entity-meta">Fix the errors above before saving.</span> : null}
       </div>
     </div>

@@ -1186,7 +1186,7 @@ func (m *MemoryStore) RecordMetering(_ context.Context, event *domain.MeteringEv
 	return nil
 }
 
-func (m *MemoryStore) SumMetering(_ context.Context, squadID, agentID string) (*domain.MeteringEvent, error) {
+func (m *MemoryStore) SumMetering(_ context.Context, squadID, agentID string, since time.Time) (*domain.MeteringEvent, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := &domain.MeteringEvent{
@@ -1199,6 +1199,10 @@ func (m *MemoryStore) SumMetering(_ context.Context, squadID, agentID string) (*
 			continue
 		}
 		if agentID != "" && event.AgentID != agentID {
+			continue
+		}
+		// S-169: month-to-date aggregation — zero since = all time.
+		if !since.IsZero() && event.Timestamp.Before(since) {
 			continue
 		}
 		out.InputTokens += event.InputTokens
