@@ -6,6 +6,7 @@ import { AppShell } from "../../components/AppShell";
 import { EmptyState } from "../../components/EmptyState";
 import { EntityRow } from "../../components/EntityRow";
 import { Modal, ModalForm } from "../../components/Modal";
+import { PromptTemplatePicker } from "../../components/PromptTemplatePicker";
 import { apiPost } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { useApi } from "../../lib/useApi";
@@ -78,6 +79,7 @@ function SquadCreateModal({
 }) {
   const [name, setName] = useState("");
   const [mission, setMission] = useState("");
+  const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -93,7 +95,11 @@ function SquadCreateModal({
           setBusy(true);
           setError("");
           try {
-            await apiPost<Squad>("/squads", token, { name: name.trim(), mission: mission.trim() });
+            await apiPost<Squad>("/squads", token, {
+              name: name.trim(),
+              mission: mission.trim(),
+              prompt: prompt.trim(),
+            });
             onCreated();
           } catch (err) {
             setError(err instanceof Error ? err.message : "create failed");
@@ -108,6 +114,19 @@ function SquadCreateModal({
         <label className="field">
           <span>Mission</span>
           <textarea value={mission} onChange={(e) => setMission(e.target.value)} placeholder="What this squad is for" />
+        </label>
+        <PromptTemplatePicker target="squad" onApply={(content) => setPrompt(content)} />
+        <label className="field">
+          <span>Squad prompt (optional)</span>
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="Operating instructions for every agent in this squad"
+          />
+          <small className="field-hint">
+            Optional. Sits between the organization and agent prompt layers; you can keep editing it later on the
+            squad&rsquo;s Prompt tab.
+          </small>
         </label>
       </ModalForm>
     </Modal>

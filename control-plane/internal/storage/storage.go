@@ -37,6 +37,7 @@ type Store interface {
 	AuditStore
 	WorkNotificationStore
 	PromptTierStore
+	PromptTemplateStore
 	BuiltinToolStore
 }
 
@@ -52,6 +53,23 @@ type PromptTierStore interface {
 	UpdateInstanceSettings(ctx context.Context, settings *domain.InstanceSettings) (*domain.InstanceSettings, error)
 	// ListPromptRevisions returns revisions newest-first for one tier.
 	ListPromptRevisions(ctx context.Context, scope, scopeID string, limit int) ([]*domain.PromptRevision, error)
+}
+
+// PromptTemplateStore persists admin-managed prompt templates (S-158).
+// Templates pre-populate squad/agent prompts at creation; they are copies,
+// not references.
+type PromptTemplateStore interface {
+	// CreatePromptTemplate inserts a template; duplicate name returns ErrConflict.
+	CreatePromptTemplate(ctx context.Context, t *domain.PromptTemplate) (*domain.PromptTemplate, error)
+	// ListPromptTemplates returns all templates ordered by name.
+	ListPromptTemplates(ctx context.Context) ([]*domain.PromptTemplate, error)
+	// GetPromptTemplate fetches one template by id.
+	GetPromptTemplate(ctx context.Context, id string) (*domain.PromptTemplate, error)
+	// UpdatePromptTemplate writes name/description/content/applies_to;
+	// duplicate name (other row) returns ErrConflict.
+	UpdatePromptTemplate(ctx context.Context, t *domain.PromptTemplate) (*domain.PromptTemplate, error)
+	// DeletePromptTemplate removes a template.
+	DeletePromptTemplate(ctx context.Context, id string) error
 }
 
 // KubernetesOutboxStore persists durable Kubernetes reconciliation intents.
