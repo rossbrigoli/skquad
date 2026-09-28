@@ -5,8 +5,8 @@ Covers the WP5 runtime contract:
   * ``run_task_once`` resolves the wake's prompt sha right after the
     claim and reports it via the start call (server-side audit,
     ADR-0011 D5) — before any handler/LLM work.
-  * The legacy fallback (fetch flag off) reports the literal
-    ``"env_legacy"``.
+  * S-147 (WP6): the legacy env path and the fetch flag are removed —
+    every wake reports the composed sha; a stale flag value is inert.
   * A fetch failure blocks the task and never reaches the start call.
 """
 
@@ -97,7 +97,20 @@ def _task_payload():
 
 
 class RunTaskOnceReportsSHA(unittest.TestCase):
-    """run_task_once must report the sha via start before handler work."""
+    """run_task_once must report the sha via start before handler work.
+
+    S-147 (WP6): restores the real fetcher (same pattern as
+    WP3EnabledMixin) because these tests force openers through it."""
+
+    def setUp(self):
+        super().setUp()
+        import skquad_runtime.runtime as rt
+
+        real = getattr(rt.PromptedRuntime, "_REAL_FETCHER_INSTANCE", None)
+        if real is not None:
+            previous = rt.PromptedRuntime._fetcher_instance
+            self.addCleanup(setattr, rt.PromptedRuntime, "_fetcher_instance", previous)
+            rt.PromptedRuntime._fetcher_instance = real
 
     def _run(self, *, fetch_enabled, opener, workspace_enabled=True):
         opener_forced = opener
@@ -147,17 +160,19 @@ class RunTaskOnceReportsSHA(unittest.TestCase):
         self.assertTrue(llm_calls, "handler must still run after a successful report")
         self.assertEqual(journal["prompt_sha"], SHA)
 
-    def test_legacy_path_reports_env_legacy(self):
+    def test_old_fetch_flag_is_inert(self):
+        # S-147 (WP6): flag off no longer means env_legacy — the composed
+        # sha is reported regardless.
         fake_cp, llm_calls, _ = self._run(
             fetch_enabled=False, opener=opener_ok, workspace_enabled=False
         )
-        self.assertEqual(fake_cp.started, [("task-1", "env_legacy")])
+        self.assertEqual(fake_cp.started, [("task-1", SHA)])
         self.assertTrue(llm_calls)
 
-    def test_legacy_path_with_workspace_still_journals_env_legacy(self):
+    def test_composed_path_with_workspace_journals_sha(self):
         fake_cp, _, journal = self._run(fetch_enabled=False, opener=opener_ok)
-        self.assertEqual(fake_cp.started, [("task-1", "env_legacy")])
-        self.assertEqual(journal["prompt_sha"], "env_legacy")
+        self.assertEqual(fake_cp.started, [("task-1", SHA)])
+        self.assertEqual(journal["prompt_sha"], SHA)
 
     def test_fetch_failure_blocks_before_start(self):
         from urllib import error

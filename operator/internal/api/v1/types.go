@@ -92,6 +92,10 @@ type AgentSpec struct {
 	AgentID      string `json:"agentId"`
 	SquadID      string `json:"squadId"`
 	Role         string `json:"role,omitempty"`
+	// Deprecated (S-147/WP6): no longer injected into the agent pod as
+	// SKQUAD_AGENT_SYSTEM_PROMPT. The runtime fetches the composed
+	// four-tier prompt from the control plane at wake (ADR-0011 D4).
+	// Field retained one release for backward compatibility, then removed.
 	SystemPrompt string `json:"systemPrompt,omitempty"`
 	// DefaultModel carries the RESOLVED bound AI Model's model_name
 	// (control-plane CR writer, WP5 + WP8 step-4 cutover). It is no longer

@@ -61,7 +61,7 @@
 | A6 | Homoglyph / fullwidth lookalikes | `＜ｓｋｑｕａｄ＿platform＞` | NFKC-normalize before the reserved scan | `norm.NFKC` in `Sanitize` | Red-team case 2 ✅ |
 | A7 | Fact smuggling | agent *name* contains a forged tag; substituted into every tier via `{{agent.name}}` | Post-substitution defensive re-sanitize in composer | `Compose` re-checks rendered tiers → `ReservedTokensError` | Red-team fact-smuggling ✅ |
 | A8 | Revision tampering / repudiation | edit a tier and deny it; prune history | D5 append-only `prompt_revisions`, same-transaction as entity update, retention forever | WP2 storage revision-intent; `ListPromptRevisions` API | Structural ✅ |
-| A9 | Run deniability ("the prompt I got wasn't X") | dispute what an agent was told | D5: composed sha per run is a queryable fact | WP5: `task_executions.prompt_sha` reported at start, exposed in task detail + board; `env_legacy` marks fallback runs | WP5 tests ✅ |
+| A9 | Run deniability ("the prompt I got wasn't X") | dispute what an agent was told | D5: composed sha per run is a queryable fact | WP5: `task_executions.prompt_sha` reported at start, exposed in task detail + board; WP6 removed the `env_legacy` fallback so every run carries a composed sha | WP5 tests ✅ |
 | A10 | Secrets in prompts | secret interpolated into a tier or log | D2: secrets never interpolated; only token counts/hashes logged | WP2 handler logging discipline; allowlist excludes any credential var | Structural ✅ |
 
 ## 4. Mitigation ↔ decision map
@@ -107,9 +107,10 @@
    the model wrapped and labeled; wrapping is visibility, not
    neutralization. A model that ignores trust labels can still be
    manipulated by layer-5 text — same class as (3).
-6. **Flag-off drift.** With `SKQUAD_PROMPT_FETCH_ENABLED=false` a run
-   uses the legacy env prompt; it is auditable (`env_legacy`) but sits
-   outside the tier guarantees until WP6 removes the path.
+6. **Flag-off drift.** RESOLVED by WP6 (S-147): the
+   `SKQUAD_PROMPT_FETCH_ENABLED` flag and the legacy env prompt path are
+   removed — every wake runs the composed prompt or fails loudly. No run
+   can sit outside the tier guarantees via fallback.
 7. **Cap bypass via many small saves.** Caps bound *stored* tiers, not
    the aggregate of many runs' dynamic content; cost abuse via dynamic
    context is a gateway/metering concern, not a prompt-tier one.
@@ -121,4 +122,5 @@ Executable form: `control-plane/internal/httpapi/redteam_test.go`
 run in CI with `go test ./...`. The WP5 acceptance pass replays the
 same corpus against the lab deployment. Runtime-side tests:
 `agent-runtime/tests/test_prompt_wp5.py` (sha reported at start,
-`env_legacy` fallback, loud-fail before start).
+stale-flag inertness, loud-fail before start; the `env_legacy` fallback
+was removed in WP6).

@@ -227,8 +227,9 @@ The shipped message handler (`LLMMessageHandler`) powers the agent chat window:
 
 - **User-authored messages** (sent from the web UI via
   `POST /api/v1/agents/:id/chat`) are answered by calling the LLM gateway with
-  the agent's recent chat history as context. The system prompt is the agent's
-  `system_prompt` when set, otherwise a default built from its role. The LLM
+  the agent's recent chat history as context. The system prompt is the
+  composed four-tier prompt fetched at wake (S-PROMPT WP3; the legacy
+  `SKQUAD_AGENT_SYSTEM_PROMPT` env path was removed in WP6/S-147). The LLM
   response is posted back into the agent's own chat history as an
   agent-authored `reply` (correlated to the original message).
 - **Chat tool calls (S-122):** when the agent has plugins loaded, their tool

@@ -1,9 +1,10 @@
 """S-PROMPT WP3 tests — fetch-at-wake, ETag caching, loud-fail, trust labels.
 
 The control-plane HTTP layer is mocked via the injectable ``opener`` on
-:class:`PromptFetcher` (same pattern as ``ControlPlaneClient`` tests). The
-suite-wide conftest defaults ``SKQUAD_PROMPT_FETCH_ENABLED=false``; these
-tests flip it on explicitly to exercise the composed path.
+:class:`PromptFetcher` (same pattern as ``ControlPlaneClient`` tests).
+S-147 (WP6): the fetch is now mandatory — these tests drive the real
+fetcher with forced openers; the legacy env path and the
+``SKQUAD_PROMPT_FETCH_ENABLED`` flag no longer exist.
 """
 
 import io
@@ -88,16 +89,23 @@ def wp3_config(tmp, **overrides):
 
 
 class WP3EnabledMixin(unittest.TestCase):
-    """Base that flips SKQUAD_PROMPT_FETCH_ENABLED on for the whole test
-    (the suite-wide conftest defaults it off for the legacy tests)."""
+    """Base for tests that drive the REAL composed-prompt fetcher.
+
+    S-147 (WP6): the flag/legacy path is gone. When the full suite runs,
+    ``test_runtime`` stubs ``_fetcher_instance`` for its own fakes; these
+    tests restore the real implementation so their forced openers take
+    effect, and put the stub back on cleanup.
+    """
 
     def setUp(self):
         super().setUp()
-        patcher = mock.patch.dict(
-            "os.environ", {"SKQUAD_PROMPT_FETCH_ENABLED": "true"}
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        import skquad_runtime.runtime as rt
+
+        real = getattr(rt.PromptedRuntime, "_REAL_FETCHER_INSTANCE", None)
+        if real is not None:
+            previous = rt.PromptedRuntime._fetcher_instance
+            self.addCleanup(setattr, rt.PromptedRuntime, "_fetcher_instance", previous)
+            rt.PromptedRuntime._fetcher_instance = real
 
 
 class PromptFetcherTest(WP3EnabledMixin):
@@ -154,12 +162,13 @@ class PromptFetcherTest(WP3EnabledMixin):
             self._fetcher(opener).fetch()
         self.assertIn("unreachable", str(ctx.exception))
 
-    def test_404_returns_legacy_no_endpoint(self):
+    def test_404_raises_prompt_fetch_error(self):
         def opener(req):
             raise error.HTTPError(req.full_url, 404, "not found", {}, io.BytesIO(b""))
 
-        source = self._fetcher(opener).fetch()
-        self.assertEqual(source.status, pf.LEGACY_NO_ENDPOINT)
+        with self.assertRaises(pf.PromptFetchError) as ctx:
+            self._fetcher(opener).fetch()
+        self.assertIn("legacy env fallback is removed", str(ctx.exception))
 
     def test_malformed_body_raises(self):
         def opener(req):
@@ -196,7 +205,9 @@ class PromptedRuntimeTest(WP3EnabledMixin):
             self.assertIn("Granted resources:", prompt)
             self.assertIn("kb", prompt)
 
-    def test_legacy_fallback_on_404(self):
+    def test_404_fails_loudly_no_env_fallback(self):
+        # S-147 (WP6): a control plane without the composed-prompt
+        # endpoint must fail the wake — never fall back to env.
         with tempfile.TemporaryDirectory() as tmp:
             config = wp3_config(tmp, SKQUAD_AGENT_SYSTEM_PROMPT="You are a terse pirate.")
 
@@ -205,18 +216,20 @@ class PromptedRuntimeTest(WP3EnabledMixin):
 
             runtime = PromptedRuntime(config, fetcher=pf.PromptFetcher(
                 "http://cp", "agent-1", "cred", opener=opener))
-            self.assertEqual(runtime.chat_system_prompt(), "You are a terse pirate.")
-            self.assertEqual(runtime.source, "env_legacy")
-            self.assertEqual(runtime.prompt_sha, "env_legacy")
+            with self.assertRaises(pf.PromptFetchError):
+                runtime.chat_system_prompt()
 
-    def test_legacy_fallback_when_flag_off(self):
+    def test_old_fetch_flag_is_inert(self):
+        # S-147 (WP6): SKQUAD_PROMPT_FETCH_ENABLED no longer controls
+        # anything — a stale "false" in the environment must not disable
+        # the composed path.
         with tempfile.TemporaryDirectory() as tmp:
-            config = wp3_config(tmp, SKQUAD_AGENT_SYSTEM_PROMPT="Legacy pirate prompt.")
+            config = wp3_config(tmp)
+            runtime = PromptedRuntime(config, fetcher=_ok_fetcher())
             with mock.patch.dict("os.environ", {"SKQUAD_PROMPT_FETCH_ENABLED": "false"}):
-                runtime = PromptedRuntime(config)
-                self.assertEqual(runtime.source, "env_legacy")
-                self.assertEqual(runtime.prompt_sha, "env_legacy")
-                self.assertEqual(runtime.chat_system_prompt(), "Legacy pirate prompt.")
+                self.assertEqual(runtime.chat_system_prompt(), COMPOSED)
+                self.assertEqual(runtime.source, "composed")
+                self.assertEqual(runtime.prompt_sha, SHA)
 
     def test_fetch_failure_raises_out_of_system_prompt(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -79,8 +79,10 @@ Failure mode: if the endpoint is unreachable, the runtime fails the wake
 loudly (it cannot claim tasks anyway — same dependency). No silent fallback to
 a lesser prompt.
 
-`SKQUAD_AGENT_SYSTEM_PROMPT` remains during migration as a fallback only when
-the fetch returns a feature-flag-disabled response; removed in WP6.
+`SKQUAD_AGENT_SYSTEM_PROMPT` and the `SKQUAD_PROMPT_FETCH_ENABLED` flag
+were removed in WP6 (S-147): the composed fetch is the only prompt path.
+`spec.systemPrompt` on the Agent CR is retained (deprecated) for one
+release for backward compatibility and is no longer delivered to the pod.
 
 ### D5 — Versioning and audit
 

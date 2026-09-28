@@ -49,8 +49,8 @@ spec:
               value: {{ .Values.agent.maxLLMSteps | quote }}
             - name: SKQUAD_AGENT_TASK_SUMMARY_MAX_CHARS
               value: {{ .Values.agent.taskSummaryMaxChars | quote }}
-            - name: SKQUAD_AGENT_PROMPT_FETCH_ENABLED
-              value: {{ .Values.agent.promptFetchEnabled | default "false" | quote }}
+            # S-147 (WP6): SKQUAD_AGENT_PROMPT_FETCH_ENABLED removed —
+            # the composed-prompt fetch is now mandatory in the runtime.
             # S-152/BT-5a (ADR-0012): operator-level default for the agent-pod
             # built-in tools kill switch (SKQUAD_BUILTIN_TOOLS_ENABLED).
             # Bool-aware: `false | default "true"` would wrongly yield "true",

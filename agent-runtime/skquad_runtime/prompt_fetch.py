@@ -9,11 +9,11 @@ with no redeploy.
 Failure policy (ADR-0011 D4 — fail loudly, never a silent degraded
 prompt):
 
-- network failure / 5xx  -> :class:`PromptFetchError` (the wake must fail;
-  the agent cannot claim tasks anyway — same dependency).
-- 404 (control plane predates the endpoint) or the feature flag
-  ``SKQUAD_PROMPT_FETCH_ENABLED=false`` -> the caller falls back to the
-  legacy env path and logs ``prompt_source=env_legacy``.
+- network failure / 5xx / 404 / malformed body -> :class:`PromptFetchError`
+  (the wake must fail; the agent cannot claim tasks anyway — same
+  dependency).
+- Since WP6 there is no legacy env fallback: the control-plane composed-prompt
+  endpoint is a hard requirement of the runtime.
 
 ETag caching is per-process: the composed sha doubles as the validator, so
 repeat fetches within one process lifetime send ``If-None-Match`` and a
@@ -32,18 +32,12 @@ LOGGER = logging.getLogger(__name__)
 
 PROMPT_ENDPOINT = "/api/v1/agents/me/prompt"
 
-#: The fetch could not complete trustworthily (network/5xx/malformed body).
-#: Per ADR-0011 D4 the wake must fail loudly — never substitute a lesser
-#: prompt for a fetch that failed.
+#: The fetch could not complete trustworthily (network/5xx/404/malformed
+#: body). Per ADR-0011 D4 the wake must fail loudly — never substitute a
+#: lesser prompt for a fetch that failed. Since WP6 (legacy env removal)
+#: there are no transitional LEGACY_* statuses: the composed-prompt
+#: endpoint is mandatory.
 FETCH_FAILED = "fetch_failed"
-
-#: The control plane has no composed-prompt endpoint (404). Transitional:
-#: the caller may use the legacy env path.
-LEGACY_NO_ENDPOINT = "legacy_no_endpoint"
-
-#: Feature flag ``SKQUAD_PROMPT_FETCH_ENABLED`` is false. Transitional
-#: fallback to the legacy env path (removed in WP6).
-LEGACY_FLAG_DISABLED = "legacy_flag_disabled"
 
 
 class PromptFetchError(RuntimeError):
@@ -53,8 +47,8 @@ class PromptFetchError(RuntimeError):
 class PromptSource:
     """One fetched composed-prompt result (frozen by convention).
 
-    ``status`` is one of FETCH_FAILED / LEGACY_NO_ENDPOINT /
-    LEGACY_FLAG_DISABLED, or "ok" when ``prompt`` is populated.
+    ``status`` is "ok" when ``prompt`` is populated (other statuses were
+    the pre-WP6 transitional values; failures now raise).
     ``sha`` is the control-plane composition sha256 (recorded in the run
     journal); ``etag`` is the validator to send on the next fetch.
     """
@@ -100,26 +94,6 @@ class ComposedPromptCache:
             return self._etag, self._prompt, self._sha
 
 
-def prompt_fetch_enabled(environ: Mapping[str, str] | None = None) -> bool:
-    """Transitional feature flag (SKQUAD_PROMPT_FETCH_ENABLED, default FALSE).
-
-    Opt-in: the composed-prompt path is only taken when the operator
-    explicitly enables it (Helm env after the control-plane endpoint is
-    live). Unset means the legacy env prompt path — safe for staged
-    rollout and keeps pre-WP3 behaviour as the default.
-
-    Read at call time from the live environment so operators can pin an
-    agent to the legacy env prompt path without a config-schema change.
-    """
-    import os
-
-    env = environ if environ is not None else os.environ
-    raw = env.get("SKQUAD_PROMPT_FETCH_ENABLED")
-    if raw is None:
-        return False
-    return raw.strip().lower() in ("1", "true", "yes", "on")
-
-
 class PromptFetcher:
     """ETag-aware fetcher for ``GET /api/v1/agents/me/prompt``.
 
@@ -155,13 +129,10 @@ class PromptFetcher:
     def fetch(self) -> PromptSource:
         """Fetch the composed prompt, honoring the cached ETag.
 
-        Returns a PromptSource; raises :class:`PromptFetchError` only for
-        the loud-fail cases (network/5xx/malformed). 404 and flag-off
-        return LEGACY_* statuses for the caller's fallback path.
+        Returns a PromptSource with status "ok"; raises
+        :class:`PromptFetchError` for every failure (network/5xx/404/
+        malformed). Since WP6 there is no legacy fallback path.
         """
-        if not prompt_fetch_enabled():
-            LOGGER.info("prompt fetch disabled by flag; prompt_source=env_legacy")
-            return PromptSource(LEGACY_FLAG_DISABLED)
         etag, cached_prompt, cached_sha = self.cache.snapshot()
         headers = {
             "Authorization": f"Bearer {self.credential}",
@@ -195,8 +166,11 @@ class PromptFetcher:
             LOGGER.info("prompt cache hit (304); reusing composed prompt sha=%s", cached_sha)
             return PromptSource("ok", cached_prompt, cached_sha, etag or resp_etag)
         if status == 404:
-            LOGGER.info("control-plane has no composed-prompt endpoint (404); prompt_source=env_legacy")
-            return PromptSource(LEGACY_NO_ENDPOINT)
+            raise PromptFetchError(
+                f"prompt fetch failed: control-plane has no composed-prompt endpoint at "
+                f"{self.base_url + PROMPT_ENDPOINT} (WP6: the legacy env fallback is removed; "
+                "upgrade the control plane — ADR-0011 D4)"
+            )
         if 500 <= status <= 599:
             raise PromptFetchError(
                 f"prompt fetch failed: control-plane returned HTTP {status} "

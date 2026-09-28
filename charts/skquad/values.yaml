@@ -76,10 +76,9 @@ agent:
   taskTimeoutSeconds: "900"
   maxLLMSteps: "8"
   taskSummaryMaxChars: "4000"
-  # S-PROMPT: "true" makes agents fetch the composed four-tier prompt
-  # (platform > org > squad > agent) from the control-plane at wake.
-  # "false" keeps the legacy env prompt path.
-  promptFetchEnabled: "false"
+  # S-147 (WP6): promptFetchEnabled removed. Agents always fetch the
+  # composed four-tier prompt (platform > org > squad > agent) from the
+  # control-plane at wake; the legacy env prompt path no longer exists.
   # S-152/BT-5a (ADR-0012): default for the agent-pod built-in tools kill
   # switch (SKQUAD_BUILTIN_TOOLS_ENABLED). "true" = enabled (runtime
   # default); set "false" to disable exec/web_fetch/web_search fleet-wide
