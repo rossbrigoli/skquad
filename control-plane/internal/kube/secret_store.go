@@ -1,0 +1,212 @@
+// S-155: provider API keys are stored as Kubernetes Secrets created by
+// the control-plane, so platform admins paste the key in the UI instead
+// of hand-creating a Secret. The providers table keeps only a
+// k8s://<namespace>/<name> reference plus a display mask.
+
+package kube
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+
+	"github.com/rossbrigoli/skquad/control-plane/internal/config"
+)
+
+// ProviderSecretKey is the data key holding the provider API key inside
+// the managed Secret.
+const ProviderSecretKey = "***"
+
+// SecretStore reads/writes provider API-key Secrets through the
+// Kubernetes API (same raw-HTTP + projected-token pattern as CRWriter —
+// the control-plane deliberately avoids client-go).
+type SecretStore struct {
+	baseURL   string
+	namespace string
+	token     string
+	client    *http.Client
+}
+
+// NewSecretStore builds a SecretStore from the same K8s connection
+// config the CRWriter uses.
+func NewSecretStore(cfg *config.Config) (*SecretStore, error) {
+	token, err := os.ReadFile(cfg.K8sTokenFile)
+	if err != nil {
+		return nil, fmt.Errorf("secretstore: read token: %w", err)
+	}
+	client, err := newK8sHTTPClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &SecretStore{
+		baseURL:   strings.TrimRight(cfg.K8sAPIBase, "/"),
+		namespace: cfg.K8sNamespace,
+		token:     strings.TrimSpace(string(token)),
+		client:    client,
+	}, nil
+}
+
+// ProviderSecretName derives the managed Secret name for a provider id.
+// Provider ids are UUIDs (DNS-1123 safe); we still sanitize defensively.
+func ProviderSecretName(providerID string) string {
+	var b strings.Builder
+	b.WriteString("skquad-provider-key-")
+	lastDash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(providerID)) {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-'
+		if !ok {
+			continue
+		}
+		if r == '-' && lastDash {
+			continue
+		}
+		b.WriteByte(byte(r))
+		lastDash = r == '-'
+	}
+	name := strings.Trim(b.String(), "-")
+	if len(name) > 253 {
+		name = name[:253]
+	}
+	return name
+}
+
+// RefFor builds the api_key_ref value stored for a managed secret.
+func (s *SecretStore) RefFor(secretName string) string {
+	return k8sRefPrefix + s.namespace + "/" + secretName
+}
+
+// IsManagedRef reports whether a ref points at a control-plane-managed
+// provider key Secret.
+func IsManagedRef(ref string) bool {
+	return strings.HasPrefix(ref, k8sRefPrefix)
+}
+
+// EnsureProviderKey creates or replaces the provider key Secret. Update
+// carries the live resourceVersion so concurrent writers conflict loudly
+// instead of silently clobbering.
+func (s *SecretStore) EnsureProviderKey(ctx context.Context, name, key string) error {
+	existing, code, err := s.getRaw(ctx, name)
+	if err != nil {
+		return err
+	}
+	secret := map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": s.namespace,
+			"labels":    map[string]string{managedByLabel: controlPlaneName},
+		},
+		"type":       "Opaque",
+		"stringData": map[string]string{ProviderSecretKey: key},
+	}
+	if code == http.StatusNotFound {
+		return s.send(ctx, http.MethodPost, "/api/v1/namespaces/"+s.namespace+"/secrets", secret, "create secret")
+	}
+	if meta, ok := existing["metadata"].(map[string]any); ok {
+		if rv, ok := meta["resourceVersion"].(string); ok && rv != "" {
+			secret["metadata"].(map[string]any)["resourceVersion"] = rv
+		}
+	}
+	return s.send(ctx, http.MethodPut, "/api/v1/namespaces/"+s.namespace+"/secrets/"+name, secret, "update secret")
+}
+
+// GetProviderKey returns the stored key for a managed Secret.
+func (s *SecretStore) GetProviderKey(ctx context.Context, name string) (string, error) {
+	secret, code, err := s.getRaw(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	if code == http.StatusNotFound {
+		return "", fmt.Errorf("secretstore: secret %s not found", name)
+	}
+	data, _ := secret["data"].(map[string]any)
+	raw, _ := data[ProviderSecretKey].(string)
+	key, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return "", fmt.Errorf("secretstore: decode %s: %w", name, err)
+	}
+	return string(key), nil
+}
+
+// DeleteProviderKey removes the Secret; a missing Secret is not an error.
+func (s *SecretStore) DeleteProviderKey(ctx context.Context, name string) error {
+	req, err := s.request(ctx, http.MethodDelete, "/api/v1/namespaces/"+s.namespace+"/secrets/"+name, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("secretstore: delete %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("secretstore: delete %s: HTTP %d", name, resp.StatusCode)
+	}
+	return nil
+}
+
+func (s *SecretStore) getRaw(ctx context.Context, name string) (map[string]any, int, error) {
+	req, err := s.request(ctx, http.MethodGet, "/api/v1/namespaces/"+s.namespace+"/secrets/"+name, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("secretstore: get %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("secretstore: read %s: %w", name, err)
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusNotFound {
+		return nil, resp.StatusCode, fmt.Errorf("secretstore: get %s: HTTP %d", name, resp.StatusCode)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("secretstore: parse %s: %w", name, err)
+	}
+	return out, resp.StatusCode, nil
+}
+
+func (s *SecretStore) send(ctx context.Context, method, path string, payload map[string]any, op string) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("secretstore: marshal %s: %w", op, err)
+	}
+	req, err := s.request(ctx, method, path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("secretstore: %s: %w", op, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("secretstore: %s: HTTP %d: %s", op, resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
+	return nil
+}
+
+func (s *SecretStore) request(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, s.baseURL+path, body)
+	if err != nil {
+		return nil, fmt.Errorf("secretstore: build request: %w", err)
+	}
+	req.Header.Set("Authorization", bearerPrefix+s.token)
+	req.Header.Set("Accept", "application/json")
+	return req, nil
+}

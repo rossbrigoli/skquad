@@ -26,6 +26,7 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/breakglass"
 	"github.com/rossbrigoli/skquad/control-plane/internal/config"
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
+	"github.com/rossbrigoli/skquad/control-plane/internal/kube"
 	"github.com/rossbrigoli/skquad/control-plane/internal/promptcompo"
 	"github.com/rossbrigoli/skquad/control-plane/internal/search"
 	"github.com/rossbrigoli/skquad/control-plane/internal/storage"
@@ -136,6 +137,11 @@ type Server struct {
 	// (duckduckgo is always present — keyless). A provider whose API key
 	// is unset is absent, which the proxy maps to 502.
 	searchProviders map[string]search.Provider
+	// providerKeys is the S-155 Secret backend for pasted provider API
+	// keys. Built at startup when K8s connection config is present;
+	// nil elsewhere (dev without a cluster). Creating/updating a provider
+	// with a key while nil returns 503 rather than storing plaintext.
+	providerKeys ProviderKeyStore
 }
 
 // OIDCAuthenticator authenticates OIDC Authorization headers.
@@ -192,19 +198,19 @@ func New(cfg *config.Config, store Store) http.Handler {
 // NewWithCRWriter returns an HTTP handler that mirrors squad/agent mutations
 // to Kubernetes CRs.
 func NewWithCRWriter(cfg *config.Config, store Store, crWriter CRWriter) http.Handler {
-	return newServer(cfg, store, nil, crWriter, nil)
+	return newServer(cfg, store, nil, crWriter, nil, nil)
 }
 
 // NewWithDependencies returns an HTTP handler with explicit optional
 // integrations for tests and production startup.
-func NewWithDependencies(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter) http.Handler {
-	return newServer(cfg, store, oidcAuth, crWriter, nil)
+func NewWithDependencies(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, providerKeys ProviderKeyStore) http.Handler {
+	return newServer(cfg, store, oidcAuth, crWriter, nil, providerKeys)
 }
 
 // NewWithOIDCAuthenticator returns an HTTP handler using oidcAuth when
 // SKQUAD_AUTH_MODE=oidc.
 func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator) http.Handler {
-	return newServer(cfg, store, oidcAuth, nil, nil)
+	return newServer(cfg, store, oidcAuth, nil, nil, nil)
 }
 
 // NewWithSearchProviders returns an HTTP handler whose web_search proxy
@@ -212,10 +218,18 @@ func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuth
 // from config secrets (duckduckgo always; brave/perplexity only when
 // their API keys are set). Tests inject stub providers here.
 func NewWithSearchProviders(cfg *config.Config, store Store, providers map[string]search.Provider) http.Handler {
-	return newServer(cfg, store, nil, nil, providers)
+	return newServer(cfg, store, nil, nil, providers, nil)
 }
 
-func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, searchProviders map[string]search.Provider) http.Handler {
+// NewWithProviderKeyStore returns an HTTP handler whose pasted provider
+// API keys are stored through the given Secret store (S-155). Tests use
+// this to inject a fake; production builds the store from config inside
+// newServer.
+func NewWithProviderKeyStore(cfg *config.Config, store Store, keys ProviderKeyStore) http.Handler {
+	return newServer(cfg, store, nil, nil, nil, keys)
+}
+
+func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, searchProviders map[string]search.Provider, providerKeys ProviderKeyStore) http.Handler {
 	if crWriter == nil {
 		crWriter = noopCRWriter{}
 	}
@@ -228,6 +242,18 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 		llmGateway = gw
 	}
 	s := &Server{cfg: cfg, store: store, oidcAuth: oidcAuth, crWriter: crWriter, llmGateway: llmGateway}
+	// S-155: provider-key Secret store. Explicit argument wins (tests);
+	// otherwise build from in-cluster K8s config. Absent config is fine
+	// (dev); handlers surface the gap when a key is actually pasted.
+	if providerKeys == nil && cfg != nil && cfg.K8sEnabled && cfg.K8sAPIBase != "" && cfg.K8sTokenFile != "" {
+		keys, err := kube.NewSecretStore(cfg)
+		if err != nil {
+			log.Printf("provider key store unavailable (provider key paste disabled): %v", err)
+		} else {
+			providerKeys = keys
+		}
+	}
+	s.providerKeys = providerKeys
 	if searchProviders == nil {
 		searchProviders = defaultSearchProviders(cfg)
 	}
@@ -730,10 +756,16 @@ func (s *Server) createLLMProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name      string `json:"name"`
-		Kind      string `json:"kind"`
-		BaseURL   string `json:"base_url"`
-		APIKeyRef string `json:"api_key_ref"`
+		Name    string `json:"name"`
+		Kind    string `json:"kind"`
+		BaseURL string `json:"base_url"`
+		// APIKey is the pasted provider key (S-155). Write-only: stored
+		// in a managed Kubernetes Secret, never echoed back.
+		APIKey string `json:"api_key"`
+		// LegacyAPIKeyRef keeps old clients from hard-failing; the value
+		// is treated as a pasted key (wrapped into a Secret), never as a
+		// caller-chosen reference.
+		LegacyAPIKeyRef string `json:"api_key_ref,omitempty"`
 		// WP8 (0014): legacy "default_model"/"models" (and S-128's
 		// "pricing") are no longer honored on providers. decodeJSON
 		// rejects unknown fields, so the deprecated keys are accepted
@@ -748,21 +780,49 @@ func (s *Server) createLLMProvider(w http.ResponseWriter, r *http.Request) {
 	if !validateName(w, req.Name) || !validateRequired(w, "kind", req.Kind) || !validateRequired(w, "base_url", req.BaseURL) {
 		return
 	}
+	key := strings.TrimSpace(req.APIKey)
+	if key == "" {
+		key = strings.TrimSpace(req.LegacyAPIKeyRef)
+	}
 	u := currentUser(r.Context())
 	provider := &domain.LLMProvider{
 		Name:         strings.TrimSpace(req.Name),
 		Kind:         strings.TrimSpace(req.Kind),
 		BaseURL:      strings.TrimSpace(req.BaseURL),
-		APIKeyRef:    req.APIKeyRef,
 		Status:       domain.ResourceActive,
 		RegisteredBy: u.ID,
 	}
-	created, err := s.store.CreateLLMProvider(s.pendingUserAuditCtx(r, "registry.llm_provider.create", string(domain.ResLLMProvider), "", "", nil), provider)
+	ctx := s.pendingUserAuditCtx(r, "registry.llm_provider.create", string(domain.ResLLMProvider), "", "", nil)
+	if key != "" && s.providerKeys == nil {
+		// Dev fallback (no K8s store configured): keep today's literal
+		// behavior so out-of-cluster dev works. Production always has
+		// the Secret store and never lands here.
+		log.Printf("provider %q: no Kubernetes secret store configured — storing the API key literally (dev mode only)", provider.Name)
+		provider.APIKeyRef = key
+		provider.APIKeyMask = maskProviderKey(key)
+		key = ""
+	}
+	created, err := s.store.CreateLLMProvider(ctx, provider)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, created)
+	if key != "" {
+		if err := s.setProviderKey(ctx, created, key); err != nil {
+			// Compensate: never leave a provider row whose key failed to
+			// land in the Secret store.
+			if delErr := s.store.DeleteLLMProvider(ctx, created.ID); delErr != nil {
+				log.Printf("provider %s: rollback after secret failure: %v", created.ID, delErr)
+			}
+			writeError(w, http.StatusBadGateway, "provider_key_store_failed", "could not store the provider key as a Kubernetes Secret")
+			return
+		}
+		if created, err = s.store.UpdateLLMProvider(ctx, created); err != nil {
+			writeStorageError(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusCreated, providerJSON(created))
 }
 
 func (s *Server) listLLMProviders(w http.ResponseWriter, r *http.Request) {
@@ -771,7 +831,7 @@ func (s *Server) listLLMProviders(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, providers)
+	writeJSON(w, http.StatusOK, providerJSONList(providers))
 }
 
 func (s *Server) getLLMProvider(w http.ResponseWriter, r *http.Request) {
@@ -780,7 +840,7 @@ func (s *Server) getLLMProvider(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, provider)
+	writeJSON(w, http.StatusOK, providerJSON(provider))
 }
 
 func (s *Server) updateLLMProvider(w http.ResponseWriter, r *http.Request) {
@@ -793,10 +853,17 @@ func (s *Server) updateLLMProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name      *string `json:"name"`
-		Kind      *string `json:"kind"`
-		BaseURL   *string `json:"base_url"`
-		APIKeyRef *string `json:"api_key_ref"`
+		Name    *string `json:"name"`
+		Kind    *string `json:"kind"`
+		BaseURL *string `json:"base_url"`
+		// APIKey (S-155): omitted = keep the stored key; non-empty =
+		// replace it; empty string = clear the key and delete the
+		// managed Secret.
+		APIKey *string `json:"api_key"`
+		// LegacyAPIKeyRef (S-155): a cached old web bundle still sends
+		// the previously-visible value here — which was the literal key.
+		// Treat it as a pasted key, never as a caller-chosen reference.
+		LegacyAPIKeyRef *string `json:"api_key_ref"`
 		// WP8 (0014): legacy "default_model"/"models" accepted-and-
 		// discarded on update too (see create for why).
 		LegacyDefaultModel json.RawMessage `json:"default_model,omitempty"`
@@ -824,15 +891,32 @@ func (s *Server) updateLLMProvider(w http.ResponseWriter, r *http.Request) {
 		}
 		provider.BaseURL = strings.TrimSpace(*req.BaseURL)
 	}
-	if req.APIKeyRef != nil {
-		provider.APIKeyRef = *req.APIKeyRef
+	if req.APIKey != nil || req.LegacyAPIKeyRef != nil {
+		key := ""
+		if req.APIKey != nil {
+			key = strings.TrimSpace(*req.APIKey)
+		} else if req.LegacyAPIKeyRef != nil {
+			key = strings.TrimSpace(*req.LegacyAPIKeyRef)
+		}
+		if key == "" {
+			s.clearProviderKey(r.Context(), provider)
+		} else if s.providerKeys == nil {
+			log.Printf("provider %s: no Kubernetes secret store configured — storing the API key literally (dev mode only)", provider.ID)
+			provider.APIKeyRef = key
+			provider.APIKeyMask = maskProviderKey(key)
+		} else {
+			if err := s.setProviderKey(r.Context(), provider, key); err != nil {
+				writeError(w, http.StatusBadGateway, "provider_key_store_failed", "could not store the provider key as a Kubernetes Secret")
+				return
+			}
+		}
 	}
 	updated, err := s.store.UpdateLLMProvider(s.pendingUserAuditCtx(r, "registry.llm_provider.update", string(domain.ResLLMProvider), provider.ID, "", nil), provider)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	writeJSON(w, http.StatusOK, providerJSON(updated))
 }
 
 func (s *Server) deprecateLLMProvider(w http.ResponseWriter, r *http.Request) {
@@ -1126,6 +1210,13 @@ func (s *Server) deleteLLMProvider(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteLLMProvider(s.pendingUserAuditCtx(r, "registry.llm_provider.delete", string(domain.ResLLMProvider), providerID, "", nil), providerID); err != nil {
 		writeStorageError(w, err)
 		return
+	}
+	// S-155: drop the managed key Secret with the provider (best-effort —
+	// an orphan Secret is harmless and GC-able by label).
+	if s.providerKeys != nil {
+		if err := s.providerKeys.DeleteProviderKey(r.Context(), providerSecretName(providerID)); err != nil {
+			log.Printf("provider %s: delete managed key secret: %v", providerID, err)
+		}
 	}
 	// Best-effort convergence of gateway keys after the provider is gone.
 	s.syncAgentsWithLLMProvider(r.Context(), providerID)

@@ -5,14 +5,10 @@ package kube
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"os"
 	"strings"
@@ -52,26 +48,9 @@ func NewCRWriter(cfg *config.Config) (*CRWriter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kube: read token: %w", err)
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if cfg.K8sInsecure {
-		// #nosec G402 -- explicit opt-in dev mode via SKQUAD_K8S_INSECURE;
-		// production paths use the projected CA branch below.
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	} else if cfg.K8sCAFile != "" {
-		// Trust the cluster CA (projected service-account CA by default). The
-		// system trust store never contains the cluster's signing CA, so
-		// without this every in-cluster API call fails x509 verification.
-		pem, err := os.ReadFile(cfg.K8sCAFile)
-		if err == nil {
-			pool := x509.NewCertPool()
-			if !pool.AppendCertsFromPEM(pem) {
-				return nil, fmt.Errorf("kube: no certificates parsed from CA file %s", cfg.K8sCAFile)
-			}
-			transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("kube: read CA file: %w", err)
-		}
-		// Missing CA file: fall back to the system trust store (out-of-cluster dev).
+	client, err := newK8sHTTPClient(cfg)
+	if err != nil {
+		return nil, err
 	}
 	return &CRWriter{
 		baseURL:         strings.TrimRight(cfg.K8sAPIBase, "/"),
@@ -83,7 +62,7 @@ func NewCRWriter(cfg *config.Config) (*CRWriter, error) {
 		storageClass:        strings.TrimSpace(cfg.StorageClass),
 		defaultStorageSize:  strings.TrimSpace(cfg.DefaultAgentStorageSize),
 		token:           strings.TrimSpace(string(token)),
-		client:          &http.Client{Transport: transport},
+		client:          client,
 	}, nil
 }
 

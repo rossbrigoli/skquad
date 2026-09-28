@@ -40,9 +40,10 @@ var errProviderAuth = errors.New("provider rejected the registered credential")
 
 // fetchProviderModels calls GET {baseURL}/models (OpenAI-compatible)
 // with the provider's registered key and returns the sorted, deduped
-// model ids. Empty api_keyRef omits the Authorization header (local
-// providers such as ollama often need no credential).
-func fetchProviderModels(ctx context.Context, client *http.Client, baseURL, apiKeyRef string) ([]string, error) {
+// model ids. Empty apiKey omits the Authorization header (local
+// providers such as ollama often need no credential). S-155: callers
+// resolve the Secret-backed key first; this takes the live value.
+func fetchProviderModels(ctx context.Context, client *http.Client, baseURL, apiKey string) ([]string, error) {
 	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if trimmed == "" {
 		return nil, errors.New("provider has no base_url configured")
@@ -57,7 +58,7 @@ func fetchProviderModels(ctx context.Context, client *http.Client, baseURL, apiK
 	if err != nil {
 		return nil, errors.New("could not build provider model-list request")
 	}
-	if key := strings.TrimSpace(apiKeyRef); key != "" {
+	if key := strings.TrimSpace(apiKey); key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 	req.Header.Set("Accept", "application/json")
@@ -148,7 +149,14 @@ func (s *Server) listLLMProviderModels(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), providerModelsTimeout)
 	defer cancel()
-	models, err := fetchProviderModels(ctx, providerModelsClient, provider.BaseURL, provider.APIKeyRef)
+	// S-155: the stored ref points at a managed Secret; resolve the live
+	// key before calling the provider.
+	apiKey, err := s.resolveProviderKey(ctx, provider)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "provider_key_resolve_failed", "could not resolve the provider's stored API key")
+		return
+	}
+	models, err := fetchProviderModels(ctx, providerModelsClient, provider.BaseURL, apiKey)
 	if err != nil {
 		switch {
 		case errors.Is(err, errProviderAuth):

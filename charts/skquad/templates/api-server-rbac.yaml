@@ -7,6 +7,19 @@ metadata:
     {{- include "skquad.labels" . | nindent 4 }}
     app.kubernetes.io/component: api-server
 rules:
+  # S-155: the control-plane creates/updates the provider API-key
+  # Secrets pasted in the Settings UI (names skquad-provider-key-*).
+  # Namespace-scoped Role; agent namespaces never granted here.
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - create
+      - update
+      - patch
+      - delete
   - apiGroups:
       - skquad.io
     resources:

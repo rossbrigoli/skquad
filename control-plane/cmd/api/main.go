@@ -81,7 +81,24 @@ func main() {
 	go httpapi.RunExecutionReaper(context.Background(), store, cfg.ReaperInterval, cfg.ReaperGrace)
 	slog.Info("started task execution reaper", "interval", cfg.ReaperInterval, "grace", cfg.ReaperGrace)
 
-	handler := httpapi.NewWithDependencies(cfg, store, oidcAuth, crWriter)
+	var providerKeys httpapi.ProviderKeyStore
+	if cfg.K8sEnabled {
+		keys, err := kube.NewSecretStore(cfg)
+		if err != nil {
+			slog.Error("configure provider key secret store", "error", err)
+			os.Exit(1)
+		}
+		providerKeys = keys
+		// S-155: wrap any pre-existing literal provider keys into managed
+		// Secrets before serving.
+		if wrapped, err := httpapi.MigrateLegacyProviderKeys(context.Background(), store, keys); err != nil {
+			slog.Error("provider key migration", "error", err)
+		} else if wrapped > 0 {
+			slog.Info("wrapped legacy literal provider keys into managed Secrets", "count", wrapped)
+		}
+	}
+
+	handler := httpapi.NewWithDependencies(cfg, store, oidcAuth, crWriter, providerKeys)
 
 	server := &http.Server{
 		Addr:    cfg.Addr,
