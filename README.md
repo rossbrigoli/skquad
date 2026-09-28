@@ -15,9 +15,9 @@
     </a>
     <img src="https://img.shields.io/badge/Status-Early%20vertical%20slice-yellow?style=flat" alt="Status: early vertical slice">
   </div>
+  <br />
 </div>
 
----
 Skquad is a Kubernetes-native control plane for building and operating governed squads of autonomous AI agents. 
 It's designed with enterprise use case in mind whereh full observability, audit logging, identity and access controls are first class citizens.
 
