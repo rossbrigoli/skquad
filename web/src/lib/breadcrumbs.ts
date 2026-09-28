@@ -26,6 +26,7 @@ const STATIC_LABELS: Record<string, string> = {
   board: "Board",
   tasks: "Tasks",
   cost: "Cost",
+  prompt: "Squad Context",
   models: "AI Models",
   appearance: "Appearance",
   profile: "Profile",

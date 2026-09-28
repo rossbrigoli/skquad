@@ -290,7 +290,7 @@ type GrantStore interface {
 // MeteringStore persists token-usage events.
 type MeteringStore interface {
 	RecordMetering(ctx context.Context, m *domain.MeteringEvent) error
-	SumMetering(ctx context.Context, squadID, agentID string) (*domain.MeteringEvent, error) // aggregated
+	SumMetering(ctx context.Context, squadID, agentID string, since time.Time) (*domain.MeteringEvent, error) // aggregated; zero since = all time (S-169 month-to-date)
 }
 
 // WakeLatencyStore persists wake-path latency events (S-87). Record is

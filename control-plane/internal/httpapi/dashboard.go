@@ -190,7 +190,7 @@ func (s *Server) dashboardSquadEntry(ctx context.Context, squad *domain.Squad, o
 		}
 	}
 
-	if usage, err := s.store.SumMetering(ctx, squad.ID, ""); err == nil && usage != nil {
+	if usage, err := s.store.SumMetering(ctx, squad.ID, "", time.Time{}); err == nil && usage != nil {
 		entry.Cost = costFromMetering(usage)
 	}
 
@@ -206,7 +206,7 @@ func (s *Server) dashboardSquadEntry(ctx context.Context, squad *domain.Squad, o
 			Role:    agent.Role,
 			Status:  agent.Status,
 		}
-		if usage, err := s.store.SumMetering(ctx, "", agent.ID); err == nil && usage != nil {
+		if usage, err := s.store.SumMetering(ctx, "", agent.ID, time.Time{}); err == nil && usage != nil {
 			da.Cost = costFromMetering(usage)
 		}
 		entry.Agents = append(entry.Agents, da)

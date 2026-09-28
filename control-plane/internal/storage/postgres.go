@@ -1690,7 +1690,14 @@ func rateValue(v *float64) any {
 	return *v
 }
 
-func (p *PostgresStore) SumMetering(ctx context.Context, squadID, agentID string) (*domain.MeteringEvent, error) {
+// SumMetering aggregates metering events. A non-zero `since` restricts
+// the sum to events at/after that instant (S-169: month-to-date spend);
+// the zero value aggregates over all time.
+func (p *PostgresStore) SumMetering(ctx context.Context, squadID, agentID string, since time.Time) (*domain.MeteringEvent, error) {
+	var sinceArg any
+	if !since.IsZero() {
+		sinceArg = since.UTC()
+	}
 	row := p.pool.QueryRow(ctx, `
 		SELECT coalesce(sum(input_tokens), 0)::integer,
 		       coalesce(sum(output_tokens), 0)::integer,
@@ -1700,7 +1707,8 @@ func (p *PostgresStore) SumMetering(ctx context.Context, squadID, agentID string
 		FROM metering
 		WHERE ($1 = '' OR squad_id = nullif($1, '')::uuid)
 		  AND ($2 = '' OR agent_id = nullif($2, '')::uuid)
-	`, squadID, agentID)
+		  AND ($3::timestamptz IS NULL OR timestamp >= $3::timestamptz)
+	`, squadID, agentID, sinceArg)
 
 	var out domain.MeteringEvent
 	var timestamp sql.NullTime
