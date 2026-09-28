@@ -7,7 +7,6 @@ import { AuthGate } from "../../../../components/AuthGate";
 import { AppShell } from "../../../../components/AppShell";
 import { EmptyState } from "../../../../components/EmptyState";
 import { EntityRow } from "../../../../components/EntityRow";
-import { SquadRail } from "../../../../components/SquadRail";
 import { StatusChip } from "../../../../components/StatusChip";
 import { useApi } from "../../../../lib/useApi";
 import { useAuth } from "../../../../lib/auth";
@@ -35,7 +34,7 @@ export default function SquadAgentsPage() {
 
   return (
     <AuthGate>
-      <AppShell secondary={<SquadRail squadId={squadId} squadName="Squad" />}>
+      <AppShell>
         <div className="section-head">
           <h1 className="page-title" style={{ margin: 0 }}>
             Agents

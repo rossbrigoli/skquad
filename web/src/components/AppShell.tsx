@@ -15,10 +15,10 @@ import { UserMenu } from "./UserMenu";
 import { IconAbout, IconAgents, IconCosts, IconDashboard, IconInbox, IconSettings, IconSquads } from "./icons";
 import { agentIdFromPath, breadcrumbsForPath } from "../lib/breadcrumbs";
 import { buildInfo, versionLabel } from "../lib/buildInfo";
+import { SquadTabs } from "./SquadTabs";
 import {
   agentsSectionActive,
   buildGlobalAgentGroups,
-  buildSquadAgentSubitems,
   buildSquadSubitems,
   effectiveExpanded,
   isSubitemActive,
@@ -135,18 +135,13 @@ function SquadsNavGroup({
 
 function AgentNavItems({
   pathname,
-  squadContextId,
-  agentSubitems,
   agentGroups,
 }: {
   readonly pathname: string;
-  readonly squadContextId: string;
-  readonly agentSubitems: NavItem[];
   readonly agentGroups: ReturnType<typeof buildGlobalAgentGroups>;
 }) {
-  if (squadContextId) {
-    return agentSubitems.map((link) => <NavSubLink key={link.href} pathname={pathname} link={link} />);
-  }
+  // S-167: the Agents menu is no longer contextual — it always shows
+  // every agent the user can see, grouped by squad.
   return agentGroups.map((group) => (
     <div key={group.squadId} className="nav-subgroup">
       <div className="nav-subgroup-label">{group.squadName}</div>
@@ -161,8 +156,6 @@ function AgentsNavGroup({
   pathname,
   active,
   expanded,
-  squadContextId,
-  agentSubitems,
   agentGroups,
   loading,
   onToggle,
@@ -170,8 +163,6 @@ function AgentsNavGroup({
   readonly pathname: string;
   readonly active: boolean;
   readonly expanded: boolean;
-  readonly squadContextId: string;
-  readonly agentSubitems: NavItem[];
   readonly agentGroups: ReturnType<typeof buildGlobalAgentGroups>;
   readonly loading: boolean;
   readonly onToggle: () => void;
@@ -197,13 +188,8 @@ function AgentsNavGroup({
       </button>
       {expanded ? (
         <div className="nav-sub" aria-label="Agents">
-          <AgentNavItems
-            pathname={pathname}
-            squadContextId={squadContextId}
-            agentSubitems={agentSubitems}
-            agentGroups={agentGroups}
-          />
-          {agentSubitems.length === 0 && agentGroups.length === 0 ? (
+          <AgentNavItems pathname={pathname} agentGroups={agentGroups} />
+          {agentGroups.length === 0 ? (
             <div className="nav-sub-empty">{loading ? "loading…" : "no agents yet"}</div>
           ) : null}
         </div>
@@ -223,8 +209,6 @@ function PrimaryRail({
   squadsLoading,
   agentsActive,
   agentsExpanded,
-  squadContextId,
-  agentSubitems,
   agentGroups,
   agentsLoading,
   onToggleGroup,
@@ -239,8 +223,6 @@ function PrimaryRail({
   readonly squadsLoading: boolean;
   readonly agentsActive: boolean;
   readonly agentsExpanded: boolean;
-  readonly squadContextId: string;
-  readonly agentSubitems: NavItem[];
   readonly agentGroups: ReturnType<typeof buildGlobalAgentGroups>;
   readonly agentsLoading: boolean;
   readonly onToggleGroup: (key: string, currentlyExpanded: boolean) => void;
@@ -286,8 +268,6 @@ function PrimaryRail({
         pathname={pathname}
         active={agentsActive}
         expanded={agentsExpanded}
-        squadContextId={squadContextId}
-        agentSubitems={agentSubitems}
         agentGroups={agentGroups}
         loading={agentsLoading}
         onToggle={() => onToggleGroup("agents", agentsExpanded)}
@@ -311,15 +291,11 @@ function PrimaryRail({
   );
 }
 
-// Two-rail shell: persistent primary nav + optional contextual secondary rail
-// (Paperclip pattern). Pages pass `secondary` for squad/agent/task context.
-export function AppShell({
-  children,
-  secondary,
-}: {
-  readonly children: ReactNode;
-  readonly secondary?: ReactNode;
-}) {
+// S-167: single-rail shell. The contextual secondary column is gone —
+// squad section navigation is a horizontal SquadTabs bar rendered at
+// the top of the content area (every squad route except the agent
+// detail screen, which owns its own tabs).
+export function AppShell({ children }: { readonly children: ReactNode }) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
   const { items } = useAttention();
@@ -331,8 +307,14 @@ export function AppShell({
 
   const squadContextId = squadIdFromPath(pathname);
   const squads = useApi<Squad[]>("/squads");
-  const squadAgents = useApi<Agent[]>(squadContextId ? `/squads/${squadContextId}/agents` : "");
-  const globalDashboard = useApi<DashboardPayload>(squadContextId ? "" : "/dashboard");
+  // Agent-name hint for breadcrumbs on agent pages.
+  const agentId = agentIdFromPath(pathname);
+  const squadAgents = useApi<Agent[]>(
+    squadContextId && agentId ? `/squads/${squadContextId}/agents` : "",
+  );
+  // S-167: the Agents menu is always global (dashboard scoping), even
+  // inside a squad context.
+  const globalDashboard = useApi<DashboardPayload>("/dashboard");
 
   const squadsActive = (pathname ?? "").startsWith("/squads");
   const agentsActive = agentsSectionActive(pathname);
@@ -349,16 +331,13 @@ export function AppShell({
   const squadHint = squadContextId
     ? (squads.data ?? []).find((squad) => squad.id === squadContextId)?.name
     : undefined;
-  const agentId = agentIdFromPath(pathname);
   const agentHint = agentId
     ? (squadAgents.data ?? []).find((agent) => agent.id === agentId)?.name
     : undefined;
   const breadcrumbs = breadcrumbsForPath(pathname, { squadName: squadHint, agentName: agentHint });
 
   const squadSubitems = buildSquadSubitems(squads.data);
-  const agentSubitems = squadContextId ? buildSquadAgentSubitems(squadAgents.data) : [];
-  const agentGroups = squadContextId ? [] : buildGlobalAgentGroups(globalDashboard.data);
-  const agentsLoading = squadContextId ? squadAgents.loading : globalDashboard.loading;
+  const agentGroups = buildGlobalAgentGroups(globalDashboard.data);
 
   // Navigating closes the drawer so you never land on a covered page.
   // Render-time adjustment (React's recommended pattern) avoids a cascading
@@ -369,7 +348,7 @@ export function AppShell({
   }
 
   return (
-    <div className={`${secondary ? "shell with-secondary" : "shell"}${menuOpen ? " drawer-open" : ""}`}>
+    <div className={`shell${menuOpen ? " drawer-open" : ""}`}>
       <button
         type="button"
         className="menu-button"
@@ -391,19 +370,15 @@ export function AppShell({
         squadsLoading={squads.loading}
         agentsActive={agentsActive}
         agentsExpanded={agentsExpanded}
-        squadContextId={squadContextId}
-        agentSubitems={agentSubitems}
         agentGroups={agentGroups}
-        agentsLoading={agentsLoading}
+        agentsLoading={globalDashboard.loading}
         onToggleGroup={toggleGroup}
       />
-      {secondary ? (
-        <aside className="rail rail-secondary" aria-label="Contextual navigation">
-          {secondary}
-        </aside>
-      ) : null}
       <div className="content-col">
         <TopBar crumbs={breadcrumbs} />
+        {/* S-167: squad section tabs replace the secondary rail. Hidden
+            on the agent detail screen, which owns its own tabs (S-169). */}
+        {squadContextId && !agentId ? <SquadTabs squadId={squadContextId} /> : null}
         <main className="content">{children}</main>
       </div>
     </div>

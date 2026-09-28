@@ -6,7 +6,6 @@ import { AuthGate } from "../../../../components/AuthGate";
 import { AppShell } from "../../../../components/AppShell";
 import { EmptyState } from "../../../../components/EmptyState";
 import { Modal } from "../../../../components/Modal";
-import { SquadRail } from "../../../../components/SquadRail";
 import { EffectivePromptPanel } from "../../../../components/EffectivePromptPanel";
 import { PromptRevisionsPanel } from "../../../../components/PromptRevisionsPanel";
 import { PromptTierEditor } from "../../../../components/PromptTierEditor";
@@ -49,7 +48,7 @@ export default function SquadPromptPage() {
 
   return (
     <AuthGate>
-      <AppShell secondary={<SquadRail squadId={squadId} squadName={squad?.name || "…"} />}>
+      <AppShell>
         <div className="section-head">
           <h1 className="page-title" style={{ margin: 0 }}>
             Squad prompt

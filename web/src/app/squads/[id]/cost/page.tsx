@@ -4,7 +4,6 @@ import { useParams } from "next/navigation";
 import { AuthGate } from "../../../../components/AuthGate";
 import { AppShell } from "../../../../components/AppShell";
 import { MetricTile } from "../../../../components/MetricTile";
-import { SquadRail } from "../../../../components/SquadRail";
 import { useApi } from "../../../../lib/useApi";
 import { formatCost, formatTokens } from "../../../../lib/format";
 import type { MeteringSummary } from "../../../../lib/api";
@@ -16,7 +15,7 @@ export default function SquadCostPage() {
 
   return (
     <AuthGate>
-      <AppShell secondary={<SquadRail squadId={squadId} squadName="Squad" />}>
+      <AppShell>
         <h1 className="page-title">Cost</h1>
         {metering.error ? (
           <div className="notice error">{metering.error}</div>
