@@ -335,7 +335,7 @@ export default function AgentProfilePage() {
             with restore-into-editor. */}
         <section style={{ marginTop: "var(--space-5)" }}>
           <div className="section-head">
-            <h2>Prompt</h2>
+            <h2>Agent Context</h2>
             <div style={{ display: "flex", gap: "var(--space-2)" }}>
               <button type="button" className="btn btn-sm" onClick={() => setEditing(true)} disabled={!agent}>
                 Edit agent prompt
