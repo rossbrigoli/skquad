@@ -66,6 +66,14 @@ flowchart LR
 - It is **stateless** — all state (metering, keys, budgets) lives in Postgres.
 - It reads **provider definitions** (base URL, models, pricing) from the
   **resource registry** and **credentials** from secrets.
+- **S-155:** provider API keys are pasted into Settings → LLM providers
+  and stored by the control-plane as Kubernetes Secrets named
+  `skquad-provider-key-<provider-id>` (label
+  `app.kubernetes.io/managed-by: skquad-control-plane`). The registry
+  keeps only the `k8s://` ref plus a display mask (last 5 chars); API
+  responses never include the key. The control-plane Role grants
+  `secrets` get/create/update/patch/delete in its own namespace. A
+  startup migration wraps any pre-existing literal keys automatically.
 
 ---
 

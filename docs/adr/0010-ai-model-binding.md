@@ -30,7 +30,7 @@ An **AI Model** is a single, admin-registered, selectable model (e.g. `gpt-6-sol
 
 ### D2 — Do NOT flatten the provider credential into the AI Model
 
-`ai_model` references an internal `provider` row that holds `base_url` + `api_key_ref`.
+`ai_model` references an internal `provider` row that holds `base_url` + `api_key_ref`. Since S-155 the key itself is pasted into the Settings UI and stored by the control-plane as a Kubernetes Secret (`skquad-provider-key-<provider-id>` in the control-plane namespace); `api_key_ref` holds the `k8s://<ns>/<secret>` pointer and `api_key_mask` the display tail (last 5 chars). Reads never return the key or the ref.
 The provider has **no UI**; it exists so N models from one account share **one** credential.
 
 > If the API key were stored per model pair, rotating a leaked key would require N edits and

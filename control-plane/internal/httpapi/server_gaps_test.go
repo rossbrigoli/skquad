@@ -172,7 +172,7 @@ func TestNewWithDependenciesWiresOIDCAndCRWriter(t *testing.T) {
 	store := storage.NewMemoryStore()
 	handler := NewWithDependencies(cfg, store, headerOIDC{
 		authAdmin: {Email: adminEmail, Name: "Admin"},
-	}, crWriter)
+	}, crWriter, nil)
 	promoteAdmin(t, store, handler, authAdmin)
 
 	// OIDC is enforced: no bearer token must not reach the handler.

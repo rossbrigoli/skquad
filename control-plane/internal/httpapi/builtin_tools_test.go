@@ -65,7 +65,7 @@ func agentWithCredential(t *testing.T, handler http.Handler, fw *fakeCRWriter, s
 func toolsHandler(t *testing.T, providers map[string]search.Provider) (http.Handler, *fakeCRWriter) {
 	t.Helper()
 	fw := &fakeCRWriter{}
-	handler := newServer(testConfig(), storage.NewMemoryStore(), nil, fw, providers)
+	handler := newServer(testConfig(), storage.NewMemoryStore(), nil, fw, providers, nil)
 	return handler, fw
 }
 
@@ -126,7 +126,7 @@ func TestAdminToolsRBAC(t *testing.T) {
 	handler := NewWithDependencies(cfg, storage.NewMemoryStore(), headerOIDC{
 		authAdmin: {Email: adminEmail, Name: "Admin", Groups: []string{platformAdminGroup}},
 		authAlice: {Email: aliceEmail, Name: "Alice"},
-	}, &fakeCRWriter{})
+	}, &fakeCRWriter{}, nil)
 
 	var denied map[string]map[string]string
 	doJSONAuth(t, handler, authAlice, http.MethodGet, pathAdminTools, nil, http.StatusForbidden, &denied)

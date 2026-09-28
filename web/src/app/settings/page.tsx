@@ -1167,7 +1167,10 @@ function ProviderModal({
   const [name, setName] = useState(provider?.name ?? "");
   const [kind, setKind] = useState(provider?.kind || "openai");
   const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? "");
-  const [apiKeyRef, setApiKeyRef] = useState(provider?.api_key_ref ?? "");
+  // S-155: paste the key directly; the control-plane stores it as a
+  // Kubernetes Secret. On edit, the current key shows masked and an
+  // empty input means "keep unchanged".
+  const [apiKey, setApiKey] = useState("");
   // WP8 (0014): default_model / models inputs removed from the provider
   // form — model configuration lives on the AI Models underneath.
   // S-128: no provider-level pricing — rates belong on the AI Models.
@@ -1186,12 +1189,16 @@ function ProviderModal({
           setBusy(true);
           setError("");
           try {
-            const body = {
+            const body: Record<string, string> = {
               name: name.trim(),
               kind: kind.trim(),
               base_url: baseUrl.trim(),
-              api_key_ref: apiKeyRef.trim(),
             };
+            // Only send a key when one was typed; omitting keeps the
+            // stored Secret (S-155).
+            if (apiKey.trim() !== "") {
+              body.api_key = apiKey.trim();
+            }
             if (provider) {
               await apiPatch(`/registry/llm-providers/${provider.id}`, token, body);
             } else {
@@ -1227,8 +1234,23 @@ function ProviderModal({
         </label>
         <div className="field-row">
           <label className="field">
-            <span>API key ref</span>
-            <input value={apiKeyRef} onChange={(e) => setApiKeyRef(e.target.value)} placeholder="k8s secret / vault ref (never the key itself)" />
+            <span>API key</span>
+            {/* S-155: paste-to-secret. type=password so the pasted key
+                never renders in cleartext. */}
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              autoComplete="new-password"
+              placeholder={
+                provider?.has_api_key
+                  ? `Current: ${provider.api_key_masked ?? "•••••"} — leave blank to keep`
+                  : "Paste API key (stored as a Kubernetes Secret)"
+              }
+            />
+            <small className="field-hint">
+              Stored as a Kubernetes Secret by the platform — no manual kubectl needed.
+            </small>
           </label>
         </div>
       </ModalForm>

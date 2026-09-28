@@ -970,10 +970,10 @@ func (p *PostgresStore) CreateLLMProvider(ctx context.Context, provider *domain.
 	defer tx.Rollback(ctx)
 
 	txRow := tx.QueryRow(ctx, `
-		INSERT INTO providers (name, kind, base_url, api_key_ref, status, registered_by)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at
-	`, provider.Name, provider.Kind, provider.BaseURL, provider.APIKeyRef, defaultResourceStatus(provider.Status), provider.RegisteredBy)
+		INSERT INTO providers (name, kind, base_url, api_key_ref, status, registered_by, api_key_mask)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at, api_key_mask
+	`, provider.Name, provider.Kind, provider.BaseURL, provider.APIKeyRef, defaultResourceStatus(provider.Status), provider.RegisteredBy, provider.APIKeyMask)
 	created, err := scanLLMProvider(txRow)
 	if err != nil {
 		return nil, err
@@ -989,7 +989,7 @@ func (p *PostgresStore) CreateLLMProvider(ctx context.Context, provider *domain.
 
 func (p *PostgresStore) GetLLMProvider(ctx context.Context, id string) (*domain.LLMProvider, error) {
 	row := p.pool.QueryRow(ctx, `
-		SELECT id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at
+		SELECT id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at, api_key_mask
 		FROM providers
 		WHERE id = $1
 	`, id)
@@ -1009,10 +1009,11 @@ func (p *PostgresStore) UpdateLLMProvider(ctx context.Context, provider *domain.
 		    kind = $3,
 		    base_url = $4,
 		    api_key_ref = $5,
-		    status = $6
+		    status = $6,
+		    api_key_mask = $7
 		WHERE id = $1
-		RETURNING id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at
-	`, provider.ID, provider.Name, provider.Kind, provider.BaseURL, provider.APIKeyRef, defaultResourceStatus(provider.Status))
+		RETURNING id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at, api_key_mask
+	`, provider.ID, provider.Name, provider.Kind, provider.BaseURL, provider.APIKeyRef, defaultResourceStatus(provider.Status), provider.APIKeyMask)
 	created, err := scanLLMProvider(txRow)
 	if err != nil {
 		return nil, err
@@ -1088,7 +1089,7 @@ func (p *PostgresStore) DeleteLLMProvider(ctx context.Context, id string) error 
 
 func (p *PostgresStore) ListLLMProviders(ctx context.Context) ([]*domain.LLMProvider, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at
+		SELECT id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at, api_key_mask
 		FROM providers
 		ORDER BY name
 	`)
@@ -2989,6 +2990,7 @@ func scanLLMProvider(row scanner) (*domain.LLMProvider, error) {
 		&p.Status,
 		&p.RegisteredBy,
 		&p.CreatedAt,
+		&p.APIKeyMask,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}

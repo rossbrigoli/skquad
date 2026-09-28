@@ -410,6 +410,10 @@ type LLMProvider struct {
 	Kind      string `json:"kind"` // openai, anthropic, ollama, ...
 	BaseURL   string `json:"base_url"`
 	APIKeyRef string `json:"api_key_ref"`
+	// APIKeyMask is the display-safe tail of the key (S-155): computed at
+	// write time so list/get responses never resolve the Secret. Never
+	// serialized — the HTTP layer exposes it as api_key_masked only.
+	APIKeyMask   string `json:"-"`
 	// WP8 (0014): legacy default_model / models / pricing fields removed.
 	// Model configuration lives exclusively on ai_models rows bound via
 	// agents.ai_model_id (ADR-0010).

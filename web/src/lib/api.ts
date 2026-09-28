@@ -120,7 +120,11 @@ export type LLMProvider = {
   name: string;
   kind: string;
   base_url: string;
-  api_key_ref?: string;
+  // S-155: the key itself is write-only (pasted into `api_key` on
+  // create/update, stored as a Kubernetes Secret). Reads expose only
+  // the masked tail and whether a key exists.
+  api_key_masked?: string;
+  has_api_key?: boolean;
   // WP8 (0014): legacy default_model/models removed — model config lives
   // on AIModel rows (ADR-0010). S-128: pricing lives only on AIModel.
   status: string;
