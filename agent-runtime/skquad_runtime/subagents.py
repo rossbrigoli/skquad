@@ -19,6 +19,7 @@ Guarantees:
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Callable, Mapping, Sequence
 
@@ -26,6 +27,11 @@ SUBAGENT_TOOL_NAME = "spawn_subagent"
 DEFAULT_SUBAGENT_MAX_TURNS = 12
 ENV_SUBAGENT_ENABLED = "SKQUAD_SUBAGENT_ENABLED"
 ENV_SUBAGENT_MAX_TURNS = "SKQUAD_SUBAGENT_MAX_TURNS"
+
+# S-163 transparency caps: keep the captured thread small enough to
+# ride the chat message payload without unbounded growth.
+SUBAGENT_THREAD_ITEM_MAX_CHARS = 2000
+SUBAGENT_THREAD_TOTAL_MAX_CHARS = 24000
 
 # kwargs_factory(messages, child_tools) -> completion kwargs. The parent
 # supplies this so the subagent's LLM calls carry exactly the parent's
@@ -141,6 +147,16 @@ class SubagentPlugin:
         if not task_text:
             return ToolResult(content="spawn_subagent requires a non-empty 'task' argument", ok=False)
 
+        # S-163: capture the subagent thread for UI transparency. The
+        # thread stores display-friendly entries (no trust wrappers) —
+        # the loop's own `messages` remain the authoritative context.
+        thread: list[dict[str, object]] = [{"role": "user", "content": _trim(task_text, SUBAGENT_THREAD_ITEM_MAX_CHARS)}]
+        steps: list[str] = []
+        turns = 0
+
+        def details() -> dict[str, object]:
+            return {"subagent": {"thread": _cap_thread(thread), "turns": turns, "steps": steps}}
+
         messages: list[dict[str, object]] = [
             {"role": "system", "content": self._system_prompt},
             {
@@ -150,24 +166,49 @@ class SubagentPlugin:
         ]
         last_content = ""
         for _ in range(self._max_turns):
+            turns += 1
             kwargs = self._kwargs_factory(messages, self._child_tools)
             _mark_subagent_metadata(kwargs)
             try:
                 response = self._completion(**kwargs)
             except Exception as exc:  # noqa: BLE001 — surfaced as a failed tool result
-                return ToolResult(content=f"subagent LLM call failed: {exc}", ok=False)
+                return ToolResult(
+                    content=f"subagent LLM call failed: {exc}", ok=False, details=details()
+                )
             message = first_message(response)
             content = str(message_value(message, "content") or "")
             calls = parse_tool_calls(message)
             if not calls:
                 return ToolResult(
-                    content=content or "(subagent finished without a final answer)", ok=True
+                    content=content or "(subagent finished without a final answer)",
+                    ok=True,
+                    details=details(),
                 )
             messages.append(assistant_message(content, calls))
+            thread.append(
+                {
+                    "role": "assistant",
+                    "content": _trim(content, SUBAGENT_THREAD_ITEM_MAX_CHARS),
+                    "tool_calls": [
+                        {"name": c.name, "arguments": _trim_args(c.arguments)} for c in calls
+                    ],
+                }
+            )
             for child_call in calls:
                 child_result = invoke_plugin_tool(child_call, config, self._plugins)
+                thread.append(
+                    {
+                        "role": "tool",
+                        "name": child_call.name,
+                        "ok": child_result.ok,
+                        "content": _trim(child_result.content, SUBAGENT_THREAD_ITEM_MAX_CHARS),
+                    }
+                )
+                steps.append(child_call.name)
                 if not child_result.ok:
-                    return ToolResult(content=f"subagent blocked: {child_result.content}", ok=False)
+                    return ToolResult(
+                        content=f"subagent blocked: {child_result.content}", ok=False, details=details()
+                    )
                 messages.append(
                     {
                         "role": "tool",
@@ -180,8 +221,46 @@ class SubagentPlugin:
                 )
             last_content = content
         return ToolResult(
-            content=(last_content + "\n[subagent stopped: max turns reached]").strip(), ok=True
+            content=(last_content + "\n[subagent stopped: max turns reached]").strip(),
+            ok=True,
+            details=details(),
         )
+
+
+def _trim(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1] + "…"
+
+
+def _trim_args(arguments: object) -> object:
+    """Keep tool arguments display-safe and bounded."""
+    try:
+        rendered = json.dumps(arguments, default=str)
+    except Exception:  # noqa: BLE001
+        rendered = str(arguments)
+    return _trim(rendered, SUBAGENT_THREAD_ITEM_MAX_CHARS)
+
+
+def _cap_thread(thread: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Bound total thread size: keep the task entry (index 0) plus as
+    many of the NEWEST entries as fit, with a drop-marker for the rest."""
+    if sum(len(str(e)) for e in thread) <= SUBAGENT_THREAD_TOTAL_MAX_CHARS:
+        return thread
+    budget = SUBAGENT_THREAD_TOTAL_MAX_CHARS - len(str(thread[0]))
+    kept_reversed: list[dict[str, object]] = []
+    for entry in reversed(thread[1:]):
+        size = len(str(entry))
+        if kept_reversed and budget - size < 0:
+            break
+        kept_reversed.append(entry)
+        budget -= size
+    dropped = (len(thread) - 1) - len(kept_reversed)
+    out: list[dict[str, object]] = [thread[0]]
+    if dropped:
+        out.append({"role": "notice", "content": f"[{dropped} earlier thread entries dropped]"})
+    out.extend(reversed(kept_reversed))
+    return out
 
 
 def _all_tool_schemas(plugins: Sequence[object]) -> list[Mapping[str, object]]:

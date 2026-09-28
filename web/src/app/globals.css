@@ -1064,6 +1064,123 @@ dialog.modal-backdrop::backdrop {
   overflow: hidden;
 }
 
+/* S-163: subagent transparency — chat + side-by-side thread panel. */
+.chat-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: stretch;
+}
+
+.chat-layout.with-side {
+  grid-template-columns: minmax(0, 1fr) 420px;
+}
+
+.subagent-panel {
+  display: flex;
+  flex-direction: column;
+  height: 62vh;
+  min-height: 360px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.subagent-panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.subagent-panel-title {
+  font-weight: 600;
+}
+
+.subagent-panel-meta {
+  margin-left: auto;
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+}
+
+.subagent-panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.subagent-entry {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg, transparent);
+}
+
+.subagent-entry.task {
+  border-left: 3px solid var(--accent);
+}
+
+.subagent-entry.assistant {
+  border-left: 3px solid var(--ink-faint);
+}
+
+.subagent-entry.tool.failed {
+  border-left: 3px solid #c0392b;
+}
+
+.subagent-entry-head {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+  margin-bottom: var(--space-1);
+}
+
+.subagent-entry-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.subagent-entry-calls {
+  margin-top: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.subagent-notice,
+.subagent-empty {
+  color: var(--ink-faint);
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
+.chat-subagent-final {
+  padding: var(--space-2) var(--space-3);
+  color: var(--ink-muted);
+  font-size: 0.88rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 980px) {
+  .chat-layout.with-side {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .subagent-panel {
+    position: fixed;
+    inset: 6vh 4vw;
+    z-index: 1200;
+    height: auto;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  }
+}
+
 .chat-scroll {
   flex: 1;
   overflow-y: auto;

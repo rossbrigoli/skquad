@@ -44,9 +44,12 @@ import {
   formatContextTokens,
   prettyToolArgs,
   sortChatMessages,
+  subagentSummary,
   summarizeToolArgs,
   truncateText,
+  type SubagentInfo,
 } from "../../../../../lib/chat";
+import { SubagentThreadPanel } from "../../../../../components/SubagentThreadPanel";
 import { agentStatus } from "../../../../../lib/status";
 import type { AIModel } from "../../../../../lib/aimodels";
 import {
@@ -484,6 +487,8 @@ function ChatThread({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // S-163: subagent transparency — the thread shown in the side panel.
+  const [openSubagent, setOpenSubagent] = useState<SubagentInfo | null>(null);
   // S-162: reset/restart action feedback + in-flight guard.
   const [actionBusy, setActionBusy] = useState(false);
   const [actionNote, setActionNote] = useState("");
@@ -524,6 +529,7 @@ function ChatThread({
   }
 
   return (
+    <div className={openSubagent ? "chat-layout with-side" : "chat-layout"}>
     <div className="chat">
       <div className="chat-scroll" ref={scrollRef}>
         {sorted.length === 0 ? (
@@ -557,21 +563,41 @@ function ChatThread({
                   )}
                   {toolCalls.length > 0 ? (
                     <div className="chat-tools">
-                      {toolCalls.map((call, idx) => (
-                        <details key={`${call.name}-${idx}`} className={`chat-tool${call.ok ? "" : " failed"}`}>
-                          <summary className="chat-tool-summary">
-                            <span className="chat-tool-name">🔧 {call.name}</span>
-                            {summarizeToolArgs(call.arguments) ? (
-                              <span className="chat-tool-args mono">{summarizeToolArgs(call.arguments)}</span>
+                      {toolCalls.map((call, idx) =>
+                        call.name === "spawn_subagent" && call.subagent ? (
+                          <div key={`sub-${idx}`} className={`chat-tool subagent-chip${call.ok ? "" : " failed"}`}>
+                            <div className="chat-tool-summary">
+                              <span className="chat-tool-name">🤖 subagent</span>
+                              <span className="chat-tool-args mono">{subagentSummary(call.subagent)}</span>
+                              <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
+                              <button
+                                type="button"
+                                className="btn ghost small"
+                                onClick={() => setOpenSubagent(call.subagent ?? null)}
+                              >
+                                Details
+                              </button>
+                            </div>
+                            {call.result ? (
+                              <div className="chat-subagent-final">{truncateText(call.result, 400)}</div>
                             ) : null}
-                            <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
-                          </summary>
-                          <pre className="chat-tool-detail mono">{prettyToolArgs(call.arguments)}</pre>
-                          {call.result ? (
-                            <pre className="chat-tool-detail mono result">{truncateText(call.result, 4000)}</pre>
-                          ) : null}
-                        </details>
-                      ))}
+                          </div>
+                        ) : (
+                          <details key={`${call.name}-${idx}`} className={`chat-tool${call.ok ? "" : " failed"}`}>
+                            <summary className="chat-tool-summary">
+                              <span className="chat-tool-name">🔧 {call.name}</span>
+                              {summarizeToolArgs(call.arguments) ? (
+                                <span className="chat-tool-args mono">{summarizeToolArgs(call.arguments)}</span>
+                              ) : null}
+                              <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
+                            </summary>
+                            <pre className="chat-tool-detail mono">{prettyToolArgs(call.arguments)}</pre>
+                            {call.result ? (
+                              <pre className="chat-tool-detail mono result">{truncateText(call.result, 4000)}</pre>
+                            ) : null}
+                          </details>
+                        )
+                      )}
                     </div>
                   ) : null}
                 </div>
@@ -691,6 +717,10 @@ function ChatThread({
         </button>
       </form>
       <div className="chat-hint">Enter to send · Shift+Enter for a new line</div>
+    </div>
+    {openSubagent ? (
+      <SubagentThreadPanel info={openSubagent} onClose={() => setOpenSubagent(null)} />
+    ) : null}
     </div>
   );
 
