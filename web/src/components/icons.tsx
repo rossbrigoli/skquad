@@ -66,6 +66,42 @@ export function IconAgents({ size }: IconProps) {
   );
 }
 
+// S-172: icons for squad-section tabs and nav sub-items. Same stroke
+// style as the rail icons; sized down by callers.
+export function IconOverview({ size }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none" />
+      <path d="M12 3v3.5" />
+      <path d="M12 17.5V21" />
+      <path d="M3 12h3.5" />
+      <path d="M17.5 12H21" />
+    </svg>
+  );
+}
+
+export function IconBoard({ size }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <rect x="3" y="3" width="5.5" height="18" rx="1" />
+      <rect x="9.75" y="3" width="5.5" height="13" rx="1" />
+      <rect x="16.5" y="3" width="4.5" height="8" rx="1" />
+    </svg>
+  );
+}
+
+export function IconContext({ size }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <path d="M8 13h8" />
+      <path d="M8 17h5" />
+    </svg>
+  );
+}
+
 export function IconCosts({ size }: IconProps) {
   return (
     <svg {...base(size)}>

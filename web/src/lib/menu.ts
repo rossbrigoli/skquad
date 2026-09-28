@@ -30,9 +30,23 @@ export function agentsSectionActive(pathname: string): boolean {
   return /^\/squads\/[^/]+\/agents(\/|$)/.test(pathname ?? "");
 }
 
-export function buildSquadSubitems(squads: Squad[] | null | undefined): MenuLink[] {
+// S-166: platform admins see every squad, so the label carries the
+// owner: "Test Squad (christianriconalla-uz)" / "Skquad Engineering
+// (me)". Regular users pass no owner context and see bare names.
+export type SquadLabelOwner = { meId?: string; nameFor?: (ownerId: string) => string | undefined };
+
+export function squadDisplayLabel(squad: Squad, owner?: SquadLabelOwner): string {
+  if (!owner || !squad.owner_id) return squad.name;
+  if (owner.meId && squad.owner_id === owner.meId) return `${squad.name} (me)`;
+  return `${squad.name} (${owner.nameFor?.(squad.owner_id) ?? squad.owner_id})`;
+}
+
+export function buildSquadSubitems(
+  squads: Squad[] | null | undefined,
+  owner?: SquadLabelOwner,
+): MenuLink[] {
   return (squads ?? [])
-    .map((squad) => ({ href: `/squads/${squad.id}`, label: squad.name }))
+    .map((squad) => ({ href: `/squads/${squad.id}`, label: squadDisplayLabel(squad, owner) }))
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 

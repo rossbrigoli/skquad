@@ -41,7 +41,7 @@ func TestCreateAgentStorageFields(t *testing.T) {
 
 	var enabled domain.Agent
 	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
-		"name":           "durable-1",
+		"name":            "durable-1",
 		"storage_enabled": true,
 		"storage_size":    "5Gi",
 	}, http.StatusCreated, &enabled)
@@ -51,7 +51,7 @@ func TestCreateAgentStorageFields(t *testing.T) {
 	// Enabled without a size falls back to the platform default.
 	var defaulted domain.Agent
 	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
-		"name":           "durable-2",
+		"name":            "durable-2",
 		"storage_enabled": true,
 	}, http.StatusCreated, &defaulted)
 	require.True(t, defaulted.StorageEnabled)
@@ -86,7 +86,7 @@ func TestCreateAgentStorageValidation(t *testing.T) {
 	for _, tc := range invalid {
 		var body map[string]map[string]string
 		doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
-			"name":           "bad-" + tc.name,
+			"name":            "bad-" + tc.name,
 			"storage_enabled": true,
 			"storage_size":    tc.size,
 		}, http.StatusBadRequest, &body)

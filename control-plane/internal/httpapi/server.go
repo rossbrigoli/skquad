@@ -1728,6 +1728,12 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		// here — platform-admin only (SKQUAD_STORAGE_CLASS).
 		StorageEnabled *bool  `json:"storage_enabled"`
 		StorageSize    string `json:"storage_size"`
+		// S-170: optional primary model at creation. When set, the agent
+		// is born bound AND with its runtime identity auto-provisioned —
+		// no separate "Provision Identity" step. Omit it and the agent is
+		// created unbound; identity can be provisioned later from the
+		// agent screen once a model is bound.
+		AIModelID string `json:"ai_model_id"`
 		// WP8 (0014): legacy "default_provider_id"/"default_model" are
 		// accepted-and-discarded (decodeJSON rejects unknown fields, so
 		// they are declared as blank fields). Model selection is via the
@@ -1787,6 +1793,20 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	if storageEnabled && storageSize == "" {
 		storageSize = s.cfg.DefaultAgentStorageSize
 	}
+	// S-170: validate the requested primary model BEFORE creating the
+	// row — a bad model must not produce a half-born agent.
+	requestedModel := strings.TrimSpace(req.AIModelID)
+	if requestedModel != "" {
+		granted, err := s.ownerGrantedModelIDs(r.Context(), squad.OwnerID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		if _, err := s.resolveBindingModel(r.Context(), requestedModel, "ai_model_id", granted); err != nil {
+			writeBindingError(w, err)
+			return
+		}
+	}
 
 	agent := &domain.Agent{
 		SquadID:        squad.ID,
@@ -1798,6 +1818,7 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		Status:         domain.AgentIdle,
 		StorageEnabled: storageEnabled,
 		StorageSize:    storageSize,
+		AIModelID:      requestedModel,
 		// S-156: deterministic K8s Deployment name, fixed at creation.
 		DeploymentName: agentDeploymentNameFor(ownerSlug(owner), req.Name),
 	}
@@ -1813,6 +1834,18 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeStorageError(w, err)
 		return
+	}
+	// S-170: auto-provision the runtime identity when a primary model
+	// was supplied. Creation is atomic from the caller's point of view:
+	// if provisioning fails the agent row is rolled back so no agent
+	// exists without the identity it can never use.
+	if requestedModel != "" {
+		if _, err := s.provisionAgentIdentity(s.pendingUserAuditCtx(r, "agent_identity.create", "agent_identity", "", squad.ID, nil), created, squad, currentUser(r.Context()).ID); err != nil {
+			rollbackCtx := s.pendingUserAuditCtx(r, "agent.create_rollback", "agent", created.ID, squad.ID, json.RawMessage(fmt.Sprintf(`{"reason":%q}`, err.Error())))
+			_ = s.store.DeleteAgent(rollbackCtx, created.ID)
+			writeIdentityProvisionError(w, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, created)
 }
@@ -2238,46 +2271,93 @@ func (s *Server) createAgentIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := currentUser(r.Context())
+	// S-170: the heavy lifting lives in provisionAgentIdentity so the
+	// create-agent path can auto-provision too. This handler is now the
+	// manual/retry door (legacy agents created before auto-provisioning).
+	created, err := s.provisionAgentIdentity(s.pendingUserAuditCtx(r, "agent_identity.create", "agent_identity", "", agent.SquadID, nil), agent, squad, u.ID)
+	if err != nil {
+		writeIdentityProvisionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+// identityProvisionError tags which step of identity provisioning failed
+// so HTTP handlers can preserve the exact status/code each step has
+// always returned (S-170 refactor: the steps moved into
+// provisionAgentIdentity, but their error contract did not change).
+type identityProvisionError struct {
+	step    string // credential | gateway | credential_secret | virtualkey_secret | store
+	err     error
+	message string
+}
+
+func (e *identityProvisionError) Error() string { return e.message }
+func (e *identityProvisionError) Unwrap() error { return e.err }
+
+// writeIdentityProvisionError maps a provisioning failure to the HTTP
+// response the pre-refactor inline code produced.
+func writeIdentityProvisionError(w http.ResponseWriter, err error) {
+	var pe *identityProvisionError
+	if !errors.As(err, &pe) {
+		writeError(w, http.StatusInternalServerError, "internal", "identity provisioning failed")
+		return
+	}
+	switch pe.step {
+	case "gateway":
+		if writeBindingError(w, pe.err) {
+			return
+		}
+		writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to provision LLM gateway virtual key")
+	case "store":
+		writeStorageError(w, pe.err)
+	default:
+		writeError(w, http.StatusInternalServerError, "internal", pe.message)
+	}
+}
+
+// provisionAgentIdentity creates an agent's runtime identity end to end:
+// control-plane credential, LLM gateway virtual key (allow-list derived
+// from the agent's current model binding), the two projected Secrets, and
+// the identity row. Partial secrets are cleaned up on failure; the caller
+// decides whether to roll back the agent itself (createAgent does —
+// S-170 auto-provisioning; the manual retry handler does not).
+//
+// The passed ctx should carry the pending audit intent for the identity
+// creation so the row and its audit commit together.
+func (s *Server) provisionAgentIdentity(ctx context.Context, agent *domain.Agent, squad *domain.Squad, userID string) (*domain.AgentIdentity, error) {
 	identity := &domain.AgentIdentity{
 		AgentID:        agent.ID,
 		CredentialRef:  generatedCredentialRef(squad.Namespace, agent.ID),
 		CredentialHash: "",
 		VirtualKeyRef:  generatedVirtualKeyRef(squad.Namespace, agent.ID),
-		CreatedBy:      u.ID,
+		CreatedBy:      userID,
 	}
 	credential, err := generateCredential()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to generate agent credential")
-		return
+		return nil, &identityProvisionError{step: "credential", err: err, message: "failed to generate agent credential"}
 	}
-	virtualKey, keyToken, err := s.provisionAgentVirtualKey(r.Context(), agent)
+	virtualKey, keyToken, err := s.provisionAgentVirtualKey(ctx, agent)
 	if err != nil {
-		if writeBindingError(w, err) {
-			return
-		}
-		writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to provision LLM gateway virtual key")
-		return
+		return nil, &identityProvisionError{step: "gateway", err: err, message: "failed to provision LLM gateway virtual key"}
 	}
 	identity.CredentialHash = hashCredential(credential)
 	identity.GatewayKeyToken = keyToken
 	identity.GatewayKeyStatus = domain.GatewayKeyActive
-	if err := s.crWriter.WriteAgentCredential(r.Context(), identity.CredentialRef, agent.ID, credential); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "failed to write agent credential secret")
-		return
+	if err := s.crWriter.WriteAgentCredential(ctx, identity.CredentialRef, agent.ID, credential); err != nil {
+		return nil, &identityProvisionError{step: "credential_secret", err: err, message: "failed to write agent credential secret"}
 	}
-	if err := s.crWriter.WriteAgentCredential(r.Context(), identity.VirtualKeyRef, agent.ID, virtualKey); err != nil {
-		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.CredentialRef)
-		writeError(w, http.StatusInternalServerError, "internal", "failed to write agent virtual-key secret")
-		return
+	if err := s.crWriter.WriteAgentCredential(ctx, identity.VirtualKeyRef, agent.ID, virtualKey); err != nil {
+		_ = s.crWriter.DeleteAgentCredential(ctx, identity.CredentialRef)
+		return nil, &identityProvisionError{step: "virtualkey_secret", err: err, message: "failed to write agent virtual-key secret"}
 	}
-	created, err := s.store.CreateAgentIdentity(s.pendingUserAuditCtx(r, "agent_identity.create", "agent_identity", "", agent.SquadID, nil), identity)
+	created, err := s.store.CreateAgentIdentity(ctx, identity)
 	if err != nil {
-		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.CredentialRef)
-		_ = s.crWriter.DeleteAgentCredential(r.Context(), identity.VirtualKeyRef)
-		writeStorageError(w, err)
-		return
+		_ = s.crWriter.DeleteAgentCredential(ctx, identity.CredentialRef)
+		_ = s.crWriter.DeleteAgentCredential(ctx, identity.VirtualKeyRef)
+		return nil, &identityProvisionError{step: "store", err: err, message: "failed to persist agent identity"}
 	}
-	writeJSON(w, http.StatusCreated, created)
+	return created, nil
 }
 
 func (s *Server) rotateAgentIdentity(w http.ResponseWriter, r *http.Request) {
