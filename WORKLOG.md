@@ -797,3 +797,15 @@
   - https://docs.sonarsource.com/sonarqube-server/analyzing-source-code/test-coverage/go-test-coverage
 - **Commands/tests run:** converter unit checks (gojson/junit, real test names); local `npm run test:coverage` (333 tests, lcov+junit); local agent-runtime `coverage run -m xmlrunner` (258 tests OK); local `sonar-scanner` against `http://sonarqube.lab` with temp key `skquad-s171-verify` (properties-only run: EXECUTION SUCCESS, imported 9+21+1 report files).
 - **Result (temp project `skquad-s171-verify`):** tests=600, test_failures=0, test_errors=0, skipped_tests=9, coverage=18.8% (partial locally — Go coverage not generated locally; agent-runtime 90.2%, web 11.0% per-dir). Before: skquad had no coverage/tests measures at all.
+
+## 2026-09-29 01:00–02:20 ACST — S-171 follow-up: Cobertura cross-host portability + final CI verification
+
+- **Objective:** First CI scan (PR run 36440300820) showed agent-runtime/llm-gateway coverage 0% despite local success.
+- **Root cause:** coverage.py writes absolute `<sources>` from the GitHub-hosted build runner (`/home/runner/work/...`); the scan runs on the self-hosted in-cluster runner (`/runner/_work/...`) so the Cobertura sensor logged `Cannot resolve the file path ... does not exist in all 'source'` and dropped all Python coverage.
+- **Fix:** `scripts/testreport-to-sonar.py` gained `cobertura-prefix` mode — rewrites `filename="X"` → `filename="<component>/X"` and neutralises `<sources>` to `.`; wired into both Python CI jobs after `coverage xml`.
+- **Verified locally:** temp key `skquad-s171-verify2` — prefixed report resolved, agent-runtime 90.2% (0 "Cannot resolve" lines).
+- **Final CI verification (PR #77, run 36441864691, commit 721ff19 — all jobs green):**
+  - skquad root: **coverage 66.4%**, tests=1144, failures=0, errors=0, skipped=0
+  - control-plane 73.5% (425 tests) · operator 83.6% (77) · agent-runtime 90.2% (258) · llm-gateway 100% (51) · web 11.0% (333 — vitest covers the logic-layer files only; rest of web/src untested, honest baseline)
+  - Before: skquad had **no coverage or test measures at all** (0%).
+- **Cleanup pending:** temp SonarQube projects `skquad-s171-verify`, `skquad-s171-verify2` (delete via API or ask Ross).
