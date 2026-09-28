@@ -89,9 +89,9 @@ type SquadList struct {
 
 // AgentSpec declares the desired state for an agent Deployment.
 type AgentSpec struct {
-	AgentID      string `json:"agentId"`
-	SquadID      string `json:"squadId"`
-	Role         string `json:"role,omitempty"`
+	AgentID string `json:"agentId"`
+	SquadID string `json:"squadId"`
+	Role    string `json:"role,omitempty"`
 	// Deprecated (S-147/WP6): no longer injected into the agent pod as
 	// SKQUAD_AGENT_SYSTEM_PROMPT. The runtime fetches the composed
 	// four-tier prompt from the control plane at wake (ADR-0011 D4).
@@ -109,16 +109,20 @@ type AgentSpec struct {
 	// FallbackAIModelID is the optional failover model (ADR-0010 D4/D6).
 	// Injected as SKQUAD_FALLBACK_MODEL_ID. The runtime only OBSERVES
 	// this binding; failover itself is executed by the gateway (D6).
-	FallbackAIModelID string               `json:"fallbackAiModelId,omitempty"`
-	Image             string               `json:"image"`
-	CredentialSecret  string               `json:"credentialSecret,omitempty"`
-	VirtualKeySecret  string               `json:"virtualKeySecret,omitempty"`
-	ControlPlaneURL   string               `json:"controlPlaneUrl,omitempty"`
-	LLMGatewayURL     string               `json:"llmGatewayUrl,omitempty"`
-	Permissions       apiextensionsv1.JSON `json:"permissions,omitempty"`
-	WorkspaceSecrets  []WorkspaceSecret    `json:"workspaceSecrets,omitempty"`
-	IdleTimeout       string               `json:"idleTimeout,omitempty"`
-	DesiredActive     bool                 `json:"desiredActive"`
+	FallbackAIModelID string `json:"fallbackAiModelId,omitempty"`
+	Image             string `json:"image"`
+	// DeploymentName (S-156) is the deterministic Deployment name chosen by
+	// the control plane: skquad-<owner>-agent-<agent-name>. When empty the
+	// operator falls back to the CR name (pre-S-156 agents).
+	DeploymentName   string               `json:"deploymentName,omitempty"`
+	CredentialSecret string               `json:"credentialSecret,omitempty"`
+	VirtualKeySecret string               `json:"virtualKeySecret,omitempty"`
+	ControlPlaneURL  string               `json:"controlPlaneUrl,omitempty"`
+	LLMGatewayURL    string               `json:"llmGatewayUrl,omitempty"`
+	Permissions      apiextensionsv1.JSON `json:"permissions,omitempty"`
+	WorkspaceSecrets []WorkspaceSecret    `json:"workspaceSecrets,omitempty"`
+	IdleTimeout      string               `json:"idleTimeout,omitempty"`
+	DesiredActive    bool                 `json:"desiredActive"`
 	// Storage declares a durable per-agent workspace PVC (S-135). When
 	// nil or disabled the agent runs without persistent workspace, exactly
 	// as before. PORTABILITY RULE: StorageClass is optional and NEVER

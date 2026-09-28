@@ -237,7 +237,9 @@ function SquadEditModal({
           setBusy(true);
           setError("");
           try {
-            await apiPatch<Squad>(`/squads/${squad.id}`, token, { name: name.trim(), mission: mission.trim() });
+            // S-156: name is immutable (bound to the K8s namespace) —
+            // only the mission is sent.
+            await apiPatch<Squad>(`/squads/${squad.id}`, token, { mission: mission.trim() });
             onSaved();
           } catch (err) {
             setError(err instanceof Error ? err.message : "update failed");
@@ -247,7 +249,11 @@ function SquadEditModal({
       >
         <label className="field">
           <span>Name</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          {/* S-156: squad names cannot be renamed after creation. */}
+          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus readOnly />
+          <small className="field-hint">
+            Squad names cannot be renamed after creation — the Kubernetes namespace is derived from it.
+          </small>
         </label>
         <label className="field">
           <span>Mission</span>

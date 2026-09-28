@@ -1301,12 +1301,28 @@ func (s *Server) createSquad(w http.ResponseWriter, r *http.Request) {
 	}
 
 	u := currentUser(r.Context())
+	// S-156: a user may not create two squads with the same name (other
+	// users may reuse it — the owner segment keeps the namespace distinct).
+	if existing, err := s.store.GetSquadByName(r.Context(), u.ID, req.Name); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		writeStorageError(w, err)
+		return
+	} else if existing != nil {
+		writeError(w, http.StatusConflict, "name_taken", "you already have a squad named "+existing.Name+"; squad names must be unique per user")
+		return
+	}
+	// S-156: namespace is skquad-<owner>-<squad> and is fixed at creation
+	// (K8s namespaces cannot be renamed).
+	namespace, err := s.uniqueSquadNamespace(r.Context(), squadNamespaceFor(ownerSlug(u), req.Name))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to allocate squad namespace")
+		return
+	}
 	squad := &domain.Squad{
 		Name:           req.Name,
 		Mission:        req.Mission,
 		OperatingModel: req.OperatingModel,
 		OwnerID:        u.ID,
-		Namespace:      namespaceFor(req.Name),
+		Namespace:      namespace,
 		Status:         domain.SquadActive,
 	}
 	created, err := s.store.CreateSquad(s.pendingUserAuditCtx(r, "squad.create", "squad", "", "", nil), squad)
@@ -1361,7 +1377,13 @@ func (s *Server) updateSquad(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "bad_request", "name must not be empty")
 			return
 		}
-		squad.Name = name
+		// S-156: the K8s namespace is derived from the squad name, so a
+		// rename would desync the squad from its namespace. Names are
+		// immutable; sending the same name back is a no-op.
+		if !strings.EqualFold(name, squad.Name) {
+			writeError(w, http.StatusBadRequest, "name_immutable", "squad name cannot be changed after creation (it is bound to the Kubernetes namespace "+squad.Namespace+")")
+			return
+		}
 	}
 	if req.Mission != nil {
 		squad.Mission = *req.Mission
@@ -1704,6 +1726,24 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	if req.IdleTimeoutSec <= 0 {
 		req.IdleTimeoutSec = int(s.cfg.DefaultIdleTimeout / time.Second)
 	}
+	// S-156: agent names are unique per user (across all their squads) and
+	// immutable — the K8s Deployment name is derived from them.
+	owner, err := s.store.GetUser(r.Context(), squad.OwnerID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if existing, err := s.store.GetAgentByNameForOwner(r.Context(), squad.OwnerID, req.Name); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		writeStorageError(w, err)
+		return
+	} else if existing != nil {
+		where := "another squad"
+		if existing.SquadID == squad.ID {
+			where = "this squad"
+		}
+		writeError(w, http.StatusConflict, "name_taken", "you already have an agent named "+existing.Name+" in "+where+"; agent names must be unique per user")
+		return
+	}
 	storageEnabled := req.StorageEnabled != nil && *req.StorageEnabled
 	storageSize := strings.TrimSpace(req.StorageSize)
 	if storageSize != "" {
@@ -1726,6 +1766,8 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		Status:         domain.AgentIdle,
 		StorageEnabled: storageEnabled,
 		StorageSize:    storageSize,
+		// S-156: deterministic K8s Deployment name, fixed at creation.
+		DeploymentName: agentDeploymentNameFor(ownerSlug(owner), req.Name),
 	}
 	createCtx := s.pendingUserAuditCtx(r, "agent.create", "agent", "", squad.ID, nil)
 	if agent.SystemPrompt != "" {
@@ -1791,13 +1833,9 @@ type updateAgentRequest struct {
 // when one is invalid. Extracted from updateAgent for cognitive
 // complexity (S-126 / S3776).
 func (s *Server) applyAgentScalarUpdates(agent *domain.Agent, req updateAgentRequest) error {
-	if req.Name != nil {
-		name := strings.TrimSpace(*req.Name)
-		if name == "" {
-			return errors.New("name must not be empty")
-		}
-		agent.Name = name
-	}
+	// S-156: req.Name is deliberately NOT applied here — renames are
+	// rejected up front in updateAgent (the Deployment name is derived
+	// from the agent name).
 	if req.Role != nil {
 		agent.Role = *req.Role
 	}
@@ -1925,6 +1963,20 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	var req updateAgentRequest
 	if !decodeJSON(w, r, &req) {
 		return
+	}
+	// S-156: the K8s Deployment name is derived from the agent name, so a
+	// rename would desync the agent from its Deployment. Names are
+	// immutable; sending the same name back is a no-op.
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if name == "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "name must not be empty")
+			return
+		}
+		if !strings.EqualFold(name, agent.Name) {
+			writeError(w, http.StatusBadRequest, "name_immutable", "agent name cannot be changed after creation (it is bound to the Kubernetes deployment "+agent.DeploymentName+")")
+			return
+		}
 	}
 	// S-PROMPT WP2: the agent tier gets the same sanitize + template-var +
 	// budget battery as the other editable tiers before anything is applied.
@@ -4593,20 +4645,6 @@ func defaultSearchProviders(cfg *config.Config) map[string]search.Provider {
 		providers["perplexity"] = search.NewPerplexity(&http.Client{Timeout: 60 * time.Second}, cfg.SearchPerplexityAPIKey)
 	}
 	return providers
-}
-
-func namespaceFor(name string) string {
-	parts := strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
-		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
-	})
-	slug := strings.Join(parts, "-")
-	if slug == "" {
-		slug = "squad"
-	}
-	if len(slug) > 40 {
-		slug = slug[:40]
-	}
-	return fmt.Sprintf("squad-%s-%s", slug, uuid.NewString()[:8])
 }
 
 func generatedCredentialRef(namespace, agentID string) string {

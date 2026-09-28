@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -111,7 +112,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: agent.Name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: deploymentNameFor(&agent), Namespace: namespace},
 	}
 	replicas := desiredReplicas(&agent, deployment, time.Now)
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
@@ -440,8 +441,18 @@ func (r *AgentReconciler) cleanupAgent(ctx context.Context, agent *skquadv1.Agen
 		}
 	}
 	return deleteIfExists(ctx, r.Client, &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: agent.Name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: deploymentNameFor(agent), Namespace: namespace},
 	})
+}
+
+// deploymentNameFor returns the S-156 deterministic Deployment name
+// (skquad-<owner>-agent-<agent>) when the control plane supplied one, and
+// the CR name otherwise (agents created before S-156).
+func deploymentNameFor(agent *skquadv1.Agent) string {
+	if name := strings.TrimSpace(agent.Spec.DeploymentName); name != "" {
+		return name
+	}
+	return agent.Name
 }
 
 // retainPVCRequested reports whether the Agent opts to keep its workspace

@@ -278,6 +278,32 @@ func (m *MemoryStore) GetSquadByName(_ context.Context, ownerID, name string) (*
 	return nil, ErrNotFound
 }
 
+// SquadNamespaceExists reports whether any squad already owns the namespace.
+func (m *MemoryStore) SquadNamespaceExists(_ context.Context, namespace string) (bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, s := range m.squads {
+		if s.Namespace == namespace {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// GetAgentByNameForOwner finds an agent by name across every squad owned by
+// ownerID (S-156 per-user agent name uniqueness).
+func (m *MemoryStore) GetAgentByNameForOwner(_ context.Context, ownerID, name string) (*domain.Agent, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, a := range m.agents {
+		s, ok := m.squads[a.SquadID]
+		if ok && s.OwnerID == ownerID && strings.EqualFold(a.Name, name) {
+			return cloneAgent(a), nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (m *MemoryStore) UpdateSquad(ctx context.Context, s *domain.Squad) (*domain.Squad, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -381,8 +407,11 @@ func (m *MemoryStore) CreateAgent(ctx context.Context, a *domain.Agent) (*domain
 	if _, ok := m.squads[a.SquadID]; !ok {
 		return nil, ErrNotFound
 	}
+	// S-156: agent names are unique per USER (across all their squads),
+	// not merely per squad.
+	ownerID := m.squads[a.SquadID].OwnerID
 	for _, existing := range m.agents {
-		if existing.SquadID == a.SquadID && strings.EqualFold(existing.Name, a.Name) {
+		if other, ok := m.squads[existing.SquadID]; ok && other.OwnerID == ownerID && strings.EqualFold(existing.Name, a.Name) {
 			return nil, ErrConflict
 		}
 	}
@@ -427,7 +456,10 @@ func (m *MemoryStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*domain
 		return nil, ErrNotFound
 	}
 	for _, other := range m.agents {
-		if other.ID != a.ID && other.SquadID == existing.SquadID && strings.EqualFold(other.Name, a.Name) {
+		// S-156: per-user uniqueness (see CreateAgent).
+		aOwner, aOK := m.squads[existing.SquadID]
+		oOwner, oOK := m.squads[other.SquadID]
+		if other.ID != a.ID && aOK && oOK && aOwner.OwnerID == oOwner.OwnerID && strings.EqualFold(other.Name, a.Name) {
 			return nil, ErrConflict
 		}
 	}
@@ -1931,15 +1963,15 @@ func (m *MemoryStore) ResetAgentChat(_ context.Context, agentID, squadID, transc
 	}
 	if archived > 0 {
 		mem := &domain.AgentMemory{
-			ID:         uuid.NewString(),
-			AgentID:    agentID,
-			SquadID:    squadID,
-			Content:    transcript,
-			TrustLevel: "distilled",
-			Provenance: "chat_reset",
+			ID:           uuid.NewString(),
+			AgentID:      agentID,
+			SquadID:      squadID,
+			Content:      transcript,
+			TrustLevel:   "distilled",
+			Provenance:   "chat_reset",
 			ReviewStatus: "approved",
-			Metadata:   defaultJSON(metadata, "{}"),
-			CreatedAt:  resetAt,
+			Metadata:     defaultJSON(metadata, "{}"),
+			CreatedAt:    resetAt,
 		}
 		m.agentMemory[mem.ID] = mem
 	}

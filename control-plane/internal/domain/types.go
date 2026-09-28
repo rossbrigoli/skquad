@@ -90,16 +90,21 @@ type Agent struct {
 	// outbox writer. StorageClass is deliberately NOT part of this surface:
 	// tenant-selectable storage classes are a portability/cost footgun, so
 	// only the platform (Helm/env at the control plane) may set it.
-	StorageEnabled bool        `json:"storage_enabled"`
-	StorageSize    string      `json:"storage_size,omitempty"`
+	StorageEnabled bool   `json:"storage_enabled"`
+	StorageSize    string `json:"storage_size,omitempty"`
+	// DeploymentName (S-156) is the deterministic Kubernetes Deployment
+	// name for the agent: skquad-<owner>-agent-<agent-name>. Computed once
+	// at creation (names are immutable) and persisted; the operator uses it
+	// instead of the CR name when present.
+	DeploymentName string `json:"deployment_name,omitempty"`
 	// ChatResetAt (S-162) marks the instant the user reset the chat
 	// thread. Messages created at or before it are excluded from the
 	// chat history and the runtime context; the transcript is archived
 	// to agent_memory first. NULL/zero = never reset.
 	ChatResetAt time.Time   `json:"chat_reset_at,omitempty"`
 	Status      AgentStatus `json:"status"`
-	CreatedAt      time.Time   `json:"created_at"`
-	UpdatedAt      time.Time   `json:"updated_at"`
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
 	// WorkspaceSecrets is derived from the agent's project_workspace grants at
 	// CR-write time (outbox worker); it is NOT persisted on the agents table.
 	// See ADR-0009 and the operator WorkspaceSecret spec.
@@ -418,7 +423,7 @@ type LLMProvider struct {
 	// APIKeyMask is the display-safe tail of the key (S-155): computed at
 	// write time so list/get responses never resolve the Secret. Never
 	// serialized — the HTTP layer exposes it as api_key_masked only.
-	APIKeyMask   string `json:"-"`
+	APIKeyMask string `json:"-"`
 	// WP8 (0014): legacy default_model / models / pricing fields removed.
 	// Model configuration lives exclusively on ai_models rows bound via
 	// agents.ai_model_id (ADR-0010).
