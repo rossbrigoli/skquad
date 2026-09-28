@@ -605,8 +605,8 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 		WHERE s.owner_id = $1 AND lower(a.name) = lower($2)
 		LIMIT 1`, squadOwner, a.Name).Scan(&clashID); err == nil {
 		return nil, ErrConflict
-	} else if !errors.Is(err, ErrNotFound) {
-		return nil, err
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, mapPgErr(err)
 	}
 
 	row := tx.QueryRow(ctx, `
