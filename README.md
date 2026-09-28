@@ -2,7 +2,7 @@
 
 
    <img src="docs/images/logo/skquad-banner.png" style="width: 50%; height: auto;" alt="skquad">                                         
-
+<br />
   <div>
     <a href="https://github.com/rossbrigoli/skquad/actions/workflows/ci.yml">
       <img src="https://github.com/rossbrigoli/skquad/actions/workflows/ci.yml/badge.svg" alt="CI">
@@ -18,11 +18,10 @@
 </div>
 
 ---
+Skquad is a Kubernetes-native control plane for building and operating governed squads of autonomous AI agents. 
+It's designed with enterprise use case in mind whereh full observability, audit logging, identity and access controls are first class citizens.
 
-> A Kubernetes-native control plane for building and operating squads of AI
-> agents.
-
-skquad models agent collaboration as squads, agents, Kanban tasks, messages,
+Skquad models agent collaboration as squads, agents, Kanban tasks, messages,
 resource grants, and task-scoped memory. It combines a Go control-plane API, a
 Kubernetes operator, a Python agent runtime, and a central LiteLLM gateway so
 that agent identity, permissions, model access, and lifecycle remain under
@@ -30,24 +29,20 @@ platform control.
 
 > [!IMPORTANT]
 > skquad is an early-stage project with a working vertical slice; it is not yet
-> production-ready. The web application currently has an authenticated shell
-> plus first-pass squad, agent, task, registry, grants, admin, identity, and
-> chat workflows, but deeper product polish is still in progress, and the
-> default Helm values intentionally use development authentication and
-> credentials. See [Current status](#current-status) before deploying it.
+> production-ready. See [Current status](#current-status) before deploying it.
 
 ## How it works
 
-skquad separates management concerns from agent workloads:
+skquad separates management concerns from agentic AI workloads:
 
-- The **control plane** runs the API server, PostgreSQL, LiteLLM gateway, web
-  application, and operator in `skquad-system`.
+- The **control plane** runs the API server, LiteLLM gateway, web
+  application, and Kubernetes operator in `skquad-system` namespace.
 - The **data plane** runs each squad in its own Kubernetes namespace. Agent
-  Deployments wake for assigned work and scale back to zero after becoming
+  Deployments wake up for assigned work and scale back to zero after becoming
   idle.
 
 ```text
-Clients ───────► Control-plane API ───────► PostgreSQL
+Clients ───────► Control-plane API
                       │
                       └── durable outbox ─► Squad and Agent CRs
                                                    │
