@@ -328,6 +328,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/resources", s.listCurrentAgentResources)
 			r.Get("/messages", s.listCurrentAgentMessages)
 			r.Get("/messages/history", s.listCurrentAgentMessageHistory)
+			// S-164: squad-peer roster so runtimes can resolve a target agent
+			// name ("Mary") for the send_message tool.
+			r.Get("/peers", s.listMySquadPeers)
 			r.Post("/messages", s.createCurrentAgentMessage)
 			r.Post("/notify-owner", s.notifyOwnerFromAgent)
 			r.Post("/messages/{messageID}/ack", s.ackCurrentAgentMessage)
@@ -3212,6 +3215,64 @@ type messageFailureRequest struct {
 	Reason string `json:"reason"`
 }
 
+// maxCorrelationChainMessages (S-164) bounds how many messages may share one
+// correlation_id. Consult/reply follow-ups between two agents keep the same
+// correlation chain, so a runaway reply loop hits this ceiling instead of
+// burning tokens forever. Generous for real conversations (6 full
+// consult→reply round trips), loud on loops.
+const maxCorrelationChainMessages = 12
+
+// isUUID guards the correlation-chain count query so a malformed id is a
+// clean 400 instead of a Postgres cast error surfacing as a 500.
+func isUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	hex := func(b byte) bool {
+		return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
+	}
+	for i, r := range []byte(value) {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !hex(r) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// listMySquadPeers (S-164) returns the other agents of the calling agent's
+// squad — id/name/role/status only. It is the roster the runtime uses to
+// resolve a send_message target by name; no prompts, credentials, or model
+// configuration are exposed.
+func (s *Server) listMySquadPeers(w http.ResponseWriter, r *http.Request) {
+	principal := currentAgent(r.Context())
+	agents, err := s.store.ListAgents(r.Context(), principal.Agent.SquadID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	type peer struct {
+		ID     string             `json:"id"`
+		Name   string             `json:"name"`
+		Role   string             `json:"role"`
+		Status domain.AgentStatus `json:"status"`
+	}
+	out := make([]peer, 0, len(agents))
+	for _, a := range agents {
+		if a.ID == principal.Agent.ID {
+			continue
+		}
+		out = append(out, peer{ID: a.ID, Name: a.Name, Role: a.Role, Status: a.Status})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Request) {
 	principal := currentAgent(r.Context())
 	var req messageRequest
@@ -3249,6 +3310,27 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 	}
 	if !s.agentMayMessageTarget(w, r, principal, target, messageType) {
 		return
+	}
+	// S-164: bound the depth of a correlated conversation chain. Every
+	// consult/reply/ping that continues a thread carries the same
+	// correlation_id; once the chain hits the budget the send is rejected
+	// and audited so a runaway agent loop fails loudly instead of looping.
+	correlationID := strings.TrimSpace(req.CorrelationID)
+	if correlationID != "" {
+		if !isUUID(correlationID) {
+			writeError(w, http.StatusBadRequest, "bad_request", "correlation_id must be a UUID")
+			return
+		}
+		chainLen, err := s.store.CountMessagesByCorrelation(r.Context(), correlationID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		if chainLen >= maxCorrelationChainMessages {
+			s.recordAgentAudit(r, principal.Agent.ID, "message.chain_exceeded", "agent", target.ID, target.SquadID, json.RawMessage(fmt.Sprintf(`{"correlation_id":%q,"chain_length":%d}`, correlationID, chainLen)))
+			writeError(w, http.StatusConflict, "chain_exceeded", "correlation chain message budget exhausted")
+			return
+		}
 	}
 	// Delegate and handoff messages materialize into a real task on the
 	// target squad's board: the task is the durable unit of work, the

@@ -8,7 +8,7 @@ import (
 
 // BT-2 (ADR-0012): storage semantics for builtin_tools_config.
 
-func TestMemoryStoreSeedsBuiltinToolsDisabled(t *testing.T) {
+func TestMemoryStoreSeedsBuiltinTools(t *testing.T) {
 	t.Parallel()
 	store := NewMemoryStore()
 	ctx := context.Background()
@@ -17,16 +17,19 @@ func TestMemoryStoreSeedsBuiltinToolsDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools) != 3 {
-		t.Fatalf("seeded tools = %d, want 3", len(tools))
+	// S-164 added send_message as a fourth builtin, seeded ENABLED; the
+	// original three stay disabled-by-default (ADR-0012 §1).
+	if len(tools) != 4 {
+		t.Fatalf("seeded tools = %d, want 4", len(tools))
 	}
-	wantNames := []string{"exec", "web_fetch", "web_search"}
+	wantNames := []string{"exec", "web_fetch", "web_search", "send_message"}
 	for i, tool := range tools {
 		if tool.Name != wantNames[i] {
 			t.Fatalf("tool[%d] = %q, want %q", i, tool.Name, wantNames[i])
 		}
-		if tool.Enabled {
-			t.Fatalf("tool %s seeded enabled, want disabled", tool.Name)
+		wantEnabled := tool.Name == "send_message"
+		if tool.Enabled != wantEnabled {
+			t.Fatalf("tool %s enabled = %v, want %v", tool.Name, tool.Enabled, wantEnabled)
 		}
 		if string(tool.Policy) != "{}" {
 			t.Fatalf("tool %s policy = %s, want {}", tool.Name, tool.Policy)

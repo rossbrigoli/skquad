@@ -2627,6 +2627,23 @@ func (p *PostgresStore) ListAgentMessageHistory(ctx context.Context, agentID str
 	return scanMessages(rows)
 }
 
+// CountMessagesByCorrelation (S-164) counts messages sharing a correlation_id
+// so the send path can cap reply-chain depth. Empty IDs are rejected rather
+// than silently matching uncorrelated traffic.
+func (p *PostgresStore) CountMessagesByCorrelation(ctx context.Context, correlationID string) (int, error) {
+	if strings.TrimSpace(correlationID) == "" {
+		return 0, ErrInvalidInput
+	}
+	var count int
+	err := p.pool.QueryRow(ctx, `
+		SELECT count(*) FROM messages WHERE correlation_id = $1::uuid
+	`, correlationID).Scan(&count)
+	if err != nil {
+		return 0, mapPgErr(err)
+	}
+	return count, nil
+}
+
 // ResetAgentChat (S-162) archives the current chat transcript into
 // agent_memory and moves the agent's chat_reset_at boundary to now, in
 // one transaction. Returns the number of messages archived (i.e. those

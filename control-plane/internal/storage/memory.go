@@ -1956,6 +1956,24 @@ func (m *MemoryStore) ListAgentMessageHistory(_ context.Context, agentID string)
 	return out, nil
 }
 
+// CountMessagesByCorrelation (S-164) counts messages sharing a correlation_id
+// so the send path can cap reply-chain depth. Empty IDs are rejected rather
+// than silently matching uncorrelated traffic.
+func (m *MemoryStore) CountMessagesByCorrelation(_ context.Context, correlationID string) (int, error) {
+	if strings.TrimSpace(correlationID) == "" {
+		return 0, ErrInvalidInput
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	for _, msg := range m.messages {
+		if msg.CorrelationID == correlationID {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // ResetAgentChat (S-162) mirrors the Postgres implementation: archive
 // the transcript into agent memory and move the boundary to now.
 func (m *MemoryStore) ResetAgentChat(_ context.Context, agentID, squadID, transcript string, metadata json.RawMessage) (int, time.Time, error) {

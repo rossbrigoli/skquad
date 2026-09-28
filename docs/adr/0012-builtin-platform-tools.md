@@ -5,6 +5,15 @@
 - Deciders: Ross, Sherlock
 - Related: ADR-0011 (layered prompts, fetch-at-wake), S-122 (chat tool loop)
 
+> **Amended by S-164 (2026-09-28):** the builtin universe widened to four —
+> `send_message` (agent-to-agent messaging within the squad) was added via
+> migration `0023`. Unlike the original three it is seeded **enabled**:
+> intra-squad messaging is the core squad primitive, bounded by squad
+> isolation, control-plane grant checks for cross-squad sends, and a
+> 12-message per-correlation-chain budget. Policy keys: `timeoutSeconds`,
+> `maxMessageChars`. See
+> [`collaboration-messaging.md`](../collaboration-messaging.md) §10.
+
 ## Context
 
 Tools in Skquad today come from external plugin modules loaded via
