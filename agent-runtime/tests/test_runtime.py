@@ -1045,7 +1045,11 @@ class RuntimeBootstrapTest(unittest.TestCase):
                 ControlPlaneClient.from_bootstrap = original
 
             self.assertEqual(result.status, "blocked")
-            self.assertNotIn("tools", calls[0])
+            # S-160: ungranted plugins stay hidden; the subagent capability
+            # is a platform feature and is always offered.
+            tool_names = [t["function"]["name"] for t in calls[0].get("tools", [])]
+            self.assertNotIn("echo", tool_names)
+            self.assertIn("spawn_subagent", tool_names)
             self.assertEqual(plugin.calls, [])
 
     def test_litellm_handler_invokes_plugin_tool_calls(self):
@@ -1858,7 +1862,10 @@ class LLMMessageHandlerTest(unittest.TestCase):
             result = handler.handle_message(user_msg("m-1", "hi"), config)
 
             self.assertTrue(result.ok)
-            self.assertNotIn("tools", seen)
+            # S-160: with no plugins, the only tool offered is the
+            # subagent capability (it inherits whatever the parent has).
+            tool_names = [t["function"]["name"] for t in seen.get("tools", [])]
+            self.assertEqual(tool_names, ["spawn_subagent"])
             # No tool calls -> no tool_calls key; no usage -> no context_tokens.
             self.assertIsNone(client.replies[-1][3])
 

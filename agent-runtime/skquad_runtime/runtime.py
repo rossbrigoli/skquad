@@ -1038,6 +1038,26 @@ class LLMMessageHandler:
                 [],
             )
         tools = self.tool_schemas(plugins)
+        # S-160: subagents in the chat path too. The subagent inherits
+        # the same composed chat system prompt and gateway identity.
+        sub_system_prompt = prompted.chat_system_prompt() if prompted is not None else ""
+        if sub_system_prompt:
+            from .subagents import maybe_add_subagent_plugin
+
+            def _chat_sub_kwargs(msgs: list, child_tools: list) -> dict:
+                kwargs = self._completion_kwargs(message, config, msgs, virtual_key, model)
+                if child_tools:
+                    kwargs["tools"] = child_tools
+                return kwargs
+
+            plugins, tools = maybe_add_subagent_plugin(
+                plugins,
+                tools,
+                system_prompt=sub_system_prompt,
+                completion=completion,
+                kwargs_factory=_chat_sub_kwargs,
+                origin=f"chat:{message.id}",
+            )
         tool_calls_log: list[dict[str, object]] = []
         max_steps = max(1, self.max_tool_steps or DEFAULT_CHAT_TOOL_STEPS)
         response: object = None
@@ -1219,10 +1239,11 @@ class LiteLLMTaskHandler:
         # control-plane composed prompt; a fetch failure raises before any
         # LLM call (ADR-0011 D4 — no silent degraded prompt).
         prompted = PromptedRuntime(config)
+        system_prompt = prompted.system_prompt(resources, memories)
         messages: list[dict[str, object]] = [
             {
                 "role": "system",
-                "content": prompted.system_prompt(resources, memories),
+                "content": system_prompt,
             },
             {
                 "role": "user",
@@ -1234,6 +1255,21 @@ class LiteLLMTaskHandler:
         ]
         tools = self.tool_schemas(plugins)
         completion = self.completion()
+        # S-160: subagents — spawn_subagent runs a nested loop that
+        # inherits this run's model, grants, config and composed system
+        # prompt but starts from an empty context.
+        from .subagents import maybe_add_subagent_plugin
+
+        plugins, tools = maybe_add_subagent_plugin(
+            plugins,
+            tools,
+            system_prompt=system_prompt,
+            completion=completion,
+            kwargs_factory=lambda msgs, child_tools: self._completion_kwargs(
+                model, msgs, config, virtual_key, task.id, child_tools
+            ),
+            origin=f"task:{task.id}",
+        )
         last_content = ""
         last_model_used = model
 
