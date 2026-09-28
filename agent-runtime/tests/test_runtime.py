@@ -1265,6 +1265,12 @@ class FakeControlPlaneClient:
         self.acked_messages.append(message_id)
         return fake_message(message_id, "ping", status="delivered")
 
+    def message_status(self, message_id):
+        # S-175: chat stop-button polling. Default: not cancelled.
+        if message_id in getattr(self, "cancelled_message_ids", set()):
+            return "cancelled"
+        return "delivered"
+
     def fail_message(self, message_id, reason):
         self.failed_messages.append((message_id, reason))
         return fake_message(message_id, "ping", attempts=1)
@@ -1897,6 +1903,52 @@ class LLMMessageHandlerTest(unittest.TestCase):
 
             self.assertFalse(result.ok)
             self.assertIn("budget exhausted", result.summary)
+            self.assertEqual(client.replies, [])
+
+    def test_chat_cancelled_before_reply_drops_reply(self):
+        # S-175: user hits stop while the final LLM call is in flight —
+        # the reply is dropped and the message acks cleanly (no retry).
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+
+            def completion(**kwargs):
+                return fake_completion_response("answer the user almost wrote")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            client.cancelled_message_ids = {"m-1"}
+            handler = LLMMessageHandler(completion=completion, client=client)
+
+            result = handler.handle_message(user_msg("m-1", "actually never mind"), config)
+
+            self.assertTrue(result.ok)
+            self.assertIn("cancelled", result.summary)
+            self.assertEqual(client.replies, [])
+
+    def test_chat_cancel_stops_tool_loop_before_next_llm_call(self):
+        # S-175: a cancel observed at a step boundary stops the loop
+        # before the next LLM call — no further tokens, no tool runs.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            plugin = EchoPlugin()
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                return fake_tool_completion("call-1", "echo", {"message": "keep going"})
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            client.cancelled_message_ids = {"m-1"}
+            handler = LLMMessageHandler(
+                completion=completion, client=client, plugins=[plugin]
+            )
+
+            result = handler.handle_message(user_msg("m-1", "stop everything"), config)
+
+            self.assertTrue(result.ok)
+            self.assertIn("cancelled", result.summary)
+            # The cancel is seen at the first boundary: no LLM call at all.
+            self.assertEqual(calls, [])
+            self.assertEqual(plugin.calls, [])
             self.assertEqual(client.replies, [])
 
     def test_chat_missing_tool_result_is_truncated(self):

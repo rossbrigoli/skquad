@@ -335,6 +335,10 @@ const (
 	MessageDelivered MessageStatus = "delivered"
 	MessageExpired   MessageStatus = "expired"
 	MessageDead      MessageStatus = "dead"
+	// MessageCancelled (S-175) marks a chat turn the user stopped from the
+	// chat UI. The runtime polls for it and abandons the in-flight turn
+	// without posting a reply.
+	MessageCancelled MessageStatus = "cancelled"
 )
 
 // Message is a durable queued message for an agent inbox.

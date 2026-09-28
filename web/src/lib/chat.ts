@@ -182,10 +182,17 @@ export function formatContextTokens(value: number): string {
 // not stay locked forever — the pending-turn lock expires after this window.
 export const CHAT_TURN_LOCK_MS = 5 * 60 * 1000;
 
+// S-175: terminal message statuses — a user message in one of these states
+// can never produce an agent reply, so it must not keep the turn "pending".
+// "cancelled" is set by the chat stop button; dead/expired messages were
+// never answered either.
+const TURN_TERMINAL_STATUSES = new Set(["cancelled", "dead", "expired"]);
+
 /** True while the agent's turn for the newest user message is still in
  *  flight: the chronologically-last message is from a user (no agent
- *  reply after it) and it is younger than `lockWindowMs`. Pure so it is
- *  unit-testable; callers pass `Date.now()` explicitly. */
+ *  reply after it), it is younger than `lockWindowMs`, and it has not
+ *  been cancelled/dead-lettered. Pure so it is unit-testable; callers
+ *  pass `Date.now()` explicitly. */
 export function agentTurnPending(
   messages: Message[],
   nowMs: number,
@@ -194,6 +201,7 @@ export function agentTurnPending(
   const sorted = sortChatMessages(messages);
   const last = sorted[sorted.length - 1];
   if (!last || last.from_type !== "user") return false;
+  if (TURN_TERMINAL_STATUSES.has(last.status)) return false;
   const sentAt = Date.parse(last.created_at ?? "");
   if (!Number.isFinite(sentAt)) return false;
   return nowMs - sentAt < lockWindowMs;

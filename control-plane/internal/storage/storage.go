@@ -200,6 +200,15 @@ type MessageStore interface {
 	ResetAgentChat(ctx context.Context, agentID, squadID, transcript string, metadata json.RawMessage) (int, time.Time, error)
 	AckMessage(ctx context.Context, agentID string, messageID string) (*domain.Message, error)
 	FailMessage(ctx context.Context, agentID string, messageID string, reason string) (*domain.Message, error)
+	// CancelChatTurn (S-175) marks the newest still-live user chat message
+	// for an agent (pending or delivered, after the chat-reset boundary,
+	// with no agent reply yet) as cancelled. The runtime polls the message
+	// status and abandons the turn without replying. Returns ErrNotFound
+	// when there is no live turn to cancel.
+	CancelChatTurn(ctx context.Context, agentID string) (*domain.Message, error)
+	// GetMessage fetches a single message by id (no agent scoping — the
+	// HTTP handler enforces it). Returns ErrNotFound when absent.
+	GetMessage(ctx context.Context, messageID string) (*domain.Message, error)
 	// UpdateMessagePayload replaces a message's payload and status (used to
 	// link a materialized delegated task back to its trigger message).
 	UpdateMessagePayload(ctx context.Context, messageID string, payload json.RawMessage, status domain.MessageStatus) (*domain.Message, error)

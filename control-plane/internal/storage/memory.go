@@ -2073,6 +2073,61 @@ func (m *MemoryStore) FailMessage(ctx context.Context, agentID string, messageID
 	return cloneMessage(msg), nil
 }
 
+func (m *MemoryStore) CancelChatTurn(_ context.Context, agentID string) (*domain.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.agents[agentID]; !ok {
+		return nil, ErrNotFound
+	}
+	resetAt := m.agents[agentID].ChatResetAt
+	var live *domain.Message
+	for _, msg := range m.messages {
+		if msg.ToAgentID != agentID || msg.FromType != "user" {
+			continue
+		}
+		if msg.Status != domain.MessagePending && msg.Status != domain.MessageDelivered {
+			continue
+		}
+		if !resetAt.IsZero() && !msg.CreatedAt.After(resetAt) {
+			continue
+		}
+		if m.agentRepliedToLocked(msg.ID) {
+			continue
+		}
+		if live == nil || msg.CreatedAt.After(live.CreatedAt) {
+			live = msg
+		}
+	}
+	if live == nil {
+		return nil, ErrNotFound
+	}
+	live.Status = domain.MessageCancelled
+	live.TerminalReason = "cancelled by user"
+	return cloneMessage(live), nil
+}
+
+// agentRepliedToLocked reports whether the agent has already answered the
+// user message (S-175): a human-chat reply carries the trigger message id
+// as its correlation_id.
+func (m *MemoryStore) agentRepliedToLocked(userMessageID string) bool {
+	for _, msg := range m.messages {
+		if msg.FromType == "agent" && msg.CorrelationID == userMessageID {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MemoryStore) GetMessage(_ context.Context, messageID string) (*domain.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	msg, ok := m.messages[messageID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return cloneMessage(msg), nil
+}
+
 func (m *MemoryStore) nextTaskPosition(boardID string, status domain.TaskStatus) int {
 	next := 1
 	for _, task := range m.tasks {

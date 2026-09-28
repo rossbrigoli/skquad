@@ -527,6 +527,18 @@ class ControlPlaneClient:
         payload = self._json("POST", f"/api/v1/agents/me/messages/{message_id}/ack", None)
         return runtime_message(payload)
 
+    def message_status(self, message_id: str) -> str:
+        """S-175: current status of one of this agent's messages.
+
+        Backs the chat stop button: the handler polls the trigger
+        message between LLM steps and abandons the turn once the user
+        has cancelled it.
+        """
+        payload = self._json("GET", f"/api/v1/agents/me/messages/{message_id}", None)
+        if isinstance(payload, Mapping):
+            return str(payload.get("status", ""))
+        return ""
+
     def fail_message(self, message_id: str, reason: str) -> RuntimeMessage:
         payload = self._json(
             "POST",
@@ -970,6 +982,14 @@ class LLMMessageHandler:
                 config.agent_id,
             )
 
+        # S-175: the user may have hit stop while the final LLM call was
+        # in flight — drop the reply instead of answering a cancelled ask.
+        if self._turn_cancelled(message, config):
+            LOGGER.info(
+                "chat turn cancelled by user before reply", extra={"message_id": message.id}
+            )
+            return MessageResult(ok=True, summary="turn cancelled by user")
+
         return self._post_chat_reply(message, config, response, tool_calls_log, model_used)
 
     @staticmethod
@@ -1041,6 +1061,22 @@ class LLMMessageHandler:
         if not user_text:
             return MessageResult(ok=False, summary="user chat message had no text"), "", ""
         return None, virtual_key, model
+
+    def _turn_cancelled(self, message: RuntimeMessage, config: BootstrapConfig) -> bool:
+        """S-175: best-effort check whether the user stopped this turn.
+
+        Polls the trigger message status on the control plane between LLM
+        steps. Only user chat turns are cancellable (the control plane
+        only ever marks those), so agent-authored mail skips the poll.
+        Any transport failure reads as "not cancelled" — a flaky cancel
+        check must never kill a healthy turn.
+        """
+        if message.from_type != "user" or not message.id:
+            return False
+        try:
+            return self._control_plane(config).message_status(message.id) == "cancelled"
+        except Exception:
+            return False
 
     def _completion_kwargs(
         self,
@@ -1125,6 +1161,14 @@ class LLMMessageHandler:
         # S-161: tiered context compaction before each LLM call.
         compactor = ContextCompactor()
         for step in range(max_steps):
+            # S-175: check for a user cancel at every step boundary so a
+            # multi-step tool loop stops burning tokens promptly.
+            if self._turn_cancelled(message, config):
+                return (
+                    MessageResult(ok=True, summary="turn cancelled by user"),
+                    response,
+                    tool_calls_log,
+                )
             chat_messages, compaction = compactor.maybe_compact(chat_messages)
             if compaction.changed:
                 LOGGER.info(
