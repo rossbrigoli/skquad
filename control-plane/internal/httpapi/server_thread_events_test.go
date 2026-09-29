@@ -86,3 +86,47 @@ func TestTaskThreadEmptySummarySurfaced(t *testing.T) {
 	require.Equal(t, "agent", thread[1].FromType)
 	require.Contains(t, string(thread[1].Payload), "without a summary")
 }
+
+// TestTaskThreadTurnStreaming pins the S-183 contract: the assigned agent
+// can stream working turns into its task thread via
+// POST /api/v1/agents/me/tasks/{id}/thread; the turn lands as a
+// delivered agent reply carrying task_id, non-assignees are rejected,
+// and empty/missing bodies are 400s.
+func TestTaskThreadTurnStreaming(t *testing.T) {
+	handler, crWriter, squad, agent, credential := agentRuntimeSetup(t, "thread-streaming-squad")
+
+	// Second agent in the same squad — must not be able to write to agent 1's thread.
+	var other domain.Agent
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{"name": "other-streamer"}, http.StatusCreated, &other)
+	var otherIdentity domain.AgentIdentity
+	doJSON(t, handler, http.MethodPost, pathAgentsPrefix+other.ID+pathIdentity, nil, http.StatusCreated, &otherIdentity)
+	otherCredential := crWriter.credentialTokens[otherIdentity.CredentialRef]
+
+	var task domain.Task
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
+		"title":             "Streamed task",
+		"assignee_agent_id": agent.ID,
+	}, http.StatusCreated, &task)
+
+	// Empty / missing bodies are rejected.
+	var emptyErr map[string]map[string]string
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+"/thread", map[string]any{"message": "   "}, http.StatusBadRequest, &emptyErr)
+	doAgentJSONNoBody(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+"/thread", nil, http.StatusBadRequest)
+
+	// Non-assignee is forbidden.
+	var forbidden map[string]map[string]string
+	doAgentJSON(t, handler, other.ID, otherCredential, http.MethodPost, pathMyTasksPrefix+task.ID+"/thread", map[string]any{"message": "sneaky"}, http.StatusForbidden, &forbidden)
+	require.Equal(t, "not_assignee", forbidden["error"]["code"])
+
+	// Assignee streams a working turn → thread gains a delivered agent reply.
+	doAgentJSONNoBody(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+"/thread", map[string]any{"message": "checking the runtime API surface"}, http.StatusNoContent)
+
+	var thread []domain.Message
+	doJSON(t, handler, http.MethodGet, pathTasksPrefix+task.ID+pathMessages, nil, http.StatusOK, &thread)
+	require.Len(t, thread, 2) // creation event + streamed turn
+	require.Equal(t, "agent", thread[1].FromType)
+	require.Equal(t, agent.ID, thread[1].ToAgentID)
+	require.Equal(t, "delivered", string(thread[1].Status))
+	require.Contains(t, string(thread[1].Payload), "checking the runtime API surface")
+	require.Contains(t, string(thread[1].Payload), task.ID)
+}

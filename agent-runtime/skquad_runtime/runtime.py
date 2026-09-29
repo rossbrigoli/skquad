@@ -620,6 +620,18 @@ class ControlPlaneClient:
         payload = self._json("POST", f"/api/v1/agents/me/tasks/{task_id}/start", body)
         return runtime_task(payload)
 
+    def append_task_thread(self, task_id: str, text: str) -> None:
+        # S-183: stream one working turn into the task thread. Best-effort:
+        # a failed push must never take the task down with it — the thread
+        # is visibility, not correctness.
+        try:
+            self._json("POST", f"/api/v1/agents/me/tasks/{task_id}/thread", {"message": text})
+        except Exception as exc:  # noqa: BLE001 - thread visibility is best-effort
+            LOGGER.warning(
+                "task thread turn push failed",
+                extra={"task_id": task_id, "error": str(exc)},
+            )
+
     def complete_task(
         self,
         task: RuntimeTask | str,
@@ -1371,6 +1383,19 @@ class LiteLLMTaskHandler:
         self.model = model
         self.max_steps = max_steps
         self.discover_resources = discover_resources
+        # S-183: per-task sink injected by run_task_once; pushes each
+        # working turn (assistant narration that accompanies tool calls)
+        # to the control-plane task thread. None = no streaming (tests,
+        # embedded use).
+        self.thread_sink: Callable[[str], None] | None = None
+
+    def attach_thread_sink(self, sink: Callable[[str], None] | None) -> None:
+        """S-183: set the per-task thread sink (see ``thread_sink``).
+
+        The final answer is NOT streamed here — it reaches the thread via
+        the completion/block event, so streaming stays duplicate-free.
+        """
+        self.thread_sink = sink
 
     def handle_task(self, task: RuntimeTask, config: BootstrapConfig) -> TaskResult:
         virtual_key = read_secret_value(config.virtual_key_path)
@@ -1477,13 +1502,26 @@ class LiteLLMTaskHandler:
                     summary=trim_text(final_content, config.task_summary_max_chars),
                     model_used=last_model_used,
                 )
+            # S-183: working narration goes to the task thread BEFORE the
+            # tool round runs, so a long/slow tool no longer leaves the
+            # thread silent while the agent is mid-work.
+            if content.strip() and self.thread_sink is not None:
+                self.thread_sink(trim_text(content, TASK_THREAD_TURN_MAX_CHARS))
             blocked = self._run_tool_calls(tool_calls, config, plugins, messages)
             if blocked is not None:
                 return blocked
 
         return TaskResult(
             status="in-review",
-            summary=trim_text(last_content, config.task_summary_max_chars),
+            # S-183: the step-limit exit used to masquerade as a normal
+            # finish — the summary was the last mid-work narration, so a
+            # cut-off run looked like a deliberate one (Alpha "security
+            # audit", 2026-09-29). Say explicitly that the run was cut.
+            summary=trim_text(
+                f"Stopped after {max_steps} steps without finishing the task.\n"
+                f"Last output before stopping:\n{last_content}",
+                config.task_summary_max_chars,
+            ),
             model_used=last_model_used,
         )
 
@@ -2093,6 +2131,11 @@ def run_task_once(
             state.task_failed(task.id, str(exc))
         return final_task
     control_plane.start_task(task.id, prompt_sha)
+    # S-183: stream the handler's working turns into the task thread
+    # (best-effort; the sink swallows its own errors).
+    attacher = getattr(handler, "attach_thread_sink", None)
+    if callable(attacher):
+        attacher(lambda text: control_plane.append_task_thread(task.id, text))
     resumed = False
     if config.workspace_enabled:
         # S-139: disk-full guard BEFORE any workspace work. Running a
@@ -2427,6 +2470,12 @@ def env_int(environ: Mapping[str, str], name: str, default: int) -> int:
 
 def parse_csv(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+# S-183: cap for one streamed task-thread working turn. The control
+# plane enforces its own cap (maxTaskThreadTurnChars); this one keeps the
+# payload small before it leaves the runtime.
+TASK_THREAD_TURN_MAX_CHARS = 4000
 
 
 def trim_text(value: str, limit: int) -> str:
