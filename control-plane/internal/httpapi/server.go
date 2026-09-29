@@ -344,6 +344,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Post("/tasks/{taskID}/complete", s.completeCurrentAgentTask)
 			r.Post("/tasks/{taskID}/block", s.blockCurrentAgentTask)
 			r.Post("/tasks/{taskID}/workspace", s.reportCurrentAgentTaskWorkspace)
+			// S-183: the runtime streams the agent's working turns into the
+			// task thread while the task runs.
+			r.Post("/tasks/{taskID}/thread", s.appendCurrentAgentTaskThread)
 			r.Post("/heartbeat", s.currentAgentHeartbeat)
 			// S-PROMPT WP2: composed effective prompt for the runtime
 			// (ETag = composition sha256, ADR-0011 D4).
@@ -2127,6 +2130,11 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 const maxInboxMessageChars = 2000
+
+// maxTaskThreadTurnChars caps one streamed working turn (S-183). Working
+// narration is longer than an inbox ping but must not flood the thread or
+// the messages table with megabyte "turns".
+const maxTaskThreadTurnChars = 4000
 
 // appendTaskThreadEvent writes a thread-only message for a task lifecycle
 // event (S-181): created/assigned by the user, agent completion, agent
@@ -3946,6 +3954,41 @@ func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 		updated.PromptSHA = promptSHA
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// appendCurrentAgentTaskThread S-183: stream one assistant working turn
+// of the current task into the task thread, so the task page shows the
+// agent's work-in-progress rather than only the final summary. Only the
+// assigned agent may append; turns are capped like inbox messages. The
+// runtime treats failures as best-effort (logged, never task-fatal).
+func (s *Server) appendCurrentAgentTaskThread(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Message string `json:"message"`
+	}
+	if r.Body == nil || r.ContentLength == 0 {
+		writeError(w, http.StatusBadRequest, "missing_body", "message is required")
+		return
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	text := strings.TrimSpace(req.Message)
+	if text == "" {
+		writeError(w, http.StatusBadRequest, "empty_message", "message must not be empty")
+		return
+	}
+	principal := currentAgent(r.Context())
+	task, err := s.store.GetTask(r.Context(), chi.URLParam(r, "taskID"))
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if task.AssigneeAgentID != principal.Agent.ID {
+		writeError(w, http.StatusForbidden, "not_assignee", "only the assigned agent can append turns to this task thread")
+		return
+	}
+	s.appendTaskThreadEvent(r.Context(), task, "agent", principal.Agent.ID, domain.MessageReply, trimRunes(text, maxTaskThreadTurnChars))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // parseClaimStartedAt leniently extracts a started_at timestamp from the
