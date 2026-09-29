@@ -265,6 +265,16 @@ web:
       memory: 128Mi
     limits:
       memory: 512Mi
+  # Pod runs as the image's non-root user (65532). fsGroup makes the
+  # next-image-cache emptyDir group-writable so the Next.js image optimizer
+  # can write /app/.next/cache/images under readOnlyRootFilesystem instead of
+  # failing EACCES and re-optimizing every request.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
   # UIv2-13: generic OIDC login (authorization code + PKCE). Works with any
   # IdP exposing .well-known/openid-configuration (Dex, Keycloak, Entra…).
   # When disabled the UI keeps the paste-a-token dev gate.

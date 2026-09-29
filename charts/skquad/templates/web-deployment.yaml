@@ -21,10 +21,24 @@ spec:
     spec:
       # S6865: this pod never calls the Kubernetes API — do not mount a SA token.
       automountServiceAccountToken: false
+      {{- if .Values.web.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.web.podSecurityContext | nindent 8 }}
+      {{- end }}
+      volumes:
+        # Next.js image optimizer needs a writable cache dir; the root FS is
+        # read-only (hardening). emptyDir + fsGroup makes it writable by the
+        # container's uid so /_next/image can cache instead of re-optimizing
+        # every request (EACCES: mkdir /app/.next/cache/images).
+        - name: next-image-cache
+          emptyDir: {}
       containers:
         - name: web
           image: {{ include "skquad.webImage" . | quote }}
           imagePullPolicy: {{ .Values.web.imagePullPolicy }}
+          volumeMounts:
+            - name: next-image-cache
+              mountPath: /app/.next/cache
           ports:
             - name: http
               containerPort: {{ .Values.web.port }}
