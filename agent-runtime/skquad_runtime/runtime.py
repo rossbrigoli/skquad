@@ -1463,13 +1463,18 @@ class LiteLLMTaskHandler:
                 )
             message = first_message(response)
             content = str(message_value(message, "content") or "")
-            last_content = content
+            # S-182: keep the last NON-EMPTY assistant text. A final round
+            # that only emits tool calls (or empty content) must not wipe
+            # the summary the agent already produced.
+            if content.strip():
+                last_content = content
             tool_calls = parse_tool_calls(message)
             messages.append(assistant_message(content, tool_calls))
             if not tool_calls:
+                final_content = content if content.strip() else last_content
                 return TaskResult(
-                    status=status_from_content(content),
-                    summary=trim_text(content, config.task_summary_max_chars),
+                    status=status_from_content(final_content),
+                    summary=trim_text(final_content, config.task_summary_max_chars),
                     model_used=last_model_used,
                 )
             blocked = self._run_tool_calls(tool_calls, config, plugins, messages)
@@ -2004,6 +2009,11 @@ def _finalize_task_result(
     workspace: WorkspaceHandle | None,
 ) -> RuntimeTask:
     summary = trim_text(result.summary, config.task_summary_max_chars)
+    if not summary.strip():
+        # S-182: an empty summary left nothing anywhere — not the task
+        # row, not the thread, not the inbox. Surface the emptiness
+        # explicitly instead of silently completing with nothing.
+        summary = f"Agent finished this task with status {result.status}; no summary text was produced."
     if result.status == "blocked":
         return control_plane.block_task(task, summary=summary)
     if workspace is not None:

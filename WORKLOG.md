@@ -826,3 +826,11 @@
   - agent-runtime/skquad_runtime/runtime.py — run_task_loop escalates sleep on consecutive failures (interval×2^n, cap 60s), resets on success.
   - control-plane/internal/storage/outbox_coalesce_test.go — new: Postgres regression test for prompt-sha start + coalescing contract.
 - Tests run: go test ./... (full, with pgvector/pg16 via podman :55499) PASS; runtime pytest 257 pass / 2 skip / 1 pre-existing fail (test_empty_user_text_fails also fails on clean main, unrelated).
+
+## 2026-09-29 — S-181 + S-182: task thread lifecycle events + no-empty summaries
+- Objective (Kanbunny S-181 9b0443b3, S-182 e5e3b693, per Ross): keep inbox notifications AND make agent turns + task lifecycle appear in the task thread; eliminate empty completion summaries.
+- Files changed:
+  - control-plane/internal/httpapi/server.go — new appendTaskThreadEvent (thread-only message: to_agent_id=assignee, task_id in payload, status=delivered so it never enters the agent's pending inbox); wired into createTask (create+assign), updateTask (later assignment), completeCurrentAgentTask (agent turn / summary), blockCurrentAgentTask (block reason). Empty completion summary surfaces as "…without a summary." instead of vanishing.
+  - agent-runtime/skquad_runtime/runtime.py — handle_task keeps last NON-EMPTY assistant content (final empty/tool-only round no longer wipes the summary); _finalize_task_result replaces empty summary with explicit placeholder.
+  - tests: server_thread_events_test.go (new), server_taskmessages_test.go (updated to new thread contract), test_runtime.py (placeholder test + updated old empty-summary assertion).
+- Tests run: go test ./... full suite vs pgvector/pg16 PASS; runtime pytest 258 pass / 2 skip / 1 pre-existing fail (test_empty_user_text_fails, fails on clean main too).

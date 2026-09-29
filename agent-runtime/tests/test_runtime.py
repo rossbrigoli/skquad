@@ -504,7 +504,10 @@ class RuntimeBootstrapTest(unittest.TestCase):
 
             self.assertEqual(task.id, "task-1")
             self.assertEqual(client.completed, [("task-1", "done")])
-            self.assertEqual(client.completion_summaries, [""])
+            # S-182: empty handler summaries are replaced with an explicit
+            # placeholder instead of completing with nothing.
+            self.assertEqual(len(client.completion_summaries), 1)
+            self.assertIn("no summary text was produced", client.completion_summaries[0])
             self.assertEqual(client.blocked, [])
             self.assertEqual(client.heartbeats, ["busy", "idle"])
 
@@ -594,6 +597,26 @@ class RuntimeBootstrapTest(unittest.TestCase):
             )
 
             self.assertEqual(client.completion_summaries, ["abcdefghij\n[truncated]"])
+
+    def test_run_task_once_replaces_empty_summary_with_placeholder(self):
+        # S-182: an empty handler summary used to leave nothing anywhere.
+        # It must be replaced with an explicit placeholder so the task
+        # row, thread, and inbox all surface that the agent said nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = ready_config(tmp)
+            client = FakeControlPlaneClient(claimed_task=fake_task("task-1"))
+
+            run_task_once(
+                config,
+                StaticTaskHandler(TaskResult(status="done", summary="   ")),
+                client,
+            )
+
+            self.assertEqual(len(client.completion_summaries), 1)
+            summary = client.completion_summaries[0]
+            self.assertIn("no summary text was produced", summary)
+            self.assertIn("done", summary)
+            self.assertTrue(summary.strip())
 
     def test_run_task_once_blocks_when_handler_times_out(self):
         with tempfile.TemporaryDirectory() as tmp:

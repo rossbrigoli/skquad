@@ -44,18 +44,23 @@ func TestTaskMessagesComposerAndThread(t *testing.T) {
 	require.Equal(t, task.ID, payload["task_id"])
 	require.Equal(t, "focus on the summary first", payload["message"])
 
-	// Thread lists exactly the task-scoped messages.
+	// Thread lists the task-scoped messages: the S-181 assign lifecycle
+	// event first, then the composer message.
 	var thread []domain.Message
 	doJSON(t, h, http.MethodGet, pathTasksPrefix+task.ID+pathMessages, nil, http.StatusOK, &thread)
-	require.Len(t, thread, 1)
-	require.Equal(t, sent.ID, thread[0].ID)
+	require.Len(t, thread, 2)
+	require.Equal(t, "delivered", string(thread[0].Status)) // lifecycle events are thread-only
+	require.Contains(t, string(thread[0].Payload), "Task assigned to you")
+	require.Equal(t, sent.ID, thread[1].ID)
 
-	// A second task on the same assignee must not see this thread.
+	// A second task on the same assignee must not see this thread — only
+	// its own lifecycle event.
 	other := createBoardTask(t, h, f.squadID, "unrelated work")
 	assignTask(t, h, other.ID, f.workerID)
 	var otherThread []domain.Message
 	doJSON(t, h, http.MethodGet, pathTasksPrefix+other.ID+pathMessages, nil, http.StatusOK, &otherThread)
-	require.Empty(t, otherThread)
+	require.Len(t, otherThread, 1)
+	require.Contains(t, string(otherThread[0].Payload), "unrelated work")
 
 	// Empty message rejected.
 	doJSONNoBody(t, h, http.MethodPost, pathTasksPrefix+task.ID+pathMessages, map[string]any{"message": "   "}, http.StatusBadRequest)
@@ -96,6 +101,10 @@ func TestTaskMessagesIncludesAgentThreadMessages(t *testing.T) {
 
 	var thread []domain.Message
 	doJSON(t, h, http.MethodGet, pathTasksPrefix+task.ID+pathMessages, nil, http.StatusOK, &thread)
-	require.Len(t, thread, 1)
-	require.Equal(t, f.senderID, thread[0].FromID)
+	// S-181: the assign lifecycle event opens the thread, then the
+	// agent's own message.
+	require.Len(t, thread, 2)
+	require.Contains(t, string(thread[0].Payload), "Task assigned to you")
+	require.Equal(t, f.senderID, thread[1].FromID)
+	require.Contains(t, string(thread[1].Payload), "blocked on data")
 }
