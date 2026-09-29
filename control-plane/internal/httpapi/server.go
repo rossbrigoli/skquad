@@ -4813,6 +4813,7 @@ func writeStorageError(w http.ResponseWriter, err error) {
 	case errors.Is(err, storage.ErrConflict):
 		writeError(w, http.StatusConflict, "conflict", "resource already exists")
 	default:
+		slog.Error("unexpected storage error", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "unexpected storage error")
 	}
 }
