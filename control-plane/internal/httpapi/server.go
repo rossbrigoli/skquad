@@ -2128,6 +2128,39 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 
 const maxInboxMessageChars = 2000
 
+// appendTaskThreadEvent writes a thread-only message for a task lifecycle
+// event (S-181): created/assigned by the user, agent completion, agent
+// block. The row is addressed to the task's assignee with task_id in the
+// payload so the task-page thread (ListAgentMessageHistory filtered by
+// task_id) renders it, and it is stored as DELIVERED so it never enters
+// the agent's pending inbox — the agent learns about the task through the
+// task wake path, not by re-processing its own thread. Best-effort: a
+// failure is logged, never surfaced to the caller.
+func (s *Server) appendTaskThreadEvent(ctx context.Context, task *domain.Task, fromType, fromID string, messageType domain.MessageType, text string) {
+	if task == nil || task.AssigneeAgentID == "" {
+		return
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	payload, err := json.Marshal(map[string]string{"message": text, "task_id": task.ID})
+	if err != nil {
+		return
+	}
+	if _, err := s.store.CreateMessage(ctx, &domain.Message{
+		FromType:  fromType,
+		FromID:    fromID,
+		ToAgentID: task.AssigneeAgentID,
+		SquadID:   task.SquadID,
+		Type:      messageType,
+		Payload:   payload,
+		Status:    domain.MessageDelivered,
+	}); err != nil {
+		slog.Warn("task thread event failed", "task_id", task.ID, "from_type", fromType, "error", err)
+	}
+}
+
 // notifyDelegationResult closes the loop for a task that was materialized from
 // a delegate/handoff message: the requesting agent receives a reply carrying
 // the completion summary, and the requesting squad's owner receives an inbox
@@ -3158,6 +3191,13 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if created.AssigneeAgentID != "" {
+		// S-181: seed the task thread so the page is not empty for tasks
+		// that actually ran — the creation itself is the opening message.
+		threadText := created.Title
+		if desc := strings.TrimSpace(created.Description); desc != "" {
+			threadText = created.Title + "\n\n" + desc
+		}
+		s.appendTaskThreadEvent(r.Context(), created, "user", u.ID, domain.MessageConsult, threadText)
 		if err := s.syncAgentStatusFromPendingWork(r.Context(), created.AssigneeAgentID); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
 			return
@@ -3972,6 +4012,14 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 	s.notifySquadOwner(r.Context(), updated.SquadID, domain.InboxTaskCompleted, principal.Agent.ID, updated.ID,
 		fmt.Sprintf("Agent %s moved task %q to %s", principal.Agent.Name, updated.Title, req.Status))
 	s.notifyDelegationResult(r.Context(), updated, principal.Agent, string(req.Status), summary)
+	// S-181: the agent's turn itself must appear in the task thread, not
+	// only in the owner's inbox. Empty summaries are surfaced explicitly
+	// rather than silently vanishing (see S-182).
+	threadText := strings.TrimSpace(summary)
+	if threadText == "" {
+		threadText = fmt.Sprintf("Moved this task to %s without a summary.", req.Status)
+	}
+	s.appendTaskThreadEvent(r.Context(), updated, "agent", principal.Agent.ID, domain.MessageReply, threadText)
 	if req.PersistMemory && strings.TrimSpace(req.Summary) != "" {
 		s.persistCompletionMemory(w, r, principal, updated, summary, strings.TrimSpace(req.Summary), req)
 	}
@@ -4107,6 +4155,12 @@ func (s *Server) blockCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	s.notifySquadOwner(r.Context(), updated.SquadID, domain.InboxActionRequired, principal.Agent.ID, updated.ID,
 		fmt.Sprintf("Agent %s blocked task %q%s", principal.Agent.Name, updated.Title, blockNote))
 	s.notifyDelegationBlocked(r.Context(), updated, principal.Agent)
+	// S-181: the agent's block turn belongs in the thread too.
+	blockedText := strings.TrimSpace(req.Summary)
+	if blockedText == "" {
+		blockedText = "Blocked this task without a reason."
+	}
+	s.appendTaskThreadEvent(r.Context(), updated, "agent", principal.Agent.ID, domain.MessageReply, blockedText)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -4352,6 +4406,13 @@ func (s *Server) updateTask(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeStorageError(w, err)
 		return
+	}
+	// S-181: assigning a task later (board drag-drop / edit) is the moment
+	// the agent joins — record it in the thread just like create-with-assignee.
+	if updated.AssigneeAgentID != "" && updated.AssigneeAgentID != previousAssignee {
+		if u := currentUser(r.Context()); u != nil {
+			s.appendTaskThreadEvent(r.Context(), updated, "user", u.ID, domain.MessageConsult, "Task assigned to you: "+updated.Title)
+		}
 	}
 	if err := s.syncAffectedAgentsFromTaskChange(r.Context(), previousAssignee, updated.AssigneeAgentID); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
