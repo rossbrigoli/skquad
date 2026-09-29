@@ -19,7 +19,7 @@
 </div>
 
 Skquad is a Kubernetes-native control plane for building and operating governed squads of autonomous AI agents. 
-It's designed with enterprise use case in mind whereh full observability, audit logging, identity and access controls are first class citizens.
+It's designed with enterprise use case in mind where full observability, audit logging, identity and access controls are first class citizens.
 
 Skquad models agent collaboration as squads, agents, Kanban tasks, messages,
 resource grants, and task-scoped memory. It combines a Go control-plane API, a
