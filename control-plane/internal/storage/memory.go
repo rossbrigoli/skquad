@@ -2128,6 +2128,225 @@ func (m *MemoryStore) GetMessage(_ context.Context, messageID string) (*domain.M
 	return cloneMessage(msg), nil
 }
 
+// clampInboxLimit bounds the per-section page size for inbox listings.
+func clampInboxLimit(limit int) int {
+	if limit <= 0 {
+		return 50
+	}
+	if limit > 200 {
+		return 200
+	}
+	return limit
+}
+
+// ListAgentInbox (S-174) builds the queue snapshot from the live map.
+// Pending is oldest-first (the waiting queue); the other sections are
+// newest-first (what just happened).
+func (m *MemoryStore) ListAgentInbox(_ context.Context, agentID string, limit int) (*domain.AgentInboxSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.agents[agentID]; !ok {
+		return nil, ErrNotFound
+	}
+	limit = clampInboxLimit(limit)
+	now := time.Now().UTC()
+	snap := &domain.AgentInboxSnapshot{
+		Pending:   []*domain.Message{},
+		Retrying:  []*domain.Message{},
+		Delivered: []*domain.Message{},
+		Dead:      []*domain.Message{},
+	}
+	for _, msg := range m.messages {
+		expireMessageIfDue(msg, now)
+		if msg.ToAgentID != agentID {
+			continue
+		}
+		switch msg.Status {
+		case domain.MessagePending:
+			if msg.Attempts <= 0 {
+				snap.PendingCount++
+				if snap.OldestPendingAt == nil || msg.CreatedAt.Before(*snap.OldestPendingAt) {
+					t := msg.CreatedAt
+					snap.OldestPendingAt = &t
+				}
+				if len(snap.Pending) < limit {
+					snap.Pending = append(snap.Pending, cloneMessage(msg))
+				}
+			} else {
+				snap.RetryingCount++
+				if len(snap.Retrying) < limit {
+					snap.Retrying = append(snap.Retrying, cloneMessage(msg))
+				}
+			}
+		case domain.MessageDelivered:
+			snap.DeliveredCount++
+			if len(snap.Delivered) < limit {
+				snap.Delivered = append(snap.Delivered, cloneMessage(msg))
+			}
+		case domain.MessageDead:
+			snap.DeadCount++
+			if len(snap.Dead) < limit {
+				snap.Dead = append(snap.Dead, cloneMessage(msg))
+			}
+		}
+	}
+	sortMessages(snap.Pending) // oldest waiting first
+	sortMessages(snap.Retrying)
+	reverseMessages(snap.Retrying)
+	sortMessages(snap.Delivered)
+	reverseMessages(snap.Delivered)
+	sortMessages(snap.Dead)
+	reverseMessages(snap.Dead)
+	return snap, nil
+}
+
+// ReplayDeadMessage (S-174) puts a dead letter back on the queue. The
+// correlation chain is untouched: replay is an operator action and the
+// send-path chain budget only gates new sends, so a replayed message is a
+// fresh delivery attempt without consuming anyone's budget.
+func (m *MemoryStore) ReplayDeadMessage(_ context.Context, messageID string) (*domain.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	msg, ok := m.messages[messageID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if msg.Status != domain.MessageDead {
+		return nil, ErrConflict
+	}
+	now := time.Now().UTC()
+	msg.Status = domain.MessagePending
+	msg.Attempts = 0
+	msg.NextRetryAt = now
+	msg.ExpiresAt = now.Add(defaultMessageTTL)
+	msg.DeliveredAt = time.Time{}
+	msg.TerminalReason = ""
+	return cloneMessage(msg), nil
+}
+
+// ListDeadLetters (S-174) scans all squads' dead messages, newest first.
+func (m *MemoryStore) ListDeadLetters(_ context.Context, filter domain.DeadLetterFilter) ([]*domain.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	reason := strings.ToLower(strings.TrimSpace(filter.Reason))
+	out := []*domain.Message{}
+	for _, msg := range m.messages {
+		if msg.Status != domain.MessageDead {
+			continue
+		}
+		if filter.SquadID != "" && msg.SquadID != filter.SquadID {
+			continue
+		}
+		if filter.AgentID != "" && msg.ToAgentID != filter.AgentID {
+			continue
+		}
+		if filter.Type != "" && string(msg.Type) != filter.Type {
+			continue
+		}
+		if reason != "" && !strings.Contains(strings.ToLower(msg.TerminalReason), reason) {
+			continue
+		}
+		if filter.Since != nil && msg.CreatedAt.Before(*filter.Since) {
+			continue
+		}
+		if filter.Until != nil && msg.CreatedAt.After(*filter.Until) {
+			continue
+		}
+		if len(out) < limit {
+			out = append(out, cloneMessage(msg))
+		}
+	}
+	sortMessages(out)
+	reverseMessages(out)
+	return out, nil
+}
+
+// DeleteMessage hard-prunes one row (admin only; handler enforces).
+func (m *MemoryStore) DeleteMessage(_ context.Context, messageID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.messages[messageID]; !ok {
+		return ErrNotFound
+	}
+	delete(m.messages, messageID)
+	return nil
+}
+
+// SweepConsultTimeouts (S-173) posts one synthetic consult_timeout reply
+// per expired unanswered consult. The notified marker is set before the
+// asker-exists check so deleted askers do not keep rows in the due set.
+func (m *MemoryStore) SweepConsultTimeouts(_ context.Context, now time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	posted := 0
+	for _, msg := range m.messages {
+		if msg.Type != domain.MessageConsult || msg.FromType != "agent" {
+			continue
+		}
+		if msg.TimeoutAt.IsZero() || !msg.TimeoutNotifiedAt.IsZero() || msg.TimeoutAt.After(now) {
+			continue
+		}
+		if msg.Status != domain.MessagePending && msg.Status != domain.MessageDelivered {
+			continue
+		}
+		thread := msg.CorrelationID
+		if thread == "" {
+			thread = msg.ID
+		}
+		if m.threadHasReplyLocked(thread, msg.ToAgentID) {
+			continue
+		}
+		msg.TimeoutNotifiedAt = now
+		asker, ok := m.agents[msg.FromID]
+		if !ok {
+			continue // sender deleted: nothing to notify, but never re-notify
+		}
+		reply := &domain.Message{
+			ID:             uuid.NewString(),
+			FromType:       "agent",
+			FromID:         msg.ToAgentID,
+			ToAgentID:      msg.FromID,
+			SquadID:        asker.SquadID,
+			Type:           domain.MessageReply,
+			Payload:        consultTimeoutPayload(msg),
+			Status:         domain.MessagePending,
+			CorrelationID:  thread,
+			Attempts:       0,
+			MaxAttempts:    defaultMessageMaxAttempts,
+			NextRetryAt:    now,
+			ExpiresAt:      now.Add(defaultMessageTTL),
+			TerminalReason: consultTimeoutReason,
+			CreatedAt:      now,
+		}
+		m.messages[reply.ID] = reply
+		posted++
+	}
+	return posted, nil
+}
+
+// threadHasReplyLocked reports whether the responder already answered in
+// the correlation thread (any reply counts — the consult was heard).
+func (m *MemoryStore) threadHasReplyLocked(correlationID, responderID string) bool {
+	for _, msg := range m.messages {
+		if msg.CorrelationID == correlationID && msg.Type == domain.MessageReply &&
+			msg.FromType == "agent" && msg.FromID == responderID {
+			return true
+		}
+	}
+	return false
+}
+
+func reverseMessages(messages []*domain.Message) {
+	slices.Reverse(messages)
+}
+
 func (m *MemoryStore) nextTaskPosition(boardID string, status domain.TaskStatus) int {
 	next := 1
 	for _, task := range m.tasks {

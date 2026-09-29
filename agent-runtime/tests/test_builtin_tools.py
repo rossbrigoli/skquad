@@ -767,6 +767,59 @@ class SendMessageToolTests(BuiltinToolsTestBase):
         assert "correlation_id" not in captured["post_body"]
         assert "Mary" in result.content
 
+    def test_consult_timeout_seconds_passthrough_s173(self):
+        tool = bt.SendMessageTool({}, self.ctx(credential="cred-a2a"))
+        captured = {}
+        with self.patch_http(self.fake_urlopen(captured)):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_message",
+                    arguments={
+                        "target_agent": "mary",
+                        "message": "quick question",
+                        "consult_timeout_seconds": 120,
+                    },
+                ),
+                None,
+            )
+        assert result.ok is True
+        assert captured["post_body"]["consult_timeout_seconds"] == 120
+
+    def test_consult_timeout_omitted_when_not_given_s173(self):
+        tool = bt.SendMessageTool({}, self.ctx(credential="cred-a2a"))
+        captured = {}
+        with self.patch_http(self.fake_urlopen(captured)):
+            tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_message",
+                    arguments={"target_agent": "mary", "message": "normal consult"},
+                ),
+                None,
+            )
+        assert "consult_timeout_seconds" not in captured["post_body"]
+
+    def test_consult_timeout_not_sent_for_ping_s173(self):
+        tool = bt.SendMessageTool({}, self.ctx(credential="cred-a2a"))
+        captured = {}
+        with self.patch_http(self.fake_urlopen(captured)):
+            tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_message",
+                    arguments={
+                        "target_agent": "mary",
+                        "message": "awake?",
+                        "type": "ping",
+                        "consult_timeout_seconds": 60,
+                    },
+                ),
+                None,
+            )
+        assert captured["post_body"]["type"] == "ping"
+        assert "consult_timeout_seconds" not in captured["post_body"]
+
     def test_unique_prefix_match_resolves(self):
         tool = bt.SendMessageTool({}, self.ctx())
         captured = {}
