@@ -46,6 +46,7 @@ import {
 } from "../../lib/aimodels";
 import { kindOptionsFor } from "../../lib/providerKinds";
 import { OrganizationPromptTab } from "../../components/PromptSettingsTab";
+import { DeadLettersPanel } from "../../components/DeadLettersPanel";
 import { BuiltinToolsPanel } from "../../components/BuiltinToolsPanel";
 import { PromptTemplatesPanel } from "../../components/PromptTemplatesPanel";
 import type { PromptTemplate } from "../../lib/promptTemplates";
@@ -64,7 +65,7 @@ function resolveSettingsTab(tab: Tab, isAdmin: boolean): Tab {
   // (mirrors requirePlatformAdmin on PUT /settings/prompt).
   // BT-4 (S-151): built-in tools settings is platform-admin only
   // (mirrors requirePlatformAdmin on /admin/tools).
-  return tab === "ai-models" || tab === "access" || tab === "prompt" || tab === "builtin-tools" || tab === "templates" ? "providers" : tab;
+  return tab === "ai-models" || tab === "access" || tab === "prompt" || tab === "builtin-tools" || tab === "templates" || tab === "dead-letters" ? "providers" : tab;
 }
 
 // TabButton: one settings tab button (S-126 / S3358: keeps the ternary
@@ -171,7 +172,7 @@ function DeleteResourceButton({
 // S-117: "appearance" and "session" tabs removed — theme switching lives
 // in the top-right ThemeToggle and session details/sign-out in the
 // bottom-left UserMenu popover, both available on every page.
-type Tab = "providers" | "resources" | "ai-models" | "access" | "prompt" | "builtin-tools" | "templates";
+type Tab = "providers" | "resources" | "ai-models" | "access" | "prompt" | "builtin-tools" | "templates" | "dead-letters";
 
 const RESOURCE_TABS: { key: string; label: string }[] = [
   { key: "skills", label: "Skills" },
@@ -225,6 +226,13 @@ export default function SettingsPage() {
               onClick={() => setTab("templates")}
             />
           ) : null}
+          {isAdmin ? (
+            <TabButton
+              active={activeTab === "dead-letters"}
+              label="Dead letters"
+              onClick={() => setTab("dead-letters")}
+            />
+          ) : null}
         </div>
 
         {!isAdmin ? (
@@ -241,6 +249,7 @@ export default function SettingsPage() {
         {isAdmin && activeTab === "prompt" ? <OrganizationPromptTab /> : null}
         {isAdmin && activeTab === "builtin-tools" ? <BuiltinToolsPanel /> : null}
         {isAdmin && activeTab === "templates" ? <PromptTemplatesTab /> : null}
+        {isAdmin && activeTab === "dead-letters" ? <DeadLettersPanel /> : null}
       </AppShell>
     </AuthGate>
   );

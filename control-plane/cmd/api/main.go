@@ -81,6 +81,12 @@ func main() {
 	go httpapi.RunExecutionReaper(context.Background(), store, cfg.ReaperInterval, cfg.ReaperGrace)
 	slog.Info("started task execution reaper", "interval", cfg.ReaperInterval, "grace", cfg.ReaperGrace)
 
+	// S-173: consult timeout/SLA. Posts synthetic consult_timeout replies
+	// for agent consults that went unanswered past their deadline. Idempotent
+	// per consult, safe on every replica.
+	go httpapi.RunConsultTimeoutSweeper(context.Background(), store, cfg.ConsultSweepInterval)
+	slog.Info("started consult timeout sweeper", "interval", cfg.ConsultSweepInterval, "default_deadline", cfg.ConsultTimeout)
+
 	var providerKeys httpapi.ProviderKeyStore
 	if cfg.K8sEnabled {
 		keys, err := kube.NewSecretStore(cfg)

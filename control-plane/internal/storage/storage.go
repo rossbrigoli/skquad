@@ -209,6 +209,27 @@ type MessageStore interface {
 	// GetMessage fetches a single message by id (no agent scoping — the
 	// HTTP handler enforces it). Returns ErrNotFound when absent.
 	GetMessage(ctx context.Context, messageID string) (*domain.Message, error)
+	// ListAgentInbox (S-174) returns the agent's queue snapshot: pending
+	// (never attempted), retrying (attempted but not terminal), recently
+	// delivered, and dead letters, with total counts per section.
+	ListAgentInbox(ctx context.Context, agentID string, limit int) (*domain.AgentInboxSnapshot, error)
+	// ReplayDeadMessage (S-174) returns a dead message to the delivery
+	// queue: status dead -> pending, attempts reset to 0, expiry refreshed
+	// by the default TTL. Returns ErrNotFound when absent and ErrConflict
+	// when the message is not dead. The correlation chain is untouched:
+	// the replay is an operator action and does not consume send-path budget.
+	ReplayDeadMessage(ctx context.Context, messageID string) (*domain.Message, error)
+	// ListDeadLetters (S-174) lists dead messages across all squads for
+	// the admin screen, newest first.
+	ListDeadLetters(ctx context.Context, filter domain.DeadLetterFilter) ([]*domain.Message, error)
+	// DeleteMessage hard-deletes one message row (admin prune, S-174).
+	// Returns ErrNotFound when absent.
+	DeleteMessage(ctx context.Context, messageID string) error
+	// SweepConsultTimeouts (S-173) posts synthetic consult_timeout replies
+	// for agent consults whose reply deadline passed with no correlated
+	// reply, and marks them notified so each consult times out exactly once.
+	// Returns the number of synthetic notifications posted.
+	SweepConsultTimeouts(ctx context.Context, now time.Time) (int, error)
 	// UpdateMessagePayload replaces a message's payload and status (used to
 	// link a materialized delegated task back to its trigger message).
 	UpdateMessagePayload(ctx context.Context, messageID string, payload json.RawMessage, status domain.MessageStatus) (*domain.Message, error)

@@ -1895,6 +1895,8 @@ func testConfig() *config.Config {
 		DevEmail:           "dev@skquad.local",
 		DevName:            "Dev Admin",
 		DefaultIdleTimeout: 5 * time.Minute,
+		ConsultTimeout:     15 * time.Minute,
+		ConsultSweepInterval: 60 * time.Second,
 	}
 }
 

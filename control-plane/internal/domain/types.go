@@ -343,22 +343,59 @@ const (
 
 // Message is a durable queued message for an agent inbox.
 type Message struct {
-	ID             string          `json:"id"`
-	FromType       string          `json:"from_type"` // "user" | "agent"
-	FromID         string          `json:"from_id"`
-	ToAgentID      string          `json:"to_agent_id"`
-	SquadID        string          `json:"squad_id"`
-	Type           MessageType     `json:"type"`
-	Payload        json.RawMessage `json:"payload"`
-	Status         MessageStatus   `json:"status"`
-	CorrelationID  string          `json:"correlation_id,omitempty"`
-	Attempts       int             `json:"attempts"`
-	MaxAttempts    int             `json:"max_attempts"`
-	NextRetryAt    time.Time       `json:"next_retry_at,omitempty"`
-	ExpiresAt      time.Time       `json:"expires_at,omitempty"`
-	TerminalReason string          `json:"terminal_reason,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
-	DeliveredAt    time.Time       `json:"delivered_at,omitempty"`
+	ID            string          `json:"id"`
+	FromType      string          `json:"from_type"` // "user" | "agent"
+	FromID        string          `json:"from_id"`
+	ToAgentID     string          `json:"to_agent_id"`
+	SquadID       string          `json:"squad_id"`
+	Type          MessageType     `json:"type"`
+	Payload       json.RawMessage `json:"payload"`
+	Status        MessageStatus   `json:"status"`
+	CorrelationID string          `json:"correlation_id,omitempty"`
+	Attempts      int             `json:"attempts"`
+	MaxAttempts   int             `json:"max_attempts"`
+	NextRetryAt   time.Time       `json:"next_retry_at,omitempty"`
+	ExpiresAt     time.Time       `json:"expires_at,omitempty"`
+	// TimeoutAt (S-173) is the reply deadline for an agent-sent consult.
+	// Zero means no consult timeout applies (chat, ping, delegate, or
+	// sends that explicitly opted out).
+	TimeoutAt time.Time `json:"timeout_at,omitempty"`
+	// TimeoutNotifiedAt (S-173) is the sweeper's idempotency marker:
+	// once set, the consult has produced its consult_timeout notice and
+	// will never time out again. Internal bookkeeping, not API surface.
+	TimeoutNotifiedAt time.Time `json:"-"`
+	TerminalReason    string    `json:"terminal_reason,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	DeliveredAt       time.Time `json:"delivered_at,omitempty"`
+}
+
+// AgentInboxSnapshot (S-174) is the read-only observability view of one
+// agent's delivery queue: what is waiting, what is retrying, what landed
+// recently, and what died and why. Counts are total; the message lists are
+// capped at the requested limit so a flooded queue never blows the payload.
+type AgentInboxSnapshot struct {
+	PendingCount    int        `json:"pending_count"`
+	OldestPendingAt *time.Time `json:"oldest_pending_at,omitempty"`
+	RetryingCount   int        `json:"retrying_count"`
+	DeliveredCount  int        `json:"delivered_count"`
+	DeadCount       int        `json:"dead_count"`
+	Pending         []*Message `json:"pending"`
+	Retrying        []*Message `json:"retrying"`
+	Delivered       []*Message `json:"delivered"`
+	Dead            []*Message `json:"dead"`
+}
+
+// DeadLetterFilter (S-174) narrows the admin dead-letter listing. Empty
+// string / nil fields are not filtered. Reason is a case-insensitive
+// substring of terminal_reason.
+type DeadLetterFilter struct {
+	SquadID string
+	AgentID string
+	Type    string
+	Reason  string
+	Since   *time.Time
+	Until   *time.Time
+	Limit   int
 }
 
 // InboxKind classifies owner-facing notifications.

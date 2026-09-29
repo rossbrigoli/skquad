@@ -41,16 +41,16 @@ type Config struct {
 	// SKQUAD_BREAKGLASS_PASSWORD_HASH and SKQUAD_BREAKGLASS_JWT_KEY.
 	// The on/off switch is deliberately a plain ConfigMap value so it can be
 	// flipped without re-sealing anything.
-	BreakGlassEnabled      bool     // SKQUAD_BREAKGLASS_ENABLED (default false)
-	BreakGlassUsername     string  // SKQUAD_BREAKGLASS_USERNAME
-	BreakGlassPasswordHash string  // SKQUAD_BREAKGLASS_PASSWORD_HASH (argon2id PHC) - SECRET
-	BreakGlassJWTKey       string  // SKQUAD_BREAKGLASS_JWT_KEY - SECRET
-	BreakGlassAllowedCIDRs []string // SKQUAD_BREAKGLASS_ALLOWED_CIDRS (comma-separated)
+	BreakGlassEnabled      bool          // SKQUAD_BREAKGLASS_ENABLED (default false)
+	BreakGlassUsername     string        // SKQUAD_BREAKGLASS_USERNAME
+	BreakGlassPasswordHash string        // SKQUAD_BREAKGLASS_PASSWORD_HASH (argon2id PHC) - SECRET
+	BreakGlassJWTKey       string        // SKQUAD_BREAKGLASS_JWT_KEY - SECRET
+	BreakGlassAllowedCIDRs []string      // SKQUAD_BREAKGLASS_ALLOWED_CIDRS (comma-separated)
 	BreakGlassTokenTTL     time.Duration // SKQUAD_BREAKGLASS_TOKEN_TTL (default 60m)
 	BreakGlassMaxAttempts  int           // SKQUAD_BREAKGLASS_MAX_ATTEMPTS (default 5)
 	BreakGlassWindow       time.Duration // SKQUAD_BREAKGLASS_WINDOW (default 15m)
-	DevEmail        string // fixed principal email (AuthMode=dev)
-	DevName         string // fixed principal name (AuthMode=dev)
+	DevEmail               string        // fixed principal email (AuthMode=dev)
+	DevName                string        // fixed principal name (AuthMode=dev)
 
 	// Storage
 	DatabaseURL string // Postgres DSN
@@ -84,9 +84,11 @@ type Config struct {
 	MemoryEmbeddingModel    string // embedding model name for generated vectors
 
 	// Behaviour
-	DefaultIdleTimeout time.Duration
-	ReaperInterval     time.Duration // how often the execution reaper runs
-	ReaperGrace        time.Duration // extra time beyond the lease before an execution is declared dead
+	DefaultIdleTimeout   time.Duration
+	ReaperInterval       time.Duration // how often the execution reaper runs
+	ReaperGrace          time.Duration // extra time beyond the lease before an execution is declared dead
+	ConsultSweepInterval time.Duration // S-173: how often the consult-timeout sweeper runs
+	ConsultTimeout       time.Duration // S-173: default reply deadline for agent consults
 
 	// Agent workspace storage (S-138). Platform-admin knobs only: squad
 	// owners pick a size within [0, MaxAgentStorage]; the StorageClass is
@@ -116,14 +118,14 @@ func Load() (*Config, error) {
 		IssuerURL:               os.Getenv("SKQUAD_OIDC_ISSUER"),
 		Audience:                os.Getenv("SKQUAD_OIDC_AUDIENCE"),
 		OIDCAdminGroups:         envList("SKQUAD_OIDC_ADMIN_GROUPS"),
-		BreakGlassEnabled:     envBool("SKQUAD_BREAKGLASS_ENABLED", false),
-		BreakGlassUsername:    strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_USERNAME")),
-		BreakGlassPasswordHash: strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_PASSWORD_HASH")),
-		BreakGlassJWTKey:      strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_JWT_KEY")),
-		BreakGlassAllowedCIDRs: envList("SKQUAD_BREAKGLASS_ALLOWED_CIDRS"),
-		BreakGlassTokenTTL:    envDuration("SKQUAD_BREAKGLASS_TOKEN_TTL", 60*time.Minute),
-		BreakGlassMaxAttempts: envInt("SKQUAD_BREAKGLASS_MAX_ATTEMPTS", 5),
-		BreakGlassWindow:      envDuration("SKQUAD_BREAKGLASS_WINDOW", 15*time.Minute),
+		BreakGlassEnabled:       envBool("SKQUAD_BREAKGLASS_ENABLED", false),
+		BreakGlassUsername:      strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_USERNAME")),
+		BreakGlassPasswordHash:  strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_PASSWORD_HASH")),
+		BreakGlassJWTKey:        strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_JWT_KEY")),
+		BreakGlassAllowedCIDRs:  envList("SKQUAD_BREAKGLASS_ALLOWED_CIDRS"),
+		BreakGlassTokenTTL:      envDuration("SKQUAD_BREAKGLASS_TOKEN_TTL", 60*time.Minute),
+		BreakGlassMaxAttempts:   envInt("SKQUAD_BREAKGLASS_MAX_ATTEMPTS", 5),
+		BreakGlassWindow:        envDuration("SKQUAD_BREAKGLASS_WINDOW", 15*time.Minute),
 		DevEmail:                envOr("SKQUAD_DEV_EMAIL", "dev@skquad.local"),
 		DevName:                 envOr("SKQUAD_DEV_NAME", "Dev Admin"),
 		DatabaseURL:             os.Getenv("SKQUAD_DATABASE_URL"),
@@ -147,15 +149,17 @@ func Load() (*Config, error) {
 		DefaultIdleTimeout:      envDuration("SKQUAD_DEFAULT_IDLE_TIMEOUT", 5*time.Minute),
 		ReaperInterval:          envSeconds("SKQUAD_REAPER_INTERVAL_SECONDS", 30),
 		ReaperGrace:             envSeconds("SKQUAD_REAPER_GRACE_SECONDS", 120),
+		ConsultSweepInterval:    envSeconds("SKQUAD_CONSULT_SWEEP_INTERVAL_SECONDS", 60),
+		ConsultTimeout:          envSeconds("SKQUAD_CONSULT_TIMEOUT_SECONDS", 900),
 		DefaultAgentStorageSize: envOr("SKQUAD_DEFAULT_AGENT_STORAGE_SIZE", "2Gi"),
 		MaxAgentStorage:         envOr("SKQUAD_MAX_AGENT_STORAGE", "10Gi"),
 		StorageClass:            strings.TrimSpace(os.Getenv("SKQUAD_STORAGE_CLASS")),
-		APIServerVersion:      envOr("SKQUAD_VERSION", "unknown"),
-		OperatorVersion:       envOr("SKQUAD_OPERATOR_VERSION", "unknown"),
-		AgentRuntimeVersion:   envOr("SKQUAD_AGENT_RUNTIME_VERSION", "unknown"),
-		LLMGatewayVersion:     envOr("SKQUAD_LLM_GATEWAY_VERSION", "unknown"),
-		WebUIVersion:          envOr("SKQUAD_WEB_UI_VERSION", "unknown"),
-		GitCommit:             envOr("SKQUAD_GIT_COMMIT", "unknown"),
+		APIServerVersion:        envOr("SKQUAD_VERSION", "unknown"),
+		OperatorVersion:         envOr("SKQUAD_OPERATOR_VERSION", "unknown"),
+		AgentRuntimeVersion:     envOr("SKQUAD_AGENT_RUNTIME_VERSION", "unknown"),
+		LLMGatewayVersion:       envOr("SKQUAD_LLM_GATEWAY_VERSION", "unknown"),
+		WebUIVersion:            envOr("SKQUAD_WEB_UI_VERSION", "unknown"),
+		GitCommit:               envOr("SKQUAD_GIT_COMMIT", "unknown"),
 	}
 	if c.LiteLLMAdminURL == "" {
 		c.LiteLLMAdminURL = c.LLMGatewayURL

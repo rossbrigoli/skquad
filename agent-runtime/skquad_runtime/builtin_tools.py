@@ -430,6 +430,17 @@ class SendMessageTool:
                                     "current thread is inherited."
                                 ),
                             },
+                            "consult_timeout_seconds": {
+                                "type": "integer",
+                                "description": (
+                                    "S-173: override how long to wait for a "
+                                    "reply to this consult (seconds). If no "
+                                    "reply lands by the deadline you receive "
+                                    "a synthetic consult_timeout notice on "
+                                    "the thread. Consult sends only; the "
+                                    "platform default is 15 minutes."
+                                ),
+                            },
                         },
                         "required": ["target_agent", "message"],
                     },
@@ -483,6 +494,14 @@ class SendMessageTool:
         }
         if correlation:
             body["correlation_id"] = correlation
+        # S-173: per-send consult deadline override (consult sends only).
+        if mtype == "consult":
+            try:
+                timeout_seconds = int(call.arguments.get("consult_timeout_seconds", 0) or 0)
+            except (TypeError, ValueError):
+                timeout_seconds = 0
+            if timeout_seconds > 0:
+                body["consult_timeout_seconds"] = timeout_seconds
         data, err = self._post_message(body)
         if err:
             return ToolResult(content=f"send_message: {err}", ok=False)

@@ -2572,7 +2572,7 @@ func (p *PostgresStore) CreateMessage(ctx context.Context, m *domain.Message) (*
 		VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, '')::uuid, $9, $10)
 		RETURNING id::text, from_type, from_id::text, to_agent_id::text, squad_id::text,
 		          type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
-		          next_retry_at, expires_at, terminal_reason, created_at, delivered_at
+		          next_retry_at, expires_at, timeout_at, terminal_reason, created_at, delivered_at
 	`, m.FromType, m.FromID, m.ToAgentID, m.SquadID, defaultMessageType(m.Type), defaultJSON(m.Payload, "{}"), defaultMessageStatus(m.Status), m.CorrelationID, maxAttempts, expiresAt)
 	created, err := scanMessage(row)
 	if err != nil {
@@ -2594,7 +2594,7 @@ func (p *PostgresStore) ListPendingMessages(ctx context.Context, agentID string)
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, from_type, from_id::text, to_agent_id::text, squad_id::text,
 		       type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
-		       next_retry_at, expires_at, terminal_reason, created_at, delivered_at
+		       next_retry_at, expires_at, timeout_at, terminal_reason, created_at, delivered_at
 		FROM messages
 		WHERE to_agent_id = $1 AND status = $2 AND next_retry_at <= now()
 		ORDER BY created_at, id
@@ -2741,7 +2741,7 @@ func (p *PostgresStore) CancelChatTurn(ctx context.Context, agentID string) (*do
 		)
 		RETURNING id::text, from_type, from_id::text, to_agent_id::text, squad_id::text,
 		          type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
-		          next_retry_at, expires_at, terminal_reason, created_at, delivered_at
+		          next_retry_at, expires_at, timeout_at, terminal_reason, created_at, delivered_at
 	`, agentID, domain.MessageCancelled, "cancelled by user", domain.MessagePending, domain.MessageDelivered)
 	updated, err := scanMessage(row)
 	if err != nil {
@@ -2760,7 +2760,7 @@ func (p *PostgresStore) GetMessage(ctx context.Context, messageID string) (*doma
 	row := p.pool.QueryRow(ctx, `
 		SELECT id::text, from_type, from_id::text, to_agent_id::text, squad_id::text,
 		       type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
-		       next_retry_at, expires_at, terminal_reason, created_at, delivered_at
+		       next_retry_at, expires_at, timeout_at, terminal_reason, created_at, delivered_at
 		FROM messages
 		WHERE id = $1
 	`, messageID)
@@ -2781,7 +2781,7 @@ func (p *PostgresStore) AckMessage(ctx context.Context, agentID string, messageI
 		WHERE id = $1 AND to_agent_id = $2
 		RETURNING id::text, from_type, from_id::text, to_agent_id::text, squad_id::text,
 		          type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
-		          next_retry_at, expires_at, terminal_reason, created_at, delivered_at
+		          next_retry_at, expires_at, timeout_at, terminal_reason, created_at, delivered_at
 	`, messageID, agentID, domain.MessagePending, domain.MessageDelivered)
 	updated, err := scanMessage(row)
 	if err != nil {
@@ -2811,7 +2811,7 @@ func (p *PostgresStore) UpdateMessagePayload(ctx context.Context, messageID stri
 		WHERE id = $1
 		RETURNING id::text, from_type, from_id::text, to_agent_id::text, squad_id::text,
 		          type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
-		          next_retry_at, expires_at, terminal_reason, created_at, delivered_at
+		          next_retry_at, expires_at, timeout_at, terminal_reason, created_at, delivered_at
 	`, messageID, payload, status)
 	updated, err := scanMessage(row)
 	if err != nil {
@@ -2857,7 +2857,7 @@ func (p *PostgresStore) FailMessage(ctx context.Context, agentID string, message
 		WHERE id = $1 AND to_agent_id = $2
 		RETURNING id::text, from_type, from_id::text, to_agent_id::text, squad_id::text,
 		          type, payload, status, coalesce(correlation_id::text, ''), attempts, max_attempts,
-		          next_retry_at, expires_at, terminal_reason, created_at, delivered_at
+		          next_retry_at, expires_at, timeout_at, terminal_reason, created_at, delivered_at
 	`, messageID, agentID, domain.MessagePending, domain.MessageExpired, domain.MessageDead, defaultMessageRetryDelay, trimMessageReason(reason), maxMessageTerminalReason)
 	updated, err := scanMessage(row)
 	if err != nil {
@@ -3398,6 +3398,7 @@ func scanAgentMemory(row scanner) (*domain.AgentMemory, error) {
 func scanMessage(row scanner) (*domain.Message, error) {
 	var msg domain.Message
 	var deliveredAt sql.NullTime
+	var timeoutAt sql.NullTime
 	if err := row.Scan(
 		&msg.ID,
 		&msg.FromType,
@@ -3412,11 +3413,15 @@ func scanMessage(row scanner) (*domain.Message, error) {
 		&msg.MaxAttempts,
 		&msg.NextRetryAt,
 		&msg.ExpiresAt,
+		&timeoutAt,
 		&msg.TerminalReason,
 		&msg.CreatedAt,
 		&deliveredAt,
 	); err != nil {
 		return nil, mapPgErr(err)
+	}
+	if timeoutAt.Valid {
+		msg.TimeoutAt = timeoutAt.Time
 	}
 	if deliveredAt.Valid {
 		msg.DeliveredAt = deliveredAt.Time

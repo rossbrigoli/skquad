@@ -48,6 +48,7 @@ import {
   type SubagentInfo,
 } from "../../../../../lib/chat";
 import { SubagentThreadPanel } from "../../../../../components/SubagentThreadPanel";
+import { AgentInboxPanel } from "../../../../../components/AgentInboxPanel";
 import { agentStatus } from "../../../../../lib/status";
 import type { AIModel } from "../../../../../lib/aimodels";
 import {
@@ -228,7 +229,8 @@ export default function AgentProfilePage() {
   const chat = useApi<Message[]>(`/agents/${agentId}/chat`, 10000);
   // S-169: Talk-first layout — Chat is the default tab, Configuration holds
   // everything the old Edit modal + stacked sections carried.
-  const [tab, setTab] = useState<"chat" | "config">("chat");
+  // S-174: Inbox adds the delivery-queue observability panel (owner/admin).
+  const [tab, setTab] = useState<"chat" | "config" | "inbox">("chat");
   const [deleting, setDeleting] = useState(false);
   const [granting, setGranting] = useState(false);
   const [identityBusy, setIdentityBusy] = useState(false);
@@ -382,7 +384,17 @@ export default function AgentProfilePage() {
           >
             Configuration
           </button>
+          <button
+            type="button"
+            className={tab === "inbox" ? "squad-tab active" : "squad-tab"}
+            aria-current={tab === "inbox" ? "page" : undefined}
+            onClick={() => setTab("inbox")}
+          >
+            Inbox
+          </button>
         </nav>
+
+        {tab === "inbox" ? <AgentInboxPanel agentId={agentId} /> : null}
 
         {tab === "chat" ? (
           <section style={{ marginTop: "var(--space-4)" }}>

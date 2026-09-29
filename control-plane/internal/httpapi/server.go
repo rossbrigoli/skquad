@@ -418,6 +418,17 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Delete(routeTask, s.deleteTask)
 			r.Get("/agents/{agentID}/metering", s.getAgentMetering)
 
+			// S-174: agent inbox observability + owner dead-letter replay
+			// (squad owner or platform_admin, enforced in-handler).
+			r.Get("/agents/{agentID}/inbox", s.getAgentInbox)
+			r.Post("/agents/{agentID}/messages/{messageID}/replay", s.replayAgentDeadMessage)
+
+			// S-174: platform-admin dead-letter screen (list / replay any /
+			// prune any).
+			r.Get("/admin/dead-letters", s.listAdminDeadLetters)
+			r.Post("/admin/dead-letters/{messageID}/replay", s.replayAdminDeadLetter)
+			r.Delete("/admin/dead-letters/{messageID}", s.pruneAdminDeadLetter)
+
 			r.Post("/registry/llm-providers", s.createLLMProvider)
 			r.Get("/registry/llm-providers", s.listLLMProviders)
 			r.Get(routeLLMProvider, s.getLLMProvider)
@@ -3341,6 +3352,9 @@ type messageRequest struct {
 	CorrelationID string             `json:"correlation_id"`
 	MaxAttempts   int                `json:"max_attempts"`
 	TTLSeconds    int                `json:"ttl_seconds"`
+	// ConsultTimeoutSeconds (S-173) overrides the reply deadline for a
+	// consult send. Only meaningful for type=consult; capped at 24h.
+	ConsultTimeoutSeconds int `json:"consult_timeout_seconds"`
 }
 
 type messageFailureRequest struct {
@@ -3483,6 +3497,7 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 		CorrelationID: strings.TrimSpace(req.CorrelationID),
 		MaxAttempts:   req.MaxAttempts,
 		ExpiresAt:     messageExpiresAt(req),
+		TimeoutAt:     s.consultDeadline(messageType, req),
 	})
 	if err != nil {
 		writeStorageError(w, err)
@@ -3717,6 +3732,29 @@ func messageExpiresAt(req messageRequest) time.Time {
 		return time.Time{}
 	}
 	return time.Now().UTC().Add(time.Duration(req.TTLSeconds) * time.Second)
+}
+
+// consultDeadline (S-173) stamps agent consults with the deadline by
+// which a correlated reply must land, else the sweeper notifies the
+// asker. Per-send override wins; otherwise the platform default
+// (SKQUAD_CONSULT_TIMEOUT_SECONDS, 15 min). Non-consult types never
+// carry a deadline — delegate/handoff is the task loop, ping needs no
+// answer, and replies close threads rather than opening them.
+func (s *Server) consultDeadline(messageType domain.MessageType, req messageRequest) time.Time {
+	if messageType != domain.MessageConsult {
+		return time.Time{}
+	}
+	seconds := req.ConsultTimeoutSeconds
+	if seconds <= 0 && s.cfg != nil {
+		seconds = int(s.cfg.ConsultTimeout.Seconds())
+	}
+	if seconds <= 0 {
+		return time.Time{}
+	}
+	if seconds > 86400 {
+		seconds = 86400
+	}
+	return time.Now().UTC().Add(time.Duration(seconds) * time.Second)
 }
 
 func requiredMessageAction(messageType domain.MessageType) string {
