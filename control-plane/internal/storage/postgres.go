@@ -2629,7 +2629,7 @@ func (p *PostgresStore) ListAgentMessageHistory(ctx context.Context, agentID str
 	rows, err := p.pool.Query(ctx, `
 		SELECT m.id::text, m.from_type, m.from_id::text, m.to_agent_id::text, m.squad_id::text,
 		       m.type, m.payload, m.status, coalesce(m.correlation_id::text, ''), m.attempts, m.max_attempts,
-		       m.next_retry_at, m.expires_at, m.terminal_reason, m.created_at, m.delivered_at
+		       m.next_retry_at, m.expires_at, m.timeout_at, m.terminal_reason, m.created_at, m.delivered_at
 		FROM messages m
 		JOIN agents a ON a.id = m.to_agent_id
 		WHERE m.to_agent_id = $1
