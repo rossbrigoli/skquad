@@ -2358,16 +2358,26 @@ def run_task_loop(
     if interval is None:
         interval = min(config.task_poll_interval_seconds, config.inbox_poll_interval_seconds)
     loop_client = client
+    consecutive_failures = 0
+    max_backoff_seconds = 60.0
     while not stop_requested(stop_event):
         try:
             did_work, loop_client = _run_loop_iteration(
                 config, handler, message_handler, loop_client, state
             )
+            consecutive_failures = 0
         except Exception as exc:
-            LOGGER.exception("agent runtime loop iteration failed")
+            consecutive_failures += 1
+            backoff = min(
+                interval * (2.0 ** consecutive_failures), max_backoff_seconds
+            )
+            LOGGER.exception(
+                "agent runtime loop iteration failed",
+                extra={"consecutive_failures": consecutive_failures, "backoff_seconds": backoff},
+            )
             if state is not None:
                 state.loop_failed(str(exc))
-            sleeper(interval)
+            sleeper(backoff)
             continue
         if not did_work and _wait_for_work(loop_client, interval, state):
             continue

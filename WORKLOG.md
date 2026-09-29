@@ -816,3 +816,13 @@
   - control-plane 73.5% (425 tests) · operator 83.6% (77) · agent-runtime 90.2% (258) · llm-gateway 100% (51) · web 11.0% (333 — vitest covers the logic-layer files only; rest of web/src untested, honest baseline)
   - Before: skquad had **no coverage or test measures at all** (0%).
 - **Cleanup pending:** temp SonarQube projects `skquad-s171-verify`, `skquad-s171-verify2` (delete via API or ask Ross).
+
+## 2026-09-29 — Outbox jam / 500-on-start fix (incident 2026-09-29)
+- Objective: fix the root cause chain behind the chat outage (945k-event outbox jam).
+- Root cause: SetTaskExecutionPromptSHA SQL referenced $5 with only 4 bound args and never used $3 → every task.start with a prompt_sha failed "could not determine data type of parameter $3" → 500 → runtime hot-retry → outbox flood.
+- Files changed:
+  - control-plane/internal/storage/postgres.go — renumbered params ($3=prompt_sha, $4=status); enqueueKubernetesOutboxTx now coalesces superseded pending/failed events for the same aggregate at enqueue time.
+  - control-plane/internal/httpapi/server.go — writeStorageError logs the real error at ERROR level (was silently swallowed).
+  - agent-runtime/skquad_runtime/runtime.py — run_task_loop escalates sleep on consecutive failures (interval×2^n, cap 60s), resets on success.
+  - control-plane/internal/storage/outbox_coalesce_test.go — new: Postgres regression test for prompt-sha start + coalescing contract.
+- Tests run: go test ./... (full, with pgvector/pg16 via podman :55499) PASS; runtime pytest 257 pass / 2 skip / 1 pre-existing fail (test_empty_user_text_fails also fails on clean main, unrelated).

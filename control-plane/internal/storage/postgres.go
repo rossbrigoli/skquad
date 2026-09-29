@@ -225,6 +225,22 @@ func (p *PostgresStore) enqueueKubernetesOutboxTx(ctx context.Context, tx pgx.Tx
 	if err != nil {
 		return fmt.Errorf("postgres: marshal kubernetes outbox payload: %w", err)
 	}
+	// Coalesce: every CR write payload is full-state and idempotent, so any
+	// still-pending/failed event for the same aggregate is superseded by the
+	// one being enqueued. Without this, a producer-rate burst (e.g. a runtime
+	// retry loop) grows the backlog unboundedly and delays the one wake that
+	// matters. Same-tx UPDATE keeps ordering-safe: the INSERT below is the
+	// only live event for this aggregate when the worker leases it.
+	if _, err := tx.Exec(ctx, `
+		UPDATE kubernetes_outbox
+		SET status = 'applied',
+		    last_error = 'coalesced: superseded by newer event at enqueue',
+		    updated_at = now()
+		WHERE aggregate_type = $1 AND aggregate_id = $2
+		  AND status IN ('pending', 'failed')
+	`, aggregateType, aggregateID); err != nil {
+		return mapPgErr(err)
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO kubernetes_outbox (aggregate_type, aggregate_id, operation, payload)
 		VALUES ($1, $2, $3, $4)
@@ -3294,8 +3310,8 @@ func scanTask(row scanner) (*domain.Task, error) {
 func (p *PostgresStore) SetTaskExecutionPromptSHA(ctx context.Context, agentID string, taskID string, promptSHA string) (*domain.TaskExecution, error) {
 	row := p.pool.QueryRow(ctx, `
 		UPDATE task_executions
-		SET prompt_sha = $4, updated_at = now()
-		WHERE agent_id = $1 AND task_id = $2 AND status = $5
+		SET prompt_sha = $3, updated_at = now()
+		WHERE agent_id = $1 AND task_id = $2 AND status = $4
 		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
 		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
 		          prompt_sha, started_at, completed_at, updated_at
