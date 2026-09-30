@@ -438,6 +438,11 @@ button.nav-group-parent {
 .chip-in-review { color: var(--status-in-review); background: var(--status-in-review-bg); }
 .chip-idle { color: var(--status-idle); background: var(--status-idle-bg); }
 .chip-error { color: var(--status-error); background: var(--status-error-bg); }
+/* S-180: pre-save provider/model Test button status line. */
+.test-result { font-size: 0.85rem; overflow-wrap: anywhere; }
+.test-result.ok { color: var(--status-done); }
+.test-result.bad { color: var(--status-error); }
+.test-result.pending { color: var(--status-idle); }
 .chip-over-budget { color: var(--status-over-budget); background: var(--status-over-budget-bg); }
 .chip-paused { color: var(--status-paused); background: var(--status-paused-bg); }
 .chip-todo { color: var(--status-todo); background: var(--status-todo-bg); }

@@ -45,6 +45,15 @@ import {
   type ModelUsageEntry,
 } from "../../lib/aimodels";
 import { kindOptionsFor } from "../../lib/providerKinds";
+import {
+  buildModelTestPayload,
+  buildProviderTestPayload,
+  failureResult,
+  formatTestResult,
+  parseTestResult,
+  testResultClass,
+  type TestResult,
+} from "../../lib/providerTest";
 import { OrganizationPromptTab } from "../../components/PromptSettingsTab";
 import { DeadLettersPanel } from "../../components/DeadLettersPanel";
 import { BuiltinToolsPanel } from "../../components/BuiltinToolsPanel";
@@ -52,6 +61,24 @@ import { PromptTemplatesPanel } from "../../components/PromptTemplatesPanel";
 import type { PromptTemplate } from "../../lib/promptTemplates";
 
 type DeleteUsage = { agent_id: string; agent_name: string; squad_id: string };
+
+// S-180: shared one-line status shown next to the pre-save Test buttons.
+type TestState = "idle" | "testing" | "done";
+
+function TestStatus({ state, result }: { readonly state: TestState; readonly result: TestResult | null }) {
+  if (state === "testing") {
+    return <span className="test-result pending" role="status">Testing…</span>;
+  }
+  if (state === "done" && result) {
+    return (
+      <span className={testResultClass(result)} role="status" aria-live="polite">
+        {result.ok ? "✓ " : "✗ "}
+        {formatTestResult(result)}
+      </span>
+    );
+  }
+  return null;
+}
 
 // resolveSettingsTab maps the requested tab onto a tab the caller may see:
 // admins never get the standalone providers tab (it is merged into
@@ -716,6 +743,30 @@ function AIModelModal({
   const [providerModels, setProviderModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState("");
+  // S-180: pre-save model round-trip test — "Reply exactly with PONG"
+  // against the provider's stored credential. Works before the model is
+  // registered; nothing is persisted by the test.
+  const [testState, setTestState] = useState<TestState>("idle");
+  const [testResult, setTestResult] = useState<TestResult | null>(null);
+
+  function resetTest() {
+    setTestState("idle");
+    setTestResult(null);
+  }
+
+  async function runModelTest() {
+    setTestState("testing");
+    setTestResult(null);
+    try {
+      const payload = buildModelTestPayload(values.provider_id, values.model_name);
+      const raw = await apiPost<unknown>("/ai-models/test", token, payload);
+      setTestResult(parseTestResult(raw));
+    } catch (err) {
+      setTestResult(failureResult(err, "model test request failed"));
+    } finally {
+      setTestState("done");
+    }
+  }
 
   // Re-query whenever the provider changes. The providerId guard drops
   // stale responses (fast provider switches must not clobber the new
@@ -779,7 +830,10 @@ function AIModelModal({
         <>
           <input
             value={values.model_name}
-            onChange={(e) => setField("model_name", e.target.value)}
+            onChange={(e) => {
+              setField("model_name", e.target.value);
+              resetTest();
+            }}
             placeholder="gpt-6-sol"
             autoFocus
           />
@@ -793,7 +847,10 @@ function AIModelModal({
       <>
         <input
           value={values.model_name}
-          onChange={(e) => setField("model_name", e.target.value)}
+          onChange={(e) => {
+            setField("model_name", e.target.value);
+            resetTest();
+          }}
           placeholder="Select a model, or type to filter…"
           autoFocus
           list={modelListId}
@@ -844,6 +901,7 @@ function AIModelModal({
               onChange={(e) => {
                 setField("provider_id", e.target.value);
                 setField("model_name", "");
+                resetTest();
               }}
             >
               <option value="" disabled>
@@ -860,6 +918,22 @@ function AIModelModal({
             <span>Model name</span>
             {modelNameControl()}
           </div>
+        </div>
+        {/* S-180: test the model round-trip BEFORE registering it. */}
+        <div className="field-row" style={{ alignItems: "center", gap: 10 }}>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={
+              testState === "testing" || values.provider_id === "" || values.model_name.trim() === ""
+            }
+            onClick={() => {
+              runModelTest();
+            }}
+          >
+            {testState === "testing" ? "Testing…" : "Test model"}
+          </button>
+          <TestStatus state={testState} result={testResult} />
         </div>
         <div className="field-row">
           <label className="field">
@@ -1201,6 +1275,30 @@ function ProviderModal({
   // S-128: no provider-level pricing — rates belong on the AI Models.
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // S-180: pre-save connection test — runs against the CURRENT form
+  // values (base URL + pasted key); on edit, a blank key falls back to
+  // the stored Secret server-side. Nothing is persisted by the test.
+  const [testState, setTestState] = useState<TestState>("idle");
+  const [testResult, setTestResult] = useState<TestResult | null>(null);
+
+  function resetTest() {
+    setTestState("idle");
+    setTestResult(null);
+  }
+
+  async function runTest() {
+    setTestState("testing");
+    setTestResult(null);
+    try {
+      const payload = buildProviderTestPayload({ base_url: baseUrl, api_key: apiKey, providerId: provider?.id });
+      const raw = await apiPost<unknown>("/registry/llm-providers/test", token, payload);
+      setTestResult(parseTestResult(raw));
+    } catch (err) {
+      setTestResult(failureResult(err, "test request failed"));
+    } finally {
+      setTestState("done");
+    }
+  }
 
   return (
     <Modal title={provider ? `Edit provider “${provider.name}”` : "Register LLM provider"} onClose={onClose}>
@@ -1255,7 +1353,14 @@ function ProviderModal({
         </div>
         <label className="field">
           <span>Base URL</span>
-          <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" />
+          <input
+            value={baseUrl}
+            onChange={(e) => {
+              setBaseUrl(e.target.value);
+              resetTest();
+            }}
+            placeholder="https://api.openai.com/v1"
+          />
         </label>
         <div className="field-row">
           <label className="field">
@@ -1265,7 +1370,10 @@ function ProviderModal({
             <input
               type="password"
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
+              onChange={(e) => {
+                setApiKey(e.target.value);
+                resetTest();
+              }}
               autoComplete="new-password"
               placeholder={
                 provider?.has_api_key
@@ -1277,6 +1385,20 @@ function ProviderModal({
               Stored as a Kubernetes Secret by the platform — no manual kubectl needed.
             </small>
           </label>
+        </div>
+        {/* S-180: test the connection BEFORE saving. */}
+        <div className="field-row" style={{ alignItems: "center", gap: 10 }}>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={testState === "testing" || (baseUrl.trim() === "" && !provider)}
+            onClick={() => {
+              runTest();
+            }}
+          >
+            {testState === "testing" ? "Testing…" : "Test connection"}
+          </button>
+          <TestStatus state={testState} result={testResult} />
         </div>
       </ModalForm>
     </Modal>
