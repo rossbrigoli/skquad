@@ -284,9 +284,23 @@ func (s *Server) composePromptForAgent(ctx context.Context, agent *domain.Agent)
 		Workspace:   squad.Namespace,
 		PlatformVer: s.cfg.APIServerVersion,
 	}
+	// S-179: the squad mission is injected into the squad tier so every
+	// agent's system prompt carries it alongside the Squad Context text.
+	// The runtime fetches this composition per wake (ETag-cached), so a
+	// mission edit takes effect on the next wake without recreating
+	// agents or pods. Empty missions omit the sentence entirely.
+	squadTier := squad.Prompt
+	if mission := strings.TrimSpace(squad.Mission); mission != "" {
+		line := "You are part of a the squad called " + squad.Name + " with the following mission: " + mission
+		if strings.TrimSpace(squadTier) == "" {
+			squadTier = line
+		} else {
+			squadTier = line + "\n\n" + squadTier
+		}
+	}
 	// Platform override is a deploy-time operator concern (Helm-rendered
 	// file); WP2 serves the embedded platform prompt.
-	return promptcompo.Compose("", orgPrompt, squad.Prompt, agent.SystemPrompt, facts)
+	return promptcompo.Compose("", orgPrompt, squadTier, agent.SystemPrompt, facts)
 }
 
 // ifNoneMatchMatches reports whether an If-None-Match header contains the

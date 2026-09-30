@@ -1337,6 +1337,12 @@ func (s *Server) createSquad(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// S-179: the mission reaches every agent's composed system prompt, so
+	// it gets the same save-time validation as the Squad Context text.
+	if _, _, failure := checkPromptDraft(promptcompo.TierSquad, req.Mission); failure != nil {
+		writePromptFailure(w, failure)
+		return
+	}
 	if len(req.OperatingModel) == 0 {
 		req.OperatingModel = json.RawMessage(`{}`)
 	}
@@ -1436,6 +1442,15 @@ func (s *Server) updateSquad(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.Mission != nil {
+		// S-179: the mission is injected into the composed squad tier, so
+		// it gets the same save-time validation as the Squad Context text —
+		// otherwise forged delimiters, unknown template vars, or an
+		// over-budget mission would make the fail-closed composer break
+		// every agent wake in the squad.
+		if _, _, failure := checkPromptDraft(promptcompo.TierSquad, *req.Mission); failure != nil {
+			writePromptFailure(w, failure)
+			return
+		}
 		squad.Mission = *req.Mission
 	}
 	// S-PROMPT WP2: the squad tier gets sanitize + template-var + budget

@@ -6,7 +6,7 @@ import { useState } from "react";
 import { ActivityFeed } from "../../../components/ActivityFeed";
 import { Collapsible } from "../../../components/Collapsible";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
-import { Modal, ModalForm } from "../../../components/Modal";
+import { SquadMissionConfig } from "../../../components/SquadMissionConfig";
 import { AuthGate } from "../../../components/AuthGate";
 import { AppShell } from "../../../components/AppShell";
 import { MetricTile } from "../../../components/MetricTile";
@@ -24,7 +24,6 @@ export default function SquadCockpitPage() {
   const router = useRouter();
   const { token } = useAuth();
   const squads = useApi<Squad[]>("/squads");
-  const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const agents = useApi<Agent[]>(`/squads/${squadId}/agents`, 15000);
   const board = useApi<BoardPayload>(`/squads/${squadId}/board`, 15000);
@@ -64,19 +63,13 @@ export default function SquadCockpitPage() {
             {squad?.name || "Squad"}
           </h1>
           <div style={{ display: "flex", gap: "var(--space-2)" }}>
-            <button type="button" className="btn btn-sm" onClick={() => setEditing(true)} disabled={!squad}>
-              Edit
-            </button>
+            {/* S-179: the Edit dialog is gone — the mission now lives in
+                the inline Configuration section below. Delete stays. */}
             <button type="button" className="btn btn-sm btn-danger" onClick={() => setDeleting(true)} disabled={!squad}>
               Delete
             </button>
           </div>
         </div>
-        {squad?.mission ? (
-          <p style={{ color: "var(--ink-muted)", marginTop: "calc(-1 * var(--space-3))", marginBottom: "var(--space-5)" }}>
-            {squad.mission}
-          </p>
-        ) : null}
 
         <div className="metric-grid">
           <MetricTile
@@ -105,6 +98,14 @@ export default function SquadCockpitPage() {
             talking, and the "Work in flight" tile above already carries
             the running count. The Stalled section below stays because it
             is actionable (expired leases need a human). */}
+
+        {/* S-179: inline squad configuration. */}
+        {squad ? (
+          <section style={{ marginTop: "var(--space-5)" }}>
+            <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>Configuration</h2>
+            <SquadMissionConfig squad={squad} token={token} onSaved={() => squads.refresh()} />
+          </section>
+        ) : null}
 
         {stalled.length > 0 ? (
           <section style={{ marginTop: "var(--space-5)" }}>
@@ -159,18 +160,6 @@ export default function SquadCockpitPage() {
           />
         </Collapsible>
 
-        {editing && squad ? (
-          <SquadEditModal
-            squad={squad}
-            onClose={() => setEditing(false)}
-            onSaved={() => {
-              setEditing(false);
-              squads.refresh();
-            }}
-            token={token}
-          />
-        ) : null}
-
         {deleting && squad ? (
           <ConfirmDialog
             title={`Delete squad “${squad.name}”?`}
@@ -185,60 +174,5 @@ export default function SquadCockpitPage() {
         ) : null}
       </AppShell>
     </AuthGate>
-  );
-}
-
-function SquadEditModal({
-  squad,
-  onClose,
-  onSaved,
-  token,
-}: {
-  squad: Squad;
-  onClose: () => void;
-  onSaved: () => void;
-  token: string;
-}) {
-  const [name, setName] = useState(squad.name ?? "");
-  const [mission, setMission] = useState(squad.mission ?? "");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  return (
-    <Modal title="Edit squad" onClose={onClose}>
-      <ModalForm
-        busy={busy}
-        error={error}
-        onCancel={onClose}
-        submitLabel="Save changes"
-        submitDisabled={name.trim() === ""}
-        onSubmit={async () => {
-          setBusy(true);
-          setError("");
-          try {
-            // S-156: name is immutable (bound to the K8s namespace) —
-            // only the mission is sent.
-            await apiPatch<Squad>(`/squads/${squad.id}`, token, { mission: mission.trim() });
-            onSaved();
-          } catch (err) {
-            setError(err instanceof Error ? err.message : "update failed");
-            setBusy(false);
-          }
-        }}
-      >
-        <label className="field">
-          <span>Name</span>
-          {/* S-156: squad names cannot be renamed after creation. */}
-          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus readOnly />
-          <small className="field-hint">
-            Squad names cannot be renamed after creation — the Kubernetes namespace is derived from it.
-          </small>
-        </label>
-        <label className="field">
-          <span>Mission</span>
-          <textarea value={mission} onChange={(e) => setMission(e.target.value)} />
-        </label>
-      </ModalForm>
-    </Modal>
   );
 }
