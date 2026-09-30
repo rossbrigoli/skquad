@@ -77,7 +77,7 @@ PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
 # S-122: chat turns may invoke tools (the agent's loaded plugins). The loop
 # is bounded so a chatty model cannot spin forever, and recorded tool results
 # are truncated so reply payloads stay small enough for the chat history API.
-DEFAULT_CHAT_TOOL_STEPS = 4
+DEFAULT_CHAT_TOOL_STEPS = 8
 CHAT_TOOL_RESULT_MAX_CHARS = 500
 
 
@@ -1205,14 +1205,33 @@ class LLMMessageHandler:
             if not calls:
                 return None, response, tool_calls_log
             if step == max_steps - 1:
-                return (
-                    MessageResult(
-                        ok=False,
-                        summary=f"chat tool-call budget exhausted after {max_steps} steps",
-                    ),
-                    response,
-                    tool_calls_log,
+                # Budget exhausted: never fail the turn into silence. Force
+                # a tools-less final completion so the user always gets a
+                # text reply built from what was gathered, instead of the
+                # message dying unreplied (incident 2026-09-30: tool-heavy
+                # chat questions burned the budget and Ross saw nothing).
+                chat_messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "Tool-call budget exhausted. Reply to the user "
+                            "now with text only, using what you have "
+                            "gathered. Do not request any more tools."
+                        ),
+                    }
                 )
+                forced_kwargs = self._completion_kwargs(
+                    message, config, chat_messages, virtual_key, model
+                )
+                try:
+                    response = completion(**forced_kwargs)
+                except Exception as exc:
+                    return (
+                        MessageResult(ok=False, summary=f"LLM call failed: {exc}"),
+                        response,
+                        tool_calls_log,
+                    )
+                return None, response, tool_calls_log
             self._append_tool_results(
                 chat_messages, assistant, calls, config, tool_calls_log, plugins
             )
