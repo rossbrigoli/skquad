@@ -1294,7 +1294,7 @@ function ProviderModal({
     setTestState("testing");
     setTestResult(null);
     try {
-      const payload = buildProviderTestPayload({ base_url: baseUrl, api_key: apiKey, providerId: provider?.id });
+      const payload = buildProviderTestPayload({ base_url: baseUrl, api_key: apiKey, providerId: provider?.id, kind });
       const raw = await apiPost<unknown>("/registry/llm-providers/test", token, payload, { timeoutMs: TEST_TIMEOUT_MS });
       setTestResult(parseTestResult(raw));
     } catch (err) {
@@ -1383,30 +1383,30 @@ function ProviderModal({
             placeholder="https://api.openai.com/v1"
           />
         </label>
-        <div className="field-row">
-          <label className="field">
-            <span>API key</span>
-            {/* S-155: paste-to-secret. type=password so the pasted key
-                never renders in cleartext. */}
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => {
-                setApiKey(e.target.value);
-                resetTest();
-              }}
-              autoComplete="new-password"
-              placeholder={
-                provider?.has_api_key
-                  ? `Current: ${provider.api_key_masked ?? "•••••"} — leave blank to keep`
-                  : "Paste API key (stored as a Kubernetes Secret)"
-              }
-            />
-            <small className="field-hint">
-              Stored as a Kubernetes Secret by the platform — no manual kubectl needed.
-            </small>
-          </label>
-        </div>
+        {/* S-180 follow-up: full-width API key field (was stuck in a
+            two-column field-row, so it only took half the dialog). */}
+        <label className="field">
+          <span>API key</span>
+          {/* S-155: paste-to-secret. type=password so the pasted key
+              never renders in cleartext. */}
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(e) => {
+              setApiKey(e.target.value);
+              resetTest();
+            }}
+            autoComplete="new-password"
+            placeholder={
+              provider?.has_api_key
+                ? `Current: ${provider.api_key_masked ?? "•••••"} — leave blank to keep`
+                : "Paste API key (stored as a Kubernetes Secret)"
+            }
+          />
+          <small className="field-hint">
+            Stored as a Kubernetes Secret by the platform — no manual kubectl needed.
+          </small>
+        </label>
       </ModalForm>
     </Modal>
   );

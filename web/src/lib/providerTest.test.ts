@@ -67,6 +67,25 @@ describe("buildProviderTestPayload", () => {
     ).toEqual({ base_url: "https://api.openai.com/v1", api_key: "sk-1" });
   });
 
+  // S-180 follow-up: kind is sent so the server shapes the probe per
+  // API family (Anthropic needs x-api-key + anthropic-version).
+  it("includes the form kind when provided", () => {
+    expect(
+      buildProviderTestPayload({
+        base_url: "https://api.anthropic.com/v1",
+        api_key: "sk-ant",
+        kind: " anthropic ",
+      }),
+    ).toEqual({ base_url: "https://api.anthropic.com/v1", api_key: "sk-ant", kind: "anthropic" });
+  });
+
+  it("omits a blank kind", () => {
+    expect(buildProviderTestPayload({ base_url: "http://x/v1", api_key: "k", kind: "  " })).toEqual({
+      base_url: "http://x/v1",
+      api_key: "k",
+    });
+  });
+
   it("omits a blank key and falls back to provider_id (edit form)", () => {
     expect(buildProviderTestPayload({ base_url: "http://x/v1", api_key: "", providerId: "p1" })).toEqual({
       base_url: "http://x/v1",

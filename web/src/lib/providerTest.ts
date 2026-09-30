@@ -70,23 +70,29 @@ export function testResultClass(result: TestResult): string {
 
 // buildProviderTestPayload builds the POST body from UNSAVED form
 // values. Empty api_key with a providerId means "test the stored key"
-// (edit form's leave-blank-to-keep semantics). Throws when there is
-// nothing to test (no base URL and no provider to fall back to).
+// (edit form's leave-blank-to-keep semantics). kind is sent so the
+// server can shape the probe per API family (Anthropic needs
+// x-api-key + anthropic-version); when a providerId is present the
+// server prefers the stored kind anyway. Throws when there is nothing
+// to test (no base URL and no provider to fall back to).
 export function buildProviderTestPayload(v: {
   base_url: string;
   api_key: string;
   providerId?: string;
+  kind?: string;
 }): Record<string, string> {
   const payload: Record<string, string> = {};
   const baseUrl = (v.base_url ?? "").trim();
   const apiKey = (v.api_key ?? "").trim();
   const providerId = (v.providerId ?? "").trim();
+  const kind = (v.kind ?? "").trim();
   if (baseUrl === "" && providerId === "") {
     throw new Error("Enter a base URL (or save the provider) before testing");
   }
   if (baseUrl !== "") payload.base_url = baseUrl;
   if (apiKey !== "") payload.api_key = apiKey;
   if (providerId !== "") payload.provider_id = providerId;
+  if (kind !== "") payload.kind = kind;
   return payload;
 }
 
