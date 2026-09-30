@@ -438,9 +438,13 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			// S-125: live model list from the provider (OpenAI-compatible
 			// passthrough) for the register-model dropdown.
 			r.Get("/registry/llm-providers/{providerID}/models", s.listLLMProviderModels)
+			// S-180: pre-save Test buttons (provider connection + model round-trip).
+			r.Post("/registry/llm-providers/test", s.testProviderConnection)
 
 			r.Get("/ai-models", s.listAIModels)
 			r.Post("/ai-models", s.createAIModel)
+			// S-180: pre-save model round-trip test ("Reply exactly with PONG").
+			r.Post("/ai-models/test", s.testModelRoundTrip)
 			r.Get(routeAIModel, s.getAIModel)
 			r.Patch(routeAIModel, s.updateAIModel)
 			r.Post("/ai-models/{modelID}/deprecate", s.deprecateAIModel)
