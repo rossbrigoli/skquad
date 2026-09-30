@@ -67,6 +67,7 @@ export function ModalForm({
   busy = false,
   error = "",
   onCancel,
+  testArea,
 }: {
   onSubmit: () => void | Promise<void>;
   children: ReactNode;
@@ -75,6 +76,10 @@ export function ModalForm({
   busy?: boolean;
   error?: string;
   onCancel: () => void;
+  // S-180 follow-up: optional left-aligned slot in the footer for the
+  // pre-save "Test" button + status, so it sits in the same button row
+  // as Cancel/Save instead of floating between form fields.
+  testArea?: ReactNode;
 }) {
   return (
     <form
@@ -87,6 +92,7 @@ export function ModalForm({
       {children}
       {error ? <div className="notice error">{error}</div> : null}
       <div className="modal-foot">
+        {testArea ? <div className="modal-test-slot">{testArea}</div> : null}
         <button type="button" className="btn" onClick={onCancel} disabled={busy}>
           Cancel
         </button>

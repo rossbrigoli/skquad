@@ -6,6 +6,7 @@ import {
   buildModelTestPayload,
   buildProviderTestPayload,
   failureResult,
+  TEST_TIMEOUT_MS,
   formatTestResult,
   parseTestResult,
   testResultClass,
@@ -103,5 +104,27 @@ describe("failureResult", () => {
 
   it("falls back for non-Error throws", () => {
     expect(failureResult("boom", "fallback detail").detail).toBe("fallback detail");
+  });
+
+  // S-180 follow-up: the client aborts at TEST_TIMEOUT_MS (125s, just
+  // after the control-plane's 120s PONG wait); the abort must surface
+  // as a proper "timeout" reason, not a generic provider error.
+  it("maps AbortSignal TimeoutError to the timeout reason", () => {
+    const err = new Error("The operation timed out");
+    err.name = "TimeoutError";
+    const r = failureResult(err, "test failed");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("timeout");
+    expect(r.detail).toContain("125s");
+  });
+
+  it("maps legacy AbortError to the timeout reason", () => {
+    const err = new Error("signal aborted");
+    err.name = "AbortError";
+    expect(failureResult(err, "test failed").reason).toBe("timeout");
+  });
+
+  it("TEST_TIMEOUT_MS is longer than the backend 120s PONG wait", () => {
+    expect(TEST_TIMEOUT_MS).toBeGreaterThan(120_000);
   });
 });

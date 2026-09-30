@@ -11,6 +11,12 @@
 
 import { ApiError } from "./api";
 
+// S-180 follow-up: the control-plane waits up to 120s for a slow PONG
+// reply (connectivity.go providerTestTimeout). The browser aborts a few
+// seconds later so when both timeouts are close, the server's structured
+// timeout result (not a client abort) is what the UI shows.
+export const TEST_TIMEOUT_MS = 125_000;
+
 export type TestResult = {
   ok: boolean;
   reason: string;
@@ -99,11 +105,26 @@ export function buildModelTestPayload(providerId: string, modelName: string): {
   return { provider_id: id, model_name: name };
 }
 
+// isClientTimeout recognises the DOMException thrown by
+// AbortSignal.timeout (TimeoutError in modern engines, AbortError in
+// some polyfills) so failureResult can report it as a timeout.
+function isClientTimeout(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
 // failureResult converts a thrown request error (transport, 4xx on the
 // test endpoint itself) into a displayable failed TestResult. ApiError
 // bodies are NOT rendered raw — only the message — so nothing sensitive
 // can leak through an unexpected error shape.
 export function failureResult(err: unknown, fallback: string): TestResult {
+  if (isClientTimeout(err)) {
+    return {
+      ok: false,
+      reason: "timeout",
+      latency_ms: 0,
+      detail: `no reply within ${Math.round(TEST_TIMEOUT_MS / 1000)}s — the provider may be slow or unreachable`,
+    };
+  }
   const message =
     err instanceof ApiError && err.message ? err.message : err instanceof Error ? err.message : fallback;
   return { ok: false, reason: "provider_error", latency_ms: 0, detail: truncate(message || fallback, 160) };

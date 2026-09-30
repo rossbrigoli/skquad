@@ -37,11 +37,15 @@ import (
 )
 
 // providerTestTimeout bounds every S-180 upstream call so a hung
-// provider cannot wedge the control-plane (task contract ~15s).
-const providerTestTimeout = 15 * time.Second
+// provider cannot wedge the control-plane forever. S-180 follow-up:
+// raised 15s → 120s (2 minutes) because cold/slow models legitimately
+// take longer than 15s to return the PONG reply (Ross's feedback).
+// The web client aborts slightly later (TEST_TIMEOUT_MS = 125s in
+// web/src/lib/providerTest.ts) so the server's own timeout result wins.
+const providerTestTimeout = 120 * time.Second
 
 // providerTestClient is the shared S-180 upstream client. Package-level
-// so tests can shrink the timeout without waiting the full 15s.
+// so tests can shrink the timeout without waiting the full 120s.
 var providerTestClient = &http.Client{Timeout: providerTestTimeout}
 
 // pongProbe is the model-test prompt: cheap and unambiguous.
