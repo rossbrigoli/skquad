@@ -113,8 +113,8 @@ func TestListProviderModelsUnknownProvider(t *testing.T) {
 }
 
 func TestFetchProviderModelsRejectsBadBaseURL(t *testing.T) {
-	_, err := fetchProviderModels(t.Context(), http.DefaultClient, "not a url", "k")
+	_, err := fetchProviderModels(t.Context(), http.DefaultClient, "not a url", "k", "openai")
 	require.Error(t, err)
-	_, err = fetchProviderModels(t.Context(), http.DefaultClient, "ftp://x/v1", "k")
+	_, err = fetchProviderModels(t.Context(), http.DefaultClient, "ftp://x/v1", "k", "")
 	require.Error(t, err)
 }

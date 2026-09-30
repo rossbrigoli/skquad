@@ -67,6 +67,55 @@ func TestS180ProviderTestSuccess(t *testing.T) {
 	require.Equal(t, "Bearer sk-fresh-123", gotAuth)
 }
 
+// S-180 follow-up: the provider probe must be kind-aware. Anthropic
+// returns 400 "anthropic-version: header is required" for a Bearer-only
+// GET /models (verified live against api.anthropic.com), so an
+// anthropic-kind probe must send x-api-key + anthropic-version instead.
+func TestS180ProviderTestAnthropicKind(t *testing.T) {
+	var gotKey, gotVersion, gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/models", r.URL.Path)
+		gotKey = r.Header.Get("x-api-key")
+		gotVersion = r.Header.Get("anthropic-version")
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-5-5"}]}`))
+	}))
+	defer upstream.Close()
+
+	handler, _ := newAIModelHarness(t)
+	res := postTest(t, handler, pathProviderTest, map[string]any{
+		"base_url": upstream.URL + "/v1",
+		"api_key":  "sk-ant-fresh",
+		"kind":     "anthropic",
+	})
+	require.True(t, res.OK, res.Detail)
+	require.Equal(t, "sk-ant-fresh", gotKey)
+	require.Equal(t, "2023-06-01", gotVersion)
+	require.Empty(t, gotAuth, "anthropic probe must not use Bearer auth")
+}
+
+// S-180 follow-up: when a provider_id is present the STORED kind is
+// authoritative — a stale/lying form kind must not change the probe.
+func TestS180ProviderTestStoredKindWins(t *testing.T) {
+	var gotKey, gotVersion string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("x-api-key")
+		gotVersion = r.Header.Get("anthropic-version")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-x"}]}`))
+	}))
+	defer upstream.Close()
+
+	handler, _ := newAIModelHarness(t)
+	id := createProviderWithKind(t, handler, "stored-ant", "anthropic", upstream.URL+"/v1", "sk-ant-stored")
+	res := postTest(t, handler, pathProviderTest, map[string]any{
+		"provider_id": id,
+		"kind":        "openai", // form lies; stored kind must win
+	})
+	require.True(t, res.OK, res.Detail)
+	require.NotEmpty(t, gotKey, "stored anthropic key must go via x-api-key")
+	require.Equal(t, "2023-06-01", gotVersion)
+}
+
 func TestS180ProviderTestAuthFailure(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -173,7 +222,10 @@ func TestS180ModelTestPongSuccess(t *testing.T) {
 	require.True(t, res.OK, res.Detail)
 	require.Equal(t, testReasonConnected, res.Reason)
 	require.Equal(t, "gpt-test", gotBody["model"])
-	require.Equal(t, float64(16), gotBody["max_tokens"], "must cap tokens for a cheap probe")
+	// S-180 follow-up: modern OpenAI rejects max_tokens; the probe must
+	// send max_completion_tokens on the OpenAI-compatible path.
+	require.Equal(t, float64(16), gotBody["max_completion_tokens"], "must cap tokens for a cheap probe")
+	require.NotContains(t, gotBody, "max_tokens", "openai-compat probe must not send the deprecated max_tokens")
 }
 
 func TestS180ModelTestPongMismatch(t *testing.T) {

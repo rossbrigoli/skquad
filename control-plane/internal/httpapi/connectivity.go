@@ -98,20 +98,27 @@ func (s *Server) testProviderConnection(w http.ResponseWriter, r *http.Request) 
 		BaseURL    string `json:"base_url"`
 		APIKey     string `json:"api_key"`
 		ProviderID string `json:"provider_id"`
+		Kind       string `json:"kind"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	baseURL := strings.TrimSpace(req.BaseURL)
 	apiKey := strings.TrimSpace(req.APIKey)
+	// S-180 follow-up: the probe request shape is kind-aware (Anthropic
+	// needs x-api-key + anthropic-version). The stored provider's kind
+	// is authoritative whenever we have one; the form-supplied kind is
+	// only used for brand-new (unsaved) providers.
+	kind := strings.TrimSpace(req.Kind)
 	// Edit-form fallback: use the stored provider's base URL / key for
 	// whatever the form left blank.
-	if providerID := strings.TrimSpace(req.ProviderID); providerID != "" && (baseURL == "" || apiKey == "") {
+	if providerID := strings.TrimSpace(req.ProviderID); providerID != "" {
 		provider, err := s.store.GetLLMProvider(r.Context(), providerID)
 		if err != nil {
 			writeStorageError(w, err)
 			return
 		}
+		kind = provider.Kind
 		if baseURL == "" {
 			baseURL = provider.BaseURL
 		}
@@ -132,7 +139,7 @@ func (s *Server) testProviderConnection(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), providerTestTimeout)
 	defer cancel()
 	start := time.Now()
-	models, err := fetchProviderModels(ctx, providerTestClient, baseURL, apiKey)
+	models, err := fetchProviderModels(ctx, providerTestClient, baseURL, apiKey, kind)
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
 		reason, detail := classifyProviderTestError(err)
@@ -168,9 +175,19 @@ func providerChatEndpoint(baseURL, suffix string) (string, error) {
 // such as Gemini's /openai endpoint all accept).
 func buildModelTestRequest(kind, baseURL, apiKey, model string) (*http.Request, error) {
 	body := map[string]any{
-		"model":      model,
-		"max_tokens": 16,
-		"messages":   []map[string]string{{"role": "user", "content": pongProbe}},
+		"model":    model,
+		"messages": []map[string]string{{"role": "user", "content": pongProbe}},
+	}
+	if strings.EqualFold(strings.TrimSpace(kind), "anthropic") {
+		// Anthropic's Messages API requires max_tokens.
+		body["max_tokens"] = 16
+	} else {
+		// S-180 follow-up: modern OpenAI (gpt-6-astra et al.) reject
+		// `max_tokens` with HTTP 400 "Use 'max_completion_tokens'
+		// instead" (verified live). max_completion_tokens is the
+		// current spec and is also accepted by Ollama-compatible
+		// servers (verified against Halogen).
+		body["max_completion_tokens"] = 16
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {

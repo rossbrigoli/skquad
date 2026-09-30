@@ -38,12 +38,19 @@ var providerModelsClient = &http.Client{Timeout: providerModelsTimeout}
 // provider's API key" rather than a generic failure.
 var errProviderAuth = errors.New("provider rejected the registered credential")
 
-// fetchProviderModels calls GET {baseURL}/models (OpenAI-compatible)
-// with the provider's registered key and returns the sorted, deduped
-// model ids. Empty apiKey omits the Authorization header (local
-// providers such as ollama often need no credential). S-155: callers
-// resolve the Secret-backed key first; this takes the live value.
-func fetchProviderModels(ctx context.Context, client *http.Client, baseURL, apiKey string) ([]string, error) {
+// fetchProviderModels calls GET {baseURL}/models with the provider's
+// registered key and returns the sorted, deduped model ids. Empty
+// apiKey omits the credential header (local providers such as ollama
+// often need no credential). S-155: callers resolve the Secret-backed
+// key first; this takes the live value.
+//
+// S-180 follow-up: the request shape is kind-aware. Anthropic requires
+// `x-api-key` plus `anthropic-version` — a Bearer-only request gets
+// HTTP 400 "anthropic-version: header is required" (verified against
+// api.anthropic.com). Every other kind keeps the OpenAI-compatible
+// Bearer auth. The Anthropic model-list JSON ({data:[{id,...}]}) parses
+// with the same OpenAI-shape parser.
+func fetchProviderModels(ctx context.Context, client *http.Client, baseURL, apiKey, kind string) ([]string, error) {
 	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if trimmed == "" {
 		return nil, errors.New("provider has no base_url configured")
@@ -58,7 +65,12 @@ func fetchProviderModels(ctx context.Context, client *http.Client, baseURL, apiK
 	if err != nil {
 		return nil, errors.New("could not build provider model-list request")
 	}
-	if key := strings.TrimSpace(apiKey); key != "" {
+	if strings.EqualFold(strings.TrimSpace(kind), "anthropic") {
+		if key := strings.TrimSpace(apiKey); key != "" {
+			req.Header.Set("x-api-key", key)
+		}
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else if key := strings.TrimSpace(apiKey); key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 	req.Header.Set("Accept", "application/json")
@@ -156,7 +168,7 @@ func (s *Server) listLLMProviderModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "provider_key_resolve_failed", "could not resolve the provider's stored API key")
 		return
 	}
-	models, err := fetchProviderModels(ctx, providerModelsClient, provider.BaseURL, apiKey)
+	models, err := fetchProviderModels(ctx, providerModelsClient, provider.BaseURL, apiKey, provider.Kind)
 	if err != nil {
 		switch {
 		case errors.Is(err, errProviderAuth):
