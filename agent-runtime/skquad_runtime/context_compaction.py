@@ -128,6 +128,18 @@ def _is_system(message: Mapping[str, object]) -> bool:
     return str(message.get("role") or "") == "system"
 
 
+def _has_role(messages: object, role: str) -> bool:
+    """True if any message (in a flat list or list of groups) has `role`."""
+    for item in messages:  # type: ignore[union-attr]
+        if isinstance(item, dict) and "role" in item:
+            if str(item.get("role") or "") == role:
+                return True
+        elif isinstance(item, (list, tuple)):
+            if _has_role(item, role):
+                return True
+    return False
+
+
 def _has_tool_calls(message: Mapping[str, object]) -> bool:
     calls = message.get("tool_calls")
     return bool(calls)
@@ -207,6 +219,23 @@ class ContextCompactor:
             self._tier1_micro_prune(working, report)
             self._tier3_emergency(working, report)
 
+        # Safety net (incident 2026-09-30): upstream chat templates (Qwen3
+        # et al.) reject requests with no user-role message ("No user query
+        # found in messages"). Compaction must never erase the user's query.
+        if _has_role(messages, "user") and not _has_role(working, "user"):
+            working.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "<skquad_context trust=\"platform\">\n"
+                        "Earlier turns were compacted; answer using the "
+                        "context above.\n"
+                        "</skquad_context>"
+                    ),
+                }
+            )
+            report.notes.append("guard: re-injected user-role message")
+
         report.tokens_after = estimate_messages_tokens(working)
         return working, report
 
@@ -275,8 +304,14 @@ class ContextCompactor:
         digest = self._digest([_render_group(g) for g in evicted])
         report.evicted_turns = sum(len(g) for g in evicted)
         report.digest_chars = len(digest)
+        # If the user's own turn(s) are all evicted, the digest MUST be a
+        # user-role message: folding it into the system prompt would leave
+        # the request with no user-role message at all, which upstream chat
+        # templates reject outright ("No user query found in messages",
+        # incident 2026-09-30 with tool-heavy chat on Qwen3).
+        must_surface_user = _has_role(evicted, "user") and not _has_role(keep, "user")
         rebuilt: list[dict[str, object]] = []
-        if system_groups:
+        if system_groups and not must_surface_user:
             base = _content_text(system_groups[0][0])
             system_groups[0][0]["content"] = (
                 f"{base}\n\n<skquad_context_digest trust=\"platform\">\n"
@@ -287,12 +322,15 @@ class ContextCompactor:
             for g in system_groups[1:]:
                 rebuilt.extend(g)
         else:
+            for g in system_groups:
+                rebuilt.extend(g)
             rebuilt.append(
                 {
                     "role": "user",
                     "content": (
                         "<skquad_context_digest trust=\"platform\">\n"
-                        f"{digest}\n</skquad_context_digest>"
+                        f"Session history (emergency-compressed):\n{digest}\n"
+                        "</skquad_context_digest>"
                     ),
                 }
             )
