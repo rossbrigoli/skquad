@@ -78,6 +78,25 @@ PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
 # is bounded so a chatty model cannot spin forever, and recorded tool results
 # are truncated so reply payloads stay small enough for the chat history API.
 DEFAULT_CHAT_TOOL_STEPS = 8
+
+
+def _sanitize_surrogates(text: str) -> str:
+    """Strip lone UTF-16 surrogates from LLM output (incident 2026-09-30).
+
+    A model can emit half an emoji (e.g. ``\\ud83d`` with no low surrogate).
+    Python's json.dumps happily serialise it as an escape, but Postgres
+    rejects it in jsonb with SQLSTATE 22P05 — killing the chat reply and,
+    on retry, the whole message. Re-encode through utf-8 with
+    ``surrogatepass``/``replace`` so unpaired surrogates become U+FFFD
+    while everything valid survives untouched.
+    """
+    if not text:
+        return text
+    try:
+        text.encode("utf-8")
+        return text
+    except UnicodeEncodeError:
+        return text.encode("utf-8", "surrogatepass").decode("utf-8", "replace")
 CHAT_TOOL_RESULT_MAX_CHARS = 500
 
 
@@ -1280,7 +1299,9 @@ class LLMMessageHandler:
         tool_calls_log: list[dict[str, object]],
         model_used: str,
     ) -> MessageResult:
-        reply_text = str(message_value(first_message(response), "content") or "").strip()
+        reply_text = _sanitize_surrogates(
+            str(message_value(first_message(response), "content") or "")
+        ).strip()
         if not reply_text:
             return MessageResult(ok=False, summary="LLM returned an empty reply")
 
