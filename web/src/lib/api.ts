@@ -226,8 +226,8 @@ export async function apiGet<T>(path: string, token: string): Promise<T> {
   return apiRequest<T>(path, token, { method: "GET" });
 }
 
-export async function apiPost<T>(path: string, token: string, body: unknown): Promise<T> {
-  return apiRequest<T>(path, token, { method: "POST", body });
+export async function apiPost<T>(path: string, token: string, body: unknown, opts?: { timeoutMs?: number }): Promise<T> {
+  return apiRequest<T>(path, token, { method: "POST", body, timeoutMs: opts?.timeoutMs });
 }
 
 export async function apiPatch<T>(path: string, token: string, body: unknown): Promise<T> {
@@ -242,7 +242,7 @@ export async function apiDelete(path: string, token: string): Promise<void> {
   await apiRequest<void>(path, token, { method: "DELETE" });
 }
 
-async function apiRequest<T>(path: string, token: string, options: { method: string; body?: unknown }): Promise<T> {
+async function apiRequest<T>(path: string, token: string, options: { method: string; body?: unknown; timeoutMs?: number }): Promise<T> {
   const headers: Record<string, string> = {
     Accept: "application/json",
   };
@@ -259,6 +259,13 @@ async function apiRequest<T>(path: string, token: string, options: { method: str
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     credentials: "same-origin",
     cache: "no-store",
+    // S-180 follow-up: callers can bound the request client-side; the
+    // abort surfaces as a TimeoutError/AbortError the test logic maps
+    // to the "timeout" reason instead of a generic failure.
+    signal:
+      options.timeoutMs && options.timeoutMs > 0
+        ? AbortSignal.timeout(options.timeoutMs)
+        : undefined,
   });
   if (!response.ok) {
     let message = response.statusText;

@@ -52,6 +52,7 @@ import {
   formatTestResult,
   parseTestResult,
   testResultClass,
+  TEST_TIMEOUT_MS,
   type TestResult,
 } from "../../lib/providerTest";
 import { OrganizationPromptTab } from "../../components/PromptSettingsTab";
@@ -759,7 +760,7 @@ function AIModelModal({
     setTestResult(null);
     try {
       const payload = buildModelTestPayload(values.provider_id, values.model_name);
-      const raw = await apiPost<unknown>("/ai-models/test", token, payload);
+      const raw = await apiPost<unknown>("/ai-models/test", token, payload, { timeoutMs: TEST_TIMEOUT_MS });
       setTestResult(parseTestResult(raw));
     } catch (err) {
       setTestResult(failureResult(err, "model test request failed"));
@@ -872,6 +873,25 @@ function AIModelModal({
         submitLabel={model ? "Save changes" : "Register"}
         submitDisabled={values.provider_id === "" || values.model_name.trim() === ""}
         onCancel={onClose}
+        testArea={
+          <>
+            {/* S-180 follow-up: Test moved into the footer button row so
+                it matches Cancel/Save instead of floating mid-form. */}
+            <button
+              type="button"
+              className="btn"
+              disabled={
+                testState === "testing" || values.provider_id === "" || values.model_name.trim() === ""
+              }
+              onClick={() => {
+                runModelTest();
+              }}
+            >
+              {testState === "testing" ? "Testing…" : "Test model"}
+            </button>
+            <TestStatus state={testState} result={testResult} />
+          </>
+        }
         onSubmit={async () => {
           setBusy(true);
           setError("");
@@ -918,22 +938,6 @@ function AIModelModal({
             <span>Model name</span>
             {modelNameControl()}
           </div>
-        </div>
-        {/* S-180: test the model round-trip BEFORE registering it. */}
-        <div className="field-row" style={{ alignItems: "center", gap: 10 }}>
-          <button
-            type="button"
-            className="btn btn-sm"
-            disabled={
-              testState === "testing" || values.provider_id === "" || values.model_name.trim() === ""
-            }
-            onClick={() => {
-              runModelTest();
-            }}
-          >
-            {testState === "testing" ? "Testing…" : "Test model"}
-          </button>
-          <TestStatus state={testState} result={testResult} />
         </div>
         <div className="field-row">
           <label className="field">
@@ -1291,7 +1295,7 @@ function ProviderModal({
     setTestResult(null);
     try {
       const payload = buildProviderTestPayload({ base_url: baseUrl, api_key: apiKey, providerId: provider?.id });
-      const raw = await apiPost<unknown>("/registry/llm-providers/test", token, payload);
+      const raw = await apiPost<unknown>("/registry/llm-providers/test", token, payload, { timeoutMs: TEST_TIMEOUT_MS });
       setTestResult(parseTestResult(raw));
     } catch (err) {
       setTestResult(failureResult(err, "test request failed"));
@@ -1308,6 +1312,23 @@ function ProviderModal({
         submitLabel={provider ? "Save changes" : "Register"}
         submitDisabled={name.trim() === "" || baseUrl.trim() === "" || kind.trim() === ""}
         onCancel={onClose}
+        testArea={
+          <>
+            {/* S-180 follow-up: Test moved into the footer button row so
+                it matches Cancel/Save instead of floating mid-form. */}
+            <button
+              type="button"
+              className="btn"
+              disabled={testState === "testing" || (baseUrl.trim() === "" && !provider)}
+              onClick={() => {
+                runTest();
+              }}
+            >
+              {testState === "testing" ? "Testing…" : "Test connection"}
+            </button>
+            <TestStatus state={testState} result={testResult} />
+          </>
+        }
         onSubmit={async () => {
           setBusy(true);
           setError("");
@@ -1385,20 +1406,6 @@ function ProviderModal({
               Stored as a Kubernetes Secret by the platform — no manual kubectl needed.
             </small>
           </label>
-        </div>
-        {/* S-180: test the connection BEFORE saving. */}
-        <div className="field-row" style={{ alignItems: "center", gap: 10 }}>
-          <button
-            type="button"
-            className="btn btn-sm"
-            disabled={testState === "testing" || (baseUrl.trim() === "" && !provider)}
-            onClick={() => {
-              runTest();
-            }}
-          >
-            {testState === "testing" ? "Testing…" : "Test connection"}
-          </button>
-          <TestStatus state={testState} result={testResult} />
         </div>
       </ModalForm>
     </Modal>

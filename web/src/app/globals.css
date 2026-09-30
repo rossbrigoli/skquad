@@ -929,6 +929,17 @@ dialog.modal-backdrop::backdrop {
   border-top: none;
 }
 
+/* S-180 follow-up: the pre-save Test button + status sit left-aligned in
+   the modal footer, in the same button row as Cancel/Save (Ross: the old
+   floating field-row Test button looked out of place). */
+.modal-test-slot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-right: auto;
+  min-width: 0;
+}
+
 .field {
   display: flex;
   flex-direction: column;
