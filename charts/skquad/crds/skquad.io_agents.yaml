@@ -79,6 +79,17 @@ spec:
                         type: string
                 idleTimeout:
                   type: string
+                thinkingLevel:
+                  type: string
+                  description: >-
+                    Per-agent reasoning effort (S-178): low, medium or high.
+                    Empty means unset (provider default). Injected into the
+                    agent runtime as SKQUAD_THINKING_LEVEL.
+                  enum:
+                    - ""
+                    - low
+                    - medium
+                    - high
                 desiredActive:
                   type: boolean
                 storage:

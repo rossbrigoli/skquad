@@ -236,6 +236,10 @@ func agentEnv(agent *skquadv1.Agent) []corev1.EnvVar {
 		{Name: "SKQUAD_AI_MODEL_ID", Value: agent.Spec.AIModelID},
 		{Name: "SKQUAD_FALLBACK_MODEL_ID", Value: agent.Spec.FallbackAIModelID},
 		{Name: "SKQUAD_IDLE_TIMEOUT", Value: agent.Spec.IdleTimeout},
+		// S-178: per-agent reasoning effort (low/medium/high) surfaced in
+		// the agent screen composer; the runtime maps it to the LLM
+		// request's reasoning_effort parameter.
+		{Name: "SKQUAD_THINKING_LEVEL", Value: agent.Spec.ThinkingLevel},
 		{Name: "SKQUAD_RUNTIME_PORT", Value: fmt.Sprintf("%d", runtimeHTTPPort)},
 		{Name: "SKQUAD_CREDENTIALS_DIR", Value: credentialsMount},
 		{Name: "SKQUAD_AGENT_CREDENTIAL_PATH", Value: credentialsMount + "/agent"},

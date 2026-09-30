@@ -8,6 +8,10 @@
 //
 // Correlation grouping: every row carries its correlation_id so a
 // consult→reply chain is traceable across sections without extra joins.
+//
+// S-178: restyled to read like an email inbox — left-aligned rows with
+// a status accent bar, a subject line (type + sender), the message
+// excerpt, and the timestamp pinned to the right.
 
 import { useState } from "react";
 import { apiPost, ApiError } from "../lib/api";
@@ -39,6 +43,14 @@ function messageExcerpt(message: InboxMessageRow): string {
   return "(no message body)";
 }
 
+/** The most meaningful timestamp for the row's right-hand column. */
+function rowTime(message: InboxMessageRow): string {
+  if (message.status === "delivered") return formatTime(message.delivered_at || message.created_at);
+  if (message.status === "dead") return formatTime(message.delivered_at || message.created_at);
+  if (message.status === "pending" && message.attempts > 0) return formatTime(message.next_retry_at || message.created_at);
+  return formatTime(message.created_at);
+}
+
 function MessageRow({
   message,
   onReplay,
@@ -52,15 +64,31 @@ function MessageRow({
 }) {
   const timeout = isConsultTimeout(message);
   return (
-    <div className="entity-row" style={{ display: "flex", flexDirection: "column", gap: "2px", padding: "8px 0", borderBottom: "1px solid var(--border, #ddd)" }}>
-      <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-        <strong>{message.type}</strong>
-        <span className="metric-chip-sub">{shortId(message.id)}</span>
-        <span className="metric-chip-sub">from {message.from_type}</span>
-        {message.correlation_id ? (
-          <span className="metric-chip-sub" title={message.correlation_id}>thread {shortId(message.correlation_id)}</span>
-        ) : null}
-        {timeout ? <span className="status-chip" style={{ color: "var(--danger, #b00020)" }}>consult timeout</span> : null}
+    <div className={`inbox-row inbox-${message.status}`}>
+      <div className="inbox-main">
+        <div className="inbox-subject">
+          <span className="inbox-type">{message.type}</span>
+          <span className="inbox-from">from {message.from_type}</span>
+          {message.correlation_id ? (
+            <span className="inbox-thread mono" title={message.correlation_id}>
+              thread {shortId(message.correlation_id)}
+            </span>
+          ) : null}
+          {timeout ? <span className="inbox-flag">consult timeout</span> : null}
+          <span className="inbox-id mono">{shortId(message.id)}</span>
+        </div>
+        <div className="inbox-excerpt">{messageExcerpt(message)}</div>
+        <div className="inbox-status">
+          {message.status === "pending" && message.attempts > 0 ? (
+            <>{retryLabel(message)} · next retry {formatTime(message.next_retry_at)}</>
+          ) : null}
+          {message.status === "pending" && message.attempts === 0 ? <>waiting</> : null}
+          {message.status === "delivered" ? <>delivered</> : null}
+          {message.status === "dead" ? <>died · reason: {message.terminal_reason || "unknown"}</> : null}
+        </div>
+      </div>
+      <div className="inbox-side">
+        <span className="inbox-time">{rowTime(message)}</span>
         {showReplay && onReplay ? (
           <button
             type="button"
@@ -72,28 +100,17 @@ function MessageRow({
           </button>
         ) : null}
       </div>
-      <div style={{ fontSize: "0.9em" }}>{messageExcerpt(message)}</div>
-      <div className="metric-chip-sub">
-        {message.status === "pending" && message.attempts > 0 ? (
-          <>
-            {retryLabel(message)} · next retry {formatTime(message.next_retry_at)}
-          </>
-        ) : null}
-        {message.status === "pending" && message.attempts === 0 ? <>waiting · created {formatTime(message.created_at)}</> : null}
-        {message.status === "delivered" ? <>delivered {formatTime(message.delivered_at)}</> : null}
-        {message.status === "dead" ? <>died {formatTime(message.delivered_at)} · reason: {message.terminal_reason || "unknown"}</> : null}
-      </div>
     </div>
   );
 }
 
 function Section({ title, count, children }: { readonly title: string; readonly count: number; readonly children: React.ReactNode }) {
   return (
-    <section style={{ marginBottom: "var(--space-4, 16px)" }}>
+    <section className="inbox-section">
       <div className="section-head">
         <h3>{title} <span className="metric-chip-sub">({count})</span></h3>
       </div>
-      {count === 0 ? <p className="field-hint">Nothing here.</p> : children}
+      {count === 0 ? <p className="field-hint">Nothing here.</p> : <div className="inbox-list">{children}</div>}
     </section>
   );
 }
@@ -129,7 +146,7 @@ export function AgentInboxPanel({ agentId }: { readonly agentId: string }) {
 
   const data = snapshot.data;
   return (
-    <section style={{ marginTop: "var(--space-4, 16px)" }}>
+    <section className="inbox-panel" style={{ marginTop: "var(--space-4, 16px)" }}>
       {note ? <p className="field-hint">{note}</p> : null}
       <Section title="Pending" count={data?.pending_count ?? 0}>
         {data?.oldest_pending_at ? (

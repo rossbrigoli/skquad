@@ -178,3 +178,42 @@ func TestCreateAgentStoragePersistsThroughOutbox(t *testing.T) {
 	require.True(t, payload.Agent.StorageEnabled)
 	require.Equal(t, "7Gi", payload.Agent.StorageSize)
 }
+
+// S-178: per-agent thinking level — PATCH accepts low/medium/high and
+// the empty string (unset), rejects anything else, and the value persists
+// on the agent record.
+func TestUpdateAgentThinkingLevel(t *testing.T) {
+	t.Parallel()
+
+	handler := New(storageTestConfig(), storage.NewMemoryStore())
+	squad := createStorageTestSquad(t, handler)
+
+	var agent domain.Agent
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
+		"name": "thinker-1",
+	}, http.StatusCreated, &agent)
+	require.Empty(t, agent.ThinkingLevel)
+
+	for _, level := range []string{"low", "medium", "high"} {
+		var patched domain.Agent
+		doJSON(t, handler, http.MethodPatch, pathAgentsPrefix+agent.ID, map[string]any{
+			"thinking_level": level,
+		}, http.StatusOK, &patched)
+		require.Equal(t, level, patched.ThinkingLevel)
+	}
+
+	// Empty unsets the level (provider default resumes).
+	var cleared domain.Agent
+	doJSON(t, handler, http.MethodPatch, pathAgentsPrefix+agent.ID, map[string]any{
+		"thinking_level": "",
+	}, http.StatusOK, &cleared)
+	require.Empty(t, cleared.ThinkingLevel)
+
+	// Unknown levels are rejected and leave the stored value untouched.
+	doJSONNoBody(t, handler, http.MethodPatch, pathAgentsPrefix+agent.ID, map[string]any{
+		"thinking_level": "turbo",
+	}, http.StatusBadRequest)
+	var after domain.Agent
+	doJSON(t, handler, http.MethodGet, pathAgentsPrefix+agent.ID, nil, http.StatusOK, &after)
+	require.Empty(t, after.ThinkingLevel)
+}
