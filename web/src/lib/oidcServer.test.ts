@@ -1,9 +1,17 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import {
+  appRedirect,
   apiBearer,
   decodeSession,
+  discover,
   encodeSession,
+  exchangeCode,
+  oidcConfig,
+  oidcEnabled,
+  refreshTokens,
   publicOrigin,
+  requestIsHttps,
+  sessionCookieOpts,
   sessionValid,
   type Session,
 } from "./oidcServer";
@@ -25,6 +33,9 @@ function clearEnv() {
 }
 
 afterEach(clearEnv);
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 // UIv2-13 fix: the control-plane verifies Dex *ID-token* JWTs (Dex access tokens
 // are opaque), so the session must be able to carry and prefer the id_token.
@@ -115,6 +126,123 @@ describe("sessionValid", () => {  const now = () => Math.floor(Date.now() / 1000
   });
 });
 
+describe("OIDC configuration helpers", () => {
+  it("reports disabled until all required settings are present", () => {
+    expect(oidcEnabled()).toBe(false);
+    process.env.SKQUAD_OIDC_ISSUER = OIDC_ENV.SKQUAD_OIDC_ISSUER;
+    process.env.SKQUAD_OIDC_CLIENT_ID = OIDC_ENV.SKQUAD_OIDC_CLIENT_ID;
+    process.env.SKQUAD_OIDC_CLIENT_SECRET = OIDC_ENV.SKQUAD_OIDC_CLIENT_SECRET;
+    expect(oidcEnabled()).toBe(false);
+  });
+
+  it("normalizes a complete config and applies default scopes", () => {
+    Object.assign(process.env, OIDC_ENV);
+    process.env.SKQUAD_OIDC_ISSUER = "https://idp.example.com/auth/";
+    expect(oidcEnabled()).toBe(true);
+    expect(oidcConfig()).toEqual({
+      issuer: "https://idp.example.com/auth",
+      clientId: "skquad",
+      clientSecret: "***",
+      redirectUrl: "https://skquad.rossbrigoli.com/auth/callback",
+      scopes: "openid profile email offline_access",
+    });
+  });
+
+  it("throws when config is incomplete", () => {
+    expect(() => oidcConfig()).toThrow("OIDC is not fully configured");
+  });
+
+  it("sets secure session cookies only for public https redirects", () => {
+    Object.assign(process.env, OIDC_ENV);
+    expect(sessionCookieOpts()).toMatchObject({ httpOnly: true, sameSite: "lax", secure: true, path: "/" });
+
+    process.env.SKQUAD_OIDC_REDIRECT_URL = "http://skquad.lab/auth/callback";
+    expect(sessionCookieOpts().secure).toBe(false);
+  });
+});
+
+describe("requestIsHttps", () => {
+  it("trusts x-forwarded-proto first", () => {
+    const req = new Request("http://internal", { headers: { "x-forwarded-proto": "https,http" } });
+    expect(requestIsHttps(req)).toBe(true);
+  });
+
+  it("falls back to the request URL protocol", () => {
+    expect(requestIsHttps(new Request("https://skquad.example.test/path"))).toBe(true);
+    expect(requestIsHttps(new Request("http://skquad.example.test/path"))).toBe(false);
+  });
+
+  it("returns false when no usable request URL exists", () => {
+    expect(requestIsHttps()).toBe(false);
+  });
+});
+
+describe("discovery and token endpoints", () => {
+  const discovery = {
+    authorization_endpoint: "https://idp.example.test/auth",
+    token_endpoint: "https://idp.example.test/token",
+    jwks_uri: "https://idp.example.test/jwks",
+  };
+
+  it("discovers and caches provider metadata", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(discovery)));
+
+    const first = await discover("https://idp-cache.example.test");
+    const second = await discover("https://idp-cache.example.test");
+
+    expect(first).toEqual(discovery);
+    expect(second).toEqual(discovery);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects failed and incomplete discovery documents", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("no", { status: 500 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ authorization_endpoint: "x" })));
+
+    await expect(discover("https://idp-fail.example.test")).rejects.toThrow("OIDC discovery failed");
+    await expect(discover("https://idp-incomplete.example.test")).rejects.toThrow("missing required endpoints");
+  });
+
+  it("exchanges authorization codes using PKCE form fields", async () => {
+    Object.assign(process.env, OIDC_ENV);
+    process.env.SKQUAD_OIDC_ISSUER = "https://idp-exchange.example.test";
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(discovery)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "a", id_token: "i" })));
+
+    const tokens = await exchangeCode("code-1", "verifier-1");
+
+    expect(tokens).toMatchObject({ access_token: "a", id_token: "i" });
+    const request = fetchMock.mock.calls[1][1] as RequestInit;
+    expect(request.method).toBe("POST");
+    expect(String(request.body)).toContain("code_verifier=verifier-1");
+  });
+
+  it("reports token endpoint failures", async () => {
+    Object.assign(process.env, OIDC_ENV);
+    process.env.SKQUAD_OIDC_ISSUER = "https://idp-token-fail.example.test";
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(discovery)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error_description: "bad code" }), { status: 400 }));
+
+    await expect(exchangeCode("bad", "verifier")).rejects.toThrow("bad code");
+  });
+
+  it("refreshes tokens and reports refresh failures", async () => {
+    Object.assign(process.env, OIDC_ENV);
+    process.env.SKQUAD_OIDC_ISSUER = "https://idp-refresh.example.test";
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(discovery)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "new" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 401 }));
+
+    await expect(refreshTokens("refresh-1")).resolves.toMatchObject({ access_token: "new" });
+    await expect(refreshTokens("refresh-2")).rejects.toThrow("refresh failed (401)");
+  });
+});
+
 describe("publicOrigin (redirect-origin leak fix)", () => {
   const req = (headers: Record<string, string>) =>
     new Request("http://127.0.0.1:3000/auth/callback", { headers });
@@ -166,5 +294,24 @@ describe("publicOrigin (redirect-origin leak fix)", () => {
   it("returns empty string when nothing usable is configured", () => {
     expect(publicOrigin(req({ host: "localhost:3000" }))).toBe("");
     expect(publicOrigin()).toBe("");
+  });
+});
+
+describe("appRedirect", () => {
+  it("redirects through the public origin when available", () => {
+    const res = appRedirect(
+      new Request("http://127.0.0.1:3000", {
+        headers: { "x-forwarded-host": "skquad.rossbrigoli.com", "x-forwarded-proto": "https" },
+      }),
+      "/squads/1",
+    );
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("https://skquad.rossbrigoli.com/squads/1");
+  });
+
+  it("falls back to a relative redirect when no origin is known", () => {
+    const res = appRedirect(undefined, "/login");
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/login");
   });
 });
