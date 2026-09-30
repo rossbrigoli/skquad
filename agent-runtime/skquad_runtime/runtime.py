@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import json
 import inspect
+import re
 import importlib
 import logging
 import threading
@@ -78,6 +79,75 @@ PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
 # is bounded so a chatty model cannot spin forever, and recorded tool results
 # are truncated so reply payloads stay small enough for the chat history API.
 DEFAULT_CHAT_TOOL_STEPS = 8
+
+# S-195: maximum *interim* (progress) replies a single chat turn may
+# deliver before the next text reply is forced to be the final answer.
+# Bounds the continuation injection so a chatty model cannot loop or
+# burn unbounded tokens (mirrors OpenClaw's bounded agent-loop turns).
+DEFAULT_CHAT_INTERIM_REPLIES = 2
+
+# S-195: injected (ephemeral, LLM-context-only) nudge that follows an
+# interim progress reply. It tells the model the previous text was
+# delivered as progress and asks it to either continue working or give
+# the final answer — never both.
+CHAT_CONTINUE_PROMPT = (
+    '<skquad_continue trust="platform">Your previous message was delivered '
+    'to the user as a progress note. If you were mid-task, continue now: '
+    'keep working with tools or deliver the next part of your answer. If '
+    'you have already finished, reply with the final answer only and do '
+    'not repeat the progress note.</skquad_continue>'
+)
+
+# S-195: heuristics for reading a text-only assistant message as an
+# unfinished progress note ("Let me analyse this...") rather than a
+# final answer. Progress notes end on a cliff-hanger suffix, or are a
+# short message that *leads* with an intent phrase. Leading-with-intent
+# keeps closed answers like "I'll note that the migration completed
+# cleanly; everything is healthy." final: the intent phrase there is
+# narrative, not a promise of more to come.
+_PROGRESS_SUFFIXES = (":", "...", "\u2026", "\u2014", "\u2013", ",")
+_PROGRESS_HINTS = (
+    "let me",
+    "i'll ",
+    "i will ",
+    "now let",
+    "now i ",
+    "first, i",
+    "first i ",
+    "i'm going to",
+    "i am going to",
+    "let's ",
+    "time to ",
+    "hold on",
+    "hang on",
+    "one moment",
+    "give me a moment",
+    "looking into",
+    "checking ",
+    "i need to",
+)
+
+
+def looks_like_progress_note(text: str) -> bool:
+    """Heuristic: is this text-only reply an unfinished progress note?
+
+    S-195: models often emit "Let me analyse this..." intending to keep
+    going, but a no-tool-call reply previously ended the turn, so the user
+    only ever saw the first message. A reply is read as *interim* when it
+    ends without closure (colon, ellipsis, dash, comma) or is a short
+    message that leads with an intent phrase. Anything that reads as a
+    closed answer (terminal punctuation, no leading intent phrase) stays
+    final — plain one-shot replies never trigger a continuation.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if stripped.endswith(_PROGRESS_SUFFIXES):
+        return True
+    lowered = stripped.lower()
+    if len(stripped) <= 120 and any(lowered.startswith(hint) for hint in _PROGRESS_HINTS):
+        return True
+    return False
 
 
 def _sanitize_surrogates(text: str) -> str:
@@ -953,6 +1023,7 @@ class LLMMessageHandler:
         client: "ControlPlaneClient | None" = None,
         plugins: list[RuntimePlugin] | None = None,
         max_tool_steps: int | None = None,
+        max_interim_replies: int | None = None,
     ) -> None:
         self._completion = completion
         self.model = model
@@ -963,6 +1034,8 @@ class LLMMessageHandler:
         # shows *what the agent actually did* during the turn.
         self.plugins = plugins or []
         self.max_tool_steps = max_tool_steps
+        # S-195: bound on interim (progress) replies per chat turn.
+        self.max_interim_replies = max_interim_replies
         # S-164: squad roster cache (60s TTL) so the chat context can tell
         # the model whom it may message without a fetch per turn.
         self._peers_cache: list[dict[str, object]] = []
@@ -1015,7 +1088,7 @@ class LLMMessageHandler:
         if ready is not None:
             return ready
 
-        ready, response, tool_calls_log = self._complete_with_tools(
+        ready, response, tool_calls_log, interim_delivered = self._complete_with_tools(
             message, config, virtual_key, model, prompted
         )
         if ready is not None:
@@ -1039,7 +1112,9 @@ class LLMMessageHandler:
             )
             return MessageResult(ok=True, summary="turn cancelled by user")
 
-        return self._post_chat_reply(message, config, response, tool_calls_log, model_used)
+        return self._post_chat_reply(
+            message, config, response, tool_calls_log, model_used, interim_delivered
+        )
 
     @staticmethod
     def _with_trust_label(message: RuntimeMessage) -> RuntimeMessage:
@@ -1174,7 +1249,14 @@ class LLMMessageHandler:
         virtual_key: str,
         model: str,
         prompted: "PromptedRuntime | None" = None,
-    ) -> tuple[MessageResult | None, object, list[dict[str, object]]]:
+    ) -> tuple[MessageResult | None, object, list[dict[str, object]], int]:
+        """Run the chat tool loop.
+
+        Returns (early_result, response, tool_calls_log, interim_delivered).
+        S-195: ``interim_delivered`` counts progress replies already posted
+        to the chat thread from inside the loop; the caller must not re-post
+        them and must tolerate an empty final response when it is non-zero.
+        """
         chat_messages = self._build_chat_messages(message, config, prompted)
         completion = self._completion or self._default_completion()
         # BT-RUNTIME: builtin tools (when enabled) join the chat tool list.
@@ -1189,6 +1271,7 @@ class LLMMessageHandler:
                 MessageResult(ok=False, summary=f"builtin-tools fetch failed: {exc}"),
                 None,
                 [],
+                0,
             )
         tools = self.tool_schemas(plugins)
         # S-160: subagents in the chat path too. The subagent inherits
@@ -1213,6 +1296,14 @@ class LLMMessageHandler:
             )
         tool_calls_log: list[dict[str, object]] = []
         max_steps = max(1, self.max_tool_steps or DEFAULT_CHAT_TOOL_STEPS)
+        # S-195: bound on interim progress replies for this turn.
+        interim_budget = max(
+            0,
+            DEFAULT_CHAT_INTERIM_REPLIES
+            if self.max_interim_replies is None
+            else self.max_interim_replies,
+        )
+        interim_delivered = 0
         response: object = None
         # S-161: tiered context compaction before each LLM call.
         compactor = ContextCompactor()
@@ -1224,6 +1315,7 @@ class LLMMessageHandler:
                     MessageResult(ok=True, summary="turn cancelled by user"),
                     response,
                     tool_calls_log,
+                    interim_delivered,
                 )
             chat_messages, compaction = compactor.maybe_compact(chat_messages)
             if compaction.changed:
@@ -1243,11 +1335,65 @@ class LLMMessageHandler:
             try:
                 response = completion(**completion_kwargs)
             except Exception as exc:
-                return MessageResult(ok=False, summary=f"LLM call failed: {exc}"), response, tool_calls_log
+                return (
+                    MessageResult(ok=False, summary=f"LLM call failed: {exc}"),
+                    response,
+                    tool_calls_log,
+                    interim_delivered,
+                )
             assistant = first_message(response)
             calls = parse_tool_calls(assistant)
             if not calls:
-                return None, response, tool_calls_log
+                interim_text = _sanitize_surrogates(
+                    str(message_value(assistant, "content") or "")
+                ).strip()
+                if (
+                    interim_delivered < interim_budget
+                    and step < max_steps - 1
+                    and interim_text
+                    and message.from_type == "user"
+                    and looks_like_progress_note(interim_text)
+                ):
+                    # S-195: the model paused on a progress note ("Let me
+                    # analyse this...") without a tool call but clearly
+                    # intends to continue. Deliver the note visibly now and
+                    # keep the turn alive with a bounded continuation so
+                    # the follow-up answer reaches the same chat thread.
+                    # Scoped to user turns: agent-to-agent chains are
+                    # already bounded by the control-plane correlation
+                    # budget, and injecting continuations there would
+                    # inflate A2A traffic.
+                    if self._turn_cancelled(message, config):
+                        return (
+                            MessageResult(ok=True, summary="turn cancelled by user"),
+                            response,
+                            tool_calls_log,
+                            interim_delivered,
+                        )
+                    try:
+                        self._deliver_interim_reply(
+                            message, config, interim_text, tool_calls_log
+                        )
+                    except Exception as exc:
+                        return (
+                            MessageResult(
+                                ok=False,
+                                summary=f"failed to post interim chat reply: {exc}",
+                            ),
+                            response,
+                            tool_calls_log,
+                            interim_delivered,
+                        )
+                    # The interim reply carried the tool-call log forward;
+                    # the final reply starts its log fresh.
+                    tool_calls_log.clear()
+                    interim_delivered += 1
+                    chat_messages.append({"role": "assistant", "content": interim_text})
+                    chat_messages.append(
+                        {"role": "user", "content": CHAT_CONTINUE_PROMPT}
+                    )
+                    continue
+                return None, response, tool_calls_log, interim_delivered
             if step == max_steps - 1:
                 # Budget exhausted: never fail the turn into silence. Force
                 # a tools-less final completion so the user always gets a
@@ -1274,12 +1420,39 @@ class LLMMessageHandler:
                         MessageResult(ok=False, summary=f"LLM call failed: {exc}"),
                         response,
                         tool_calls_log,
+                        interim_delivered,
                     )
-                return None, response, tool_calls_log
+                return None, response, tool_calls_log, interim_delivered
             self._append_tool_results(
                 chat_messages, assistant, calls, config, tool_calls_log, plugins
             )
-        return None, response, tool_calls_log
+        return None, response, tool_calls_log, interim_delivered
+
+    def _deliver_interim_reply(
+        self,
+        message: RuntimeMessage,
+        config: BootstrapConfig,
+        text: str,
+        tool_calls_log: list[dict[str, object]],
+    ) -> None:
+        """Post an interim progress reply into the chat thread (S-195).
+
+        Routed like the final reply to a user chat message (the agent's own
+        chat history, same correlation id) so the web UI threads it under
+        the same ask; the ``interim`` payload flag lets renderers tell
+        progress apart from the final answer. The reply is agent-authored
+        and self-addressed, so the inbox runner acks it without triggering
+        a second LLM turn.
+        """
+        extra: dict[str, object] = {"interim": True}
+        if tool_calls_log:
+            extra["tool_calls"] = list(tool_calls_log)
+        self._control_plane(config).send_chat_reply(
+            text,
+            correlation_id=message.correlation_id or message.id,
+            to_agent_id="",
+            extra=extra,
+        )
 
     def _append_tool_results(
         self,
@@ -1323,11 +1496,23 @@ class LLMMessageHandler:
         response: object,
         tool_calls_log: list[dict[str, object]],
         model_used: str,
+        interim_delivered: int = 0,
     ) -> MessageResult:
         reply_text = _sanitize_surrogates(
             str(message_value(first_message(response), "content") or "")
         ).strip()
         if not reply_text:
+            if interim_delivered:
+                # S-195: progress already reached the user — an empty
+                # final message must not fail the turn into a retry that
+                # would re-run (and re-bill) the whole exchange.
+                return MessageResult(
+                    ok=True,
+                    summary=(
+                        f"turn ended after {interim_delivered} interim "
+                        "reply (empty final message)"
+                    ),
+                )
             return MessageResult(ok=False, summary="LLM returned an empty reply")
 
         # S-164 routing: an answer to a peer's consult goes back to the
@@ -1371,7 +1556,11 @@ class LLMMessageHandler:
                 summary=f"processed {message.message_type} from agent {message.from_id}",
                 model_used=model_used,
             )
-        return MessageResult(ok=True, summary="replied to user chat message", model_used=model_used)
+        if message.from_type == "user":
+            summary = "replied to user chat message"
+            if interim_delivered:
+                summary += f" after {interim_delivered} interim reply(ies)"
+            return MessageResult(ok=True, summary=summary, model_used=model_used)
 
     def tool_schemas(self, plugins: list[RuntimePlugin] | None = None) -> list[Mapping[str, object]]:
         schemas: list[Mapping[str, object]] = []
