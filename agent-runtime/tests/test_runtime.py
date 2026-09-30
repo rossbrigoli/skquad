@@ -1906,6 +1906,27 @@ class LLMMessageHandlerTest(unittest.TestCase):
             # No tool calls -> no tool_calls key; no usage -> no context_tokens.
             self.assertIsNone(client.replies[-1][3])
 
+    def test_chat_reply_with_lone_surrogate_is_sanitised(self):
+        # A half-emoji from the model must not kill the reply: Postgres
+        # rejects lone surrogates in jsonb (SQLSTATE 22P05, incident
+        # 2026-09-30). The reply must still post, with U+FFFD replacing
+        # the unpaired surrogate.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+
+            def completion(**kwargs):
+                return fake_completion_response("Hi \ud83d there")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=completion, client=client)
+
+            result = handler.handle_message(user_msg("m-1", "hi"), config)
+
+            self.assertTrue(result.ok)
+            posted = client.replies[-1][0]
+            posted.encode("utf-8")  # must be jsonb-safe
+            self.assertIn("Hi", posted)
+
     def test_chat_tool_budget_exhausted_forces_final_answer(self):
         # Budget exhaustion must not fail the turn into silence: the
         # runtime forces a tools-less final completion so the user always
