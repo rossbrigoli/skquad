@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,6 +139,48 @@ type aiModelResolver interface {
 	GetAIModel(ctx context.Context, id string) (*domain.AIModel, error)
 }
 
+// platformSettingReader reads platform-admin key/value settings (S-183).
+// Both stores satisfy it.
+type platformSettingReader interface {
+	GetPlatformSetting(ctx context.Context, key string) (string, bool, error)
+}
+
+// defaultIdleScaleToZeroSeconds is the last-resort fallback when neither
+// the agent override nor the platform setting is usable (S-183: 15 min).
+const defaultIdleScaleToZeroSeconds = 900
+
+// deriveEffectiveIdleTimeout resolves the idle timeout written into the
+// Agent CR (S-183). Precedence: explicit per-agent override (>0) wins;
+// otherwise the platform setting (changed live by platform admins from
+// the Settings screen) applies; anything unreadable/invalid falls back to
+// the 15-minute default. A settings read failure must not block the CR
+// sync — same posture as deriveBindingModelNames.
+func deriveEffectiveIdleTimeout(ctx context.Context, store storage.KubernetesOutboxStore, agentSeconds int) int {
+	if agentSeconds > 0 {
+		return agentSeconds
+	}
+	reader, ok := store.(platformSettingReader)
+	if !ok {
+		return defaultIdleScaleToZeroSeconds
+	}
+	raw, found, err := reader.GetPlatformSetting(ctx, domain.PlatformSettingIdleScaleToZeroSeconds)
+	if err != nil {
+		slog.Warn("cannot read platform idle scale-to-zero setting; using fallback",
+			"fallback_seconds", defaultIdleScaleToZeroSeconds, "error", err)
+		return defaultIdleScaleToZeroSeconds
+	}
+	if !found {
+		return defaultIdleScaleToZeroSeconds
+	}
+	seconds, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || seconds <= 0 {
+		slog.Warn("platform idle scale-to-zero setting is not a positive int; using fallback",
+			"raw", raw, "fallback_seconds", defaultIdleScaleToZeroSeconds)
+		return defaultIdleScaleToZeroSeconds
+	}
+	return seconds
+}
+
 // deriveBindingModelNames resolves the agent's primary/fallback AI Model
 // ids into model names on the CR payload. Unresolvable ids are logged and
 // left empty — since the WP8 step-4 cutover the CR writer no longer falls
@@ -215,6 +258,11 @@ func upsertAgentFromOutbox(ctx context.Context, store storage.KubernetesOutboxSt
 	if resolver, ok := store.(aiModelResolver); ok {
 		deriveBindingModelNames(ctx, resolver, payload.Agent)
 	}
+	// S-183: the effective idle timeout is resolved at CR-apply time so a
+	// platform-admin setting change reaches every agent through the mirror
+	// fan-out without redeploying Helm. 0 on the agent means "follow the
+	// platform setting".
+	payload.Agent.IdleTimeoutSec = deriveEffectiveIdleTimeout(ctx, store, payload.Agent.IdleTimeoutSec)
 	return writer.UpsertAgent(ctx, payload.Agent, payload.Identity)
 }
 

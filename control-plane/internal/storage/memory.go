@@ -68,6 +68,11 @@ type MemoryStore struct {
 	// S-158: admin-managed prompt templates, mirroring the Postgres
 	// prompt_templates table.
 	promptTemplates map[string]*domain.PromptTemplate
+
+	// S-183: platform-admin key/value settings, mirroring the Postgres
+	// platform_settings table (migration 0026). Seeded with the
+	// 15-minute scale-to-zero default the migration seeds.
+	platformSettings map[string]string
 }
 
 // NewMemoryStore creates an empty development store.
@@ -103,6 +108,9 @@ func NewMemoryStore() *MemoryStore {
 		promptRevisions:  []*domain.PromptRevision{},
 		builtinTools:     map[string]*domain.BuiltinToolConfig{},
 		promptTemplates:  map[string]*domain.PromptTemplate{},
+	}
+	store.platformSettings = map[string]string{
+		domain.PlatformSettingIdleScaleToZeroSeconds: "900",
 	}
 	store.seedBuiltinToolsLocked()
 	return store

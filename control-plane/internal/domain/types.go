@@ -694,6 +694,13 @@ func ValidPromptTemplateAppliesTo(appliesTo string) bool {
 	return false
 }
 
+// PlatformSettingIdleScaleToZeroSeconds is the platform_settings key
+// (S-183) holding how many seconds an agent must stay idle — no task
+// running, no chat turn in progress, no pending inbox work — before the
+// operator scales its Deployment to zero. Seeded at 900 (15 minutes)
+// by migration 0026; platform admins change it from the Settings screen.
+const PlatformSettingIdleScaleToZeroSeconds = "idle_scale_to_zero_seconds"
+
 // InstanceSettings is the single-row organization-level configuration
 // (layer 2 of the prompt hierarchy). Seeded by migration 0016.
 type InstanceSettings struct {

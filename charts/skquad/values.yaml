@@ -69,7 +69,11 @@ observability:
   enabled: false   # toggle Prometheus metrics (see docs/observability-metering.md)
 
 agent:
-  idleTimeout: 300s
+  # S-183: scale to zero only after 15 minutes of no agent activity.
+  # This is the deploy-time fallback; the live value is the platform
+  # setting (platform_settings.idle_scale_to_zero_seconds), changeable
+  # by platform admins in the Settings screen without redeploying.
+  idleTimeout: 900s
   taskPollIntervalSeconds: "30"
   inboxPollIntervalSeconds: "30"
   inboxBatchSize: "5"

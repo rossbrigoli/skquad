@@ -146,7 +146,7 @@ func Load() (*Config, error) {
 		SearchPerplexityAPIKey:  strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_PERPLEXITY_API_KEY")),
 		MemoryEmbeddingsEnabled: envBool("SKQUAD_MEMORY_EMBEDDINGS_ENABLED", false),
 		MemoryEmbeddingModel:    os.Getenv("SKQUAD_MEMORY_EMBEDDING_MODEL"),
-		DefaultIdleTimeout:      envDuration("SKQUAD_DEFAULT_IDLE_TIMEOUT", 5*time.Minute),
+		DefaultIdleTimeout:      envDuration("SKQUAD_DEFAULT_IDLE_TIMEOUT", 15*time.Minute),
 		ReaperInterval:          envSeconds("SKQUAD_REAPER_INTERVAL_SECONDS", 30),
 		ReaperGrace:             envSeconds("SKQUAD_REAPER_GRACE_SECONDS", 120),
 		ConsultSweepInterval:    envSeconds("SKQUAD_CONSULT_SWEEP_INTERVAL_SECONDS", 60),
