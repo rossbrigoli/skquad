@@ -564,7 +564,10 @@ function AgentConfigPane({
   readonly onSaved: () => void;
 }) {
   const [role, setRole] = useState(agent.role ?? "");
-  const [idleTimeout, setIdleTimeout] = useState(String(agent.idle_timeout_sec ?? 300));
+  // S-183: empty = follow the platform idle scale-to-zero setting (0).
+  const [idleTimeout, setIdleTimeout] = useState(
+    agent.idle_timeout_sec ? String(agent.idle_timeout_sec) : "",
+  );
   const [storageEnabled, setStorageEnabled] = useState(agent.storage_enabled ?? false);
   const [storageSize, setStorageSize] = useState(agent.storage_size || DEFAULT_AGENT_STORAGE_SIZE);
   const [prompt, setPrompt] = useState(agent.system_prompt ?? "");
@@ -579,7 +582,7 @@ function AgentConfigPane({
   const dirty =
     role !== (agent.role ?? "") ||
     prompt !== (agent.system_prompt ?? "") ||
-    Number(idleTimeout) !== (agent.idle_timeout_sec ?? 300) ||
+    Number(idleTimeout || 0) !== (agent.idle_timeout_sec ?? 0) ||
     storageEnabled !== (agent.storage_enabled ?? false) ||
     (storageEnabled ? storageSize.trim() !== (agent.storage_size || DEFAULT_AGENT_STORAGE_SIZE) : false) ||
     primary !== (agent.ai_model_id ?? "") ||
@@ -596,7 +599,7 @@ function AgentConfigPane({
       const body: Record<string, unknown> = {
         role,
         system_prompt: prompt,
-        idle_timeout_sec: Number(idleTimeout) > 0 ? Number(idleTimeout) : 300,
+        idle_timeout_sec: idleTimeout.trim() === "" ? 0 : Number(idleTimeout),
         storage_enabled: storageEnabled,
         storage_size: storageEnabled ? storageSize.trim() : "",
         ai_model_id: binding.ai_model_id,
@@ -646,6 +649,7 @@ function AgentConfigPane({
                 setSavedNote("");
               }}
               inputMode="numeric"
+              placeholder="Platform default (15 min)"
             />
           </label>
         </div>

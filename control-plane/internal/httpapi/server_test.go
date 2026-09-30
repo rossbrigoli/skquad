@@ -46,7 +46,9 @@ func TestSquadAgentTaskFlow(t *testing.T) {
 	// accepted; the decoder ignores them.
 	require.Empty(t, agent.AIModelID)
 	require.Equal(t, "You are a pragmatic architecture lead.", agent.SystemPrompt)
-	require.Equal(t, 300, agent.IdleTimeoutSec)
+	// S-183: unset idle_timeout_sec now stores 0 = "follow the platform
+	// idle scale-to-zero setting" (was: bake in the 300s deploy default).
+	require.Equal(t, 0, agent.IdleTimeoutSec)
 
 	var patchedAgent domain.Agent
 	doJSON(t, handler, http.MethodPatch, pathAgentsPrefix+agent.ID, map[string]any{

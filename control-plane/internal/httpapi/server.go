@@ -116,6 +116,8 @@ type Store interface {
 	storage.PromptTierStore
 	storage.PromptTemplateStore
 	storage.BuiltinToolStore
+	storage.PlatformSettingsStore
+	storage.AgentMirrorQueue
 }
 
 // Server owns HTTP routing and request-scoped dependencies.
@@ -428,6 +430,10 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/admin/dead-letters", s.listAdminDeadLetters)
 			r.Post("/admin/dead-letters/{messageID}/replay", s.replayAdminDeadLetter)
 			r.Delete("/admin/dead-letters/{messageID}", s.pruneAdminDeadLetter)
+
+			// S-183: platform-admin settings (idle scale-to-zero minutes).
+			r.Get("/admin/settings", s.getAdminSettings)
+			r.Put("/admin/settings", s.putAdminSettings)
 
 			r.Post("/registry/llm-providers", s.createLLMProvider)
 			r.Get("/registry/llm-providers", s.listLLMProviders)
@@ -1798,9 +1804,12 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	if len(req.Permissions) == 0 {
 		req.Permissions = json.RawMessage(`[]`)
 	}
-	if req.IdleTimeoutSec <= 0 {
-		req.IdleTimeoutSec = int(s.cfg.DefaultIdleTimeout / time.Second)
+	if req.IdleTimeoutSec < 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "idle_timeout_sec cannot be negative")
+		return
 	}
+	// S-183: 0/unset means "follow the platform idle scale-to-zero
+	// setting" — the deploy-time default is no longer baked into the row.
 	// S-156: agent names are unique per user (across all their squads) and
 	// immutable — the K8s Deployment name is derived from them.
 	owner, err := s.store.GetUser(r.Context(), squad.OwnerID)
@@ -1951,8 +1960,10 @@ func (s *Server) applyAgentScalarUpdates(agent *domain.Agent, req updateAgentReq
 		agent.Permissions = *req.Permissions
 	}
 	if req.IdleTimeoutSec != nil {
-		if *req.IdleTimeoutSec <= 0 {
-			return errors.New("idle_timeout_sec must be positive")
+		// S-183: 0 clears the per-agent override (follow the platform
+		// setting); negative is invalid.
+		if *req.IdleTimeoutSec < 0 {
+			return errors.New("idle_timeout_sec cannot be negative")
 		}
 		agent.IdleTimeoutSec = *req.IdleTimeoutSec
 	}

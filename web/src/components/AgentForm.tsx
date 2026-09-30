@@ -60,7 +60,10 @@ export function AgentFormModal({
   const nameLocked = Boolean(initial?.name);
   const [role, setRole] = useState(initial?.role ?? "");
   const [systemPrompt, setSystemPrompt] = useState(initial?.system_prompt ?? "");
-  const [idleTimeout, setIdleTimeout] = useState(String(initial?.idle_timeout_sec ?? 300));
+  // S-183: empty = follow the platform idle scale-to-zero setting (0).
+  const [idleTimeout, setIdleTimeout] = useState(
+    initial?.idle_timeout_sec ? String(initial.idle_timeout_sec) : "",
+  );
   const [storageEnabled, setStorageEnabled] = useState(initial?.storage_enabled ?? false);
   const [storageSize, setStorageSize] = useState(initial?.storage_size || DEFAULT_AGENT_STORAGE_SIZE);
   const [busy, setBusy] = useState(false);
@@ -99,7 +102,7 @@ export function AgentFormModal({
               name: name.trim(),
               role: role.trim(),
               system_prompt: systemPrompt,
-              idle_timeout_sec: Number(idleTimeout) > 0 ? Number(idleTimeout) : 300,
+              idle_timeout_sec: idleTimeout.trim() === "" ? 0 : Number(idleTimeout),
               storage_enabled: storageEnabled,
               storage_size: storageEnabled ? storageSize.trim() : "",
               ai_model_id: aiModelId,
@@ -136,6 +139,7 @@ export function AgentFormModal({
               value={idleTimeout}
               onChange={(e) => setIdleTimeout(e.target.value.replace(/[^0-9]/g, ""))}
               inputMode="numeric"
+              placeholder="Platform default (15 min)"
             />
           </label>
         </div>

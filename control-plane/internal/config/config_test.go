@@ -58,8 +58,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AgentImage != "skquad/agent-runtime:0.1.0" {
 		t.Fatalf("AgentImage = %q", cfg.AgentImage)
 	}
-	if cfg.DefaultIdleTimeout != 5*time.Minute {
-		t.Fatalf("DefaultIdleTimeout = %s, want 5m", cfg.DefaultIdleTimeout)
+	if cfg.DefaultIdleTimeout != 15*time.Minute {
+		t.Fatalf("DefaultIdleTimeout = %s, want 15m", cfg.DefaultIdleTimeout)
 	}
 	if cfg.ReaperInterval != 30*time.Second {
 		t.Fatalf("ReaperInterval = %s, want 30s", cfg.ReaperInterval)
@@ -230,10 +230,10 @@ func TestEnvDurationAndSeconds(t *testing.T) {
 		value string
 		want  time.Duration
 	}{
-		{name: "unset", value: "", want: 5 * time.Minute},
+		{name: "unset", value: "", want: 15 * time.Minute},
 		{name: "parsed", value: "45s", want: 45 * time.Second},
 		{name: "minutes", value: "2m", want: 2 * time.Minute},
-		{name: "invalid", value: "soon", want: 5 * time.Minute},
+		{name: "invalid", value: "soon", want: 15 * time.Minute},
 	}
 	for _, tc := range cases {
 		t.Setenv("SKQUAD_DEFAULT_IDLE_TIMEOUT", tc.value)
