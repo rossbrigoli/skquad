@@ -133,6 +133,46 @@ class TierSelectionTest(unittest.TestCase):
         self.assertIn("skquad_context_digest", str(out[0]["content"]))
         assert_pairing(self, out)
 
+    def test_tier3_keeps_user_message_when_user_turn_evicted(self):
+        # Incident 2026-09-30: user query + trailing assistant/tool groups.
+        # Tier 3 evicted the user turn into the SYSTEM digest, leaving no
+        # user-role message; Qwen3 template rejected with "No user query
+        # found in messages". The digest must surface as a user message.
+        msgs = [sys_msg(), user_msg("look at the skquad project")]
+        msgs += assistant_tool_group("c1") * 1
+        for i in range(2, 8):
+            msgs.extend(assistant_tool_group(call_id=f"c{i}", tool_text="x" * 4000))
+        compactor = ContextCompactor(limit=estimate_messages_tokens(msgs) // 0.95)
+        out, report = compactor.maybe_compact(msgs)
+        self.assertEqual(report.tier, 3)
+        self.assertTrue(any(m["role"] == "user" for m in out))
+        # The user's original query survives inside the user-role digest.
+        user_msgs = [m for m in out if m["role"] == "user"]
+        self.assertIn("look at the skquad project", str(user_msgs[0]["content"]))
+        # System prompt stays verbatim (no digest folded in).
+        self.assertEqual(out[0]["content"], "SYSTEM PROMPT")
+        assert_pairing(self, out)
+
+    def test_tier3_folds_into_system_when_user_kept(self):
+        # User turn inside the kept window → old fold-into-system behavior.
+        msgs = [sys_msg()]
+        for i in range(2, 8):
+            msgs.extend(assistant_tool_group(call_id=f"c{i}", tool_text="x" * 4000))
+        msgs.append(user_msg("latest question"))
+        compactor = ContextCompactor(limit=estimate_messages_tokens(msgs) // 0.95)
+        out, report = compactor.maybe_compact(msgs)
+        self.assertEqual(report.tier, 3)
+        self.assertIn("emergency-compressed", out[0]["content"])
+        self.assertTrue(any(m["role"] == "user" for m in out))
+        assert_pairing(self, out)
+
+    def test_no_user_message_never_invented(self):
+        # Conversations with no user turn at all must not gain one.
+        msgs = build_convo(groups=16)
+        compactor = ContextCompactor(limit=estimate_messages_tokens(msgs) // 0.95)
+        out, _ = compactor.maybe_compact(msgs)
+        self.assertFalse(any(m["role"] == "user" for m in out))
+
 
 class SummarizerTest(unittest.TestCase):
     def test_injected_summarizer_used(self):
