@@ -291,7 +291,7 @@ func (s *Server) composePromptForAgent(ctx context.Context, agent *domain.Agent)
 	// agents or pods. Empty missions omit the sentence entirely.
 	squadTier := squad.Prompt
 	if mission := strings.TrimSpace(squad.Mission); mission != "" {
-		line := "You are part of a the squad called " + squad.Name + " with the following mission: " + mission
+		line := "You are part of the squad called " + squad.Name + " with the following mission: " + mission
 		if strings.TrimSpace(squadTier) == "" {
 			squadTier = line
 		} else {

@@ -70,7 +70,7 @@ func TestS179MissionInjectedIntoComposedPrompt(t *testing.T) {
 	var resp composedPromptResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 
-	sentence := "You are part of a the squad called S179 Squad with the following mission: Ship the quarterly release safely."
+	sentence := "You are part of the squad called S179 Squad with the following mission: Ship the quarterly release safely."
 	require.Contains(t, resp.Prompt, sentence)
 
 	// The sentence lives inside the squad tier block, not the agent tier.
@@ -96,10 +96,10 @@ func TestS179MissionAlongsideSquadContext(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	var resp composedPromptResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Contains(t, resp.Prompt, "You are part of a the squad called Both Tiers with the following mission: Coordinate the migration.")
+	require.Contains(t, resp.Prompt, "You are part of the squad called Both Tiers with the following mission: Coordinate the migration.")
 	require.Contains(t, resp.Prompt, "Always verify before deploying.")
 	// Mission sentence precedes the Squad Context text within the squad tier.
-	missionIdx := strings.Index(resp.Prompt, "You are part of a the squad called Both Tiers")
+	missionIdx := strings.Index(resp.Prompt, "You are part of the squad called Both Tiers")
 	contextIdx := strings.Index(resp.Prompt, "Always verify before deploying.")
 	require.Less(t, missionIdx, contextIdx)
 }
