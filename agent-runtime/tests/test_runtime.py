@@ -1906,13 +1906,21 @@ class LLMMessageHandlerTest(unittest.TestCase):
             # No tool calls -> no tool_calls key; no usage -> no context_tokens.
             self.assertIsNone(client.replies[-1][3])
 
-    def test_chat_tool_budget_exhausted_fails_message(self):
+    def test_chat_tool_budget_exhausted_forces_final_answer(self):
+        # Budget exhaustion must not fail the turn into silence: the
+        # runtime forces a tools-less final completion so the user always
+        # gets a reply (was: message died unreplied, incident 2026-09-30).
         with tempfile.TemporaryDirectory() as tmp:
             config = self._config(tmp)
             plugin = EchoPlugin()
 
+            seen_kwargs = []
+
             def completion(**kwargs):
-                return fake_tool_completion("call-x", "echo", {"message": "loop"})
+                seen_kwargs.append(kwargs)
+                if "tools" in kwargs:
+                    return fake_tool_completion("call-x", "echo", {"message": "loop"})
+                return fake_completion_response("final answer without tools")
 
             client = FakeChatClient(claimed_task=None, messages=[])
             handler = LLMMessageHandler(
@@ -1924,9 +1932,11 @@ class LLMMessageHandlerTest(unittest.TestCase):
 
             result = handler.handle_message(user_msg("m-1", "loop forever"), config)
 
-            self.assertFalse(result.ok)
-            self.assertIn("budget exhausted", result.summary)
-            self.assertEqual(client.replies, [])
+            self.assertTrue(result.ok)
+            self.assertEqual(len(client.replies), 1)
+            self.assertIn("final answer without tools", client.replies[-1][0])
+            # The forced completion is genuinely called without tools.
+            self.assertNotIn("tools", seen_kwargs[-1])
 
     def test_chat_cancelled_before_reply_drops_reply(self):
         # S-175: user hits stop while the final LLM call is in flight —
