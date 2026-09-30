@@ -13,7 +13,24 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "lcov"],
       reportsDirectory: "coverage",
-      include: ["src/lib/status.ts", "src/lib/format.ts", "src/lib/attention.ts", "src/lib/agentStorage.ts", "src/components/MarkdownMessage.tsx"],
+      // S-182: widened from the original 5-file allowlist to the whole logic
+      // layer. Almost every lib module already has a colocated *.test.ts; the
+      // stale include list was hiding them from lcov, which is why SonarQube
+      // reported web at ~10% despite the tests existing.
+      include: [
+        "src/lib/**/*.ts",
+        "src/components/MarkdownMessage.tsx",
+        "src/components/SquadMissionConfig.tsx",
+      ],
+      exclude: [
+        "src/**/*.test.ts",
+        "src/**/*.test.tsx",
+        // React client hooks need a DOM test environment (jsdom) which this
+        // node-env suite deliberately does not load; they are thin wrappers
+        // over apiGet/useState. DOM coverage is a separate follow-up.
+        "src/lib/useApi.ts",
+        "src/lib/usePromptValidation.ts",
+      ],
       thresholds: {
         statements: 85,
         lines: 85,

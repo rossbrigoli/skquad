@@ -31,7 +31,8 @@ spec:
         # container's uid so /_next/image can cache instead of re-optimizing
         # every request (EACCES: mkdir /app/.next/cache/images).
         - name: next-image-cache
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: {{ .Values.web.imageCacheSizeLimit | default "256Mi" | quote }}
       containers:
         - name: web
           image: {{ include "skquad.webImage" . | quote }}

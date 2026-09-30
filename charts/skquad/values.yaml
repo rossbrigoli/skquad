@@ -259,12 +259,23 @@ web:
   # https://skquad.rossbrigoli.com. Empty = derive from x-forwarded-*
   # headers, then the OIDC redirect URL's origin.
   publicBaseUrl: ""
-  # S6864: explicit memory limit.
+  # S6864: explicit memory limit. S6870: the web container mounts the
+  # next-image-cache emptyDir, so it also needs an explicit ephemeral-storage
+  # request+limit (otherwise a runaway cache/log could evict the pod under
+  # DiskPressure with no bound). S6892/S6897: explicit CPU request+limit so
+  # the scheduler has a complete resource profile for this container.
   resources:
     requests:
+      cpu: 50m
       memory: 128Mi
+      ephemeral-storage: 512Mi
     limits:
+      cpu: 500m
       memory: 512Mi
+      ephemeral-storage: 1Gi
+  # Cap for the next-image-cache emptyDir (S6870 best practice: bound each
+  # emptyDir individually, not just the container total).
+  imageCacheSizeLimit: 256Mi
   # Pod runs as the image's non-root user (65532). fsGroup makes the
   # next-image-cache emptyDir group-writable so the Next.js image optimizer
   # can write /app/.next/cache/images under readOnlyRootFilesystem instead of
