@@ -19,6 +19,8 @@ export type AttentionItem = {
   title: string;
   href: string;
   meta: string;
+  // S-181: email-style body for richer inbox notifications.
+  body?: string;
   createdAt?: string;
 };
 
@@ -131,12 +133,17 @@ function inboxAttentionItems(message: InboxMessage): AttentionItem[] {
   if (message.read_at) {
     return [];
   }
+  // S-181: prefer the richer subject/body; fall back to the legacy
+  // one-line message for notifications created before the change.
+  const title = message.subject?.trim() || message.message;
+  const body = message.body?.trim() || undefined;
   if (message.kind === "action_required") {
     return [
       {
         id: `action:${message.id}`,
         reason: "action_required",
-        title: message.message,
+        title,
+        body,
         href: inboxMessageHref(message),
         meta: "agent needs your input",
         createdAt: message.created_at,
@@ -147,7 +154,8 @@ function inboxAttentionItems(message: InboxMessage): AttentionItem[] {
     {
       id: `done:${message.id}`,
       reason: "completed",
-      title: message.message,
+      title,
+      body,
       href: inboxMessageHref(message),
       meta: "completed",
       createdAt: message.created_at,

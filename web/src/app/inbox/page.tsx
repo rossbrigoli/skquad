@@ -34,6 +34,7 @@ export default function InboxPage() {
           <span className="entity-meta">
             {item.meta} · {formatRelativeTime(item.createdAt)}
           </span>
+          {item.body ? <span className="inbox-body">{item.body}</span> : null}
         </Link>
         <div className="entity-side" style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
           <span className={chip.className}>{chip.label}</span>

@@ -1,5 +1,24 @@
 # WORKLOG
 
+## 2026-09-30 15:20 ACST
+
+- objective: S-181 — task screen "Result" field + email-style inbox notifications. Owners previously had no way to see the final outcome (completion summary / blocked reason) of an agent's work without reading the whole thread, and inbox notifications were bare one-liners without a task link.
+- files changed:
+  - `control-plane/internal/domain/types.go` — `Task.Result`/`ResultStatus`/`ResultAt` (dedicated persisted final-outcome fields); `InboxMessage.Subject`/`Body` (optional, backward-compatible richer payload).
+  - `control-plane/internal/storage/migrations/0025_task_result_inbox_rich.sql` — adds `tasks.result`, `tasks.result_status`, `tasks.result_at`, `inbox_messages.subject`, `inbox_messages.body`.
+  - `control-plane/internal/storage/postgres.go` — result columns in all task SELECTs + `scanTask`; `CompleteTaskExecution` persists result/result_status/result_at only on done/blocked (CASE-guarded); inbox INSERT/SELECT/RETURNING + `scanInboxMessage` carry subject/body.
+  - `control-plane/internal/storage/memory.go` — `CompleteTaskExecution` parity: sets Result/ResultStatus/ResultAt on done/blocked only.
+  - `control-plane/internal/httpapi/server.go` — `notifySquadOwnerRich` (subject/body alongside legacy message; `notifySquadOwner` delegates), `taskNotifySubjectBody` helper (email-style subject + body with task/title/agent/status/timestamp and `/squads/{sid}/tasks/{tid}` link), `firstLine`; wired into complete, block, and both delegation-result notifications. Subject caps: done → `Task "X" completed: …`, blocked → `Task "X" is blocked because of …`, other → `Task "X" is now <status>: …`.
+  - `control-plane/internal/httpapi/server_s181_test.go` — new: done/blocked populate Result + rich inbox subject/body/link; in-review leaves Result empty; no-reason block fallback; truncation caps.
+  - `control-plane/internal/storage/memory_test.go` + `postgres_parity_test.go` — new result-persistence parity tests (done/blocked set, in-review untouched) and pg inbox subject/body round-trip.
+  - `web/src/lib/api.ts` — Task result fields; InboxMessage subject/body.
+  - `web/src/lib/taskResult.ts` (new) + `taskResult.test.ts` (new) — pure `taskResultInfo()`: prefers dedicated `task.result` (tone from `result_status`), falls back to the latest agent `reply` thread message for pre-S-181 done/blocked tasks.
+  - `web/src/app/squads/[id]/tasks/[tid]/page.tsx` — prominent Result section (green done / red-blocked panel with chip + timestamp) between description and Actions.
+  - `web/src/lib/attention.ts` — inbox items prefer `subject` over legacy `message`, carry `body`.
+  - `web/src/app/inbox/page.tsx` — rows render the richer body under the title; whole row (incl. body) links to the task screen.
+  - `web/src/app/globals.css` — `.result-panel` (done/blocked variants), `.inbox-body` preview styles.
+- command/test run: `go build ./... && go vet ./...` + `go test ./... -count=1` (9 pkgs ok; httpapi+storage: 333 pass/skip, 0 fail) in `control-plane/`; `npx tsc --noEmit`, `npx vitest run` (23 files / 355 tests passed), `NEXT_TELEMETRY_DISABLED=1 npm run build` in `web/`; `git diff --check` clean. agent-runtime untouched (runtime already sends the summary on complete/block; persistence/notification is server-side).
+- result: Final outcome is now a first-class task field populated atomically with the done/blocked transition (memory/postgres parity), surfaced as a labeled Result section on the task screen with thread-reply fallback for pre-existing tasks. Owner inbox notifications read like email: subject `Task "Deploy the thing" is blocked because of registry credentials expired`, body with Task/Status/Agent/When + outcome text + `Open the task: /squads/<sid>/tasks/<tid>`; legacy `message` line kept for backward compatibility. Simplifications: in-review transitions intentionally do not set the dedicated Result (UI falls back to thread); task link is a relative path (no public-base-URL config exists); notification body timestamp is server UTC at notify time.
 ## 2026-09-30 15:00:00 ACST
 
 - objective: S-180 — pre-save "Test" buttons for LLM provider connection and AI model round-trip. Admin can verify a provider token and a model config BEFORE saving, without persisting anything.

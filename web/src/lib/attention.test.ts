@@ -237,3 +237,40 @@ describe("buildAttention inbox", () => {
     expect(Object.keys(REASON_PRIORITY)).toHaveLength(6);
   });
 });
+
+describe("buildAttention richer inbox notifications (S-181)", () => {
+  it("prefers the richer subject over the legacy message and carries the body", () => {
+    const items = buildAttention(
+      input({
+        inbox: [
+          msg({
+            id: "rich",
+            kind: "action_required",
+            task_id: "t9",
+            message: "Agent x blocked task \"Deploy\" : creds expired",
+            subject: "Task \"Deploy\" is blocked because of creds expired",
+            body: "Task: Deploy\nStatus: blocked\n\ncreds expired\n\nOpen the task: /squads/s1/tasks/t9",
+          }),
+        ],
+      }),
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0].title).toBe("Task \"Deploy\" is blocked because of creds expired");
+    expect(items[0].body).toContain("Open the task: /squads/s1/tasks/t9");
+    expect(items[0].href).toBe("/squads/s1/tasks/t9");
+  });
+
+  it("falls back to the legacy message when subject is absent", () => {
+    const items = buildAttention(input({ inbox: [msg({ id: "legacy" })] }));
+    expect(items[0].title).toBe("all done");
+    expect(items[0].body).toBeUndefined();
+  });
+
+  it("treats a whitespace-only subject/body as absent", () => {
+    const items = buildAttention(
+      input({ inbox: [msg({ id: "blank", subject: "   ", body: "  " })] }),
+    );
+    expect(items[0].title).toBe("all done");
+    expect(items[0].body).toBeUndefined();
+  });
+});

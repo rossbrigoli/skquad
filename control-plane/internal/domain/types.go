@@ -261,6 +261,14 @@ type Task struct {
 	WorkerID       string    `json:"worker_id,omitempty"`
 	FencingToken   string    `json:"fencing_token,omitempty"`
 	LeaseExpiresAt time.Time `json:"lease_expires_at,omitempty"`
+	// Result carries the final outcome text of the latest terminal
+	// transition (S-181): the completion summary for done tasks, the
+	// blocked reason for blocked tasks. ResultStatus records which
+	// status produced the text so the UI can label it correctly even
+	// after a manual move; ResultAt is when it was recorded.
+	Result       string    `json:"result,omitempty"`
+	ResultStatus string    `json:"result_status,omitempty"`
+	ResultAt     time.Time `json:"result_at,omitempty"`
 }
 
 // TaskExecutionStatus is the lifecycle of one runtime attempt for a task.
@@ -426,8 +434,15 @@ type InboxMessage struct {
 	TaskID      string    `json:"task_id,omitempty"`
 	Kind        InboxKind `json:"kind"`
 	Message     string    `json:"message"`
-	ReadAt      time.Time `json:"read_at,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	// Subject and Body (S-181) make owner notifications read like an
+	// email: a one-line subject plus a body with the key context and a
+	// link to the task screen. Both are optional — older messages and
+	// plain notifications leave them empty and consumers fall back to
+	// Message.
+	Subject   string    `json:"subject,omitempty"`
+	Body      string    `json:"body,omitempty"`
+	ReadAt    time.Time `json:"read_at,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // IsRead reports whether the owner has acknowledged the notification.

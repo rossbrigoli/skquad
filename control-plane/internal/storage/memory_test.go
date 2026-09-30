@@ -283,3 +283,62 @@ func TestMemoryStoreReapSkipsCompletedExecution(t *testing.T) {
 		t.Fatalf("task status = %q, want done", got.Status)
 	}
 }
+
+// TestMemoryStoreTaskResultPersistence pins S-181 memory/postgres
+// parity: done and blocked transitions persist result/result_status/
+// result_at; in-review leaves them empty.
+func TestMemoryStoreTaskResultPersistence(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := NewMemoryStore()
+	squad := mustCreateMemoryTestSquad(t, ctx, store)
+	agent := mustCreateMemoryTestAgent(t, ctx, store, squad.ID)
+
+	doneTask := mustCreateMemoryTestTask(t, ctx, store, squad, agent)
+	claimed, err := store.ClaimNextTask(ctx, agent.ID, testWorkerID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteTaskExecution(ctx, agent.ID, doneTask.ID, claimed.ExecutionID, claimed.FencingToken, domain.TaskDone, "shipped it"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetTask(ctx, doneTask.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result != "shipped it" || got.ResultStatus != string(domain.TaskDone) || got.ResultAt.IsZero() {
+		t.Fatalf("done result persistence = %q/%q/%v", got.Result, got.ResultStatus, got.ResultAt)
+	}
+
+	blockedTask := mustCreateMemoryTestTask(t, ctx, store, squad, agent)
+	claimed, err = store.ClaimNextTask(ctx, agent.ID, testWorkerID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteTaskExecution(ctx, agent.ID, blockedTask.ID, claimed.ExecutionID, claimed.FencingToken, domain.TaskBlocked, "creds expired"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.GetTask(ctx, blockedTask.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result != "creds expired" || got.ResultStatus != string(domain.TaskBlocked) || got.ResultAt.IsZero() {
+		t.Fatalf("blocked result persistence = %q/%q/%v", got.Result, got.ResultStatus, got.ResultAt)
+	}
+
+	reviewTask := mustCreateMemoryTestTask(t, ctx, store, squad, agent)
+	claimed, err = store.ClaimNextTask(ctx, agent.ID, testWorkerID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteTaskExecution(ctx, agent.ID, reviewTask.ID, claimed.ExecutionID, claimed.FencingToken, domain.TaskInReview, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.GetTask(ctx, reviewTask.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result != "" || got.ResultStatus != "" || !got.ResultAt.IsZero() {
+		t.Fatalf("in-review must not set result, got %q/%q/%v", got.Result, got.ResultStatus, got.ResultAt)
+	}
+}
