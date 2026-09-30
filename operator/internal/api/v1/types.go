@@ -122,6 +122,10 @@ type AgentSpec struct {
 	Permissions      apiextensionsv1.JSON `json:"permissions,omitempty"`
 	WorkspaceSecrets []WorkspaceSecret    `json:"workspaceSecrets,omitempty"`
 	IdleTimeout      string               `json:"idleTimeout,omitempty"`
+	// ThinkingLevel (S-178) is the per-agent reasoning effort
+	// ("low"|"medium"|"high"; empty = provider default). Injected into the
+	// runtime as SKQUAD_THINKING_LEVEL.
+	ThinkingLevel string `json:"thinkingLevel,omitempty"`
 	DesiredActive    bool                 `json:"desiredActive"`
 	// Storage declares a durable per-agent workspace PVC (S-135). When
 	// nil or disabled the agent runs without persistent workspace, exactly

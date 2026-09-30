@@ -2453,5 +2453,129 @@ class DiskFullGuardTest(unittest.TestCase):
         self.assertEqual(config.min_free_bytes, 123456)
 
 
+
+
+class ThinkingLevelPassthroughTest(unittest.TestCase):
+    """S-178: per-agent thinking level → reasoning_effort on LLM requests."""
+
+    def test_reasoning_effort_for_valid_levels(self):
+        self.assertEqual(rt.reasoning_effort_for("low"), "low")
+        self.assertEqual(rt.reasoning_effort_for("medium"), "medium")
+        self.assertEqual(rt.reasoning_effort_for("high"), "high")
+
+    def test_reasoning_effort_for_normalizes_case_and_whitespace(self):
+        self.assertEqual(rt.reasoning_effort_for("  HIGH "), "high")
+        self.assertEqual(rt.reasoning_effort_for("Medium"), "medium")
+
+    def test_reasoning_effort_for_unset_or_unknown_is_none(self):
+        self.assertIsNone(rt.reasoning_effort_for(""))
+        self.assertIsNone(rt.reasoning_effort_for("turbo"))
+        self.assertIsNone(rt.reasoning_effort_for(None))
+
+    def test_load_bootstrap_config_reads_thinking_level(self):
+        config = rt.load_bootstrap_config(
+            {
+                "SKQUAD_AGENT_ID": "agent-1",
+                "SKQUAD_SQUAD_ID": "squad-1",
+                "SKQUAD_TASK_LOOP_ENABLED": "false",
+                "SKQUAD_THINKING_LEVEL": "high",
+            }
+        )
+        self.assertEqual(config.thinking_level, "high")
+        default = rt.load_bootstrap_config(
+            {
+                "SKQUAD_AGENT_ID": "agent-1",
+                "SKQUAD_SQUAD_ID": "squad-1",
+                "SKQUAD_TASK_LOOP_ENABLED": "false",
+            }
+        )
+        self.assertEqual(default.thinking_level, "")
+
+    def test_chat_completion_carries_reasoning_effort(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            credential = Path(tmp) / "agent"
+            credential.write_text("credential", encoding="utf-8")
+            virtual = Path(tmp) / "llm-gateway"
+            virtual.write_text("virtual-key", encoding="utf-8")
+            config = rt.load_bootstrap_config(
+                {
+                    "SKQUAD_AGENT_ID": "agent-1",
+                    "SKQUAD_SQUAD_ID": "squad-1",
+                    "SKQUAD_AGENT_CREDENTIAL_PATH": str(credential),
+                    "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH": str(virtual),
+                    "SKQUAD_LLM_GATEWAY_URL": "http://llm-gateway:4000",
+                    "SKQUAD_DEFAULT_MODEL": "gpt-4o",
+                    "SKQUAD_TASK_LOOP_ENABLED": "false",
+                    "SKQUAD_THINKING_LEVEL": "medium",
+                }
+            )
+            seen = {}
+
+            def fake_completion(**kwargs):
+                seen.update(kwargs)
+                return fake_completion_response("ok")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = rt.LLMMessageHandler(completion=fake_completion, client=client)
+            result = handler.handle_message(user_msg("m-1", "hi"), config)
+            self.assertTrue(result.ok)
+            self.assertEqual(seen["reasoning_effort"], "medium")
+
+    def test_chat_completion_omits_reasoning_effort_when_unset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            credential = Path(tmp) / "agent"
+            credential.write_text("credential", encoding="utf-8")
+            virtual = Path(tmp) / "llm-gateway"
+            virtual.write_text("virtual-key", encoding="utf-8")
+            config = rt.load_bootstrap_config(
+                {
+                    "SKQUAD_AGENT_ID": "agent-1",
+                    "SKQUAD_SQUAD_ID": "squad-1",
+                    "SKQUAD_AGENT_CREDENTIAL_PATH": str(credential),
+                    "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH": str(virtual),
+                    "SKQUAD_LLM_GATEWAY_URL": "http://llm-gateway:4000",
+                    "SKQUAD_DEFAULT_MODEL": "gpt-4o",
+                    "SKQUAD_TASK_LOOP_ENABLED": "false",
+                }
+            )
+            seen = {}
+
+            def fake_completion(**kwargs):
+                seen.update(kwargs)
+                return fake_completion_response("ok")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = rt.LLMMessageHandler(completion=fake_completion, client=client)
+            result = handler.handle_message(user_msg("m-1", "hi"), config)
+            self.assertTrue(result.ok)
+            self.assertNotIn("reasoning_effort", seen)
+
+    def test_task_completion_carries_reasoning_effort(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            virtual_key = Path(tmp) / "llm-gateway"
+            virtual_key.write_text("virtual-key", encoding="utf-8")
+            config = rt.load_bootstrap_config(
+                {
+                    "SKQUAD_AGENT_ID": "agent-1",
+                    "SKQUAD_SQUAD_ID": "squad-1",
+                    "SKQUAD_AGENT_CREDENTIAL_PATH": str(Path(tmp) / "agent"),
+                    "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH": str(virtual_key),
+                    "SKQUAD_LLM_GATEWAY_URL": "http://gateway",
+                    "SKQUAD_DEFAULT_MODEL": "model-1",
+                    "SKQUAD_THINKING_LEVEL": "low",
+                }
+            )
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                return fake_completion("SKQUAD_STATUS: done\nImplemented.")
+
+            handler = rt.LiteLLMTaskHandler(completion=completion, discover_resources=False)
+            result = handler.handle_task(fake_task("task-1"), config)
+            self.assertEqual(result.status, "done")
+            self.assertEqual(calls[0]["reasoning_effort"], "low")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -50,6 +50,7 @@ import {
 import { SubagentThreadPanel } from "../../../../../components/SubagentThreadPanel";
 import { AgentInboxPanel } from "../../../../../components/AgentInboxPanel";
 import { agentStatus } from "../../../../../lib/status";
+import { THINKING_LEVELS, resolveThinkingLevel, thinkingLevelLabel, type ThinkingLevel } from "../../../../../lib/thinking";
 import type { AIModel } from "../../../../../lib/aimodels";
 import {
   bindingWarnings,
@@ -245,6 +246,21 @@ export default function AgentProfilePage() {
   const [chatNote, setChatNote] = useState("");
   const [restartBusy, setRestartBusy] = useState(false);
   const [restartNote, setRestartNote] = useState("");
+  // S-178: thinking-level selector in the composer (immediate PATCH, not
+  // part of the Configuration form).
+  const [thinkingBusy, setThinkingBusy] = useState(false);
+  // S-178: resolve the agent's bound model for the composer's model chip.
+  const myModels = useApi<AIModel[]>("/models/me", 60000);
+
+  async function saveThinkingLevel(level: ThinkingLevel) {
+    setThinkingBusy(true);
+    try {
+      await apiPatch(`/agents/${agentId}`, token, { thinking_level: level });
+      agents.refresh();
+    } finally {
+      setThinkingBusy(false);
+    }
+  }
 
   const agent = (agents.data || []).find((a) => a.id === agentId);
   const tasks = (board.data?.tasks || []).filter((t) => t.assignee_agent_id === agentId);
@@ -258,6 +274,15 @@ export default function AgentProfilePage() {
   // S-169 item 12: the context-window stat moved from under the chat box
   // up into the compact chip row.
   const contextTokens = useMemo(() => chatContextTokens(chat.data || []), [chat.data]);
+  // S-178: human-readable name of the agent's bound LLM for the composer
+  // chip; falls back to the bare id when the model is no longer visible
+  // via /models/me (revoked/deprecated).
+  const llmLabel = useMemo(() => {
+    const id = agent?.ai_model_id;
+    if (!id) return "no model bound";
+    const m = findModelById(myModels.data ?? [], id);
+    return m ? modelLabel(m) : `${id.slice(0, 12)}…`;
+  }, [agent?.ai_model_id, myModels.data]);
 
   async function resetChat() {
     if (!window.confirm("Reset this chat thread? Earlier turns stop being included in the agent's context. The transcript is saved to the agent's memory.")) return;
@@ -301,7 +326,7 @@ export default function AgentProfilePage() {
   return (
     <AuthGate>
       <AppShell>
-        <div className="section-head">
+        <div className="section-head agent-title-row">
           <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-3)", flexWrap: "wrap" }}>
             <h1 className="page-title" style={{ margin: 0 }}>
               {agent?.name || "Agent"}
@@ -320,19 +345,11 @@ export default function AgentProfilePage() {
             </button>
             {restartNote ? <span className="field-hint">{restartNote}</span> : null}
           </div>
-          <div style={{ display: "flex", gap: "var(--space-2)" }}>
-            <button type="button" className="btn btn-sm btn-danger" onClick={() => setDeleting(true)} disabled={!agent}>
-              Delete
-            </button>
-          </div>
-        </div>
-        <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)" }}>
-          {agent?.role || "no role set"} · <span className="mono">{agentId.slice(0, 12)}</span>
-        </p>
-
-        {/* S-169 items 11+12: one compact chip row replaces the big metric
-            grid; MTD spend replaces lifetime spend; context tokens moved up. */}
-        <div className="metric-chips" style={{ marginTop: "var(--space-4)" }}>
+          {/* S-178: the metric chips moved up into the title row, where
+              the Delete button used to sit. Delete itself moved to the
+              Configuration tab's Danger zone — beside the chat it read
+              like a message-delete. */}
+          <div className="metric-chips agent-title-metrics">
           <span className={stalled.length > 0 ? "metric-chip attention" : "metric-chip"}>
             <span className="metric-chip-label">Current lease</span>
             <span className="metric-chip-value">{live.length > 0 ? "1 task" : "none"}</span>
@@ -365,7 +382,11 @@ export default function AgentProfilePage() {
             <span className="metric-chip-value">{contextTokens === null ? "—" : formatContextTokens(contextTokens)}</span>
             <span className="metric-chip-sub">tokens · last agent turn</span>
           </span>
+          </div>
         </div>
+        <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)" }}>
+          {agent?.role || "no role set"} · <span className="mono">{agentId.slice(0, 12)}</span>
+        </p>
 
         <nav className="squad-tabs agent-tabs" aria-label="Agent sections" style={{ marginTop: "var(--space-4)" }}>
           <button
@@ -397,7 +418,7 @@ export default function AgentProfilePage() {
         {tab === "inbox" ? <AgentInboxPanel agentId={agentId} /> : null}
 
         {tab === "chat" ? (
-          <section style={{ marginTop: "var(--space-4)" }}>
+          <section className="agent-chat-section" style={{ marginTop: "var(--space-4)" }}>
             <div className="section-head">
               <h2>Talk to {agent?.name || "this agent"}</h2>
               {/* S-169 item 9a: Reset chat sits in the chat header now. */}
@@ -419,6 +440,10 @@ export default function AgentProfilePage() {
               onSent={() => chat.refresh()}
               agentId={agentId}
               token={token}
+              llmLabel={llmLabel}
+              thinkingLevel={resolveThinkingLevel(agent?.thinking_level)}
+              thinkingBusy={thinkingBusy}
+              onThinkingLevelChange={saveThinkingLevel}
             />
             {/* Task lists kept under the chat (S-169: chat is the star; the
                 lists stay reachable without crowding the header). */}
@@ -456,6 +481,7 @@ export default function AgentProfilePage() {
               }
             }}
             onPreviewEffective={() => setPreviewEffective(true)}
+            onRequestDelete={() => setDeleting(true)}
             onSaved={() => {
               setSavedTick((t) => t + 1);
               agents.refresh();
@@ -520,6 +546,7 @@ function AgentConfigPane({
   onRevoke,
   onIdentityAction,
   onPreviewEffective,
+  onRequestDelete,
   onSaved,
 }: {
   readonly agent: Agent;
@@ -533,6 +560,7 @@ function AgentConfigPane({
   readonly onRevoke: (next: { resource_type: string; resource_id: string }[]) => Promise<void>;
   readonly onIdentityAction: () => Promise<void>;
   readonly onPreviewEffective: () => void;
+  readonly onRequestDelete: () => void;
   readonly onSaved: () => void;
 }) {
   const [role, setRole] = useState(agent.role ?? "");
@@ -770,6 +798,25 @@ function AgentConfigPane({
           emptyHint="Assignments, status changes and identity events show up here."
         />
       </Collapsible>
+
+      {/* S-178: Danger zone — the destructive delete moved here from the
+          chat screen header, where it read like a per-message action.
+          The ConfirmDialog (typed-name confirmation) still gates it. */}
+      <section className="danger-zone" aria-label="Danger zone">
+        <h2>Danger zone</h2>
+        <div className="danger-zone-row">
+          <div>
+            <div className="danger-zone-title">Delete this agent</div>
+            <p className="field-hint" style={{ margin: 0 }}>
+              Removes the agent, its identity, grants and queued messages.
+              Running work will be orphaned. This cannot be undone.
+            </p>
+          </div>
+          <button type="button" className="btn btn-danger" onClick={onRequestDelete}>
+            Delete agent
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
@@ -788,12 +835,21 @@ function ChatThread({
   onSent,
   agentId,
   token,
+  llmLabel,
+  thinkingLevel,
+  thinkingBusy,
+  onThinkingLevelChange,
 }: {
   messages: Message[];
   agentName: string;
   onSent: () => void;
   agentId: string;
   token: string;
+  // S-178: model info + thinking level surfaced at the composer.
+  llmLabel: string;
+  thinkingLevel: ThinkingLevel;
+  thinkingBusy: boolean;
+  onThinkingLevelChange: (level: ThinkingLevel) => Promise<void>;
 }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1009,6 +1065,33 @@ function ChatThread({
           </button>
         )}
       </form>
+      {/* S-178: which LLM this agent talks through, and the per-agent
+          thinking level (defaults to the median, Medium). Saved
+          immediately via PATCH /agents/{id}. */}
+      <div className="composer-meta">
+        <span className="composer-model" title="LLM this agent uses">
+          🧠 {llmLabel}
+        </span>
+        <label className="composer-thinking">
+          <span>Thinking</span>
+          <select
+            value={thinkingLevel}
+            disabled={thinkingBusy}
+            aria-label="Thinking level"
+            onChange={(e) => {
+              onThinkingLevelChange(e.target.value as ThinkingLevel).catch(
+                () => setError("could not save thinking level"),
+              );
+            }}
+          >
+            {THINKING_LEVELS.map((l) => (
+              <option key={l} value={l}>
+                {thinkingLevelLabel(l)}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
       <div className="chat-hint">Enter to send · Shift+Enter for a new line</div>
     </div>
     {openSubagent ? (

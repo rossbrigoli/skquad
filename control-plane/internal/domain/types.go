@@ -85,6 +85,12 @@ type Agent struct {
 	FallbackAIModelID string          `json:"fallback_ai_model_id,omitempty"`
 	Permissions       json.RawMessage `json:"permissions"`
 	IdleTimeoutSec    int             `json:"idle_timeout_sec"`
+	// ThinkingLevel (S-178) is the per-agent reasoning effort knob:
+	// "low" | "medium" | "high" ("" = unset, provider default). It flows
+	// through the Agent CR (spec.thinkingLevel) into the runtime env
+	// (SKQUAD_THINKING_LEVEL) and lands on LLM requests as litellm's
+	// reasoning_effort parameter. The UI defaults the selector to medium.
+	ThinkingLevel string `json:"thinking_level,omitempty"`
 	// StorageEnabled and StorageSize configure the agent's durable workspace
 	// PVC (S-138). They flow into the Agent CR's spec.storage via the
 	// outbox writer. StorageClass is deliberately NOT part of this surface:

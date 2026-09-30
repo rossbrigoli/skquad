@@ -1909,6 +1909,9 @@ type updateAgentRequest struct {
 	// nil = leave unchanged. storageClass is not accepted (platform only).
 	StorageEnabled *bool   `json:"storage_enabled"`
 	StorageSize    *string `json:"storage_size"`
+	// ThinkingLevel (S-178). Pointer semantics: nil = leave unchanged,
+	// "" = unset (provider default), one of low|medium|high = set.
+	ThinkingLevel *string `json:"thinking_level"`
 }
 
 // applyAgentScalarUpdates copies the non-binding scalar fields from the
@@ -1945,6 +1948,15 @@ func (s *Server) applyAgentScalarUpdates(agent *domain.Agent, req updateAgentReq
 			}
 		}
 		agent.StorageSize = size
+	}
+	if req.ThinkingLevel != nil {
+		level := strings.TrimSpace(*req.ThinkingLevel)
+		switch level {
+		case "", "low", "medium", "high":
+			agent.ThinkingLevel = level
+		default:
+			return errors.New("thinking_level must be one of low, medium, high (or empty to unset)")
+		}
 	}
 	if agent.StorageEnabled && agent.StorageSize == "" {
 		agent.StorageSize = s.cfg.DefaultAgentStorageSize

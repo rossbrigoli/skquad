@@ -2390,3 +2390,209 @@ button.squad-tab.active {
 .effective-prompt-summary {
   margin-bottom: var(--space-3);
 }
+
+/* ============ S-178: Agent screen reorg ============ */
+
+/* Metrics chips live in the agent title row now (where Delete used to be). */
+.agent-title-row {
+  align-items: flex-start;
+}
+
+.agent-title-metrics {
+  justify-content: flex-end;
+  max-width: 62%;
+}
+
+@media (max-width: 1100px) {
+  .agent-title-metrics {
+    max-width: 100%;
+  }
+}
+
+/* Chat tab fills the remaining viewport below the tab strip — no dead
+   space under the composer. Task lists (when present) simply extend the
+   page past the fold. */
+.agent-chat-section {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 330px);
+}
+
+.agent-chat-section .chat-layout {
+  flex: 1;
+  min-height: 0;
+}
+
+.agent-chat-section .chat {
+  height: auto;
+  flex: 1;
+  min-height: 360px;
+}
+
+/* Composer meta row: which LLM the agent uses + its thinking level. */
+.composer-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3) 0;
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+}
+
+.composer-model {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60%;
+}
+
+.composer-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.composer-thinking select {
+  width: auto;
+  padding: 2px 6px;
+  font-size: 0.82rem;
+}
+
+/* Danger zone: destructive actions, bottom of the Configuration tab. */
+.danger-zone {
+  margin-top: var(--space-6);
+  border: 1px solid rgba(192, 57, 43, 0.45);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  background: rgba(192, 57, 43, 0.05);
+}
+
+.danger-zone h2 {
+  font-size: var(--text-lg);
+  margin: 0 0 var(--space-3);
+  color: var(--danger, #c0392b);
+}
+
+.danger-zone-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.danger-zone-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+/* Inbox tab: email-inbox look, left-aligned rows with a status accent. */
+.inbox-panel {
+  text-align: left;
+}
+
+.inbox-section {
+  margin-bottom: var(--space-5);
+}
+
+.inbox-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.inbox-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 10px var(--space-4);
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid transparent;
+  text-align: left;
+}
+
+.inbox-row:last-child {
+  border-bottom: none;
+}
+
+.inbox-row:hover {
+  background: var(--surface-sunken);
+}
+
+.inbox-pending {
+  border-left-color: #d9a441;
+}
+
+.inbox-retrying {
+  border-left-color: #e07b39;
+}
+
+.inbox-delivered {
+  border-left-color: #4caf7d;
+}
+
+.inbox-dead {
+  border-left-color: #c0392b;
+}
+
+.inbox-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.inbox-subject {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.inbox-type {
+  font-weight: 700;
+}
+
+.inbox-from,
+.inbox-thread,
+.inbox-id {
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+}
+
+.inbox-flag {
+  color: var(--danger, #c0392b);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.inbox-excerpt {
+  font-size: 0.9rem;
+  overflow-wrap: break-word;
+}
+
+.inbox-status {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+.inbox-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+
+.inbox-time {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}

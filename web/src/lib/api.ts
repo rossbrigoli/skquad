@@ -31,6 +31,9 @@ export type Agent = {
   ai_model_id?: string;
   fallback_ai_model_id?: string;
   idle_timeout_sec?: number;
+  // S-178: per-agent reasoning effort ("low"|"medium"|"high"; unset =
+  // provider default). Set from the composer's thinking-level selector.
+  thinking_level?: string;
   // Durable workspace PVC (S-138). storageClass is platform-admin only
   // and intentionally absent from the tenant-facing surface.
   storage_enabled?: boolean;

@@ -189,6 +189,11 @@ class BootstrapConfig:
     # populated from the bound AI Model's model_name upstream.
     ai_model_id: str = ""
     fallback_model_id: str = ""
+    # S-178: per-agent reasoning effort ("low"|"medium"|"high"; "" =
+    # unset → provider default). Injected by the operator from the Agent
+    # CR's spec.thinkingLevel; mapped onto the LLM request's
+    # reasoning_effort parameter by ``reasoning_effort_for``.
+    thinking_level: str = ""
 
     @property
     def missing_required(self) -> list[str]:
@@ -424,6 +429,18 @@ class RuntimePlugin(Protocol):
         ...
 
 
+# S-178: the accepted thinking levels. Anything else (empty, typo)
+# resolves to None so the request simply omits reasoning_effort and the
+# provider default applies — a bad knob value must never break a turn.
+VALID_THINKING_LEVELS = ("low", "medium", "high")
+
+
+def reasoning_effort_for(level: str) -> str | None:
+    """Map a thinking level to the OpenAI-style reasoning_effort value."""
+    normalized = (level or "").strip().lower()
+    return normalized if normalized in VALID_THINKING_LEVELS else None
+
+
 def load_bootstrap_config(environ: Mapping[str, str] | None = None) -> BootstrapConfig:
     env = os.environ if environ is None else environ
     credentials_dir = Path(env.get("SKQUAD_CREDENTIALS_DIR", str(DEFAULT_CREDENTIALS_DIR)))
@@ -434,6 +451,7 @@ def load_bootstrap_config(environ: Mapping[str, str] | None = None) -> Bootstrap
         default_model=env.get("SKQUAD_DEFAULT_MODEL", ""),
         ai_model_id=env.get("SKQUAD_AI_MODEL_ID", ""),
         fallback_model_id=env.get("SKQUAD_FALLBACK_MODEL_ID", ""),
+        thinking_level=env.get("SKQUAD_THINKING_LEVEL", ""),
         idle_timeout=env.get("SKQUAD_IDLE_TIMEOUT", ""),
         credentials_dir=credentials_dir,
         agent_credential_path=Path(
@@ -1117,7 +1135,7 @@ class LLMMessageHandler:
         virtual_key: str,
         model: str,
     ) -> dict[str, object]:
-        return {
+        completion_kwargs: dict[str, object] = {
             "model": model,
             # The gateway is OpenAI-compatible by architecture. litellm's
             # provider inference rejects bare model names
@@ -1141,6 +1159,13 @@ class LLMMessageHandler:
                 }
             },
         }
+        # S-178: the agent's thinking level rides every chat LLM request
+        # as reasoning_effort; unset/unknown levels omit it (provider
+        # default) rather than failing the turn.
+        effort = reasoning_effort_for(config.thinking_level)
+        if effort:
+            completion_kwargs["reasoning_effort"] = effort
+        return completion_kwargs
 
     def _complete_with_tools(
         self,
@@ -1594,6 +1619,10 @@ class LiteLLMTaskHandler:
         }
         if tools:
             completion_kwargs["tools"] = tools
+        # S-178: same thinking-level passthrough as the chat path.
+        effort = reasoning_effort_for(config.thinking_level)
+        if effort:
+            completion_kwargs["reasoning_effort"] = effort
         return completion_kwargs
 
     def _run_tool_calls(

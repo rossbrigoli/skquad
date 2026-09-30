@@ -112,6 +112,10 @@ func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identit
 		"image":             w.agentImage,
 		"permissions":       rawJSON(agent.Permissions, []any{}),
 		"idleTimeout":       fmt.Sprintf("%ds", agent.IdleTimeoutSec),
+		// S-178: per-agent reasoning effort; the operator injects it as
+		// SKQUAD_THINKING_LEVEL and the runtime maps it to the LLM
+		// request's reasoning_effort parameter.
+		"thinkingLevel":     agent.ThinkingLevel,
 		"desiredActive":     agent.Status == domain.AgentBusy,
 	}
 	// S-156: deterministic Deployment name (skquad-<owner>-agent-<agent>).
