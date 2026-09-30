@@ -72,6 +72,10 @@ export type Task = {
   worker_id?: string;
   fencing_token?: string;
   lease_expires_at?: string;
+  // S-181: final outcome text of the latest done/blocked transition.
+  result?: string;
+  result_status?: string;
+  result_at?: string;
 };
 
 export type BoardPayload = {
@@ -112,6 +116,9 @@ export type InboxMessage = {
   task_id?: string;
   kind: "task_completed" | "action_required";
   message: string;
+  // S-181: email-style richer payload; optional for older messages.
+  subject?: string;
+  body?: string;
   read_at?: string;
   created_at: string;
 };

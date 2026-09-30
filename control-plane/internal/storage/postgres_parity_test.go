@@ -748,3 +748,107 @@ func assertTaskExecutionRowDone(t *testing.T, store *PostgresStore, ctx context.
 		t.Fatalf("execution row = %q/%q/%q finished=%v", status, result, summary, finished)
 	}
 }
+
+// TestPostgresStoreTaskResultPersistence pins S-181 parity: done and
+// blocked transitions persist the outcome text on the task row
+// (result/result_status/result_at); in-review leaves it untouched.
+func TestPostgresStoreTaskResultPersistence(t *testing.T) {
+	store := postgresTestStore(t)
+	f := newPGFixture(t, store)
+	ctx := context.Background()
+
+	doneTask := f.newTask(t, store, "result done")
+	claimed, err := store.ClaimNextTask(ctx, f.agent.ID, testWorkerID, time.Minute)
+	if err != nil {
+		t.Fatalf(claimErrFormat, err)
+	}
+	if _, err := store.CompleteTaskExecution(ctx, f.agent.ID, doneTask.ID, claimed.ExecutionID, claimed.FencingToken, domain.TaskDone, "shipped it"); err != nil {
+		t.Fatalf("complete done: %v", err)
+	}
+	got, err := store.GetTask(ctx, doneTask.ID)
+	if err != nil {
+		t.Fatalf("get done task: %v", err)
+	}
+	if got.Result != "shipped it" || got.ResultStatus != string(domain.TaskDone) || got.ResultAt.IsZero() {
+		t.Fatalf("done result persistence = %q/%q/%v", got.Result, got.ResultStatus, got.ResultAt)
+	}
+
+	blockedTask := f.newTask(t, store, "result blocked")
+	claimed, err = store.ClaimNextTask(ctx, f.agent.ID, testWorkerID, time.Minute)
+	if err != nil {
+		t.Fatalf(claimErrFormat, err)
+	}
+	if _, err := store.CompleteTaskExecution(ctx, f.agent.ID, blockedTask.ID, claimed.ExecutionID, claimed.FencingToken, domain.TaskBlocked, "creds expired"); err != nil {
+		t.Fatalf("complete blocked: %v", err)
+	}
+	got, err = store.GetTask(ctx, blockedTask.ID)
+	if err != nil {
+		t.Fatalf("get blocked task: %v", err)
+	}
+	if got.Result != "creds expired" || got.ResultStatus != string(domain.TaskBlocked) || got.ResultAt.IsZero() {
+		t.Fatalf("blocked result persistence = %q/%q/%v", got.Result, got.ResultStatus, got.ResultAt)
+	}
+
+	reviewTask := f.newTask(t, store, "result in-review")
+	claimed, err = store.ClaimNextTask(ctx, f.agent.ID, testWorkerID, time.Minute)
+	if err != nil {
+		t.Fatalf(claimErrFormat, err)
+	}
+	if _, err := store.CompleteTaskExecution(ctx, f.agent.ID, reviewTask.ID, claimed.ExecutionID, claimed.FencingToken, domain.TaskInReview, "ready"); err != nil {
+		t.Fatalf("complete in-review: %v", err)
+	}
+	got, err = store.GetTask(ctx, reviewTask.ID)
+	if err != nil {
+		t.Fatalf("get in-review task: %v", err)
+	}
+	if got.Result != "" || got.ResultStatus != "" || !got.ResultAt.IsZero() {
+		t.Fatalf("in-review must not set result, got %q/%q/%v", got.Result, got.ResultStatus, got.ResultAt)
+	}
+}
+
+// TestPostgresStoreInboxRichFieldsPersistence pins S-181 parity for the
+// inbox: subject/body round-trip through create/list/mark-read.
+func TestPostgresStoreInboxRichFieldsPersistence(t *testing.T) {
+	store := postgresTestStore(t)
+	f := newPGFixture(t, store)
+	ctx := context.Background()
+
+	created, err := store.CreateInboxMessage(ctx, &domain.InboxMessage{
+		SquadID: f.squad.ID,
+		UserID:  f.user.ID,
+		Kind:    domain.InboxTaskCompleted,
+		Message: "legacy one-liner",
+		Subject: "Task \"x\" completed: all good",
+		Body:    "Task: x\nStatus: done\n\nall good\n\nOpen the task: /squads/s/tasks/t",
+	})
+	if err != nil {
+		t.Fatalf("create inbox: %v", err)
+	}
+	if created.Subject == "" || created.Body == "" {
+		t.Fatalf("subject/body not returned on create: %+v", created)
+	}
+	listed, err := store.ListInboxMessages(ctx, f.user.ID, false, 10)
+	if err != nil {
+		t.Fatalf("list inbox: %v", err)
+	}
+	var found *domain.InboxMessage
+	for _, m := range listed {
+		if m.ID == created.ID {
+			found = m
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("created inbox message not listed")
+	}
+	if found.Subject != "Task \"x\" completed: all good" || found.Body == "" {
+		t.Fatalf("inbox rich fields did not round-trip: %+v", found)
+	}
+	read, err := store.MarkInboxMessageRead(ctx, f.user.ID, created.ID)
+	if err != nil {
+		t.Fatalf("mark read: %v", err)
+	}
+	if read.Subject == "" || read.Body == "" {
+		t.Fatalf("rich fields lost on mark-read: %+v", read)
+	}
+}

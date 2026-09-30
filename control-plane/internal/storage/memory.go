@@ -1544,6 +1544,13 @@ func (m *MemoryStore) CompleteTaskExecution(ctx context.Context, agentID string,
 	task.Status = status
 	task.Position = m.nextTaskPosition(task.BoardID, status)
 	task.UpdatedAt = now
+	// S-181: persist the final outcome text on terminal transitions so
+	// the task screen can surface a dedicated Result section.
+	if status == domain.TaskDone || status == domain.TaskBlocked {
+		task.Result = summary
+		task.ResultStatus = string(status)
+		task.ResultAt = now
+	}
 	if status == domain.TaskBlocked {
 		exec.Status = domain.TaskExecutionBlocked
 	} else {

@@ -632,6 +632,48 @@ button.nav-group-parent {
   color: var(--status-error);
 }
 
+/* S-181: prominent Result section on the task screen. */
+.result-panel {
+  margin-top: var(--space-4);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid transparent;
+}
+
+.result-panel.done {
+  background: var(--status-done-bg);
+  border-color: color-mix(in srgb, var(--status-done) 35%, transparent);
+}
+
+.result-panel.blocked {
+  background: var(--status-blocked-bg);
+  border-color: color-mix(in srgb, var(--status-blocked) 35%, transparent);
+}
+
+.result-panel .result-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.result-panel .result-text {
+  white-space: pre-wrap;
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+/* S-181: email-style body preview on inbox rows. */
+.inbox-body {
+  display: block;
+  white-space: pre-line;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  margin-top: var(--space-1);
+  max-height: 8em;
+  overflow: hidden;
+}
+
 /* Soft bind-time warnings (WP7 LLM tab) — advisory, never blocking. */
 .notice.warn {
   background: var(--status-in-review-bg);

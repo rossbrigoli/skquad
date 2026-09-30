@@ -2173,6 +2173,11 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 
 const maxInboxMessageChars = 2000
 
+const (
+	maxInboxSubjectChars = 300
+	maxInboxBodyChars    = 4000
+)
+
 // maxTaskThreadTurnChars caps one streamed working turn (S-183). Working
 // narration is longer than an inbox ping but must not flood the thread or
 // the messages table with megabyte "turns".
@@ -2240,8 +2245,10 @@ func (s *Server) notifyDelegationResult(ctx context.Context, task *domain.Task, 
 	}); err == nil {
 		_ = s.syncAgentStatusFromPendingWork(ctx, source.ID)
 	}
-	s.notifySquadOwner(ctx, source.SquadID, domain.InboxTaskCompleted, completingAgent.ID, task.ID,
-		fmt.Sprintf("Task %q delegated from agent %s finished with status %s", task.Title, source.Name, status))
+	delegSubject, delegBody := taskNotifySubjectBody(task, completingAgent.Name, status, summary)
+	s.notifySquadOwnerRich(ctx, source.SquadID, domain.InboxTaskCompleted, completingAgent.ID, task.ID,
+		fmt.Sprintf("Task %q delegated from agent %s finished with status %s", task.Title, source.Name, status),
+		delegSubject, delegBody)
 }
 
 // notifyDelegationBlocked informs the requesting squad's owner when a
@@ -2254,13 +2261,23 @@ func (s *Server) notifyDelegationBlocked(ctx context.Context, task *domain.Task,
 	if err != nil || source.ID == blockingAgent.ID {
 		return
 	}
-	s.notifySquadOwner(ctx, source.SquadID, domain.InboxActionRequired, blockingAgent.ID, task.ID,
-		fmt.Sprintf("Task %q delegated from agent %s was blocked by %s", task.Title, source.Name, blockingAgent.Name))
+	delegSubject, delegBody := taskNotifySubjectBody(task, blockingAgent.Name, string(domain.TaskBlocked), task.Result)
+	s.notifySquadOwnerRich(ctx, source.SquadID, domain.InboxActionRequired, blockingAgent.ID, task.ID,
+		fmt.Sprintf("Task %q delegated from agent %s was blocked by %s", task.Title, source.Name, blockingAgent.Name),
+		delegSubject, delegBody)
 }
 
 // notifySquadOwner files an owner-facing inbox notification. It is best-effort
 // by design: a notification failure must never fail the underlying task flow.
 func (s *Server) notifySquadOwner(ctx context.Context, squadID string, kind domain.InboxKind, fromAgentID string, taskID string, message string) {
+	s.notifySquadOwnerRich(ctx, squadID, kind, fromAgentID, taskID, message, "", "")
+}
+
+// notifySquadOwnerRich (S-181) files an owner-facing inbox notification with
+// an optional email-style subject and body alongside the legacy one-line
+// message. Consumers that predate the richer payload keep reading Message;
+// newer ones prefer Subject/Body. Best-effort like notifySquadOwner.
+func (s *Server) notifySquadOwnerRich(ctx context.Context, squadID string, kind domain.InboxKind, fromAgentID, taskID, message, subject, body string) {
 	squad, err := s.store.GetSquad(ctx, squadID)
 	if err != nil || squad.OwnerID == "" {
 		return
@@ -2272,7 +2289,56 @@ func (s *Server) notifySquadOwner(ctx context.Context, squadID string, kind doma
 		TaskID:      taskID,
 		Kind:        kind,
 		Message:     trimRunes(strings.TrimSpace(message), maxInboxMessageChars),
+		Subject:     trimRunes(strings.TrimSpace(subject), maxInboxSubjectChars),
+		Body:        trimRunes(strings.TrimSpace(body), maxInboxBodyChars),
 	})
+}
+
+// taskNotifySubjectBody (S-181) builds the email-style subject/body for
+// owner inbox notifications about a task reaching a terminal outcome.
+// The subject is a one-line summary ("Task \"X\" is blocked because of
+// …"), the body carries the key context plus a link to the task screen.
+func taskNotifySubjectBody(task *domain.Task, agentName, status, summary string) (subject, body string) {
+	oneLine := firstLine(summary, 140)
+	switch status {
+	case string(domain.TaskBlocked):
+		if oneLine == "" {
+			oneLine = "no reason was given"
+		}
+		subject = fmt.Sprintf("Task %q is blocked because of %s", task.Title, oneLine)
+	case string(domain.TaskDone):
+		if oneLine == "" {
+			subject = fmt.Sprintf("Task %q completed", task.Title)
+		} else {
+			subject = fmt.Sprintf("Task %q completed: %s", task.Title, oneLine)
+		}
+	default:
+		if oneLine == "" {
+			subject = fmt.Sprintf("Task %q is now %s", task.Title, status)
+		} else {
+			subject = fmt.Sprintf("Task %q is now %s: %s", task.Title, status, oneLine)
+		}
+	}
+	outcome := strings.TrimSpace(summary)
+	if outcome == "" {
+		outcome = "(no summary provided)"
+	}
+	taskPath := fmt.Sprintf("/squads/%s/tasks/%s", task.SquadID, task.ID)
+	body = fmt.Sprintf(
+		"Task: %s\nStatus: %s\nAgent: %s\nWhen: %s\n\n%s\n\nOpen the task: %s",
+		task.Title, status, agentName, time.Now().UTC().Format(time.RFC3339), outcome, taskPath,
+	)
+	return trimRunes(subject, maxInboxSubjectChars), trimRunes(body, maxInboxBodyChars)
+}
+
+// firstLine returns the first non-empty line of text, truncated to max runes.
+func firstLine(text string, max int) string {
+	for _, line := range strings.Split(text, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return trimRunes(trimmed, max)
+		}
+	}
+	return ""
 }
 
 func (s *Server) listInbox(w http.ResponseWriter, r *http.Request) {
@@ -4121,8 +4187,9 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 		return
 	}
-	s.notifySquadOwner(r.Context(), updated.SquadID, domain.InboxTaskCompleted, principal.Agent.ID, updated.ID,
-		fmt.Sprintf("Agent %s moved task %q to %s", principal.Agent.Name, updated.Title, req.Status))
+	subject, body := taskNotifySubjectBody(updated, principal.Agent.Name, string(req.Status), summary)
+	s.notifySquadOwnerRich(r.Context(), updated.SquadID, domain.InboxTaskCompleted, principal.Agent.ID, updated.ID,
+		fmt.Sprintf("Agent %s moved task %q to %s", principal.Agent.Name, updated.Title, req.Status), subject, body)
 	s.notifyDelegationResult(r.Context(), updated, principal.Agent, string(req.Status), summary)
 	// S-181: the agent's turn itself must appear in the task thread, not
 	// only in the owner's inbox. Empty summaries are surfaced explicitly
@@ -4264,8 +4331,9 @@ func (s *Server) blockCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	if blockNote != "" {
 		blockNote = ": " + blockNote
 	}
-	s.notifySquadOwner(r.Context(), updated.SquadID, domain.InboxActionRequired, principal.Agent.ID, updated.ID,
-		fmt.Sprintf("Agent %s blocked task %q%s", principal.Agent.Name, updated.Title, blockNote))
+	subject, body := taskNotifySubjectBody(updated, principal.Agent.Name, string(domain.TaskBlocked), strings.TrimSpace(req.Summary))
+	s.notifySquadOwnerRich(r.Context(), updated.SquadID, domain.InboxActionRequired, principal.Agent.ID, updated.ID,
+		fmt.Sprintf("Agent %s blocked task %q%s", principal.Agent.Name, updated.Title, blockNote), subject, body)
 	s.notifyDelegationBlocked(r.Context(), updated, principal.Agent)
 	// S-181: the agent's block turn belongs in the thread too.
 	blockedText := strings.TrimSpace(req.Summary)

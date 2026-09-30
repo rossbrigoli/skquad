@@ -14,6 +14,7 @@ import { useApi } from "../../../../../lib/useApi";
 import { useAuth } from "../../../../../lib/auth";
 import { apiDelete, apiPatch, apiPost, type Agent, type AuditEntry, type Message, type Task } from "../../../../../lib/api";
 import { formatRelativeTime, leaseState, messageText } from "../../../../../lib/format";
+import { taskResultInfo } from "../../../../../lib/taskResult";
 import { taskStatus } from "../../../../../lib/status";
 
 const MOVE_TARGETS: { status: string; label: string }[] = [
@@ -47,6 +48,7 @@ export default function TaskDetailPage() {
   const assignee = (agents.data || []).find((a) => a.id === current?.assignee_agent_id);
   const messages = thread.data || [];
   const timeline = (audit.data || []).filter((entry) => entry.resource_id === taskId);
+  const resultInfo = current ? taskResultInfo(current, messages) : null;
 
   const send = useCallback(async () => {
     if (!authed || !draft.trim() || !current) {
@@ -144,6 +146,18 @@ export default function TaskDetailPage() {
         </p>
         {current.description ? (
           <p style={{ whiteSpace: "pre-wrap", marginTop: "var(--space-3)" }}>{current.description}</p>
+        ) : null}
+
+        {resultInfo ? (
+          <section className={`result-panel ${resultInfo.tone}`} aria-label="Task result">
+            <div className="result-head">
+              <span className={`chip ${resultInfo.tone === "blocked" ? "chip-blocked" : "chip-done"}`}>
+                {resultInfo.label}
+              </span>
+              {resultInfo.at ? <span className="muted">{formatRelativeTime(resultInfo.at)}</span> : null}
+            </div>
+            <p className="result-text">{resultInfo.text}</p>
+          </section>
         ) : null}
 
         {actionError ? <div className="notice error">{actionError}</div> : null}
