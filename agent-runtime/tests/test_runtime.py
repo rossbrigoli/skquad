@@ -2611,6 +2611,105 @@ class ProgressNoteHeuristicS195Test(unittest.TestCase):
     def test_empty_is_not_progress(self):
         self.assertFalse(rt.looks_like_progress_note("   "))
 
+    # S-195c regression: the live miss (2026-10-01, agent Albert). The
+    # model emitted a curly-apostrophe, 244-char progress promise; the
+    # old straight-apostrophe/120-char heuristic let the turn die there.
+    def test_typographic_apostrophe_progress_is_detected(self):
+        self.assertTrue(
+            rt.looks_like_progress_note("I\u2019ll search for the latest AI news first, then work out the delivery path.")
+        )
+        self.assertTrue(rt.looks_like_progress_note("I\u2019ll look into that"))
+        self.assertTrue(rt.looks_like_progress_note("I\u2019m going to check the logs"))
+
+    def test_long_progress_promise_beyond_old_cap_is_detected(self):
+        self.assertTrue(
+            rt.looks_like_progress_note(
+                "I\u2019ll look for the Skquad source, trace how memory is stored "
+                "and loaded into agent runs, and assess the runtime against "
+                "established agent frameworks and harnesses. I\u2019ll distinguish "
+                "what the code actually does from what it appears intended to do."
+            )
+        )
+
+    def test_narrative_frames_stay_final_under_widened_cap(self):
+        self.assertFalse(
+            rt.looks_like_progress_note(
+                "I\u2019ll note that the migration completed cleanly and all "
+                "checks passed; the service is healthy on both nodes and "
+                "the rollback plan is documented in the runbook."
+            )
+        )
+        self.assertFalse(rt.looks_like_progress_note("I'll mention that the fix shipped already."))
+
+
+class SystemRoleInvariantS195cTest(unittest.TestCase):
+    # S-195c: strict chat templates (Qwen3.8 via halogen) reject any
+    # system message that is not at index 0 — the live failure was
+    # "message 43 has role 'system' after a non-system turn" killing a
+    # chat turn when the tool budget was exhausted.
+
+    def test_enforce_leading_system_demotes_midconversation_system(self):
+        msgs = [
+            {"role": "system", "content": "lead"},
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": "rogue mid-conversation note"},
+            {"role": "assistant", "content": "sure"},
+        ]
+        out = rt.enforce_leading_system(msgs)
+        self.assertEqual([m["role"] for m in out], ["system", "user", "user", "assistant"])
+        self.assertIn("rogue mid-conversation note", out[2]["content"])
+        self.assertIn('trust="platform"', out[2]["content"])
+        # Leading system untouched; idempotent on a second pass.
+        self.assertEqual(out[0], msgs[0])
+        self.assertEqual(rt.enforce_leading_system(out), out)
+
+    def test_forced_final_note_is_not_a_system_turn(self):
+        # The budget-exhausted forced completion must inject its framing
+        # as a platform-noted USER turn, never a mid-conversation system
+        # turn (regression: 400 from strict templates, message died dead).
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            seen_messages = []
+
+            def completion(**kwargs):
+                seen_messages.append(list(kwargs["messages"]))
+                if "tools" in kwargs:
+                    return fake_tool_completion("call-x", "echo", {"message": "loop"})
+                return fake_completion_response("forced final")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(
+                completion=completion,
+                client=client,
+                plugins=[EchoPlugin()],
+                max_tool_steps=2,
+            )
+            result = handler.handle_message(user_msg("m-1", "loop forever"), config)
+            self.assertTrue(result.ok)
+            forced = seen_messages[-1]
+            system_indices = [i for i, m in enumerate(forced) if m.get("role") == "system"]
+            self.assertTrue(all(i == 0 for i in system_indices))
+            self.assertIn("Tool-call budget exhausted", forced[-1]["content"])
+            self.assertEqual(forced[-1]["role"], "user")
+
+    def _config(self, tmp, **extra):  # mirror sibling test helper
+        credential = Path(tmp) / "agent"
+        credential.write_text("credential", encoding="utf-8")
+        virtual = Path(tmp) / "llm-gateway"
+        virtual.write_text("virtual-key", encoding="utf-8")
+        env = {
+            "SKQUAD_AGENT_ID": "agent-1",
+            "SKQUAD_SQUAD_ID": "squad-1",
+            "SKQUAD_AGENT_CREDENTIAL_PATH": str(credential),
+            "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH": str(virtual),
+            "SKQUAD_LLM_GATEWAY_URL": "http://llm-gateway:4000",
+            "SKQUAD_DEFAULT_MODEL": "gpt-4o",
+            "SKQUAD_AGENT_ROLE": "helper",
+            "SKQUAD_TASK_LOOP_ENABLED": "false",
+        }
+        env.update(extra)
+        return load_bootstrap_config(env)
+
 
 class MultiReplyChatTurnS195Test(unittest.TestCase):
     """The turn must survive a progress-note pause and deliver follow-ups."""
