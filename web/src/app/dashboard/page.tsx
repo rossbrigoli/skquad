@@ -227,24 +227,31 @@ export default function DashboardPage() {
   );
 }
 
-// ModeToggle flips both histograms between token and dollar series.
-function ModeToggle({ mode, onChange }: { mode: ChartMode; onChange: (mode: ChartMode) => void }) {
+// ModeToggle flips both histograms between token and dollar series with an
+// iOS-style sliding switch (S-195: replaces the old two-button control).
+export function ModeToggle({ mode, onChange }: { mode: ChartMode; onChange: (mode: ChartMode) => void }) {
+  const isCost = mode === "cost";
+  const toggle = () => onChange(isCost ? "tokens" : "cost");
   return (
-    <div className="chart-toggle" role="group" aria-label="Chart metric">
-      <button
-        type="button"
-        className={mode === "tokens" ? "btn btn-active" : "btn"}
-        onClick={() => onChange("tokens")}
-      >
-        Tokens
-      </button>
-      <button
-        type="button"
-        className={mode === "cost" ? "btn btn-active" : "btn"}
-        onClick={() => onChange("cost")}
-      >
-        Cost ($)
-      </button>
+    <div
+      className="switch-toggle"
+      role="switch"
+      aria-checked={isCost}
+      aria-label={isCost ? "Chart metric: cost" : "Chart metric: tokens"}
+      tabIndex={0}
+      onClick={toggle}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggle();
+        }
+      }}
+    >
+      <span className="switch-labels">
+        <span className={isCost ? undefined : "switch-label-active"}>Tokens</span>
+        <span className={isCost ? "switch-label-active" : undefined}>Cost ($)</span>
+      </span>
+      <span className="switch-knob" aria-hidden="true" />
     </div>
   );
 }

@@ -1767,7 +1767,7 @@ func (p *PostgresStore) SumMeteringDaily(ctx context.Context, since time.Time, s
 		FROM metering m
 		LEFT JOIN squads s ON s.id = m.squad_id
 		LEFT JOIN agents a ON a.id = m.agent_id
-		LEFT JOIN llm_providers p ON p.id = m.provider_id
+		LEFT JOIN providers p ON p.id = m.provider_id
 		WHERE ($1::timestamptz IS NULL OR m.timestamp >= $1::timestamptz)
 		  AND (cardinality($2::uuid[]) = 0 OR m.squad_id = ANY($2::uuid[]))
 		GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
