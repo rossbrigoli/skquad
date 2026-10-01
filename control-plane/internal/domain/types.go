@@ -579,6 +579,25 @@ type AccessGrant struct {
 	CreatedAt   time.Time   `json:"created_at"`
 }
 
+// MeteringDailyRow is a per-day aggregate of metering events for one
+// (squad, agent, provider, model) tuple (S-190 dashboard histograms).
+// Day is the UTC calendar day in YYYY-MM-DD form. Names are joined in at
+// query time so the dashboard can label series without extra round-trips.
+type MeteringDailyRow struct {
+	Day          string  `json:"day"`
+	SquadID      string  `json:"squad_id"`
+	SquadName    string  `json:"squad_name"`
+	AgentID      string  `json:"agent_id"`
+	AgentName    string  `json:"agent_name"`
+	ProviderID   string  `json:"provider_id"`
+	ProviderName string  `json:"provider_name"`
+	Model        string  `json:"model"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	Cost         float64 `json:"cost"`
+	Currency     string  `json:"currency"`
+}
+
 // MeteringEvent records token usage for an agent (and squad) LLM call.
 //
 // WP5 (ADR-0010 D8 + Risk 3): ModelUsed names the model that ACTUALLY

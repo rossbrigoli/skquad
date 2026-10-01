@@ -1740,6 +1740,56 @@ func (p *PostgresStore) SumMetering(ctx context.Context, squadID, agentID string
 	return &out, nil
 }
 
+// SumMeteringDaily buckets metering per UTC day per
+// (squad, agent, provider, model) for the S-190 dashboard histograms.
+// squadIDs is an explicit allowlist; empty means all squads (see
+// MeteringStore). Names come from LEFT JOINs so deleted rows degrade to
+// empty labels rather than dropping history.
+func (p *PostgresStore) SumMeteringDaily(ctx context.Context, since time.Time, squadIDs []string) ([]domain.MeteringDailyRow, error) {
+	var sinceArg any
+	if !since.IsZero() {
+		sinceArg = since.UTC()
+	}
+	// Text array literal cast to uuid[]; empty list → '{}' → no filter.
+	squadArg := "{" + strings.Join(squadIDs, ",") + "}"
+
+	rows, err := p.pool.Query(ctx, `
+		SELECT to_char(m.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD'),
+		       m.squad_id::text, coalesce(s.name, ''),
+		       m.agent_id::text, coalesce(a.name, ''),
+		       coalesce(m.provider_id::text, ''), coalesce(p.name, ''),
+		       m.model,
+		       sum(m.input_tokens)::integer,
+		       sum(m.output_tokens)::integer,
+		       coalesce(sum(m.cost), 0)::double precision,
+		       coalesce(max(m.currency), 'USD')
+		FROM metering m
+		LEFT JOIN squads s ON s.id = m.squad_id
+		LEFT JOIN agents a ON a.id = m.agent_id
+		LEFT JOIN llm_providers p ON p.id = m.provider_id
+		WHERE ($1::timestamptz IS NULL OR m.timestamp >= $1::timestamptz)
+		  AND (cardinality($2::uuid[]) = 0 OR m.squad_id = ANY($2::uuid[]))
+		GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+		ORDER BY 1, 3, 5, 7, 8
+	`, sinceArg, squadArg)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+
+	out := []domain.MeteringDailyRow{}
+	for rows.Next() {
+		var row domain.MeteringDailyRow
+		if err := rows.Scan(&row.Day, &row.SquadID, &row.SquadName, &row.AgentID, &row.AgentName,
+			&row.ProviderID, &row.ProviderName, &row.Model,
+			&row.InputTokens, &row.OutputTokens, &row.Cost, &row.Currency); err != nil {
+			return nil, mapPgErr(err)
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 func (p *PostgresStore) RecordAudit(ctx context.Context, entry *domain.AuditEntry) error {
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO audit_log (

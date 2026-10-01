@@ -377,6 +377,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/versions", s.getVersions)
 
 			r.Get("/dashboard", s.getDashboard)
+			// S-190: daily usage series + MTD totals for the dashboard
+			// histograms and provider usage section.
+			r.Get("/dashboard/usage", s.getDashboardUsage)
 			r.Get("/inbox", s.listInbox)
 			r.Post("/inbox/{messageID}/read", s.markInboxRead)
 
