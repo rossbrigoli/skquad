@@ -1364,7 +1364,10 @@ button.squad-tab.active {
   display: flex;
   gap: var(--space-3);
   align-items: flex-start;
-  max-width: min(85%, 720px);
+  /* S-192: widen message boxes ~50% (720px -> 1080px cap) so long
+     messages are shorter vertically. The 85% clamp keeps narrow/mobile
+     viewports unchanged; the larger cap only kicks in on wide screens. */
+  max-width: min(85%, 1080px);
 }
 
 .chat-row.mine {
