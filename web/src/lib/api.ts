@@ -66,6 +66,8 @@ export type Task = {
   created_by_type?: string;
   created_by_id?: string;
   position?: number;
+  // S-184: per-squad sequential display reference (rendered "T-<n>").
+  task_number?: number;
   created_at?: string;
   updated_at?: string;
   execution_id?: string;

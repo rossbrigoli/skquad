@@ -241,6 +241,10 @@ type Task struct {
 	CreatedByType   string     `json:"created_by_type"` // "user" | "agent"
 	CreatedByID     string     `json:"created_by_id"`
 	Position        int        `json:"position"`
+	// TaskNumber is the per-squad sequential display reference (S-184),
+	// rendered "T-<n>" on board cards and the task screen. Immutable after
+	// creation (backfilled by migration 0027 for pre-existing tasks).
+	TaskNumber int `json:"task_number"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 	// OriginMessageID links a task back to the delegate/handoff message

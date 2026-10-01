@@ -12,6 +12,8 @@ export type Crumb = { readonly label: string; readonly href: string | null };
 export type BreadcrumbHints = {
   readonly squadName?: string;
   readonly agentName?: string;
+  // S-184: on task detail routes this carries the short task ref ("T-12");
+  // the crumb renders as "Task: T-12" (or plain "Task" without the hint).
   readonly taskName?: string;
 };
 
@@ -65,10 +67,31 @@ function humanize(segment: string): string {
 // breadcrumbsForPath returns the crumb trail for a pathname. Every crumb
 // except the last is linked (href set); the last crumb is plain text
 // (href null). Root "/" renders as a single "Dashboard" crumb.
+//
+// S-184: task detail routes (/squads/<id>/tasks/<tid>) are special-cased.
+// There is no "Tasks" index screen, so the old "Tasks" crumb 404s; the
+// trail becomes "Squads / <squad> / Board / Task: <ref>" with Board
+// linking to the squad board route.
 export function breadcrumbsForPath(pathname: string, hints: BreadcrumbHints = {}): Crumb[] {
   const segments = (pathname ?? "").split("/").filter(Boolean);
   if (segments.length === 0) {
     return [{ label: "Dashboard", href: null }];
+  }
+
+  if (
+    segments.length === 4 &&
+    segments[0] === "squads" &&
+    segments[1] &&
+    segments[2] === "tasks" &&
+    segments[3]
+  ) {
+    const squadPath = `/squads/${segments[1]}`;
+    return [
+      { label: "Squads", href: "/squads" },
+      { label: hints.squadName || "Squad", href: squadPath },
+      { label: "Board", href: `${squadPath}/board` },
+      { label: hints.taskName ? `Task: ${hints.taskName}` : "Task", href: null },
+    ];
   }
 
   const crumbs: Crumb[] = [];

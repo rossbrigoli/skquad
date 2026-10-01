@@ -58,17 +58,36 @@ describe("breadcrumbsForPath", () => {
     expect(breadcrumbsForPath("/squads/abc/tasks/t-1")).toEqual([
       { label: "Squads", href: "/squads" },
       { label: "Squad", href: "/squads/abc" },
-      { label: "Tasks", href: "/squads/abc/tasks" },
+      { label: "Board", href: "/squads/abc/board" },
       { label: "Task", href: null },
     ]);
   });
 
-  it("uses the taskName hint when provided", () => {
-    expect(breadcrumbsForPath("/squads/abc/tasks/t-1", { taskName: "Fix login" })).toEqual([
+  it("uses the taskName hint as the task ref in the last crumb", () => {
+    expect(breadcrumbsForPath("/squads/abc/tasks/t-1", { taskName: "T-12" })).toEqual([
       { label: "Squads", href: "/squads" },
       { label: "Squad", href: "/squads/abc" },
-      { label: "Tasks", href: "/squads/abc/tasks" },
-      { label: "Fix login", href: null },
+      { label: "Board", href: "/squads/abc/board" },
+      { label: "Task: T-12", href: null },
+    ]);
+  });
+
+  it("task detail crumbs resolve the squad name and link Board", () => {
+    expect(
+      breadcrumbsForPath("/squads/abc/tasks/t-1", { squadName: "Deploy Bots", taskName: "T-3" }),
+    ).toEqual([
+      { label: "Squads", href: "/squads" },
+      { label: "Deploy Bots", href: "/squads/abc" },
+      { label: "Board", href: "/squads/abc/board" },
+      { label: "Task: T-3", href: null },
+    ]);
+  });
+
+  it("does not special-case the squad tasks index route itself", () => {
+    expect(breadcrumbsForPath("/squads/abc/tasks")).toEqual([
+      { label: "Squads", href: "/squads" },
+      { label: "Squad", href: "/squads/abc" },
+      { label: "Tasks", href: null },
     ]);
   });
 

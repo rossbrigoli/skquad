@@ -8,13 +8,14 @@ import type { ReactNode } from "react";
 import { useAuth } from "../lib/auth";
 import { useAttention } from "../lib/useAttention";
 import { useApi } from "../lib/useApi";
-import type { Agent, Squad } from "../lib/api";
+import type { Agent, Squad, Task } from "../lib/api";
 import type { DashboardPayload } from "../lib/dashboard";
 import { ThemeToggle } from "./ThemeToggle";
 import { UserMenu } from "./UserMenu";
 import { IconAbout, IconAgents, IconCosts, IconDashboard, IconInbox, IconSettings, IconSquads } from "./icons";
 import type { ComponentType } from "react";
-import { agentIdFromPath, breadcrumbsForPath } from "../lib/breadcrumbs";
+import { agentIdFromPath, breadcrumbsForPath, taskIdFromPath } from "../lib/breadcrumbs";
+import { formatTaskRef } from "../lib/taskRef";
 import { buildInfo, versionLabel } from "../lib/buildInfo";
 import { SquadTabs } from "./SquadTabs";
 import {
@@ -364,7 +365,16 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
   const agentHint = agentId
     ? (squadAgents.data ?? []).find((agent) => agent.id === agentId)?.name
     : undefined;
-  const breadcrumbs = breadcrumbsForPath(pathname, { squadName: squadHint, agentName: agentHint });
+  // S-184: on task detail routes, load the task so the crumb can show the
+  // short "T-<n>" ref instead of the old 404-ing "Tasks" segment.
+  const crumbTaskId = taskIdFromPath(pathname);
+  const crumbTask = useApi<Task>(crumbTaskId ? `/tasks/${crumbTaskId}` : "");
+  const taskHint = formatTaskRef(crumbTask.data);
+  const breadcrumbs = breadcrumbsForPath(pathname, {
+    squadName: squadHint,
+    agentName: agentHint,
+    taskName: taskHint || undefined,
+  });
 
   const squadSubitems = buildSquadSubitems(squads.data, ownerLabels);
   const agentGroups = buildGlobalAgentGroups(globalDashboard.data);

@@ -12,6 +12,7 @@ import { useApi } from "../../../../lib/useApi";
 import { useAuth } from "../../../../lib/auth";
 import { apiPatch, apiPost, type Agent, type BoardPayload, type Squad, type Task, type TaskStatus } from "../../../../lib/api";
 import { formatRelativeTime, leaseState } from "../../../../lib/format";
+import { formatTaskRef } from "../../../../lib/taskRef";
 import { taskStatus } from "../../../../lib/status";
 import {
   boardColumnsFromOperatingModel,
@@ -122,9 +123,16 @@ export default function SquadBoardPage() {
                             e.dataTransfer.effectAllowed = "move";
                           }}
                         >
-                          <Link href={`/squads/${squadId}/tasks/${task.id}`} className="task-title">
-                            {task.title}
-                          </Link>
+                          <div className="task-title">
+                            {formatTaskRef(task) ? (
+                              <span className="task-ref" title={`Task reference ${formatTaskRef(task)}`}>
+                                {formatTaskRef(task)}
+                              </span>
+                            ) : null}
+                            <Link href={`/squads/${squadId}/tasks/${task.id}`} className="task-title-link">
+                              {task.title}
+                            </Link>
+                          </div>
                           <div className="task-meta">
                             <span>{agentName(task.assignee_agent_id)}</span>
                             {lease === "running" ? <StatusChip status="running" /> : null}
