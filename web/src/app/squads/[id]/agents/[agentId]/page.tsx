@@ -49,6 +49,9 @@ import {
 } from "../../../../../lib/chat";
 import { SubagentThreadPanel } from "../../../../../components/SubagentThreadPanel";
 import { AgentInboxPanel } from "../../../../../components/AgentInboxPanel";
+import { AttachmentThumbs } from "../../../../../components/AttachmentThumbs";
+import { MAX_MESSAGE_ATTACHMENTS, messageAttachments, validateImageFile, type UploadRef } from "../../../../../lib/uploads";
+import { apiUploadImage } from "../../../../../lib/api";
 import { agentStatus } from "../../../../../lib/status";
 import { THINKING_LEVELS, resolveThinkingLevel, thinkingLevelLabel, type ThinkingLevel } from "../../../../../lib/thinking";
 import type { AIModel } from "../../../../../lib/aimodels";
@@ -439,6 +442,7 @@ export default function AgentProfilePage() {
               agentName={agent?.name || "agent"}
               onSent={() => chat.refresh()}
               agentId={agentId}
+              squadId={squadId}
               token={token}
               llmLabel={llmLabel}
               thinkingLevel={resolveThinkingLevel(agent?.thinking_level)}
@@ -843,6 +847,7 @@ function ChatThread({
   agentName,
   onSent,
   agentId,
+  squadId,
   token,
   llmLabel,
   thinkingLevel,
@@ -854,6 +859,7 @@ function ChatThread({
   agentName: string;
   onSent: () => void;
   agentId: string;
+  squadId: string;
   token: string;
   // S-178: model info + thinking level surfaced at the composer.
   llmLabel: string;
@@ -874,6 +880,11 @@ function ChatThread({
   const [cancelBusy, setCancelBusy] = useState(false);
   // S-163: subagent transparency — the thread shown in the side panel.
   const [openSubagent, setOpenSubagent] = useState<SubagentInfo | null>(null);
+  // S-194: image attachments staged in the composer (uploaded, not yet
+  // sent) and the file picker input driven by the paperclip / paste.
+  const [pendingAttachments, setPendingAttachments] = useState<UploadRef[]>([]);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { user } = useAuth();
   const scrollRef = useRef<HTMLDivElement>(null);
   // S-175: auto-scroll only while the user is already near the bottom, so
@@ -934,6 +945,8 @@ function ChatThread({
           sorted.map((msg) => {
             const fromUser = msg.from_type === "user";
             const toolCalls = fromUser ? [] : chatToolCalls(msg);
+            // S-194: image attachments render under the message text.
+            const attachments = messageAttachments(msg);
             return (
               <div key={msg.id} className={`chat-row ${fromUser ? "mine" : "theirs"}`}>
                 <div className={`chat-avatar ${fromUser ? "me" : "agent"}`} aria-hidden="true">
@@ -951,9 +964,10 @@ function ChatThread({
                   </div>
                   {msg.payload?.message ? (
                     <MarkdownMessage text={msg.payload.message} />
-                  ) : (
+                  ) : attachments.length > 0 ? null : (
                     <div className="chat-text">(no text)</div>
                   )}
+                  <AttachmentThumbs attachments={attachments} />
                   {toolCalls.length > 0 ? (
                     <div className="chat-tools">
                       {toolCalls.map((call, idx) =>
@@ -1048,6 +1062,19 @@ function ChatThread({
             }
           }}
         />
+        {/* S-194: paperclip opens the file picker. */}
+        <button
+          type="button"
+          className="chat-attach-btn"
+          disabled={uploadBusy || generating || pendingAttachments.length >= MAX_MESSAGE_ATTACHMENTS}
+          onClick={() => fileInputRef.current?.click()}
+          aria-label="Attach image"
+          title={uploadBusy ? "Uploading…" : "Attach image (or paste)"}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M10.5 4.5L5 10a2.1 2.1 0 003 3l5.6-5.6a3.6 3.6 0 10-5.1-5.1L2.8 8a5.1 5.1 0 007.2 7.2l4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
         {generating ? (
           /* S-175: while a turn is in flight the send button becomes a
              STOP button — cancels the active chat turn server-side. */
@@ -1069,7 +1096,7 @@ function ChatThread({
           <button
             type="submit"
             className="chat-send"
-            disabled={busy || draft.trim() === ""}
+            disabled={busy || (draft.trim() === "" && pendingAttachments.length === 0)}
             aria-label="Send message"
             title="Send"
           >
@@ -1079,6 +1106,26 @@ function ChatThread({
           </button>
         )}
       </form>
+      {/* S-194: staged attachments shown as removable chips until sent. */}
+      {pendingAttachments.length > 0 ? (
+        <div className="composer-attachments">
+          {pendingAttachments.map((att) => (
+            <span key={att.id} className="attachment-chip">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={att.url} alt={att.filename} />
+              <span className="attachment-chip-name">{att.filename}</span>
+              <button
+                type="button"
+                className="attachment-chip-remove"
+                aria-label={`Remove ${att.filename}`}
+                onClick={() => setPendingAttachments((prev) => prev.filter((a) => a.id !== att.id))}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : null}
       {/* S-178: which LLM this agent talks through, and the per-agent
           thinking level (defaults to the median, Medium). Saved
           immediately via PATCH /agents/{id}. */}
@@ -1115,7 +1162,9 @@ function ChatThread({
   );
 
   async function send() {
-    if (draft.trim() === "") return;
+    // S-194: an image with no text is still a message (the runtime
+    // synthesizes the attachment reference for the agent).
+    if (draft.trim() === "" && pendingAttachments.length === 0) return;
     setBusy(true);
     setError("");
     // S-175: a fresh send re-arms the pending-turn indicator and forces
@@ -1123,14 +1172,46 @@ function ChatThread({
     setStopRequested(false);
     stickToBottom.current = true;
     try {
-      await apiPost(`/agents/${agentId}/chat`, token, { message: draft.trim() });
+      await apiPost(`/agents/${agentId}/chat`, token, {
+        message: draft.trim(),
+        // S-194: bind the staged uploads to this message by id.
+        attachments: pendingAttachments.map((a) => a.id),
+      });
       setDraft("");
+      setPendingAttachments([]);
       onSent();
     } catch (err) {
       setError(err instanceof Error ? err.message : "send failed");
     } finally {
       setBusy(false);
     }
+  }
+
+  // S-194: validate + upload picked/pasted images, staging them for the
+  // next send. Per-file errors surface in the composer error line; the
+  // server re-validates content by sniffing bytes regardless.
+  async function attachFiles(files: File[] | FileList) {
+    const room = MAX_MESSAGE_ATTACHMENTS - pendingAttachments.length;
+    if (room <= 0) {
+      setError(`At most ${MAX_MESSAGE_ATTACHMENTS} images per message.`);
+      return;
+    }
+    setUploadBusy(true);
+    setError("");
+    for (const file of Array.from(files).slice(0, room)) {
+      const invalid = validateImageFile(file);
+      if (invalid) {
+        setError(invalid);
+        continue;
+      }
+      try {
+        const up = await apiUploadImage("/uploads", token, file, `?squad_id=${encodeURIComponent(squadId)}`);
+        setPendingAttachments((prev) => (prev.some((a) => a.id === up.id) ? prev : [...prev, up]));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "upload failed");
+      }
+    }
+    setUploadBusy(false);
   }
 
   // S-175: stop the in-flight agent turn. The control plane marks the

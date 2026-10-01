@@ -218,6 +218,31 @@ def wrap_human(text: str, **attrs: object) -> str:
     return f"<{tag}>{text}</skquad_human>"
 
 
+def format_attachment_note(raw: object) -> str:
+    """S-194: render ``payload.attachments`` as a text reference line.
+
+    The agent receives the image *reference* — filename, MIME type and
+    the control-plane URL. The URL is retrievable by the receiving agent
+    with its own credential via ``GET /api/v1/agents/me/uploads/{id}``.
+    Full vision passthrough (fetching the bytes and sending base64 image
+    content parts to the LLM) is an explicit follow-up, not part of
+    S-194; malformed attachment entries are skipped, never raised.
+    """
+    if not isinstance(raw, list):
+        return ""
+    notes: list[str] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        name = str(item.get("filename") or "image").strip() or "image"
+        ctype = str(item.get("content_type") or "image").strip() or "image"
+        notes.append(f"[attached {ctype}: {name} at {url}]")
+    return "\n".join(notes)
+
+
 @dataclass(frozen=True)
 class BootstrapConfig:
     agent_id: str
@@ -1128,6 +1153,12 @@ class LLMMessageHandler:
         if message.payload.get("_skquad_trusted"):
             return message
         text = str(message.payload.get("message", "") or "")
+        # S-194: image attachments ride along as a text reference so
+        # the agent knows an image exists and where to fetch it (see
+        # format_attachment_note for the vision-passthrough caveat).
+        note = format_attachment_note(message.payload.get("attachments"))
+        if note:
+            text = (text + "\n" + note) if text.strip() else note
         if not text:
             return message
         labeled = dict(message.payload)

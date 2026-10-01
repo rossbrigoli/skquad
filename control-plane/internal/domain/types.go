@@ -733,6 +733,22 @@ type InstanceSettings struct {
 	UpdatedBy string    `json:"updated_by"`
 }
 
+// Upload (S-194) is an image a user attached in the web UI — chat
+// composer or task thread. Bytes live in Postgres (bytea) for now; the
+// long-term home is object storage (see the S-194 report). The payload is
+// deliberately excluded from JSON (`json:"-"`): API responses carry the
+// metadata + URL, never the raw bytes.
+type Upload struct {
+	ID          string    `json:"id"`
+	SquadID     string    `json:"squad_id"`
+	UploaderID  string    `json:"uploader_id"`
+	Filename    string    `json:"filename"`
+	ContentType string    `json:"content_type"`
+	SizeBytes   int64     `json:"size_bytes"`
+	Data        []byte    `json:"-"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 // PromptRevision is one append-only entry in the prompt revision history.
 // Retention is forever (ADR-0011 D5): rows are never updated or deleted.
 type PromptRevision struct {

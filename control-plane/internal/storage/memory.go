@@ -73,6 +73,10 @@ type MemoryStore struct {
 	// platform_settings table (migration 0026). Seeded with the
 	// 15-minute scale-to-zero default the migration seeds.
 	platformSettings map[string]string
+
+	// S-194: image uploads (chat + task attachments), mirroring the
+	// Postgres uploads table (migration 0028).
+	uploads map[string]*domain.Upload
 }
 
 // NewMemoryStore creates an empty development store.
@@ -108,6 +112,7 @@ func NewMemoryStore() *MemoryStore {
 		promptRevisions:  []*domain.PromptRevision{},
 		builtinTools:     map[string]*domain.BuiltinToolConfig{},
 		promptTemplates:  map[string]*domain.PromptTemplate{},
+		uploads:          map[string]*domain.Upload{},
 	}
 	store.platformSettings = map[string]string{
 		domain.PlatformSettingIdleScaleToZeroSeconds: "900",
@@ -2952,4 +2957,44 @@ func (m *MemoryStore) DeletePromptTemplate(_ context.Context, id string) error {
 	}
 	delete(m.promptTemplates, id)
 	return nil
+}
+
+// --- S-194: image uploads -------------------------------------------------
+
+func cloneUpload(u *domain.Upload) *domain.Upload {
+	if u == nil {
+		return nil
+	}
+	out := *u
+	if u.Data != nil {
+		out.Data = append([]byte(nil), u.Data...)
+	}
+	return &out
+}
+
+func (m *MemoryStore) CreateUpload(_ context.Context, u *domain.Upload) (*domain.Upload, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if u == nil || u.SquadID == "" {
+		return nil, ErrInvalidInput
+	}
+	created := cloneUpload(u)
+	if created.ID == "" {
+		created.ID = uuid.NewString()
+	}
+	if created.CreatedAt.IsZero() {
+		created.CreatedAt = time.Now().UTC()
+	}
+	m.uploads[created.ID] = created
+	return cloneUpload(created), nil
+}
+
+func (m *MemoryStore) GetUpload(_ context.Context, uploadID string) (*domain.Upload, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	u, ok := m.uploads[uploadID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return cloneUpload(u), nil
 }

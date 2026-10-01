@@ -1,18 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ActivityFeed } from "../../../../../components/ActivityFeed";
 import { AuthGate } from "../../../../../components/AuthGate";
 import { ConfirmDialog } from "../../../../../components/ConfirmDialog";
 import { Modal, ModalForm } from "../../../../../components/Modal";
 import { AppShell } from "../../../../../components/AppShell";
+import { AttachmentThumbs } from "../../../../../components/AttachmentThumbs";
 import { EmptyState } from "../../../../../components/EmptyState";
 import { StatusChip } from "../../../../../components/StatusChip";
 import { useApi } from "../../../../../lib/useApi";
 import { useAuth } from "../../../../../lib/auth";
-import { apiDelete, apiPatch, apiPost, type Agent, type AuditEntry, type Message, type Task } from "../../../../../lib/api";
+import { apiDelete, apiPatch, apiPost, apiUploadImage, type Agent, type AuditEntry, type Message, type Task } from "../../../../../lib/api";
+import { messageAttachments, validateImageFile } from "../../../../../lib/uploads";
 import { formatRelativeTime, leaseState, messageText } from "../../../../../lib/format";
 import { formatTaskRef } from "../../../../../lib/taskRef";
 import { taskResultInfo } from "../../../../../lib/taskResult";
@@ -42,6 +44,10 @@ export default function TaskDetailPage() {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // S-194: attach a screenshot to the task thread (uploaded, then
+  // posted as a task message carrying the attachment reference).
+  const [attachBusy, setAttachBusy] = useState(false);
+  const attachInputRef = useRef<HTMLInputElement | null>(null);
 
   const current = task.data;
   const assignee = (agents.data || []).find((a) => a.id === current?.assignee_agent_id);
@@ -76,6 +82,34 @@ export default function TaskDetailPage() {
       setActionError(err instanceof Error ? err.message : "reassign failed");
     } finally {
       setBusy(false);
+    }
+  };
+
+  // S-194: upload a picked image into this task's squad and post it to
+  // the task thread. The control plane binds the attachment to the
+  // message and delivers the reference to the assigned agent.
+  const attachImage = async (file: File) => {
+    if (!authed || !current) {
+      return;
+    }
+    const invalid = validateImageFile(file);
+    if (invalid) {
+      setActionError(invalid);
+      return;
+    }
+    setAttachBusy(true);
+    setActionError("");
+    try {
+      const up = await apiUploadImage("/uploads", token, file, `?squad_id=${encodeURIComponent(squadId)}`);
+      await apiPost(`/tasks/${taskId}/messages`, token, {
+        message: `📎 Screenshot attached: ${up.filename}`,
+        attachments: [up.id],
+      });
+      thread.refresh();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "attach failed");
+    } finally {
+      setAttachBusy(false);
     }
   };
 
@@ -181,8 +215,33 @@ export default function TaskDetailPage() {
         </section>
 
         <section style={{ marginTop: "var(--space-5)" }}>
-          <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>
+          <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
             Thread <span className="chip chip-idle">{messages.length}</span>
+            {/* S-194: attach a defect screenshot straight to the thread. */}
+            {current.assignee_agent_id ? (
+              <>
+                <input
+                  ref={attachInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    if (file) void attachImage(file);
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={attachBusy}
+                  onClick={() => attachInputRef.current?.click()}
+                  title={attachBusy ? "Uploading…" : "Attach an image (png/jpg/gif/webp, ≤5 MB)"}
+                >
+                  {attachBusy ? "Uploading…" : "📎 Attach image"}
+                </button>
+              </>
+            ) : null}
           </h2>
           {messages.length === 0 ? (
             <EmptyState
@@ -200,6 +259,8 @@ export default function TaskDetailPage() {
                       {formatRelativeTime(message.created_at)}
                       {message.status !== "delivered" && message.status !== "acked" ? ` · ${message.status}` : ""}
                     </span>
+                    {/* S-194: screenshots carried by this thread message. */}
+                    <AttachmentThumbs attachments={messageAttachments(message)} />
                   </div>
                 </div>
               ))}

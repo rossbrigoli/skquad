@@ -118,6 +118,7 @@ type Store interface {
 	storage.BuiltinToolStore
 	storage.PlatformSettingsStore
 	storage.AgentMirrorQueue
+	storage.UploadStore
 }
 
 // Server owns HTTP routing and request-scoped dependencies.
@@ -337,6 +338,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Post("/notify-owner", s.notifyOwnerFromAgent)
 			r.Post("/messages/{messageID}/ack", s.ackCurrentAgentMessage)
 			r.Post("/messages/{messageID}/fail", s.failCurrentAgentMessage)
+			// S-194: an agent can fetch images attached inside its own
+			// squad (the chat/task payload URLs).
+			r.Get("/uploads/{uploadID}", s.getMyUploadBytes)
 			// S-175: the runtime polls a turn's status to notice user cancels.
 			r.Get("/messages/{messageID}", s.getCurrentAgentMessage)
 			r.Get("/work/wait", s.waitCurrentAgentWork)
@@ -382,6 +386,10 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/dashboard/usage", s.getDashboardUsage)
 			r.Get("/inbox", s.listInbox)
 			r.Post("/inbox/{messageID}/read", s.markInboxRead)
+
+			// S-194: image attachments (chat composer + task threads).
+			r.Post("/uploads", s.createUpload)
+			r.Get("/uploads/{uploadID}", s.getUpload)
 
 			r.Post("/squads", s.createSquad)
 			r.Get("/squads", s.listSquads)
@@ -3466,6 +3474,11 @@ type messageRequest struct {
 	// ConsultTimeoutSeconds (S-173) overrides the reply deadline for a
 	// consult send. Only meaningful for type=consult; capped at 24h.
 	ConsultTimeoutSeconds int `json:"consult_timeout_seconds"`
+	// Attachments (S-194) are upload ids (POST /api/v1/uploads) to bind
+	// to the message. Each must reference an image uploaded into the
+	// message's squad; the handler normalizes them into
+	// payload.attachments.
+	Attachments []string `json:"attachments"`
 }
 
 type messageFailureRequest struct {
@@ -3744,13 +3757,18 @@ func (s *Server) createAgentChatMessage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	u := currentUser(r.Context())
+	attachments, err := s.resolveUploadAttachments(r, target.SquadID, req.Attachments)
+	if err != nil {
+		s.writeAttachmentError(w, err)
+		return
+	}
 	created, err := s.store.CreateMessage(s.pendingUserAuditCtx(r, "message.create", "message", "", target.SquadID, nil), &domain.Message{
 		FromType:      "user",
 		FromID:        u.ID,
 		ToAgentID:     target.ID,
 		SquadID:       target.SquadID,
 		Type:          messageType,
-		Payload:       messagePayload(req),
+		Payload:       withAttachments(messagePayload(req), attachments),
 		Status:        domain.MessagePending,
 		CorrelationID: strings.TrimSpace(req.CorrelationID),
 		MaxAttempts:   req.MaxAttempts,
@@ -4544,13 +4562,18 @@ func (s *Server) createTaskMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := currentUser(r.Context())
+	attachments, err := s.resolveUploadAttachments(r, task.SquadID, req.Attachments)
+	if err != nil {
+		s.writeAttachmentError(w, err)
+		return
+	}
 	created, err := s.store.CreateMessage(s.pendingUserAuditCtx(r, "task.message", "task", task.ID, task.SquadID, nil), &domain.Message{
 		FromType:      "user",
 		FromID:        u.ID,
 		ToAgentID:     task.AssigneeAgentID,
 		SquadID:       task.SquadID,
 		Type:          messageType,
-		Payload:       withTaskID(messagePayload(req), task.ID),
+		Payload:       withAttachments(withTaskID(messagePayload(req), task.ID), attachments),
 		Status:        domain.MessagePending,
 		CorrelationID: strings.TrimSpace(req.CorrelationID),
 		MaxAttempts:   req.MaxAttempts,

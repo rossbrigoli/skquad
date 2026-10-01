@@ -244,6 +244,36 @@ export async function apiDelete(path: string, token: string): Promise<void> {
   await apiRequest<void>(path, token, { method: "DELETE" });
 }
 
+// S-194: multipart image upload for the chat composer and task threads.
+// Kept separate from apiRequest because the body is FormData (the JSON
+// Content-Type header must NOT be set — the browser adds the boundary).
+export async function apiUploadImage(path: string, token: string, file: File, query = ""): Promise<import("./uploads").UploadRef> {
+  const form = new FormData();
+  form.append("file", file);
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (token.trim() !== "") {
+    headers.Authorization = `Bearer ${token.trim()}`;
+  }
+  const response = await fetch(`${apiBaseUrl()}${path}${query}`, {
+    method: "POST",
+    headers,
+    body: form,
+    credentials: "same-origin",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    let message = response.statusText;
+    try {
+      const parsed = (await response.json()) as { error?: { message?: unknown } } | null;
+      if (typeof parsed?.error?.message === "string" && parsed.error.message !== "") message = parsed.error.message;
+    } catch {
+      // Keep the HTTP status text when the body is not JSON.
+    }
+    throw new ApiError(response.status, message);
+  }
+  return (await response.json()) as import("./uploads").UploadRef;
+}
+
 async function apiRequest<T>(path: string, token: string, options: { method: string; body?: unknown; timeoutMs?: number }): Promise<T> {
   const headers: Record<string, string> = {
     Accept: "application/json",
