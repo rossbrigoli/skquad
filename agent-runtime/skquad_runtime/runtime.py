@@ -98,6 +98,36 @@ CHAT_CONTINUE_PROMPT = (
     'not repeat the progress note.</skquad_continue>'
 )
 
+# S-195c: typographic (smart) punctuation the models emit constantly.
+# The S-195 heuristic matched "i'll " with a straight apostrophe only,
+# so "I\u2019ll look for the source\u2026" (U+2019) slipped through and the turn
+# ended after the first progress message (live repro 2026-10-01). Fold
+# curly quotes onto their ASCII forms before any hint matching.
+_TYPOGRAPHIC_FOLD = str.maketrans(
+    {"\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+     "\u201c": '"', "\u201d": '"', "\u0060": "'"}
+)
+
+# S-195c: leading-intent messages are not inherently short. The live
+# miss was a 244-char "I\u2019ll look for the source, trace X, and assess Y."
+# — well past the old 120-char cap. 400 covers realistic multi-clause
+# promises while still letting long-form closed answers stay final.
+_PROGRESS_LEAD_MAX_CHARS = 400
+
+# S-195c: narrative frames that merely *open* with an intent phrase but
+# deliver a closed statement ("I'll note that the migration completed
+# cleanly..."). These stay final even under the widened lead cap — the
+# phrase is rhetorical framing, not a promise of more work to come.
+_PROGRESS_NARRATIVE_FRAMES = (
+    "i'll note",
+    "i'll mention",
+    "i'll add that",
+    "i'll point out",
+    "i'll just say",
+    "i want to note",
+    "i'd note",
+)
+
 # S-195: heuristics for reading a text-only assistant message as an
 # unfinished progress note ("Let me analyse this...") rather than a
 # final answer. Progress notes end on a cliff-hanger suffix, or are a
@@ -144,10 +174,46 @@ def looks_like_progress_note(text: str) -> bool:
         return False
     if stripped.endswith(_PROGRESS_SUFFIXES):
         return True
-    lowered = stripped.lower()
-    if len(stripped) <= 120 and any(lowered.startswith(hint) for hint in _PROGRESS_HINTS):
+    # S-195c: fold smart quotes to ASCII before hint matching so "I\u2019ll"
+    # is tested as "I'll".
+    lowered = stripped.translate(_TYPOGRAPHIC_FOLD).lower()
+    if (
+        len(stripped) <= _PROGRESS_LEAD_MAX_CHARS
+        and any(lowered.startswith(hint) for hint in _PROGRESS_HINTS)
+        and not any(lowered.startswith(frame) for frame in _PROGRESS_NARRATIVE_FRAMES)
+    ):
         return True
     return False
+
+
+# S-195c: platform wrapper for runtime-injected mid-conversation nudges.
+# Strict chat templates (Qwen and friends served via llama.cpp/halogen)
+# accept a system message ONLY at index 0; a mid-conversation system
+# turn 400s the whole request and the chat message dies unreplied
+# (live repro 2026-10-01: "message 43 has role 'system' after a
+# non-system turn"). Injected framing therefore rides as a user turn
+# with an explicit platform trust tag, mirroring CHAT_CONTINUE_PROMPT.
+def _platform_note(content: str) -> dict[str, object]:
+    return {
+        "role": "user",
+        "content": f'<skquad_platform_note trust="platform">{content}</skquad_platform_note>',
+    }
+
+
+def enforce_leading_system(messages: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Defense-in-depth: only index 0 may keep role 'system'.
+
+    Any other system-role message is demoted to a platform-noted user
+    turn so strict templates never see a mid-conversation system turn.
+    Idempotent: demoted turns are already 'user'.
+    """
+    out: list[dict[str, object]] = []
+    for idx, msg in enumerate(messages):
+        if idx > 0 and str(msg.get("role") or "") == "system":
+            out.append(_platform_note(str(msg.get("content") or "")))
+        else:
+            out.append(msg)
+    return out
 
 
 def _sanitize_surrogates(text: str) -> str:
@@ -1349,6 +1415,9 @@ class LLMMessageHandler:
                     interim_delivered,
                 )
             chat_messages, compaction = compactor.maybe_compact(chat_messages)
+            # S-195c: strict templates reject mid-conversation system
+            # turns; guarantee the leading-system invariant every step.
+            chat_messages = enforce_leading_system(chat_messages)
             if compaction.changed:
                 LOGGER.info(
                     "S-161 chat compaction: tier=%d tokens %d->%d evicted=%d clipped=%d",
@@ -1432,14 +1501,11 @@ class LLMMessageHandler:
                 # message dying unreplied (incident 2026-09-30: tool-heavy
                 # chat questions burned the budget and Ross saw nothing).
                 chat_messages.append(
-                    {
-                        "role": "system",
-                        "content": (
-                            "Tool-call budget exhausted. Reply to the user "
-                            "now with text only, using what you have "
-                            "gathered. Do not request any more tools."
-                        ),
-                    }
+                    _platform_note(
+                        "Tool-call budget exhausted. Reply to the user "
+                        "now with text only, using what you have "
+                        "gathered. Do not request any more tools."
+                    )
                 )
                 forced_kwargs = self._completion_kwargs(
                     message, config, chat_messages, virtual_key, model
