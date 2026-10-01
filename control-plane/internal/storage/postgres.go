@@ -1832,17 +1832,18 @@ func (p *PostgresStore) CreateTask(ctx context.Context, t *domain.Task) (*domain
 	row := tx.QueryRow(ctx, `
 		INSERT INTO tasks (
 			board_id, squad_id, title, description, status, assignee_agent_id,
-			created_by_type, created_by_id, position, origin_message_id
+			created_by_type, created_by_id, position, origin_message_id, task_number
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, nullif($6, '')::uuid,
 			$7, $8,
 			coalesce((SELECT max(position) + 1 FROM tasks WHERE board_id = $1 AND status = $5), 1),
-			$9
+			$9,
+			(SELECT coalesce(max(task_number), 0) + 1 FROM tasks WHERE squad_id = $2)
 		)
 		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at
+		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
 	`, t.BoardID, t.SquadID, t.Title, t.Description, defaultTaskStatus(t.Status), t.AssigneeAgentID, t.CreatedByType, t.CreatedByID, t.OriginMessageID)
 	created, err := scanTask(row)
 	if err != nil {
@@ -1861,7 +1862,7 @@ func (p *PostgresStore) GetTask(ctx context.Context, id string) (*domain.Task, e
 	row := p.pool.QueryRow(ctx, `
 		SELECT id::text, board_id::text, squad_id::text, title, description, status,
 		       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at
+		       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
 		FROM tasks
 		WHERE id = $1
 	`, id)
@@ -1901,7 +1902,7 @@ func (p *PostgresStore) UpdateTask(ctx context.Context, t *domain.Task) (*domain
 		WHERE id = $1
 		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at
+		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
 	`, t.ID, t.Title, t.Description, t.AssigneeAgentID, defaultTaskStatus(t.Status))
 	updated, err := scanTask(row)
 	if err != nil {
@@ -1932,7 +1933,7 @@ func (p *PostgresStore) SetTaskWorkspace(ctx context.Context, taskID string, res
 		WHERE id = $1
 		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at
+		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
 	`, taskID, resourceID, branch, commitSHA)
 	updated, err := scanTask(row)
 	if err != nil {
@@ -1973,7 +1974,7 @@ func (p *PostgresStore) ListTasks(ctx context.Context, boardID string, status do
 		rows, err = p.pool.Query(ctx, `
 			SELECT id::text, board_id::text, squad_id::text, title, description, status,
 			       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-			       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at
+			       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
 			FROM tasks
 			WHERE board_id = $1
 			ORDER BY status, position
@@ -1982,7 +1983,7 @@ func (p *PostgresStore) ListTasks(ctx context.Context, boardID string, status do
 		rows, err = p.pool.Query(ctx, `
 			SELECT id::text, board_id::text, squad_id::text, title, description, status,
 			       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-			       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at
+			       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
 			FROM tasks
 			WHERE board_id = $1 AND status = $2
 			ORDER BY position
@@ -2008,7 +2009,7 @@ func (p *PostgresStore) ListAgentTasks(ctx context.Context, agentID string) ([]*
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, board_id::text, squad_id::text, title, description, status,
 		       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at
+		       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
 		FROM tasks
 		WHERE assignee_agent_id = $1
 		ORDER BY status, position
@@ -2090,7 +2091,7 @@ func (p *PostgresStore) claimReclaimableInProgress(ctx context.Context, tx pgx.T
 	row := tx.QueryRow(ctx, `
 		SELECT id::text, board_id::text, squad_id::text, title, description, status,
 		       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at
+		       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
 		FROM tasks
 		WHERE assignee_agent_id = $1
 		  AND status = $2
@@ -2131,7 +2132,7 @@ func (p *PostgresStore) claimTodoTask(ctx context.Context, tx pgx.Tx, agentID st
 		WHERE id = (SELECT id FROM candidate)
 		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at
+		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
 	`, agentID, domain.TaskTodo, domain.TaskInProgress)
 	return scanTask(row)
 }
@@ -2331,7 +2332,7 @@ func (p *PostgresStore) CompleteTaskExecution(ctx context.Context, agentID strin
 		WHERE id = (SELECT id FROM existing)
 		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
 		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
-		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at
+		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
 	`, taskID, agentID, status, summary)
 	task, err := scanTask(row)
 	if err != nil {
@@ -3314,6 +3315,7 @@ func scanTask(row scanner) (*domain.Task, error) {
 		&t.Result,
 		&t.ResultStatus,
 		&resultAt,
+		&t.TaskNumber,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}

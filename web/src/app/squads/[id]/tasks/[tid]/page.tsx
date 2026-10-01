@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ActivityFeed } from "../../../../../components/ActivityFeed";
 import { AuthGate } from "../../../../../components/AuthGate";
@@ -14,6 +14,7 @@ import { useApi } from "../../../../../lib/useApi";
 import { useAuth } from "../../../../../lib/auth";
 import { apiDelete, apiPatch, apiPost, type Agent, type AuditEntry, type Message, type Task } from "../../../../../lib/api";
 import { formatRelativeTime, leaseState, messageText } from "../../../../../lib/format";
+import { formatTaskRef } from "../../../../../lib/taskRef";
 import { taskResultInfo } from "../../../../../lib/taskResult";
 import { taskStatus } from "../../../../../lib/status";
 
@@ -37,8 +38,6 @@ export default function TaskDetailPage() {
   const agents = useApi<Agent[]>(`/squads/${squadId}/agents`, 60000);
   const audit = useApi<AuditEntry[]>(`/squads/${squadId}/audit?limit=50`, 30000);
 
-  const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
   const [actionError, setActionError] = useState("");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -49,23 +48,6 @@ export default function TaskDetailPage() {
   const messages = thread.data || [];
   const timeline = (audit.data || []).filter((entry) => entry.resource_id === taskId);
   const resultInfo = current ? taskResultInfo(current, messages) : null;
-
-  const send = useCallback(async () => {
-    if (!authed || !draft.trim() || !current) {
-      return;
-    }
-    setSending(true);
-    setActionError("");
-    try {
-      await apiPost(`/tasks/${taskId}/messages`, token, { message: draft.trim() });
-      setDraft("");
-      thread.refresh();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "send failed");
-    } finally {
-      setSending(false);
-    }
-  }, [token, authed, draft, current, taskId, thread]);
 
   const move = async (status: string) => {
     if (!authed || !current) {
@@ -121,7 +103,14 @@ export default function TaskDetailPage() {
     <AuthGate>
       <AppShell>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "var(--space-3)" }}>
-          <h1 className="page-title">{current.title}</h1>
+          <h1 className="page-title">
+            {formatTaskRef(current) ? (
+              <span className="task-ref" title={`Task reference ${formatTaskRef(current)}`}>
+                {formatTaskRef(current)}
+              </span>
+            ) : null}
+            {current.title}
+          </h1>
           <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
             <StatusChip status={taskStatus(current)} />
             <button type="button" className="btn btn-sm" onClick={() => setEditing(true)}>
@@ -217,23 +206,16 @@ export default function TaskDetailPage() {
             </div>
           )}
           {current.assignee_agent_id ? (
-            <div style={{ display: "flex", gap: "var(--space-2)", marginTop: "var(--space-3)" }}>
-              <input
-                className="input"
-                style={{ flex: 1 }}
-                placeholder={`Message ${assignee?.name || "the assignee"} about this task…`}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    send().catch(() => undefined);
-                  }
-                }}
-              />
-              <button type="button" className="btn btn-primary" disabled={sending || !draft.trim()} onClick={() => send().catch(() => undefined)}>
-                {sending ? "Sending…" : "Send"}
-              </button>
+            // S-184: the inline composer is gone — conversation happens in
+            // the assigned agent's chat screen, which keeps one continuous
+            // thread per agent. This button jumps there.
+            <div style={{ marginTop: "var(--space-3)" }}>
+              <Link
+                href={`/squads/${squadId}/agents/${current.assignee_agent_id}`}
+                className="btn btn-primary"
+              >
+                Agent Chat{assignee ? ` — ${assignee.name}` : ""}
+              </Link>
             </div>
           ) : null}
         </section>

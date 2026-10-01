@@ -1288,6 +1288,7 @@ func (m *MemoryStore) CreateTask(ctx context.Context, t *domain.Task) (*domain.T
 		created.Status = domain.TaskTodo
 	}
 	created.Position = m.nextTaskPosition(t.BoardID, created.Status)
+	created.TaskNumber = m.nextTaskNumberLocked(created.SquadID)
 	created.CreatedAt = now
 	created.UpdatedAt = now
 	m.tasks[created.ID] = created
@@ -1315,6 +1316,7 @@ func (m *MemoryStore) UpdateTask(ctx context.Context, t *domain.Task) (*domain.T
 	updated := cloneTask(t)
 	updated.BoardID = existing.BoardID
 	updated.SquadID = existing.SquadID
+	updated.TaskNumber = existing.TaskNumber // S-184: display ref is immutable
 	updated.CreatedByType = existing.CreatedByType
 	updated.CreatedByID = existing.CreatedByID
 	updated.CreatedAt = existing.CreatedAt
@@ -2367,6 +2369,19 @@ func (m *MemoryStore) nextTaskPosition(boardID string, status domain.TaskStatus)
 	for _, task := range m.tasks {
 		if task.BoardID == boardID && task.Status == status && task.Position >= next {
 			next = task.Position + 1
+		}
+	}
+	return next
+}
+
+// nextTaskNumberLocked returns the next per-squad sequential task reference
+// number (S-184). Caller must hold m.mu. Mirrors the Postgres
+// coalesce(max(task_number),0)+1 WHERE squad_id logic.
+func (m *MemoryStore) nextTaskNumberLocked(squadID string) int {
+	next := 1
+	for _, task := range m.tasks {
+		if task.SquadID == squadID && task.TaskNumber >= next {
+			next = task.TaskNumber + 1
 		}
 	}
 	return next
