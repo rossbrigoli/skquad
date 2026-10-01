@@ -899,6 +899,19 @@ dialog.modal-backdrop::backdrop {
   border-top: 3px solid var(--status-blocked);
 }
 
+/* S-186: wide variant for prompt-preview style dialogs — ~70% of the
+   viewport, capped at 1200px so it stays readable on ultrawide screens,
+   and near-full-width on small screens where 70vw is too cramped. */
+.modal-card.modal-wide {
+  max-width: min(70vw, 1200px);
+}
+
+@media (max-width: 768px) {
+  .modal-card.modal-wide {
+    max-width: 96vw;
+  }
+}
+
 .modal-head {
   display: flex;
   align-items: center;

@@ -10,12 +10,16 @@ export function Modal({
   children,
   footer,
   danger = false,
+  wide = false,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
   danger?: boolean;
+  // S-186: wide dialogs (e.g. the effective-prompt preview) get ~70vw so
+  // long prompt text is readable without cramped line lengths.
+  wide?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
 
@@ -43,7 +47,7 @@ export function Modal({
           if (event.target === event.currentTarget) onClose();
         }}
       >
-        <div className={`modal-card${danger ? " modal-danger" : ""}`}>
+        <div className={`modal-card${danger ? " modal-danger" : ""}${wide ? " modal-wide" : ""}`}>
         <div className="modal-head">
           <h2>{title}</h2>
           <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
