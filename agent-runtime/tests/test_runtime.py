@@ -2711,6 +2711,133 @@ class SystemRoleInvariantS195cTest(unittest.TestCase):
         return load_bootstrap_config(env)
 
 
+# ---------------------------------------------------------------------------
+# S-195d (pi-inspired): explicit turn-continuation decision + clean failure
+# closure. Pi reference: packages/agent/src/agent-loop.ts — finishTurn hook
+# decides end/continue after every assistant message; a "continue" with no
+# pending tool calls is fulfilled with one context-only continuation turn;
+# error stop reasons take an explicit terminal path (never silent death).
+# ---------------------------------------------------------------------------
+
+
+class TurnDecisionS195dTest(unittest.TestCase):
+    def _config(self, tmp, **extra):  # mirror sibling test helper
+        credential = Path(tmp) / "agent"
+        credential.write_text("credential", encoding="utf-8")
+        virtual = Path(tmp) / "llm-gateway"
+        virtual.write_text("virtual-key", encoding="utf-8")
+        env = {
+            "SKQUAD_AGENT_ID": "agent-1",
+            "SKQUAD_SQUAD_ID": "squad-1",
+            "SKQUAD_AGENT_CREDENTIAL_PATH": str(credential),
+            "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH": str(virtual),
+            "SKQUAD_LLM_GATEWAY_URL": "http://llm-gateway:4000",
+            "SKQUAD_DEFAULT_MODEL": "gpt-4o",
+            "SKQUAD_AGENT_ROLE": "helper",
+            "SKQUAD_TASK_LOOP_ENABLED": "false",
+        }
+        env.update(extra)
+        return load_bootstrap_config(env)
+
+    def test_tool_calls_always_continue_the_loop(self):
+        self.assertEqual(
+            rt.decide_turn_action(
+                has_tool_calls=True,
+                interim_text="anything",
+                interim_budget_left=False,
+                steps_left=False,
+                is_user_turn=True,
+            ),
+            rt.TURN_CONTINUE_TOOLS,
+        )
+
+    def test_progress_note_with_budget_is_a_nudge(self):
+        self.assertEqual(
+            rt.decide_turn_action(
+                has_tool_calls=False,
+                interim_text="I\u2019ll trace how Skquad stores memory, then examine its loop.",
+                interim_budget_left=True,
+                steps_left=True,
+                is_user_turn=True,
+            ),
+            rt.TURN_CONTINUE_NUDGE,
+        )
+
+    def test_exhausted_budget_or_agent_turn_is_final(self):
+        for budget, steps, user in ((False, True, True), (True, False, True), (True, True, False)):
+            self.assertEqual(
+                rt.decide_turn_action(
+                    has_tool_calls=False,
+                    interim_text="Let me analyse this...",
+                    interim_budget_left=budget,
+                    steps_left=steps,
+                    is_user_turn=user,
+                ),
+                rt.TURN_FINAL,
+            )
+
+    def test_failure_after_interim_posts_closure_on_final_attempt(self):
+        # Live incident shape: interim delivered, then provider 429s on
+        # the continuation call. On the FINAL attempt the user must get
+        # a visible closure reply, not a dangling progress note.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            calls = {"n": 0}
+
+            def completion(**kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return fake_completion_response("I\u2019ll trace how Skquad stores memory first.")
+                raise RuntimeError("RateLimitError: credit_balance_exhausted")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=completion, client=client)
+            msg = replace(user_msg("m-1", "deep review please"), attempts=2, max_attempts=3)
+            result = handler.handle_message(msg, config)
+            self.assertFalse(result.ok)
+            self.assertIn("credit_balance_exhausted", result.summary)
+            # 1 interim + 1 failure closure.
+            self.assertEqual(len(client.replies), 2)
+            self.assertTrue(client.replies[0][3]["interim"])
+            self.assertTrue(client.replies[1][3]["turn_error"])
+            self.assertIn("couldn't finish this turn", client.replies[1][0])
+            self.assertIn("credit_balance_exhausted", client.replies[1][0])
+
+    def test_failure_before_final_attempt_defers_closure_to_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            calls = {"n": 0}
+
+            def completion(**kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return fake_completion_response("Let me check the logs first...")
+                raise RuntimeError("transient network blip")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=completion, client=client)
+            msg = replace(user_msg("m-1", "check logs"), attempts=0, max_attempts=3)
+            result = handler.handle_message(msg, config)
+            self.assertFalse(result.ok)
+            # Only the interim posted; closure waits for the final attempt.
+            self.assertEqual(len(client.replies), 1)
+            self.assertTrue(client.replies[0][3]["interim"])
+
+    def test_failure_without_interim_posts_no_closure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+
+            def completion(**kwargs):
+                raise RuntimeError("provider down from the start")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=completion, client=client)
+            msg = replace(user_msg("m-1", "hello"), attempts=2, max_attempts=3)
+            result = handler.handle_message(msg, config)
+            self.assertFalse(result.ok)
+            self.assertEqual(client.replies, [])
+
+
 class MultiReplyChatTurnS195Test(unittest.TestCase):
     """The turn must survive a progress-note pause and deliver follow-ups."""
 

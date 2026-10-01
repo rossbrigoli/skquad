@@ -216,6 +216,48 @@ def enforce_leading_system(messages: list[dict[str, object]]) -> list[dict[str, 
     return out
 
 
+# S-195d (pi-inspired): explicit per-turn continuation decision.
+# Pi's agent loop (packages/agent/src/agent-loop.ts, agent_loop inner
+# loop ~L179-320) asks a finishTurn hook after EVERY assistant message
+# whether the turn ends or continues, and fulfils a "continue" with
+# exactly one context-only continuation turn when no tool calls are
+# pending ("fulfill the continuation decision with one context-only
+# turn"). skquad's chat loop centralizes the same decision here so
+# continuation is a harness policy computed once per assistant message
+# — not an inline condition chain buried in the loop body.
+TURN_CONTINUE_TOOLS = "continue_tools"
+TURN_CONTINUE_NUDGE = "continue_nudge"
+TURN_FINAL = "final"
+
+
+def decide_turn_action(
+    *,
+    has_tool_calls: bool,
+    interim_text: str,
+    interim_budget_left: bool,
+    steps_left: bool,
+    is_user_turn: bool,
+) -> str:
+    """Compute the harness decision for one assistant response.
+
+    - tool calls present  -> keep the loop running (execute them);
+    - text-only progress  -> deliver as interim and continue with one
+      bounded context-only nudge turn (pi's continuation pattern);
+    - anything else       -> final answer, end the turn.
+    """
+    if has_tool_calls:
+        return TURN_CONTINUE_TOOLS
+    if (
+        interim_budget_left
+        and steps_left
+        and interim_text
+        and is_user_turn
+        and looks_like_progress_note(interim_text)
+    ):
+        return TURN_CONTINUE_NUDGE
+    return TURN_FINAL
+
+
 def _sanitize_surrogates(text: str) -> str:
     """Strip lone UTF-16 surrogates from LLM output (incident 2026-09-30).
 
@@ -1435,6 +1477,7 @@ class LLMMessageHandler:
             try:
                 response = completion(**completion_kwargs)
             except Exception as exc:
+                self._close_failed_turn(message, config, exc, interim_delivered)
                 return (
                     MessageResult(ok=False, summary=f"LLM call failed: {exc}"),
                     response,
@@ -1447,13 +1490,14 @@ class LLMMessageHandler:
                 interim_text = _sanitize_surrogates(
                     str(message_value(assistant, "content") or "")
                 ).strip()
-                if (
-                    interim_delivered < interim_budget
-                    and step < max_steps - 1
-                    and interim_text
-                    and message.from_type == "user"
-                    and looks_like_progress_note(interim_text)
-                ):
+                decision = decide_turn_action(
+                    has_tool_calls=False,
+                    interim_text=interim_text,
+                    interim_budget_left=interim_delivered < interim_budget,
+                    steps_left=step < max_steps - 1,
+                    is_user_turn=message.from_type == "user",
+                )
+                if decision == TURN_CONTINUE_NUDGE:
                     # S-195: the model paused on a progress note ("Let me
                     # analyse this...") without a tool call but clearly
                     # intends to continue. Deliver the note visibly now and
@@ -1513,6 +1557,7 @@ class LLMMessageHandler:
                 try:
                     response = completion(**forced_kwargs)
                 except Exception as exc:
+                    self._close_failed_turn(message, config, exc, interim_delivered)
                     return (
                         MessageResult(ok=False, summary=f"LLM call failed: {exc}"),
                         response,
@@ -1550,6 +1595,47 @@ class LLMMessageHandler:
             to_agent_id="",
             extra=extra,
         )
+
+    def _close_failed_turn(
+        self,
+        message: RuntimeMessage,
+        config: BootstrapConfig,
+        exc: Exception,
+        interim_delivered: int,
+    ) -> None:
+        """S-195d (pi-inspired): a turn that already delivered progress must
+        terminate with visible closure, never a dangling progress note.
+
+        Pi treats error/aborted stop reasons as an explicit terminal path
+        (packages/agent/src/agent-loop.ts: finishTurn + turn_end +
+        agent_end on error — the loop never dies silently). skquad's
+        control plane retries failed messages, so the closure posts only
+        on the FINAL attempt (attempts+1 >= max_attempts, matching the
+        control plane's own dead-transition gate in postgres.go) to avoid
+        one notice per retry. Live incident 2026-10-01: provider credits
+        exhausted mid-turn; the user was left with only the interim
+        progress note and no explanation.
+        """
+        if interim_delivered <= 0:
+            return
+        if message.max_attempts and message.attempts + 1 < message.max_attempts:
+            return
+        short = _sanitize_surrogates(str(exc)).strip()
+        if len(short) > 200:
+            short = short[:197] + "..."
+        try:
+            self._control_plane(config).send_chat_reply(
+                "\u26a0\ufe0f I couldn't finish this turn — the model provider "
+                f"returned an error ({short}). My progress notes above show "
+                "where I stopped. Please retry once the provider recovers.",
+                correlation_id=message.correlation_id or message.id,
+                to_agent_id="",
+                extra={"turn_error": True},
+            )
+        except Exception:  # noqa: BLE001 — closure is best-effort
+            LOGGER.warning(
+                "failed to post turn-failure closure for message %s", message.id
+            )
 
     def _append_tool_results(
         self,
