@@ -115,7 +115,7 @@ export default function SquadPromptPage() {
         </section>
 
         {previewAgent ? (
-          <Modal title={`Effective prompt — ${previewAgent.name}`} onClose={() => setPreviewAgent(null)}>
+          <Modal title={`Effective prompt — ${previewAgent.name}`} wide onClose={() => setPreviewAgent(null)}>
             <EffectivePromptPanel agentId={previewAgent.id} />
           </Modal>
         ) : null}

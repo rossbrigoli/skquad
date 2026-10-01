@@ -524,7 +524,7 @@ export default function AgentProfilePage() {
         ) : null}
 
         {previewEffective && agent ? (
-          <Modal title={`Effective prompt — ${agent.name}`} onClose={() => setPreviewEffective(false)}>
+          <Modal title={`Effective prompt — ${agent.name}`} wide onClose={() => setPreviewEffective(false)}>
             <EffectivePromptPanel agentId={agentId} />
           </Modal>
         ) : null}
