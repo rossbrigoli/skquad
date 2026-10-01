@@ -313,6 +313,8 @@ func (c *liteLLMGatewayClient) DeployModel(ctx context.Context, spec GatewayMode
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
 	httpReq.Header.Set("Content-Type", "application/json")
+	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
+	// path; no user-controlled component reaches this request.
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("litellm: model deploy: %w", err)
@@ -355,6 +357,8 @@ func (c *liteLLMGatewayClient) UpdateModelDeployment(ctx context.Context, deploy
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
 	httpReq.Header.Set("Content-Type", "application/json")
+	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
+	// path; no user-controlled component reaches this request.
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("litellm: model update: %w", err)
@@ -383,6 +387,8 @@ func (c *liteLLMGatewayClient) DeleteModelDeployment(ctx context.Context, deploy
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
 	httpReq.Header.Set("Content-Type", "application/json")
+	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
+	// path; no user-controlled component reaches this request.
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("litellm: model delete: %w", err)
@@ -403,6 +409,8 @@ func (c *liteLLMGatewayClient) ListModelDeployments(ctx context.Context) ([]Gate
 		return nil, fmt.Errorf("litellm: build model info request: %w", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
+	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
+	// path; no user-controlled component reaches this request.
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("litellm: model info: %w", err)
