@@ -71,6 +71,11 @@ type Config struct {
 	LiteLLMAdminURL      string // URL used by the API server for LiteLLM key management
 	LiteLLMMasterKey     string // LiteLLM proxy admin key used for virtual-key provisioning
 	GatewayCallbackToken string // internal bearer token for gateway callbacks into the API
+	// LLMGatewayDeployment is the K8s Deployment name of the LiteLLM
+	// gateway (S-GWREG). The control plane rollout-restarts it after any
+	// gateway model-deployment change because the litellm router only
+	// picks up DB-persisted models on pod restart (docs/llm-gateway.md).
+	LLMGatewayDeployment string // SKQUAD_LLM_GATEWAY_DEPLOYMENT, default skquad-llm-gateway
 
 	// Built-in web_search providers (BT-2, ADR-0012 §3). SECRETS: they
 	// must come from a SealedSecret on the control-plane deployment and
@@ -142,6 +147,7 @@ func Load() (*Config, error) {
 		LiteLLMAdminURL:         os.Getenv("SKQUAD_LITELLM_ADMIN_URL"),
 		LiteLLMMasterKey:        os.Getenv("SKQUAD_LITELLM_MASTER_KEY"),
 		GatewayCallbackToken:    os.Getenv("SKQUAD_GATEWAY_CALLBACK_TOKEN"),
+		LLMGatewayDeployment:    envOr("SKQUAD_LLM_GATEWAY_DEPLOYMENT", "skquad-llm-gateway"),
 		SearchBraveAPIKey:       strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_BRAVE_API_KEY")),
 		SearchPerplexityAPIKey:  strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_PERPLEXITY_API_KEY")),
 		MemoryEmbeddingsEnabled: envBool("SKQUAD_MEMORY_EMBEDDINGS_ENABLED", false),

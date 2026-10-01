@@ -29,6 +29,17 @@ rules:
     verbs:
       - delete
       - list
+  # S-GWREG: rollout-restart the LiteLLM gateway Deployment after model
+  # deployment changes (the litellm router only picks up DB-persisted
+  # models on pod restart — see docs/llm-gateway.md). Strategic-merge
+  # patch of the pod-template annotation skquad.io/gateway-reload.
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - get
+      - patch
   - apiGroups:
       - skquad.io
     resources:

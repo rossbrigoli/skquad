@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"strings"
@@ -85,17 +86,20 @@ func validateLongContextThreshold(value *int) (string, bool) {
 
 // ensureAIModelProviderExists validates the internal provider credential
 // reference (D2). Providers have no new public CRUD; the reference must
-// point at an already-registered provider.
-func (s *Server) ensureAIModelProviderExists(w http.ResponseWriter, r *http.Request, providerID string) bool {
-	if _, err := s.store.GetLLMProvider(r.Context(), providerID); err != nil {
+// point at an already-registered provider. The provider record is
+// returned so S-GWREG gateway provisioning can resolve kind/base_url/key
+// without a second lookup.
+func (s *Server) ensureAIModelProviderExists(w http.ResponseWriter, r *http.Request, providerID string) (*domain.LLMProvider, bool) {
+	provider, err := s.store.GetLLMProvider(r.Context(), providerID)
+	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			writeError(w, http.StatusBadRequest, "bad_request", "provider_id must reference an existing provider")
-			return false
+			return nil, false
 		}
 		writeStorageError(w, err)
-		return false
+		return nil, false
 	}
-	return true
+	return provider, true
 }
 
 // isDuplicateAIModelName reports an existing model sharing the
@@ -142,7 +146,8 @@ func (s *Server) createAIModel(w http.ResponseWriter, r *http.Request) {
 	}
 	providerID := strings.TrimSpace(req.ProviderID)
 	modelName := strings.TrimSpace(req.ModelName)
-	if !s.ensureAIModelProviderExists(w, r, providerID) {
+	provider, ok := s.ensureAIModelProviderExists(w, r, providerID)
+	if !ok {
 		return
 	}
 	if dup, err := s.isDuplicateAIModelName(r.Context(), providerID, modelName, ""); err != nil {
@@ -172,10 +177,30 @@ func (s *Server) createAIModel(w http.ResponseWriter, r *http.Request) {
 		Status:                     domain.ResourceActive,
 		RegisteredBy:               u.ID,
 	}
+	// S-GWREG fail-loud: provision the gateway deployment BEFORE the
+	// registry row. A gateway failure means no registry row, 502, and a
+	// loud error — never a silently-unusable model.
+	gatewayDeploymentID := ""
+	if s.gatewayModelsEnabled() {
+		deploymentID, err := s.provisionGatewayModel(r.Context(), provider, modelName)
+		if err != nil {
+			writeGatewayProvisionFailure(w, "registered", err)
+			return
+		}
+		gatewayDeploymentID = deploymentID
+	} else {
+		log.Printf("aimodel: LLM gateway not configured — skipping gateway deployment for %q (dev mode; model will NOT be routable until registered in the gateway)", modelName)
+	}
 	created, err := s.store.CreateAIModel(s.pendingUserAuditCtx(r, "aimodel.create", "ai_model", "", "", nil), model)
 	if err != nil {
+		if gatewayDeploymentID != "" {
+			s.compensateGatewayDelete(r.Context(), gatewayDeploymentID, modelName)
+		}
 		writeStorageError(w, err)
 		return
+	}
+	if gatewayDeploymentID != "" {
+		s.reloadGateway(r.Context())
 	}
 	writeJSON(w, http.StatusCreated, created)
 }
@@ -231,7 +256,7 @@ func (s *Server) applyAIModelScalarFields(w http.ResponseWriter, r *http.Request
 		if !validateRequired(w, "provider_id", providerID) {
 			return false
 		}
-		if !s.ensureAIModelProviderExists(w, r, providerID) {
+		if _, ok := s.ensureAIModelProviderExists(w, r, providerID); !ok {
 			return false
 		}
 		model.ProviderID = providerID
@@ -298,6 +323,8 @@ func (s *Server) updateAIModel(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	oldProviderID := model.ProviderID
+	oldModelName := model.ModelName
 	if !s.applyAIModelScalarFields(w, r, model, req) {
 		return
 	}
@@ -311,10 +338,31 @@ func (s *Server) updateAIModel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "duplicate_model", "an AI model with this model_name already exists for the provider")
 		return
 	}
+	// S-GWREG fail-loud: when the routing identity changed (provider or
+	// model_name), converge the gateway deployment BEFORE persisting.
+	// A gateway failure → 502 and the registry keeps the old, working
+	// configuration.
+	gatewayTouched := false
+	if (model.ProviderID != oldProviderID || model.ModelName != oldModelName) && s.gatewayModelsEnabled() {
+		provider, ok := s.ensureAIModelProviderExists(w, r, model.ProviderID)
+		if !ok {
+			return
+		}
+		if err := s.updateGatewayModelDeployment(r.Context(), oldModelName, provider, model.ModelName); err != nil {
+			writeGatewayProvisionFailure(w, "updated", err)
+			return
+		}
+		gatewayTouched = true
+	} else if (model.ProviderID != oldProviderID || model.ModelName != oldModelName) {
+		log.Printf("aimodel: LLM gateway not configured — skipping gateway update for %q (dev mode; gateway deployment NOT converged)", model.ModelName)
+	}
 	updated, err := s.store.UpdateAIModel(s.pendingUserAuditCtx(r, "aimodel.update", "ai_model", model.ID, "", nil), model)
 	if err != nil {
 		writeStorageError(w, err)
 		return
+	}
+	if gatewayTouched {
+		s.reloadGateway(r.Context())
 	}
 	writeJSON(w, http.StatusOK, updated)
 }

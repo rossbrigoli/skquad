@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -819,8 +820,15 @@ func TestAgentIdentityProvisionsLiteLLMVirtualKey(t *testing.T) {
 
 	var keyRequests []map[string]any
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/key/generate", r.URL.Path)
 		require.Equal(t, "Bearer sk-test-master", r.Header.Get("Authorization"))
+		// S-GWREG: this test also registers an AI model, which now
+		// provisions a gateway deployment. Serve the model surface
+		// generically; the key assertions below are the point.
+		if strings.HasPrefix(r.URL.Path, "/model/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"model_info": map[string]any{"id": "dep-test-1"}, "data": []any{}})
+			return
+		}
+		require.Equal(t, "/key/generate", r.URL.Path)
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		keyRequests = append(keyRequests, body)
