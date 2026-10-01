@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityFeed } from "../../../../../components/ActivityFeed";
 import { AuthGate } from "../../../../../components/AuthGate";
 import { AppShell } from "../../../../../components/AppShell";
@@ -444,11 +444,16 @@ export default function AgentProfilePage() {
               thinkingLevel={resolveThinkingLevel(agent?.thinking_level)}
               thinkingBusy={thinkingBusy}
               onThinkingLevelChange={saveThinkingLevel}
+              // S-185: task lists ride inside the chat scroll area (they
+              // used to sit below the chat and push the page past the
+              // fold). S-169's "reachable without crowding" intent holds.
+              footer={
+                <>
+                  <TaskListSection title="Working on" tasks={live} squadId={squadId} status="running" leaseLabel="lease expires" />
+                  <TaskListSection title="Stalled work" tasks={stalled} squadId={squadId} status="stalled" leaseLabel="lease expired" />
+                </>
+              }
             />
-            {/* Task lists kept under the chat (S-169: chat is the star; the
-                lists stay reachable without crowding the header). */}
-            <TaskListSection title="Working on" tasks={live} squadId={squadId} status="running" leaseLabel="lease expires" />
-            <TaskListSection title="Stalled work" tasks={stalled} squadId={squadId} status="stalled" leaseLabel="lease expired" />
           </section>
         ) : null}
 
@@ -843,6 +848,7 @@ function ChatThread({
   thinkingLevel,
   thinkingBusy,
   onThinkingLevelChange,
+  footer,
 }: {
   messages: Message[];
   agentName: string;
@@ -854,6 +860,9 @@ function ChatThread({
   thinkingLevel: ThinkingLevel;
   thinkingBusy: boolean;
   onThinkingLevelChange: (level: ThinkingLevel) => Promise<void>;
+  // S-185: extra content (task lists) rendered inside the chat scroll
+  // area so the page itself never scrolls past the chat viewport.
+  footer?: ReactNode;
 }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1004,6 +1013,7 @@ function ChatThread({
             </div>
           </div>
         ) : null}
+        {footer}
       </div>
       {error ? <div className="notice error" style={{ margin: "var(--space-2) var(--space-3) 0" }}>{error}</div> : null}
       <form

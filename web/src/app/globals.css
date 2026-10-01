@@ -2467,13 +2467,30 @@ button.squad-tab.active {
   }
 }
 
-/* Chat tab fills the remaining viewport below the tab strip — no dead
-   space under the composer. Task lists (when present) simply extend the
-   page past the fold. */
+/* S-185: the chat tab fills the viewport exactly. The PAGE itself must
+   not scroll — only the chat history box (.chat-scroll) scrolls, and the
+   composer stays pinned at the bottom of the screen. The content column
+   is clamped to 100dvh while the chat tab is mounted (:has scopes this
+   to the chat tab only; config/inbox tabs scroll normally). Task lists
+   ride inside the chat scroll area via ChatThread's footer prop, so
+   nothing extends past the fold. */
+.content-col:has(.agent-chat-section) {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.content-col:has(.agent-chat-section) .content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .agent-chat-section {
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 330px);
+  flex: 1;
+  min-height: 0;
 }
 
 .agent-chat-section .chat-layout {
@@ -2484,7 +2501,13 @@ button.squad-tab.active {
 .agent-chat-section .chat {
   height: auto;
   flex: 1;
-  min-height: 360px;
+  min-height: 0;
+}
+
+/* The subagent side panel stretches with the chat box in fill mode. */
+.agent-chat-section .subagent-panel {
+  height: auto;
+  min-height: 0;
 }
 
 /* Composer meta row: which LLM the agent uses + its thinking level. */
