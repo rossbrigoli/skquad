@@ -4,16 +4,29 @@
 // powers squads + agents, costs, provider liveness and the resource
 // overview. Platform admins see everything (scope "all"); everyone else
 // sees owned + granted squads.
+//
+// S-190 adds GET /dashboard/usage: MTD cost tiles (plus platform-wide
+// cost/users/agents for admins), daily stacked-bar histograms per squad
+// and per agent with a tokens/cost toggle, and month-to-date cost + token
+// counts per provider and per model in the LLM Providers section.
 
+import { useState } from "react";
 import Link from "next/link";
 import { AuthGate } from "../../components/AuthGate";
 import { AppShell } from "../../components/AppShell";
+import { BarChart } from "../../components/BarChart";
 import { EmptyState } from "../../components/EmptyState";
 import { MetricTile } from "../../components/MetricTile";
 import { StatusChip } from "../../components/StatusChip";
 import { useApi } from "../../lib/useApi";
-import { formatCost, formatMoney, formatTokens } from "../../lib/format";
+import { formatCompact, formatCost, formatMoney, formatTokens } from "../../lib/format";
 import { agentStatus } from "../../lib/status";
+import {
+  buildStackedChart,
+  providerUsageMap,
+  type ChartMode,
+  type DashboardUsagePayload,
+} from "../../lib/usage";
 import {
   dashboardTotals,
   providerChip,
@@ -26,7 +39,15 @@ const POLL_MS = 30_000;
 
 export default function DashboardPage() {
   const { data, loading, error, refresh } = useApi<DashboardPayload>("/dashboard", POLL_MS);
+  const { data: usage, error: usageError } = useApi<DashboardUsagePayload>("/dashboard/usage", POLL_MS);
+  const [mode, setMode] = useState<ChartMode>("tokens");
   const totals = dashboardTotals(data);
+  const isAdmin = data?.scope === "all";
+  const currency = usage?.currency ?? "USD";
+  const formatValue = mode === "cost" ? (n: number) => formatMoney(n, currency) : (n: number) => formatCompact(n);
+  const squadChart = buildStackedChart(usage?.days ?? [], usage?.by_squad ?? [], mode);
+  const agentChart = buildStackedChart(usage?.days ?? [], usage?.by_agent ?? [], mode);
+  const providerUsage = providerUsageMap(usage?.providers);
 
   return (
     <AuthGate>
@@ -38,12 +59,13 @@ export default function DashboardPage() {
           </button>
         </div>
         {error ? <div className="notice error">{error}</div> : null}
+        {usageError ? <div className="notice error">Usage series unavailable: {usageError}</div> : null}
         {loading && !data ? (
           <EmptyState title="Loading your dashboard…" hint="Aggregating squads, agents, costs, providers and resources." />
         ) : (
           <>
             <div className="metric-grid">
-              <MetricTile label="Squads" value={totals.squads} sub={data?.scope === "all" ? "all squads (platform admin)" : "owned + granted"} />
+              <MetricTile label="Squads" value={totals.squads} sub={isAdmin ? "all squads (platform admin)" : "owned + granted"} />
               <MetricTile label="Agents running" value={totals.agentsRunning} sub={`${totals.agents} agents total`} />
               <MetricTile
                 label="Agents in error"
@@ -51,7 +73,36 @@ export default function DashboardPage() {
                 attention={totals.agentsError > 0}
                 sub={totals.agentsError > 0 ? "check the squads below" : "all healthy"}
               />
-              <MetricTile label="Total cost" value={formatMoney(totals.totalCost, totals.currency)} sub="across your squads" />
+              <MetricTile label="Total cost" value={formatMoney(totals.totalCost, currency)} sub="across your squads" />
+              <MetricTile
+                label="MTD cost"
+                value={formatMoney(usage?.squad_mtd_cost ?? 0, currency)}
+                sub={isAdmin ? "this month, all squads" : "this month, your squads"}
+              />
+              {isAdmin && usage?.platform ? (
+                <>
+                  <MetricTile label="Platform total cost" value={formatMoney(usage.platform.total_cost, currency)} sub="all time, all squads" />
+                  <MetricTile label="Platform MTD cost" value={formatMoney(usage.platform.mtd_cost, currency)} sub="this month, all squads" />
+                  <MetricTile label="Users" value={usage.platform.users} sub="in the platform" />
+                  <MetricTile label="Agents" value={usage.platform.agents} sub="across all squads" />
+                </>
+              ) : null}
+            </div>
+
+            <div className="chart-header">
+              <h2 className="section-title">Daily usage — per squad (past month)</h2>
+              <ModeToggle mode={mode} onChange={setMode} />
+            </div>
+            <div className="card">
+              <BarChart model={squadChart} formatValue={formatValue} />
+            </div>
+
+            <div className="chart-header">
+              <h2 className="section-title">Daily usage — per agent (past month)</h2>
+              <ModeToggle mode={mode} onChange={setMode} />
+            </div>
+            <div className="card">
+              <BarChart model={agentChart} formatValue={formatValue} />
             </div>
 
             <h2 className="section-title">Squads</h2>
@@ -107,19 +158,41 @@ export default function DashboardPage() {
               <div className="entity-list">
                 {data!.providers.map((provider) => {
                   const chip = providerChip(provider);
+                  const usageRow = providerUsage.get(provider.id);
                   return (
-                    <div key={provider.id} className="entity-row">
-                      <div className="entity-main">
-                        <span className="entity-title">{provider.name}</span>
-                        <span className="entity-meta">
-                          {provider.kind}
-                          {provider.latency_ms ? ` · ${provider.latency_ms} ms` : ""}
-                          {provider.error ? ` · ${provider.error}` : ""}
-                        </span>
+                    <div key={provider.id} className="entity-row" style={{ flexDirection: "column", alignItems: "stretch" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                        <div className="entity-main">
+                          <span className="entity-title">{provider.name}</span>
+                          <span className="entity-meta">
+                            {provider.kind}
+                            {provider.latency_ms ? ` · ${provider.latency_ms} ms` : ""}
+                            {provider.error ? ` · ${provider.error}` : ""}
+                          </span>
+                        </div>
+                        <div className="entity-side" style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                          {usageRow ? (
+                            <span className="mono">
+                              MTD {formatMoney(usageRow.cost, currency)} · {formatCompact(usageRow.tokens)} tokens
+                            </span>
+                          ) : (
+                            <span className="entity-meta">no usage this month</span>
+                          )}
+                          <span className={chip.className}>{chip.label}</span>
+                        </div>
                       </div>
-                      <div className="entity-side">
-                        <span className={chip.className}>{chip.label}</span>
-                      </div>
+                      {(usageRow?.models?.length ?? 0) > 0 ? (
+                        <div className="provider-models">
+                          {usageRow!.models.map((model) => (
+                            <div key={model.model} className="provider-model">
+                              <span className="mono">{model.model}</span>
+                              <span className="mono">
+                                {formatMoney(model.cost, currency)} · {formatCompact(model.tokens)} tokens
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -151,6 +224,28 @@ export default function DashboardPage() {
         )}
       </AppShell>
     </AuthGate>
+  );
+}
+
+// ModeToggle flips both histograms between token and dollar series.
+function ModeToggle({ mode, onChange }: { mode: ChartMode; onChange: (mode: ChartMode) => void }) {
+  return (
+    <div className="chart-toggle" role="group" aria-label="Chart metric">
+      <button
+        type="button"
+        className={mode === "tokens" ? "btn btn-active" : "btn"}
+        onClick={() => onChange("tokens")}
+      >
+        Tokens
+      </button>
+      <button
+        type="button"
+        className={mode === "cost" ? "btn btn-active" : "btn"}
+        onClick={() => onChange("cost")}
+      >
+        Cost ($)
+      </button>
+    </div>
   );
 }
 

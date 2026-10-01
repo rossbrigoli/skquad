@@ -2718,3 +2718,79 @@ button.squad-tab.active {
   color: var(--ink-muted);
   font-size: 0.78rem;
 }
+
+/* ============================================================
+   S-190: dashboard usage charts
+   ============================================================ */
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.chart-header .section-title {
+  margin-bottom: 0;
+}
+
+.chart-toggle {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+
+.btn-active {
+  background: var(--accent, var(--surface-raise, #6366f1));
+  color: #fff;
+  border-color: transparent;
+}
+
+.chart-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.chart-empty {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  padding: var(--space-3) 0;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chart-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.provider-models {
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--text-sm);
+}
+
+.provider-model {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-left: var(--space-2);
+}

@@ -321,6 +321,15 @@ type GrantStore interface {
 type MeteringStore interface {
 	RecordMetering(ctx context.Context, m *domain.MeteringEvent) error
 	SumMetering(ctx context.Context, squadID, agentID string, since time.Time) (*domain.MeteringEvent, error) // aggregated; zero since = all time (S-169 month-to-date)
+	// SumMeteringDaily buckets metering into per-day aggregates per
+	// (squad, agent, provider, model) for the dashboard histograms (S-190).
+	// Events before `since` are excluded (zero since = all time). squadIDs
+	// restricts the aggregation to an explicit allowlist; nil or empty
+	// means "all squads" — auth-scoped callers must pass their visible
+	// squad IDs and short-circuit when that list is empty.
+	// Rows are sorted by day, then squad name, agent name, provider name,
+	// model.
+	SumMeteringDaily(ctx context.Context, since time.Time, squadIDs []string) ([]domain.MeteringDailyRow, error)
 }
 
 // WakeLatencyStore persists wake-path latency events (S-87). Record is

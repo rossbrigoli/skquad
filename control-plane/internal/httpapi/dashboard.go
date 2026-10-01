@@ -21,6 +21,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -280,6 +282,326 @@ func costFromMetering(ev *domain.MeteringEvent) *DashboardCost {
 		Cost:         ev.Cost,
 		Currency:     ev.Currency,
 	}
+}
+
+// ---------------------------------------------------------------------------
+// S-190: dashboard usage series (daily histograms + MTD totals).
+//
+// GET /api/v1/dashboard/usage?days=30 powers the dashboard histograms.
+// Auth scoping mirrors getDashboard: platform admins get platform-wide
+// series plus the `platform` block (total/MTD cost, user and agent
+// counts); everyone else is scoped to owned + granted squads. The day
+// axis is emitted server-side (UTC calendar days) so every series is
+// zero-filled and aligned — the frontend never interpolates dates.
+// ---------------------------------------------------------------------------
+
+const (
+	defaultUsageDays = 30
+	maxUsageDays     = 90
+	usageDayLayout   = "2006-01-02"
+)
+
+// UsagePoint is one day's aggregate for a series.
+type UsagePoint struct {
+	Day          string  `json:"day"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	Tokens       int     `json:"tokens"`
+	Cost         float64 `json:"cost"`
+}
+
+// UsageSeries is one histogram line: a squad (by_squad) or an agent
+// (by_agent, with its squad for labeling). Points align 1:1 with the
+// payload's Days axis.
+type UsageSeries struct {
+	ID        string       `json:"id"`
+	Name      string       `json:"name"`
+	SquadID   string       `json:"squad_id,omitempty"`
+	SquadName string       `json:"squad_name,omitempty"`
+	Points    []UsagePoint `json:"points"`
+}
+
+// ProviderModelUsage is one model's month-to-date usage under a provider.
+type ProviderModelUsage struct {
+	Model  string  `json:"model"`
+	Tokens int     `json:"tokens"`
+	Cost   float64 `json:"cost"`
+}
+
+// ProviderUsage is a provider's month-to-date rollup plus per-model rows.
+type ProviderUsage struct {
+	ProviderID   string               `json:"provider_id"`
+	ProviderName string               `json:"provider_name"`
+	Tokens       int                  `json:"tokens"`
+	Cost         float64              `json:"cost"`
+	Models       []ProviderModelUsage `json:"models"`
+}
+
+// PlatformUsage is platform-admin-only: whole-platform cost and counts.
+type PlatformUsage struct {
+	TotalCost float64 `json:"total_cost"`
+	MTDCost   float64 `json:"mtd_cost"`
+	Users     int     `json:"users"`
+	Agents    int     `json:"agents"`
+}
+
+type DashboardUsagePayload struct {
+	Scope   string   `json:"scope"`
+	Days    []string `json:"days"`
+	MTDStart string  `json:"mtd_start"`
+	Currency string  `json:"currency,omitempty"`
+	// SquadMTDCost is the month-to-date cost across the caller's visible
+	// squads (platform-wide for admins — same scoping rule as the series).
+	SquadMTDCost float64        `json:"squad_mtd_cost"`
+	BySquad      []UsageSeries  `json:"by_squad"`
+	ByAgent      []UsageSeries  `json:"by_agent"`
+	Providers    []ProviderUsage `json:"providers"`
+	// Platform is present only for platform admins.
+	Platform *PlatformUsage `json:"platform,omitempty"`
+}
+
+// usageDaysParam parses ?days= with a sane clamp so nobody asks for a year
+// of buckets on a 30s poll.
+func usageDaysParam(r *http.Request) int {
+	raw := strings.TrimSpace(r.URL.Query().Get("days"))
+	if raw == "" {
+		return defaultUsageDays
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return defaultUsageDays
+	}
+	if n > maxUsageDays {
+		return maxUsageDays
+	}
+	return n
+}
+
+func (s *Server) getDashboardUsage(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r.Context())
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing principal")
+		return
+	}
+	isAdmin := u.Role == domain.RolePlatformAdmin
+
+	now := time.Now().UTC()
+	days := usageDaysParam(r)
+	axis := make([]string, days)
+	for i := range axis {
+		axis[i] = now.AddDate(0, 0, -(days - 1 - i)).Format(usageDayLayout)
+	}
+	since, err := time.Parse(usageDayLayout, axis[0])
+	if err != nil { // unreachable: axis built from the same layout
+		writeError(w, http.StatusInternalServerError, "bad_day_axis", err.Error())
+		return
+	}
+	mtdStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	mtdDay := mtdStart.Format(usageDayLayout)
+
+	squads, err := s.dashboardSquads(r, u.ID, isAdmin)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	squadIDs := make([]string, 0, len(squads))
+	for _, sq := range squads {
+		squadIDs = append(squadIDs, sq.ID)
+	}
+
+	payload := DashboardUsagePayload{
+		Scope:    "personal",
+		Days:     axis,
+		MTDStart: mtdDay,
+		Currency: "USD",
+		BySquad:  []UsageSeries{},
+		ByAgent:  []UsageSeries{},
+		Providers: []ProviderUsage{},
+	}
+	if isAdmin {
+		payload.Scope = "all"
+	}
+
+	// A non-admin with no visible squads has nothing to aggregate; skip
+	// the query so the empty allowlist is never mistaken for "all".
+	if len(squadIDs) > 0 || isAdmin {
+		var filter []string
+		if !isAdmin {
+			filter = squadIDs
+		}
+		rows, err := s.store.SumMeteringDaily(r.Context(), since, filter)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		buildUsageSeries(&payload, rows)
+	}
+
+	if isAdmin {
+		platform, err := s.platformUsage(r.Context(), mtdStart)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		payload.Platform = platform
+	}
+
+	writeJSON(w, http.StatusOK, payload)
+}
+
+// usageSeriesAcc accumulates one series' per-day points inside
+// buildUsageSeries.
+type usageSeriesAcc struct {
+	meta  UsageSeries
+	byDay map[string]*UsagePoint
+}
+
+// buildUsageSeries folds daily rows into squad series, agent series and
+// the provider/model MTD rollup. Series are sorted by name so chart
+// colors stay stable between polls.
+func buildUsageSeries(payload *DashboardUsagePayload, rows []domain.MeteringDailyRow) {
+	squadAcc := map[string]*usageSeriesAcc{}
+	agentAcc := map[string]*usageSeriesAcc{}
+	provAcc := map[string]*ProviderUsage{}
+	modelAcc := map[string]map[string]*ProviderModelUsage{}
+
+	for _, row := range rows {
+		if row.Currency != "" {
+			payload.Currency = row.Currency
+		}
+		if row.Day >= payload.MTDStart {
+			payload.SquadMTDCost += row.Cost
+		}
+
+		acc := squadAcc[row.SquadID]
+		if acc == nil {
+			acc = &usageSeriesAcc{meta: UsageSeries{ID: row.SquadID, Name: row.SquadName}, byDay: map[string]*UsagePoint{}}
+			squadAcc[row.SquadID] = acc
+		}
+		accumulateUsagePoint(acc, row)
+
+		agent := agentAcc[row.AgentID]
+		if agent == nil {
+			agent = &usageSeriesAcc{
+				meta:  UsageSeries{ID: row.AgentID, Name: row.AgentName, SquadID: row.SquadID, SquadName: row.SquadName},
+				byDay: map[string]*UsagePoint{},
+			}
+			agentAcc[row.AgentID] = agent
+		}
+		accumulateUsagePoint(agent, row)
+
+		// Provider/model rollup is month-to-date only.
+		if row.Day < payload.MTDStart {
+			continue
+		}
+		prov := provAcc[row.ProviderID]
+		if prov == nil {
+			name := row.ProviderName
+			if name == "" {
+				name = "unknown provider"
+			}
+			prov = &ProviderUsage{ProviderID: row.ProviderID, ProviderName: name, Models: []ProviderModelUsage{}}
+			provAcc[row.ProviderID] = prov
+			modelAcc[row.ProviderID] = map[string]*ProviderModelUsage{}
+		}
+		model := row.Model
+		if model == "" {
+			model = "unknown model"
+		}
+		mm := modelAcc[row.ProviderID]
+		mu, ok := mm[model]
+		if !ok {
+			mu = &ProviderModelUsage{Model: model}
+			mm[model] = mu
+		}
+		mu.Tokens += row.InputTokens + row.OutputTokens
+		mu.Cost += row.Cost
+		prov.Tokens += row.InputTokens + row.OutputTokens
+		prov.Cost += row.Cost
+	}
+
+	payload.BySquad = finalizeUsageSeries(payload.Days, squadAcc)
+	payload.ByAgent = finalizeUsageSeries(payload.Days, agentAcc)
+
+	for pid, prov := range provAcc {
+		models := make([]ProviderModelUsage, 0, len(modelAcc[pid]))
+		for _, mu := range modelAcc[pid] {
+			models = append(models, *mu)
+		}
+		slices.SortFunc(models, func(a, b ProviderModelUsage) int { return strings.Compare(a.Model, b.Model) })
+		prov.Models = models
+		payload.Providers = append(payload.Providers, *prov)
+	}
+	slices.SortFunc(payload.Providers, func(a, b ProviderUsage) int {
+		if c := strings.Compare(a.ProviderName, b.ProviderName); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ProviderID, b.ProviderID)
+	})
+}
+
+func accumulateUsagePoint(acc *usageSeriesAcc, row domain.MeteringDailyRow) {
+	point, ok := acc.byDay[row.Day]
+	if !ok {
+		point = &UsagePoint{Day: row.Day}
+		acc.byDay[row.Day] = point
+	}
+	point.InputTokens += row.InputTokens
+	point.OutputTokens += row.OutputTokens
+	point.Tokens += row.InputTokens + row.OutputTokens
+	point.Cost += row.Cost
+}
+
+// finalizeUsageSeries flattens accumulators into name-sorted series whose
+// points align 1:1 with the day axis, zero-filling missing days.
+func finalizeUsageSeries(days []string, acc map[string]*usageSeriesAcc) []UsageSeries {
+	out := make([]UsageSeries, 0, len(acc))
+	for _, a := range acc {
+		s := a.meta
+		s.Points = make([]UsagePoint, 0, len(days))
+		for _, day := range days {
+			if point, ok := a.byDay[day]; ok {
+				s.Points = append(s.Points, *point)
+			} else {
+				s.Points = append(s.Points, UsagePoint{Day: day})
+			}
+		}
+		out = append(out, s)
+	}
+	slices.SortFunc(out, func(a, b UsageSeries) int {
+		if c := strings.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return out
+}
+
+func (s *Server) platformUsage(ctx context.Context, mtdStart time.Time) (*PlatformUsage, error) {
+	total, err := s.store.SumMetering(ctx, "", "", time.Time{})
+	if err != nil {
+		return nil, err
+	}
+	mtd, err := s.store.SumMetering(ctx, "", "", mtdStart)
+	if err != nil {
+		return nil, err
+	}
+	users, err := s.store.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	agents, err := s.store.ListAllAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := &PlatformUsage{Users: len(users), Agents: len(agents)}
+	if total != nil {
+		out.TotalCost = total.Cost
+	}
+	if mtd != nil {
+		out.MTDCost = mtd.Cost
+	}
+	return out, nil
 }
 
 // probeProviders checks each provider's endpoint concurrently. Active

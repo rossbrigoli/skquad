@@ -54,6 +54,11 @@ export function formatTokens(summary: MeteringSummary | null): string {
   return `${compact(input)} in · ${compact(output)} out`;
 }
 
+// formatCompact renders a raw number compactly (S-190 usage charts).
+export function formatCompact(value: number): string {
+  return compact(value);
+}
+
 function compact(value: number): string {
   return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }

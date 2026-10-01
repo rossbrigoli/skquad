@@ -1223,6 +1223,86 @@ func (m *MemoryStore) SumMetering(_ context.Context, squadID, agentID string, si
 	return out, nil
 }
 
+// SumMeteringDaily buckets metering events per UTC day per
+// (squad, agent, provider, model). See MeteringStore for semantics.
+func (m *MemoryStore) SumMeteringDaily(_ context.Context, since time.Time, squadIDs []string) ([]domain.MeteringDailyRow, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	allowed := map[string]bool{}
+	for _, id := range squadIDs {
+		allowed[id] = true
+	}
+
+	type groupKey struct {
+		day, squadID, agentID, providerID, model string
+	}
+	agg := map[groupKey]*domain.MeteringDailyRow{}
+	for _, event := range m.metering {
+		if !since.IsZero() && event.Timestamp.Before(since) {
+			continue
+		}
+		if len(allowed) > 0 && !allowed[event.SquadID] {
+			continue
+		}
+		key := groupKey{
+			day:        event.Timestamp.UTC().Format("2006-01-02"),
+			squadID:    event.SquadID,
+			agentID:    event.AgentID,
+			providerID: event.ProviderID,
+			model:      event.Model,
+		}
+		row, ok := agg[key]
+		if !ok {
+			row = &domain.MeteringDailyRow{
+				Day:        key.day,
+				SquadID:    key.squadID,
+				AgentID:    key.agentID,
+				ProviderID: key.providerID,
+				Model:      key.model,
+				Currency:   "USD",
+			}
+			if squad, ok := m.squads[event.SquadID]; ok {
+				row.SquadName = squad.Name
+			}
+			if agent, ok := m.agents[event.AgentID]; ok {
+				row.AgentName = agent.Name
+			}
+			if provider, ok := m.llmProviders[event.ProviderID]; ok {
+				row.ProviderName = provider.Name
+			}
+			agg[key] = row
+		}
+		row.InputTokens += event.InputTokens
+		row.OutputTokens += event.OutputTokens
+		row.Cost += event.Cost
+		if event.Currency != "" {
+			row.Currency = event.Currency
+		}
+	}
+
+	out := make([]domain.MeteringDailyRow, 0, len(agg))
+	for _, row := range agg {
+		out = append(out, *row)
+	}
+	slices.SortFunc(out, func(a, b domain.MeteringDailyRow) int {
+		if c := strings.Compare(a.Day, b.Day); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.SquadName, b.SquadName); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.AgentName, b.AgentName); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.ProviderName, b.ProviderName); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Model, b.Model)
+	})
+	return out, nil
+}
+
 func (m *MemoryStore) RecordAudit(_ context.Context, entry *domain.AuditEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
