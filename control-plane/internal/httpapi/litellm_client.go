@@ -249,3 +249,182 @@ func gatewayResponseSnippet(r io.Reader) string {
 	}
 	return strings.TrimSpace(string(body))
 }
+
+// ---------------------------------------------------------------------------
+// Model deployment surface (S-GWREG)
+//
+// Registers/updates/deletes LiteLLM model deployments (the gateway's
+// model_list entries persisted in its DB). The registration shape was
+// verified live against the gateway: POST /model/new with
+// {"model_name": ..., "litellm_params": {"model": "<prefix>/<name>",
+// "api_base": ..., "api_key": ...}}. The gateway never sees skquad's
+// registry — it only knows deployments — so this stays transparent to
+// users, exactly like the virtual-key surface above.
+// ---------------------------------------------------------------------------
+
+// GatewayModelSpec describes one LiteLLM model deployment to register.
+type GatewayModelSpec struct {
+	// ModelName is the litellm model_name — identical to the skquad
+	// ai_models.model_name so agent keys' allow-list entries resolve.
+	ModelName string
+	// LitellmModel is litellm_params.model, i.e. "<provider-prefix>/<model_name>".
+	LitellmModel string
+	// APIBase is litellm_params.api_base (provider base_url). Empty → omitted.
+	APIBase string
+	// APIKey is litellm_params.api_key (resolved provider key). Empty →
+	// omitted (keyless providers such as local ollama).
+	APIKey string
+}
+
+// GatewayModelDeployment is one entry of the gateway's /model/info list.
+type GatewayModelDeployment struct {
+	ModelName    string
+	DeploymentID string
+}
+
+func (c *liteLLMGatewayClient) modelParamsBody(spec GatewayModelSpec) map[string]any {
+	params := map[string]any{"model": spec.LitellmModel}
+	if strings.TrimSpace(spec.APIBase) != "" {
+		params["api_base"] = spec.APIBase
+	}
+	if strings.TrimSpace(spec.APIKey) != "" {
+		params["api_key"] = spec.APIKey
+	}
+	return params
+}
+
+// DeployModel registers a new model deployment via POST /model/new and
+// returns the gateway-side deployment id (model_info.id). Errors are
+// wrapped with a response snippet; the provider key is never included
+// in the error text beyond what litellm itself echoes (it does not).
+func (c *liteLLMGatewayClient) DeployModel(ctx context.Context, spec GatewayModelSpec) (string, error) {
+	body := map[string]any{
+		"model_name":     spec.ModelName,
+		"litellm_params": c.modelParamsBody(spec),
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("litellm: marshal model deploy request: %w", err)
+	}
+	// #nosec G704 -- c.baseURL is validated admin-supplied config, not user input
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/model/new", bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("litellm: build model deploy request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("litellm: model deploy: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("litellm: model deploy: %s: %s", resp.Status, gatewayResponseSnippet(resp.Body))
+	}
+	var out struct {
+		ModelInfo struct {
+			ID string `json:"id"`
+		} `json:"model_info"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("litellm: decode model deploy response: %w", err)
+	}
+	return strings.TrimSpace(out.ModelInfo.ID), nil
+}
+
+// UpdateModelDeployment updates an existing deployment (identified by
+// its model_info.id) with the spec's model_name + litellm_params via
+// POST /model/update.
+func (c *liteLLMGatewayClient) UpdateModelDeployment(ctx context.Context, deploymentID string, spec GatewayModelSpec) error {
+	if strings.TrimSpace(deploymentID) == "" {
+		return fmt.Errorf("litellm: model update requires a deployment id")
+	}
+	body := map[string]any{
+		"id":             deploymentID,
+		"model_name":     spec.ModelName,
+		"litellm_params": c.modelParamsBody(spec),
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("litellm: marshal model update request: %w", err)
+	}
+	// #nosec G704 -- c.baseURL is validated admin-supplied config, not user input
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/model/update", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("litellm: build model update request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("litellm: model update: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("litellm: model update: %s: %s", resp.Status, gatewayResponseSnippet(resp.Body))
+	}
+	return nil
+}
+
+// DeleteModelDeployment removes a deployment by id via POST /model/delete.
+func (c *liteLLMGatewayClient) DeleteModelDeployment(ctx context.Context, deploymentID string) error {
+	if strings.TrimSpace(deploymentID) == "" {
+		return fmt.Errorf("litellm: model delete requires a deployment id")
+	}
+	body := map[string]any{"id": deploymentID}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("litellm: marshal model delete request: %w", err)
+	}
+	// #nosec G704 -- c.baseURL is validated admin-supplied config, not user input
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/model/delete", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("litellm: build model delete request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("litellm: model delete: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("litellm: model delete: %s: %s", resp.Status, gatewayResponseSnippet(resp.Body))
+	}
+	return nil
+}
+
+// ListModelDeployments returns every model deployment the gateway knows
+// via GET /model/info (model_name + model_info.id per entry).
+func (c *liteLLMGatewayClient) ListModelDeployments(ctx context.Context) ([]GatewayModelDeployment, error) {
+	// #nosec G704 -- c.baseURL is validated admin-supplied config, not user input
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/model/info", nil)
+	if err != nil {
+		return nil, fmt.Errorf("litellm: build model info request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("litellm: model info: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("litellm: model info: %s: %s", resp.Status, gatewayResponseSnippet(resp.Body))
+	}
+	var out struct {
+		Data []struct {
+			ModelName string `json:"model_name"`
+			ModelInfo struct {
+				ID string `json:"id"`
+			} `json:"model_info"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("litellm: decode model info: %w", err)
+	}
+	deployments := make([]GatewayModelDeployment, 0, len(out.Data))
+	for _, d := range out.Data {
+		deployments = append(deployments, GatewayModelDeployment{ModelName: d.ModelName, DeploymentID: d.ModelInfo.ID})
+	}
+	return deployments, nil
+}

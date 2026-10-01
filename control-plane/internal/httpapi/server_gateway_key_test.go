@@ -38,6 +38,17 @@ type recordingGateway struct {
 	// lifecycle tests keep their lenient stand-in.
 	enforceUniqueAlias bool
 	seq                int
+
+	// S-GWREG model-deployment surface: records /model/* calls and
+	// keeps a live model_name → deployment-id map so the control
+	// plane's find/update/delete flows behave against the stand-in.
+	modelDeployed   []map[string]any
+	modelUpdated    []map[string]any
+	modelDeleted    []string
+	modelLive       map[string]string // model_name → deployment id
+	failModelDeploy bool
+	failModelUpdate bool
+	failModelDelete bool
 }
 
 // canCall reports whether the virtual key identified by token is still live
@@ -89,10 +100,81 @@ func (g *recordingGateway) handler() http.Handler {
 			g.handleDelete(w, body)
 		case "/key/list":
 			g.handleList(w, r)
+		case "/model/new":
+			g.handleModelNew(w, body)
+		case "/model/update":
+			g.handleModelUpdate(w, body)
+		case "/model/delete":
+			g.handleModelDelete(w, body)
+		case "/model/info":
+			g.handleModelInfo(w)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})
+}
+
+// handleModelNew records a /model/new registration (S-GWREG).
+func (g *recordingGateway) handleModelNew(w http.ResponseWriter, body map[string]any) {
+	if g.failModelDeploy {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if g.modelLive == nil {
+		g.modelLive = map[string]string{}
+	}
+	g.seq++
+	id := fmt.Sprintf("dep-%d", g.seq)
+	name, _ := body["model_name"].(string)
+	g.modelLive[name] = id
+	g.modelDeployed = append(g.modelDeployed, body)
+	_ = json.NewEncoder(w).Encode(map[string]any{"model_info": map[string]any{"id": id}})
+}
+
+// handleModelUpdate records a /model/update (S-GWREG).
+func (g *recordingGateway) handleModelUpdate(w http.ResponseWriter, body map[string]any) {
+	if g.failModelUpdate {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	g.modelUpdated = append(g.modelUpdated, body)
+	_ = json.NewEncoder(w).Encode(map[string]any{"updated": true})
+}
+
+// handleModelDelete records a /model/delete (S-GWREG).
+func (g *recordingGateway) handleModelDelete(w http.ResponseWriter, body map[string]any) {
+	if g.failModelDelete {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	id, _ := body["id"].(string)
+	g.modelDeleted = append(g.modelDeleted, id)
+	for name, depID := range g.modelLive {
+		if depID == id {
+			delete(g.modelLive, name)
+		}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"deleted": true})
+}
+
+// handleModelInfo serves GET /model/info from the live map (S-GWREG).
+func (g *recordingGateway) handleModelInfo(w http.ResponseWriter) {
+	data := []map[string]any{}
+	for name, id := range g.modelLive {
+		data = append(data, map[string]any{"model_name": name, "model_info": map[string]any{"id": id}})
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+}
+
+// modelNames returns the currently-live gateway model names (S-GWREG).
+func (g *recordingGateway) modelNames() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]string, 0, len(g.modelLive))
+	for name := range g.modelLive {
+		out = append(out, name)
+	}
+	return out
 }
 
 // handleList serves GET /key/list?key_alias=... — the lookup the control

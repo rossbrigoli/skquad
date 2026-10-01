@@ -151,6 +151,17 @@ type Server struct {
 	// label through the K8s API. Built at startup when K8s connection
 	// config is present; nil elsewhere (dev). Restart while nil → 503.
 	podRestarter PodRestarter
+	// gwModels is the S-GWREG gateway model-deployment registry (the
+	// model_list half of the LiteLLM admin API). Built from the same
+	// LiteLLMAdminURL/master-key config as llmGateway; nil when the
+	// gateway is unconfigured (dev) — AI-model CRUD then skips gateway
+	// provisioning with a warning instead of failing.
+	gwModels GatewayModelRegistry
+	// gwReloader rollout-restarts the gateway Deployment after model
+	// deployment changes (litellm router only picks up DB-persisted
+	// models on pod restart — docs/llm-gateway.md). Built from K8s
+	// config; nil in dev → reload skipped with a warning.
+	gwReloader GatewayReloader
 }
 
 // OIDCAuthenticator authenticates OIDC Authorization headers.
@@ -207,24 +218,24 @@ func New(cfg *config.Config, store Store) http.Handler {
 // NewWithCRWriter returns an HTTP handler that mirrors squad/agent mutations
 // to Kubernetes CRs.
 func NewWithCRWriter(cfg *config.Config, store Store, crWriter CRWriter) http.Handler {
-	return newServer(cfg, store, nil, crWriter, nil, nil, nil)
+	return newServer(cfg, store, nil, crWriter, nil, nil, nil, nil)
 }
 
 // NewWithDependencies returns an HTTP handler with explicit optional
 // integrations for tests and production startup.
 func NewWithDependencies(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, providerKeys ProviderKeyStore) http.Handler {
-	return newServer(cfg, store, oidcAuth, crWriter, nil, providerKeys, nil)
+	return newServer(cfg, store, oidcAuth, crWriter, nil, providerKeys, nil, nil)
 }
 
 // NewWithPodRestarter wires an explicit PodRestarter (S-162 tests).
 func NewWithPodRestarter(cfg *config.Config, store Store, restarter PodRestarter) http.Handler {
-	return newServer(cfg, store, nil, nil, nil, nil, restarter)
+	return newServer(cfg, store, nil, nil, nil, nil, restarter, nil)
 }
 
 // NewWithOIDCAuthenticator returns an HTTP handler using oidcAuth when
 // SKQUAD_AUTH_MODE=oidc.
 func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator) http.Handler {
-	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil)
+	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil, nil)
 }
 
 // NewWithSearchProviders returns an HTTP handler whose web_search proxy
@@ -232,7 +243,7 @@ func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuth
 // from config secrets (duckduckgo always; brave/perplexity only when
 // their API keys are set). Tests inject stub providers here.
 func NewWithSearchProviders(cfg *config.Config, store Store, providers map[string]search.Provider) http.Handler {
-	return newServer(cfg, store, nil, nil, providers, nil, nil)
+	return newServer(cfg, store, nil, nil, providers, nil, nil, nil)
 }
 
 // NewWithProviderKeyStore returns an HTTP handler whose pasted provider
@@ -240,20 +251,32 @@ func NewWithSearchProviders(cfg *config.Config, store Store, providers map[strin
 // this to inject a fake; production builds the store from config inside
 // newServer.
 func NewWithProviderKeyStore(cfg *config.Config, store Store, keys ProviderKeyStore) http.Handler {
-	return newServer(cfg, store, nil, nil, nil, keys, nil)
+	return newServer(cfg, store, nil, nil, nil, keys, nil, nil)
 }
 
-func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, searchProviders map[string]search.Provider, providerKeys ProviderKeyStore, restarter PodRestarter) http.Handler {
+// NewWithGatewayReload returns an HTTP handler using the given gateway
+// rollout reloader (S-GWREG tests). The gateway model registry itself
+// is built from cfg.LiteLLMAdminURL/master key (point those at an
+// httptest fake gateway in tests); the reloader is injected here.
+func NewWithGatewayReload(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, reloader GatewayReloader) http.Handler {
+	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil, reloader)
+}
+
+func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, searchProviders map[string]search.Provider, providerKeys ProviderKeyStore, restarter PodRestarter, gwReloader GatewayReloader) http.Handler {
 	if crWriter == nil {
 		crWriter = noopCRWriter{}
 	}
 	llmGateway := LLMGatewayProvisioner(noopLLMGateway{})
+	var gwModels GatewayModelRegistry
 	if cfg != nil && cfg.LiteLLMAdminURL != "" && cfg.LiteLLMMasterKey != "" {
 		gw, err := newLiteLLMGatewayClient(cfg.LiteLLMAdminURL, cfg.LiteLLMMasterKey)
 		if err != nil {
 			panic(fmt.Sprintf("litellm gateway client: %v", err))
 		}
 		llmGateway = gw
+		// S-GWREG: same client, model-deployment surface (avoids a
+		// second HTTP pool / duplicated master-key handling).
+		gwModels = gw
 	}
 	s := &Server{cfg: cfg, store: store, oidcAuth: oidcAuth, crWriter: crWriter, llmGateway: llmGateway}
 	// S-155: provider-key Secret store. Explicit argument wins (tests);
@@ -281,6 +304,18 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 		}
 	}
 	s.podRestarter = restarter
+	// S-GWREG: gateway rollout reloader. Explicit argument wins (tests);
+	// otherwise build from in-cluster K8s config. Same typed-nil guard
+	// pattern as the pod restarter.
+	if gwReloader == nil {
+		if built, err := newGatewayReloader(cfg); err != nil {
+			log.Printf("gateway reloader unavailable (model changes need a manual gateway restart): %v", err)
+		} else if built != nil {
+			gwReloader = built
+		}
+	}
+	s.gwReloader = gwReloader
+	s.gwModels = gwModels
 	if searchProviders == nil {
 		searchProviders = defaultSearchProviders(cfg)
 	}
@@ -499,6 +534,11 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/metering/summary", s.getMeteringSummary)
 			r.Get("/audit", s.listAudit)
 			r.Post("/admin/gateway/keys/reconcile", s.reconcileGatewayKeys)
+			// S-GWREG: model-deployment drift reconcile — registers active
+			// registry models missing from the gateway, reports extras
+			// without deleting them. platform_admin only, same as keys
+			// reconcile.
+			r.Post("/admin/gateway/models/reconcile", s.reconcileGatewayModels)
 
 			// BT-2: built-in platform tools admin surface (platform_admin
 			// only, ADR-0012 §2).

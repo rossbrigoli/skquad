@@ -115,8 +115,81 @@ falls back to a generated opaque token.
   and is idempotent; use it after partial failures. The identity-record
   write after a commit failure is audited as
   `*.gateway_key_record_stale` for exactly this repair path.
+- **Model-deployment registration (S-GWREG)**: `POST /api/v1/ai-models`
+  now provisions the gateway deployment (`/model/new`) **before** writing
+  the registry row — see §4a below. `POST /api/v1/admin/gateway/models/reconcile`
+  (platform admin) repairs drift between ACTIVE `ai_models` rows and the
+  gateway's deployment list.
 - **Runtime behavior on revoked keys**: LiteLLM rejects calls with revoked
   keys (auth error), which fails the task — fail-closed by design.
+
+---
+
+## 4a. Model-deployment registration (S-GWREG)
+
+Registering an AI Model in the Settings UI fully provisions the gateway;
+LiteLLM stays invisible to users. The control plane owns the gateway's
+`model_list` (persisted via `store_model_in_db=true`; the ConfigMap
+`model_list` is intentionally empty).
+
+**Create (`POST /api/v1/ai-models`)** — fail-loud ordering:
+
+1. Validate pricing/fields, provider existence, duplicate name.
+2. Resolve the provider's kind → LiteLLM model prefix (`openai`,
+   `anthropic`, `gemini`, `ollama_chat`, `ollama`, `azure` — identity
+   mapping; unknown kinds are rejected) and its live API key (S-155
+   Secret store; never logged).
+3. `POST /model/new` with
+   `{"model_name": "<ai_models.model_name>", "litellm_params": {"model": "<prefix>/<model_name>", "api_base": "<provider.base_url>", "api_key": "<resolved key>"}}`.
+   A gateway failure returns **502 `gateway_provision_failed`** and **no
+   registry row is written** — a model that exists in the UI but has no
+   gateway deployment (the old "dead model" failure mode) cannot happen.
+4. Write the `ai_models` registry row. If that fails, the just-created
+   deployment is deleted again (compensate) and the gateway is reloaded.
+5. Trigger a gateway rollout restart (§4b) so the router picks it up.
+
+**Update (`PATCH /ai-models/{id}`)** — only when `provider_id` or
+`model_name` changed (the routing identity):
+
+- Same `model_name`, new provider/credentials → `/model/update` in place.
+- Renamed → create the new deployment **first**, then delete the old one
+  (no window without a deployment; no reliance on rename semantics).
+  If the old deployment cannot be deleted, the new one is rolled back.
+- Gateway failure → 502, the registry keeps its old working config.
+- Display-only changes (display_name, pricing, context window) never
+  touch the gateway.
+
+**Dev mode**: when the gateway is not configured (no
+`SKQUAD_LITELLM_ADMIN_URL`/master key), provisioning is skipped with a
+warning log — existing dev/test flows keep working, but such models are
+not routable.
+
+**Reconcile (`POST /api/v1/admin/gateway/models/reconcile`, platform
+admin)**: compares every ACTIVE `ai_models` row against the gateway's
+`/model/info`. Missing models are registered (same shape as create);
+gateway deployments with no active registry entry are reported as
+`extras` **without being deleted** (deletion cascade is a follow-up).
+Returns `{"registered": [...], "already_present": [...], "failed":
+[{"model", "error"}], "extras": [{"model_name", "deployment_id"}]}` and
+triggers exactly one rollout restart if anything was registered.
+Audited as `gateway.models.reconcile`.
+
+---
+
+## 4b. Gateway rollout restart
+
+The running litellm router does **not** pick up DB-persisted model
+changes until the gateway pod restarts. The control plane now performs
+this automatically after every successful model-deployment mutation:
+a strategic-merge patch stamping the pod-template annotation
+`skquad.io/gateway-reload: <timestamp>` on the gateway Deployment
+(`SKQUAD_LLM_GATEWAY_DEPLOYMENT`, default `skquad-llm-gateway`, in the
+control-plane namespace) — the same mechanism as `kubectl rollout
+restart`. Required RBAC (`apps/deployments` get+patch) is part of the
+api-server Role in the chart. Reload failures are logged loudly but do
+not fail the originating request: the deployment is persisted and any
+restart picks it up; re-running the model reconcile endpoint is the
+repair path.
 
 ---
 
@@ -253,8 +326,10 @@ ADR-0010 L1 ("do not claim D7 is fully enforced"). A 400 from the primary is
 therefore served once by the fallback. If a future LiteLLM release adds
 per-class fallback exclusion, this can be tightened.
 
-**Operational note — gateway model-list reload is not live.** `/model/new` and
-`/model/update` persist to the gateway DB but the running router does **not**
-pick up the change until the gateway pod restarts (`kubectl rollout restart
-deployment skquad-llm-gateway`). Any gateway deployment change must be followed
-by a rollout restart before it takes effect.
+**Operational note — gateway model-list reload is automated (S-GWREG).**
+`/model/new` and `/model/update` persist to the gateway DB but the running
+router does **not** pick up the change until the gateway pod restarts. The
+control plane now triggers that restart itself (see §4b) after every model
+deployment change, so manual `kubectl rollout restart` is no longer required
+for UI-registered models. Manual restart remains the fallback if the
+control plane's reloader is unavailable (logged loudly in that case).
