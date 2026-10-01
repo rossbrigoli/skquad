@@ -7,6 +7,7 @@ import {
   buildScopedListQuery,
   inboxDisplay,
   inboxKindMeta,
+  inboxSender,
   inboxTaskLink,
   isUnread,
   notificationLink,
@@ -109,5 +110,30 @@ describe("inbox display helpers", () => {
   it("links inbox rows to their task", () => {
     expect(inboxTaskLink({ ...msg, task_id: "t5" })).toBe("/squads/s1/tasks/t5");
     expect(inboxTaskLink(msg)).toBeNull();
+  });
+});
+
+// S-201: the inbox sender column resolves agent names via the directory.
+describe("inboxSender", () => {
+  const localMsg: InboxMessage = {
+    id: "i9",
+    squad_id: "s1",
+    kind: "agent_message",
+    message: "hey",
+    created_at: "2026-10-01T01:00:00Z",
+  };
+  const names = (id?: string) => (id === "a1" ? "build-bot" : undefined);
+
+  it("shows System for messages with no agent origin", () => {
+    expect(inboxSender(localMsg, names)).toBe("System");
+  });
+
+  it("resolves the sending agent's display name", () => {
+    expect(inboxSender({ ...localMsg, from_agent_id: "a1" }, names)).toBe("build-bot");
+  });
+
+  it("falls back to a short agent id when the directory misses", () => {
+    const id = "deadbeefcafebabe-1234";
+    expect(inboxSender({ ...localMsg, from_agent_id: id }, names)).toBe(`agent ${id.slice(0, 8)}`);
   });
 });

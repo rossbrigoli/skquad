@@ -111,8 +111,8 @@ export function NotificationBell() {
       >
         <svg
           viewBox="0 0 24 24"
-          width="15"
-          height="15"
+          width="18"
+          height="18"
           aria-hidden="true"
           focusable="false"
           fill="none"

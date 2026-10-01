@@ -54,6 +54,39 @@ export type DashboardUsagePayload = {
 
 export type ChartMode = "tokens" | "cost";
 
+// S-201: the single Daily Usage chart folds the old per-squad and per-agent
+// histograms into one; this toggle picks which series set is rendered.
+export type ChartSource = "squads" | "agents";
+
+const MONTH_SHORT = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+// formatDayLabel renders an ISO "YYYY-MM-DD" axis day as "DD-MMM"
+// (e.g. "2026-10-01" → "01-Oct"). Anything unparseable falls back to
+// the raw string so the axis never shows garbage numbers.
+export function formatDayLabel(day: string): string {
+  const parts = (day ?? "").split("-");
+  if (parts.length !== 3) return day;
+  const monthIndex = Number(parts[1]) - 1;
+  const dd = parts[2];
+  if (!Number.isInteger(monthIndex) || monthIndex < 0 || monthIndex > 11 || !dd) {
+    return day;
+  }
+  return `${dd}-${MONTH_SHORT[monthIndex]}`;
+}
+
 // Deterministic palette: series index → color, so a squad/agent keeps the
 // same color across polls and between the two histograms' legends within a
 // chart.

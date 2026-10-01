@@ -319,8 +319,10 @@ function PrimaryRail({
 export function AppShell({ children }: { readonly children: ReactNode }) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
-  const { items } = useAttention();
-  const inboxBadge = items.length;
+  // S-201: the Inbox badge is the unread inbox count, not the whole
+  // attention queue.
+  const { inboxUnread } = useAttention();
+  const inboxBadge = inboxUnread;
   const [menuOpen, setMenuOpen] = useState(false);
   const [lastPath, setLastPath] = useState(pathname);
   // Explicit user toggles; absent = follow the route (auto-expand when active).

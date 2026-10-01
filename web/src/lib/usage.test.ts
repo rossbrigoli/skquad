@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildStackedChart,
+  formatDayLabel,
   paletteColor,
   CHART_PALETTE,
   pointValue,
@@ -105,5 +106,21 @@ describe("providerUsageMap", () => {
     expect(map.get("p1")?.provider_name).toBe("One");
     expect(map.get("missing")).toBeUndefined();
     expect(providerUsageMap(undefined).size).toBe(0);
+  });
+});
+
+// S-201: x-axis day labels render as DD-MMM (e.g. 01-Oct).
+describe("formatDayLabel", () => {
+  it("formats ISO days as DD-MMM", () => {
+    expect(formatDayLabel("2026-10-01")).toBe("01-Oct");
+    expect(formatDayLabel("2026-01-09")).toBe("09-Jan");
+    expect(formatDayLabel("2026-12-31")).toBe("31-Dec");
+    expect(formatDayLabel("2026-09-30")).toBe("30-Sep");
+  });
+
+  it("falls back to the raw string for unparseable input", () => {
+    expect(formatDayLabel("not-a-date")).toBe("not-a-date");
+    expect(formatDayLabel("2026-13-01")).toBe("2026-13-01");
+    expect(formatDayLabel("")).toBe("");
   });
 });

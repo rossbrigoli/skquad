@@ -3,7 +3,7 @@
 // buttons. Both labels render inside the track; the knob slides via CSS.
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ModeToggle } from "./page";
+import { ModeToggle, SourceToggle } from "./page";
 
 describe("ModeToggle sliding switch", () => {
   it("renders a switch with both labels and knob", () => {
@@ -29,5 +29,25 @@ describe("ModeToggle sliding switch", () => {
     // Static markup can't dispatch clicks; the behavioral contract is
     // covered by the shared ChartMode wiring in lib/usage tests.
     expect(typeof onChange).toBe("function");
+  });
+});
+
+// S-201: the second sliding switch on the single Daily Usage chart —
+// Squads | Agents series selector, same iOS-style pattern as the
+// tokens/cost toggle.
+describe("SourceToggle sliding switch", () => {
+  it("renders Squads/Agents labels with the switch role", () => {
+    const html = renderToStaticMarkup(<SourceToggle source="squads" onChange={() => undefined} />);
+    expect(html).toContain('role="switch"');
+    expect(html).toContain('aria-checked="false"');
+    expect(html).toContain("Squads");
+    expect(html).toContain("Agents");
+    expect(html).toContain("switch-knob");
+  });
+
+  it("marks aria-checked when the agents series is active", () => {
+    const html = renderToStaticMarkup(<SourceToggle source="agents" onChange={() => undefined} />);
+    expect(html).toContain('aria-checked="true"');
+    expect(html).toContain('aria-label="Chart series: agents"');
   });
 });

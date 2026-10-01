@@ -47,10 +47,12 @@ describe("BarChart", () => {
     expect(html).not.toContain("<svg");
   });
 
-  it("includes day labels and tooltip titles", () => {
+  it("includes DD-MMM day labels (S-201) and tooltip titles", () => {
     const model = buildStackedChart(days, [series("a", "Alpha", { "2026-10-01": 30 })], "tokens");
     const html = renderToStaticMarkup(createElement(BarChart, { model, formatValue: identity }));
-    expect(html).toContain("10-01");
+    // Axis labels are HTML now (fixed page-text size), formatted DD-MMM.
+    expect(html).toContain("chart-xlabel");
+    expect(html).toContain("01-Oct");
     expect(html).toContain("2026-10-01 · Alpha: 30");
   });
 });

@@ -80,3 +80,15 @@ export function inboxTaskLink(message: InboxMessage): string | null {
   }
   return null;
 }
+
+// inboxSender (S-201) resolves the "from" column of the Gmail-style
+// inbox: the sending agent's display name when known, a short-id
+// fallback for agents outside the loaded directory, and "System" for
+// rows with no agent origin.
+export function inboxSender(
+  message: InboxMessage,
+  agentName: (id?: string) => string | undefined,
+): string {
+  if (!message.from_agent_id) return "System";
+  return agentName(message.from_agent_id) ?? `agent ${message.from_agent_id.slice(0, 8)}`;
+}
