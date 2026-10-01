@@ -45,6 +45,7 @@ import {
   type ModelUsageEntry,
 } from "../../lib/aimodels";
 import { kindOptionsFor } from "../../lib/providerKinds";
+import { formatMaskedApiKey } from "../../lib/providerKey";
 import {
   buildModelTestPayload,
   buildProviderTestPayload,
@@ -1393,7 +1394,10 @@ function ProviderModal({
         <label className="field">
           <span>API key</span>
           {/* S-155: paste-to-secret. type=password so the pasted key
-              never renders in cleartext. */}
+              never renders in cleartext. S-187: the placeholder is just
+              the masked key (fixed mask + last 5 chars from
+              api_key_masked); the "keep current" semantics moved to the
+              helper text below. */}
           <input
             type="password"
             value={apiKey}
@@ -1404,12 +1408,14 @@ function ProviderModal({
             autoComplete="new-password"
             placeholder={
               provider?.has_api_key
-                ? `Current: ${provider.api_key_masked ?? "•••••"} — leave blank to keep`
+                ? formatMaskedApiKey(provider.api_key_masked)
                 : "Paste API key (stored as a Kubernetes Secret)"
             }
           />
           <small className="field-hint">
-            Stored as a Kubernetes Secret by the platform — no manual kubectl needed.
+            {provider?.has_api_key
+              ? "Stored as a Kubernetes Secret by the platform. Leave blank to keep the current key."
+              : "Stored as a Kubernetes Secret by the platform — no manual kubectl needed."}
           </small>
         </label>
       </ModalForm>
