@@ -144,14 +144,14 @@ func TestMemoryStoreReapExpiredTaskExecutions(t *testing.T) {
 	}
 
 	// A cutoff before the lease expiry reaps nothing: the lease is still live.
-	if n, err := store.ReapExpiredTaskExecutions(ctx, time.Now()); err != nil {
+	if n, err := reapLen(store, ctx, time.Now()); err != nil {
 		t.Fatal(err)
 	} else if n != 0 {
 		t.Fatalf("reaped = %d, want 0 before lease expiry", n)
 	}
 
 	// A cutoff past the lease expiry expires the execution and re-queues the task.
-	if n, err := store.ReapExpiredTaskExecutions(ctx, time.Now().Add(2*time.Minute)); err != nil {
+	if n, err := reapLen(store, ctx, time.Now().Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	} else if n != 1 {
 		t.Fatalf("reaped = %d, want 1", n)
@@ -177,7 +177,7 @@ func TestMemoryStoreReapExpiredTaskExecutions(t *testing.T) {
 	}
 
 	// Idempotent: a second reap with the same cutoff reaps nothing.
-	if n, err := store.ReapExpiredTaskExecutions(ctx, time.Now().Add(2*time.Minute)); err != nil {
+	if n, err := reapLen(store, ctx, time.Now().Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	} else if n != 0 {
 		t.Fatalf("second reap = %d, want 0", n)
@@ -203,7 +203,7 @@ func TestMemoryStoreReapSkipsHeartbeatedExecution(t *testing.T) {
 	if _, err := store.HeartbeatTaskExecution(ctx, agent.ID, claimed.ExecutionID, claimed.FencingToken, 10*time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := store.ReapExpiredTaskExecutions(ctx, time.Now().Add(2*time.Minute)); err != nil {
+	if n, err := reapLen(store, ctx, time.Now().Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	} else if n != 0 {
 		t.Fatalf("reaped = %d, want 0 after heartbeat", n)
@@ -240,7 +240,7 @@ func TestMemoryStoreReapKeepsTaskInProgressWithLiveAttempt(t *testing.T) {
 	}
 
 	// Reap the lapsed attempt: the fresh lease must keep the task in-progress.
-	if n, err := store.ReapExpiredTaskExecutions(ctx, time.Now()); err != nil {
+	if n, err := reapLen(store, ctx, time.Now()); err != nil {
 		t.Fatal(err)
 	} else if n != 1 {
 		t.Fatalf("reaped = %d, want 1", n)
@@ -270,7 +270,7 @@ func TestMemoryStoreReapSkipsCompletedExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if n, err := store.ReapExpiredTaskExecutions(ctx, time.Now().Add(-time.Hour)); err != nil {
+	if n, err := reapLen(store, ctx, time.Now().Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	} else if n != 0 {
 		t.Fatalf("reaped = %d, want 0 for completed execution", n)
@@ -341,4 +341,11 @@ func TestMemoryStoreTaskResultPersistence(t *testing.T) {
 	if got.Result != "" || got.ResultStatus != "" || !got.ResultAt.IsZero() {
 		t.Fatalf("in-review must not set result, got %q/%q/%v", got.Result, got.ResultStatus, got.ResultAt)
 	}
+}
+
+// reapLen adapts the S-193 []ReapedExecution return to the count-based
+// assertions these reap tests were written against.
+func reapLen(store *MemoryStore, ctx context.Context, cutoff time.Time) (int, error) {
+	reaped, err := store.ReapExpiredTaskExecutions(ctx, cutoff)
+	return len(reaped), err
 }

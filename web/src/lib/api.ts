@@ -114,13 +114,34 @@ export type Message = {
 export type InboxMessage = {
   id: string;
   squad_id: string;
+  user_id?: string;
   from_agent_id?: string;
   task_id?: string;
-  kind: "task_completed" | "action_required";
+  // S-193: "agent_message" = content an agent delivered via send_inbox
+  // at the human's request. task_completed/action_required stay
+  // system-emitted.
+  kind: "task_completed" | "action_required" | "agent_message";
   message: string;
   // S-181: email-style richer payload; optional for older messages.
   subject?: string;
   body?: string;
+  read_at?: string;
+  created_at: string;
+};
+
+// S-193: recipient-scoped "something went wrong" alerts for the bell.
+export type NotificationType = "task_failed" | "task_stuck" | "agent_died" | "task_blocked";
+export type NotificationSeverity = "info" | "warning" | "error";
+
+export type AppNotification = {
+  id: string;
+  user_id: string;
+  squad_id: string;
+  task_id?: string;
+  agent_id?: string;
+  type: NotificationType;
+  severity: NotificationSeverity;
+  message: string;
   read_at?: string;
   created_at: string;
 };

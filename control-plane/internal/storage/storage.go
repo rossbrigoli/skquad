@@ -178,11 +178,12 @@ type TaskStore interface {
 	CompleteTaskExecution(ctx context.Context, agentID string, taskID string, executionID string, fencingToken string, status domain.TaskStatus, summary string) (*domain.Task, error)
 	// ReapExpiredTaskExecutions marks active executions whose lease expired
 	// before cutoff as expired and re-queues their tasks (in-progress → todo)
-	// when no other live execution remains. Returns the number of executions
-	// reaped. Safe to run concurrently: the updates are conditional, so a
-	// heartbeat or complete that lands after cutoff wins and the row is left
-	// untouched.
-	ReapExpiredTaskExecutions(ctx context.Context, cutoff time.Time) (int, error)
+	// when no other live execution remains. Returns the reaped executions
+	// (S-193: the reaper notifies squad owners about dead attempts) so the
+	// caller can identify what died without a second sweep. Safe to run
+	// concurrently: the updates are conditional, so a heartbeat or complete
+	// that lands after cutoff wins and the row is left untouched.
+	ReapExpiredTaskExecutions(ctx context.Context, cutoff time.Time) ([]domain.ReapedExecution, error)
 }
 
 // AgentMemoryStore persists bounded agent long-term memory.
@@ -249,6 +250,23 @@ type InboxStore interface {
 	CreateInboxMessage(ctx context.Context, msg *domain.InboxMessage) (*domain.InboxMessage, error)
 	ListInboxMessages(ctx context.Context, userID string, unreadOnly bool, limit int) ([]*domain.InboxMessage, error)
 	MarkInboxMessageRead(ctx context.Context, userID string, id string) (*domain.InboxMessage, error)
+	// GetInboxMessage fetches one message by id (S-193: delete
+	// authorization needs the recipient before removal).
+	GetInboxMessage(ctx context.Context, id string) (*domain.InboxMessage, error)
+	// DeleteInboxMessage removes a message permanently (S-193: inbox
+	// messages are never auto-removed — only explicit user delete). When
+	// userID is empty the user scoping is skipped: the handler has already
+	// enforced platform-admin for that path.
+	DeleteInboxMessage(ctx context.Context, id string, userID string) error
+}
+
+// NotificationStore persists recipient-scoped "something went wrong"
+// alerts for the top-bar bell (S-193). Separate from the inbox by design.
+type NotificationStore interface {
+	CreateNotification(ctx context.Context, n *domain.Notification) (*domain.Notification, error)
+	ListNotifications(ctx context.Context, userID string, unreadOnly bool, limit int) ([]*domain.Notification, error)
+	MarkNotificationRead(ctx context.Context, userID string, id string) (*domain.Notification, error)
+	MarkAllNotificationsRead(ctx context.Context, userID string) (int, error)
 }
 
 // WorkNotificationStore lets runtimes wait for assigned task or inbox changes

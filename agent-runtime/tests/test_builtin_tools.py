@@ -1015,5 +1015,139 @@ class SendMessageToolTests(BuiltinToolsTestBase):
         assert "peers lookup failed" in result.content
 
 
+
+# --------------------------------------------------------------------------
+# SendInboxTool (S-193) — agent-authored content to the squad owner's inbox
+# --------------------------------------------------------------------------
+
+
+class SendInboxToolTests(BuiltinToolsTestBase):
+    """Fake HTTP: POST /api/v1/agents/me/inbox is captured."""
+
+    def patch_http(self, fake):
+        return mock.patch(
+            "skquad_runtime.builtin_tools.request.urlopen", side_effect=fake
+        )
+
+    def test_registry_contains_send_inbox(self):
+        assert "send_inbox" in bt._BUILTIN_REGISTRY
+
+    def test_tool_schema_shape(self):
+        tool = bt.SendInboxTool({}, self.ctx())
+        (schema,) = tool.tools()
+        fn = schema["function"]
+        assert fn["name"] == "send_inbox"
+        assert fn["parameters"]["required"] == ["message"]
+        assert set(fn["parameters"]["properties"]) == {"message", "subject", "task_id"}
+
+    def test_posts_message_subject_and_task(self):
+        tool = bt.SendInboxTool({}, self.ctx(credential="cred-inbox"))
+        captured = {}
+
+        def fake(req, timeout=None):
+            assert req.get_method() == "POST"
+            assert req.full_url.endswith("/api/v1/agents/me/inbox")
+            assert req.headers.get("Authorization") == "Bearer cred-inbox"
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return FakeHTTPResponse(
+                201, json.dumps({"id": "inb-1"}).encode("utf-8"), "application/json"
+            )
+
+        with self.patch_http(fake):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_inbox",
+                    arguments={
+                        "message": "the report you asked for",
+                        "subject": "Report",
+                        "task_id": "task-9",
+                    },
+                ),
+                None,
+            )
+        assert result.ok is True
+        assert "inb-1" in result.content
+        assert captured["body"] == {
+            "message": "the report you asked for",
+            "subject": "Report",
+            "task_id": "task-9",
+        }
+
+    def test_omits_empty_optional_fields(self):
+        tool = bt.SendInboxTool({}, self.ctx())
+        captured = {}
+
+        def fake(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return FakeHTTPResponse(201, b'{"id": "inb-2"}', "application/json")
+
+        with self.patch_http(fake):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_inbox",
+                    arguments={"message": "ping", "subject": "  ", "task_id": ""},
+                ),
+                None,
+            )
+        assert result.ok is True
+        assert captured["body"] == {"message": "ping"}
+
+    def test_empty_message_rejected_without_http(self):
+        tool = bt.SendInboxTool({}, self.ctx())
+
+        def fake(req, timeout=None):  # pragma: no cover
+            raise AssertionError("must not call HTTP")
+
+        with self.patch_http(fake):
+            result = tool.invoke(
+                ToolCall(id="c1", name="send_inbox", arguments={"message": "   "}), None
+            )
+        assert result.ok is False
+        assert "message is required" in result.content
+
+    def test_policy_max_chars_enforced(self):
+        tool = bt.SendInboxTool({"maxMessageChars": 10}, self.ctx())
+
+        def fake(req, timeout=None):  # pragma: no cover
+            raise AssertionError("must not call HTTP")
+
+        with self.patch_http(fake):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1", name="send_inbox", arguments={"message": "x" * 11}
+                ),
+                None,
+            )
+        assert result.ok is False
+        assert "exceeds 10 characters" in result.content
+
+    def test_http_error_surfaces_as_tool_failure(self):
+        tool = bt.SendInboxTool({}, self.ctx())
+
+        def fake(req, timeout=None):
+            raise error.HTTPError(
+                req.full_url,
+                404,
+                "not found",
+                {},
+                io.BytesIO(b'{"error":"squad owner not found"}'),
+            )
+
+        with self.patch_http(fake):
+            result = tool.invoke(
+                ToolCall(id="c1", name="send_inbox", arguments={"message": "hi"}), None
+            )
+        assert result.ok is False
+        assert "send_inbox" in result.content
+
+    def test_build_builtin_tools_includes_enabled_send_inbox(self):
+        fetched = {"tools": [{"name": "send_inbox", "enabled": True, "policy": {}}]}
+        tools = bt.build_builtin_tools(fetched, self.ctx())
+        assert [t.name for t in tools] == ["send_inbox"]
+        assert isinstance(tools[0], bt.SendInboxTool)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1181,9 +1181,9 @@ func TestBoardAfterReaperShowsTaskRequeued(t *testing.T) {
 	require.NotEmpty(t, claimed.ExecutionID)
 
 	// The worker dies: reap with a cutoff past the 2-minute claim lease.
-	n, err := store.ReapExpiredTaskExecutions(context.Background(), time.Now().Add(3*time.Minute))
+	reaped, err := store.ReapExpiredTaskExecutions(context.Background(), time.Now().Add(3*time.Minute))
 	require.NoError(t, err)
-	require.Equal(t, 1, n)
+	require.Len(t, reaped, 1)
 
 	var board struct {
 		Board domain.Board  `json:"board"`

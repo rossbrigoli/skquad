@@ -2,8 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
+	"github.com/rossbrigoli/skquad/control-plane/internal/storage"
 )
 
 // RunExecutionReaper periodically expires task executions whose lease has
@@ -35,9 +39,46 @@ func RunExecutionReaper(ctx context.Context, store Store, interval, grace time.D
 				slog.Warn("reap expired task executions", "error", err)
 				continue
 			}
-			if reaped > 0 {
-				slog.Info("reaped expired task executions", "count", reaped, "grace", grace)
+			if len(reaped) > 0 {
+				slog.Info("reaped expired task executions", "count", len(reaped), "grace", grace)
+			}
+			// S-193: every dead attempt is an "agent died mid-task" alert
+			// for the squad owner. Best-effort: a notification failure
+			// must never stop the reaper loop.
+			for _, r := range reaped {
+				notifyReapedExecution(ctx, store, r)
 			}
 		}
+	}
+}
+
+// notifyReapedExecution files one agent_died notification for a reaped
+// attempt. All lookups are best-effort: if the task, agent, or squad owner
+// is gone there is nothing addressable, so we skip silently.
+func notifyReapedExecution(ctx context.Context, store Store, r domain.ReapedExecution) {
+	task, err := store.GetTask(ctx, r.TaskID)
+	if err != nil {
+		return
+	}
+	agent, err := store.GetAgent(ctx, r.AgentID)
+	if err != nil {
+		return
+	}
+	squad, err := store.GetSquad(ctx, task.SquadID)
+	if err != nil || squad.OwnerID == "" {
+		return
+	}
+	msg := fmt.Sprintf("Task %s failed: agent %s died mid-task (lease expired); the task was re-queued.",
+		formatTaskRef(task), agent.Name)
+	if _, err := store.CreateNotification(ctx, &domain.Notification{
+		UserID:   squad.OwnerID,
+		SquadID:  task.SquadID,
+		TaskID:   task.ID,
+		AgentID:  agent.ID,
+		Type:     domain.NotificationAgentDied,
+		Severity: domain.NotificationError,
+		Message:  msg,
+	}); err != nil && err != storage.ErrNotFound {
+		slog.Warn("notify reaped execution", "error", err)
 	}
 }

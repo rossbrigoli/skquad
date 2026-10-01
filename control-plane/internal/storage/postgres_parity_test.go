@@ -281,8 +281,8 @@ func TestPostgresStoreReapExpiredTaskExecutions(t *testing.T) {
 	if err != nil {
 		t.Fatalf(reapErrFormat, err)
 	}
-	if reaped < 1 {
-		t.Fatalf("reaped = %d, want >= 1", reaped)
+	if len(reaped) < 1 {
+		t.Fatalf("reaped = %d, want >= 1", len(reaped))
 	}
 
 	var (

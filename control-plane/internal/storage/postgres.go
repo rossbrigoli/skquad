@@ -2254,10 +2254,10 @@ func (p *PostgresStore) HeartbeatTaskExecution(ctx context.Context, agentID stri
 // Two conditional statements in one transaction: a heartbeat or complete that
 // lands after the cutoff wins (its own WHERE clause matches first), so the
 // reaper is idempotent and safe under concurrent replicas.
-func (p *PostgresStore) ReapExpiredTaskExecutions(ctx context.Context, cutoff time.Time) (int, error) {
+func (p *PostgresStore) ReapExpiredTaskExecutions(ctx context.Context, cutoff time.Time) ([]domain.ReapedExecution, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
-		return 0, mapPgErr(err)
+		return nil, mapPgErr(err)
 	}
 	defer tx.Rollback(ctx)
 
@@ -2269,26 +2269,28 @@ func (p *PostgresStore) ReapExpiredTaskExecutions(ctx context.Context, cutoff ti
 		    updated_at     = now()
 		WHERE status = $1
 		  AND lease_expires_at < $3
-		RETURNING task_id::text
+		RETURNING id::text, task_id::text, agent_id::text
 	`, domain.TaskExecutionActive, domain.TaskExecutionExpired, cutoff)
 	if err != nil {
-		return 0, mapPgErr(err)
+		return nil, mapPgErr(err)
 	}
+	reaped := []domain.ReapedExecution{}
 	taskIDs := []string{}
 	for rows.Next() {
-		var taskID string
-		if err := rows.Scan(&taskID); err != nil {
+		var r domain.ReapedExecution
+		if err := rows.Scan(&r.ExecutionID, &r.TaskID, &r.AgentID); err != nil {
 			rows.Close()
-			return 0, mapPgErr(err)
+			return nil, mapPgErr(err)
 		}
-		taskIDs = append(taskIDs, taskID)
+		reaped = append(reaped, r)
+		taskIDs = append(taskIDs, r.TaskID)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return 0, mapPgErr(err)
+		return nil, mapPgErr(err)
 	}
 	if len(taskIDs) == 0 {
-		return 0, mapPgErr(tx.Commit(ctx))
+		return reaped, mapPgErr(tx.Commit(ctx))
 	}
 
 	// Re-queue only tasks with no remaining live attempt: a task can
@@ -2309,12 +2311,12 @@ func (p *PostgresStore) ReapExpiredTaskExecutions(ctx context.Context, cutoff ti
 		  )
 	`, taskIDs, domain.TaskTodo, domain.TaskInProgress, domain.TaskExecutionActive)
 	if err != nil {
-		return 0, mapPgErr(err)
+		return nil, mapPgErr(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, mapPgErr(err)
+		return nil, mapPgErr(err)
 	}
-	return len(taskIDs), nil
+	return reaped, nil
 }
 
 func (p *PostgresStore) CompleteTaskExecution(ctx context.Context, agentID string, taskID string, executionID string, fencingToken string, status domain.TaskStatus, summary string) (*domain.Task, error) {
@@ -3019,6 +3021,125 @@ func (p *PostgresStore) MarkInboxMessageRead(ctx context.Context, userID string,
 		return nil, mapPgErr(err)
 	}
 	return updated, nil
+}
+
+func (p *PostgresStore) GetInboxMessage(ctx context.Context, id string) (*domain.InboxMessage, error) {
+	row := p.pool.QueryRow(ctx, `
+		SELECT id::text, squad_id::text, user_id::text, coalesce(from_agent_id::text, ''),
+		       coalesce(task_id::text, ''), kind, message, subject, body, read_at, created_at
+		FROM inbox_messages WHERE id = $1
+	`, id)
+	return scanInboxMessage(row)
+}
+
+// DeleteInboxMessage (S-193) permanently removes an inbox message.
+// Empty userID skips recipient scoping (platform-admin path, enforced
+// by the handler).
+func (p *PostgresStore) DeleteInboxMessage(ctx context.Context, id string, userID string) error {
+	var tag pgconn.CommandTag
+	var err error
+	if userID == "" {
+		tag, err = p.pool.Exec(ctx, `DELETE FROM inbox_messages WHERE id = $1`, id)
+	} else {
+		tag, err = p.pool.Exec(ctx, `DELETE FROM inbox_messages WHERE id = $1 AND user_id = $2`, id, userID)
+	}
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// CreateNotification (S-193) files a recipient-scoped bell alert.
+func (p *PostgresStore) CreateNotification(ctx context.Context, n *domain.Notification) (*domain.Notification, error) {
+	severity := n.Severity
+	if severity == "" {
+		severity = domain.NotificationWarning
+	}
+	row := p.pool.QueryRow(ctx, `
+		INSERT INTO notifications (user_id, squad_id, task_id, agent_id, type, severity, message)
+		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7)
+		RETURNING id::text, user_id::text, squad_id::text, coalesce(task_id::text, ''),
+		          coalesce(agent_id::text, ''), type, severity, message, read_at, created_at
+	`, n.UserID, n.SquadID, n.TaskID, n.AgentID, n.Type, severity, n.Message)
+	return scanNotification(row)
+}
+
+func (p *PostgresStore) ListNotifications(ctx context.Context, userID string, unreadOnly bool, limit int) ([]*domain.Notification, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT id::text, user_id::text, squad_id::text, coalesce(task_id::text, ''),
+		       coalesce(agent_id::text, ''), type, severity, message, read_at, created_at
+		FROM notifications
+		WHERE user_id = $1 AND (NOT $2::boolean OR read_at IS NULL)
+		ORDER BY created_at DESC
+		LIMIT $3
+	`, userID, unreadOnly, limit)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+	out := []*domain.Notification{}
+	for rows.Next() {
+		n, err := scanNotification(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return out, nil
+}
+
+func (p *PostgresStore) MarkNotificationRead(ctx context.Context, userID string, id string) (*domain.Notification, error) {
+	row := p.pool.QueryRow(ctx, `
+		UPDATE notifications
+		SET read_at = COALESCE(read_at, now())
+		WHERE id = $1 AND user_id = $2
+		RETURNING id::text, user_id::text, squad_id::text, coalesce(task_id::text, ''),
+		          coalesce(agent_id::text, ''), type, severity, message, read_at, created_at
+	`, id, userID)
+	return scanNotification(row)
+}
+
+func (p *PostgresStore) MarkAllNotificationsRead(ctx context.Context, userID string) (int, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE notifications SET read_at = now()
+		WHERE user_id = $1 AND read_at IS NULL
+	`, userID)
+	if err != nil {
+		return 0, mapPgErr(err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func scanNotification(row scanner) (*domain.Notification, error) {
+	var n domain.Notification
+	var readAt sql.NullTime
+	if err := row.Scan(
+		&n.ID,
+		&n.UserID,
+		&n.SquadID,
+		&n.TaskID,
+		&n.AgentID,
+		&n.Type,
+		&n.Severity,
+		&n.Message,
+		&readAt,
+		&n.CreatedAt,
+	); err != nil {
+		return nil, mapPgErr(err)
+	}
+	if readAt.Valid {
+		n.ReadAt = readAt.Time
+	}
+	return &n, nil
 }
 
 func (p *PostgresStore) WaitForAgentWork(ctx context.Context, agentID string, timeout time.Duration) (bool, error) {

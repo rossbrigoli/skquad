@@ -11,6 +11,7 @@ import { useApi } from "../lib/useApi";
 import type { Agent, Squad, Task } from "../lib/api";
 import type { DashboardPayload } from "../lib/dashboard";
 import { ThemeToggle } from "./ThemeToggle";
+import { NotificationBell } from "./NotificationBell";
 import { UserMenu } from "./UserMenu";
 import { IconAbout, IconAgents, IconCosts, IconDashboard, IconInbox, IconSettings, IconSquads } from "./icons";
 import type { ComponentType } from "react";
@@ -70,6 +71,8 @@ function TopBar({ crumbs }: { readonly crumbs: ReturnType<typeof breadcrumbsForP
         ))}
       </nav>
       <div className="topbar-actions">
+        {/* S-193: bell sits immediately left of the theme switcher. */}
+        <NotificationBell />
         <ThemeToggle />
       </div>
     </header>
