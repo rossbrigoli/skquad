@@ -8,6 +8,12 @@ import type { Agent, BoardPayload, InboxMessage, Squad } from "./api";
 
 type AttentionValue = {
   items: AttentionItem[];
+  // S-201: unread inbox message count — the nav "Inbox" badge must show
+  // this, not the total attention queue (which also counts stalled tasks,
+  // agent errors and stale reviews).
+  inboxUnread: number;
+  // S-201: resolve an agent id to its display name (inbox sender column).
+  agentName: (id?: string) => string | undefined;
   loading: boolean;
   error: string;
   refresh: () => void;
@@ -23,6 +29,8 @@ const POLL_MS = 30_000;
 export function AttentionProvider({ children }: { children: ReactNode }) {
   const { token, authed } = useAuth();
   const [items, setItems] = useState<AttentionItem[]>([]);
+  const [inboxUnread, setInboxUnread] = useState(0);
+  const [agentNames, setAgentNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
@@ -35,6 +43,10 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
     if (!authed) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setItems([]);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setInboxUnread(0);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAgentNames({});
       setLoading(false);
       return;
     }
@@ -59,6 +71,10 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
             agentNames.set(agent.id, agent.name);
           }
         }
+        // The inbox was fetched with unread=true, so its length IS the
+        // unread count (S-201 nav badge).
+        setInboxUnread(Array.isArray(inbox) ? inbox.length : 0);
+        setAgentNames(Object.fromEntries(agentNames));
         setItems(
           buildAttention({
             tasksBySquad,
@@ -97,13 +113,20 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
       }
       await apiPost(`/inbox/${messageId}/read`, token, {});
       setItems((current) => current.filter((item) => !item.id.endsWith(messageId)));
+      // Keep the nav badge honest the moment a message is opened.
+      setInboxUnread((n) => Math.max(0, n - 1));
     },
     [token, authed],
   );
 
+  const agentName = useCallback(
+    (id?: string) => (id ? agentNames[id] : undefined),
+    [agentNames],
+  );
+
   const value = useMemo(
-    () => ({ items, loading, error, refresh, markRead }),
-    [items, loading, error, refresh, markRead],
+    () => ({ items, inboxUnread, agentName, loading, error, refresh, markRead }),
+    [items, inboxUnread, agentName, loading, error, refresh, markRead],
   );
 
   return <AttentionContext.Provider value={value}>{children}</AttentionContext.Provider>;

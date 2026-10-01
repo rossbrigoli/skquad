@@ -1,11 +1,16 @@
 "use client";
 
 // S-193: the Inbox rebuilt as an email-like list. Messages from agents
-// (send_inbox) and the system land here for the human owner. Unread
-// rows are bold with a dot; clicking a row marks it read and expands the
-// body. Messages are NEVER auto-removed — the only removal path is the
-// explicit Delete on a row. Platform admins get a Filter control to
-// view any user's inbox (default: own).
+// (send_inbox) and the system land here for the human owner.
+//
+// S-201: the inbox now reads like Gmail. The list shows a sender column
+// (the agent's name, resolved through the AttentionProvider's agent
+// directory), unread rows carry a bold subject and a dot, and clicking a
+// row drills through to a full-message reading view with a ← back arrow
+// instead of expanding inline. Opening a message marks it read, which
+// also decrements the nav "Inbox" badge. Messages are NEVER auto-removed
+// — the only removal path is the explicit Delete in the reading view.
+// Platform admins keep the Filter control to view any user's inbox.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -13,13 +18,15 @@ import { AuthGate } from "../../components/AuthGate";
 import { AppShell } from "../../components/AppShell";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { EmptyState } from "../../components/EmptyState";
-import { apiDelete, apiGet, apiPost, type ApiUser, type InboxMessage } from "../../lib/api";
+import { apiDelete, apiGet, type ApiUser, type InboxMessage } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
+import { useAttention } from "../../lib/useAttention";
 import { formatRelativeTime } from "../../lib/format";
 import {
   buildScopedListQuery,
   inboxDisplay,
   inboxKindMeta,
+  inboxSender,
   inboxTaskLink,
   isUnread,
   unreadCount,
@@ -29,13 +36,14 @@ type UserFilter = { mode: "own" } | { mode: "user"; userId: string };
 
 export default function InboxPage() {
   const { token, user, authed } = useAuth();
+  const { agentName, markRead: markAttentionRead } = useAttention();
   const isAdmin = user?.role === "platform_admin";
 
   const [messages, setMessages] = useState<InboxMessage[]>([]);
   const [users, setUsers] = useState<ApiUser[]>([]);
   const [filter, setFilter] = useState<UserFilter>({ mode: "own" });
   const [unreadOnly, setUnreadOnly] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<InboxMessage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -69,23 +77,32 @@ export default function InboxPage() {
   }, [isAdmin, authed, token]);
 
   const unread = useMemo(() => unreadCount(messages), [messages]);
+  const selected = useMemo(
+    () => (selectedId === null ? null : (messages.find((m) => m.id === selectedId) ?? null)),
+    [messages, selectedId],
+  );
 
   const markRead = useCallback(
     async (message: InboxMessage) => {
       if (!isUnread(message.read_at)) return;
+      // Optimistic: the row (and the nav badge via the provider) flips to
+      // read immediately; the provider owns the POST so one request keeps
+      // both surfaces in sync.
+      setMessages((prev) =>
+        prev.map((m) => (m.id === message.id ? { ...m, read_at: new Date().toISOString() } : m)),
+      );
       try {
-        const updated = await apiPost<InboxMessage>(`/inbox/${message.id}/read`, token, {});
-        setMessages((prev) => prev.map((m) => (m.id === message.id ? updated : m)));
+        await markAttentionRead(message.id);
       } catch {
         // Transient: a manual refresh re-syncs; never block the UI.
       }
     },
-    [token],
+    [markAttentionRead],
   );
 
-  const toggleRow = useCallback(
+  const openMessage = useCallback(
     (message: InboxMessage) => {
-      setExpandedId((current) => (current === message.id ? null : message.id));
+      setSelectedId(message.id);
       void markRead(message);
     },
     [markRead],
@@ -96,57 +113,80 @@ export default function InboxPage() {
     try {
       await apiDelete(`/inbox/${pendingDelete.id}`, token);
       setMessages((prev) => prev.filter((m) => m.id !== pendingDelete.id));
-      if (expandedId === pendingDelete.id) setExpandedId(null);
+      if (selectedId === pendingDelete.id) setSelectedId(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "delete failed");
     } finally {
       setPendingDelete(null);
     }
-  }, [pendingDelete, token, expandedId]);
+  }, [pendingDelete, token, selectedId]);
 
   const renderRow = (message: InboxMessage) => {
     const unreadRow = isUnread(message.read_at);
     const kind = inboxKindMeta(message.kind);
+    const { subject } = inboxDisplay(message);
+    return (
+      <div
+        key={message.id}
+        className={`inbox-row ${unreadRow ? "inbox-row-unread" : ""}`}
+        role="button"
+        tabIndex={0}
+        aria-label={`Open message: ${subject}`}
+        onClick={() => openMessage(message)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openMessage(message);
+          }
+        }}
+      >
+        <span className="inbox-dot" aria-hidden="true" data-unread={unreadRow ? "yes" : "no"} />
+        <span className="inbox-sender">{inboxSender(message, agentName)}</span>
+        <span className="inbox-subject">{subject}</span>
+        <span className={`chip ${kind.className}`}>{kind.label}</span>
+        <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
+      </div>
+    );
+  };
+
+  const renderDetail = (message: InboxMessage) => {
+    const kind = inboxKindMeta(message.kind);
     const { subject, body } = inboxDisplay(message);
     const taskHref = inboxTaskLink(message);
-    const expanded = expandedId === message.id;
     return (
-      <div key={message.id} className={`inbox-row ${unreadRow ? "inbox-row-unread" : ""}`}>
-        <div className="inbox-row-head" role="button" tabIndex={0} onClick={() => toggleRow(message)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              toggleRow(message);
-            }
-          }}
-        >
-          <span className="inbox-dot" aria-hidden="true" data-unread={unreadRow ? "yes" : "no"} />
-          <span className="inbox-subject">{subject}</span>
-          <span className={`chip ${kind.className}`}>{kind.label}</span>
-          <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
+      <div className="inbox-detail">
+        <div className="inbox-detail-topbar">
           <button
             type="button"
-            className="btn btn-small inbox-delete"
+            className="btn btn-small inbox-back"
+            aria-label="Back to inbox"
+            onClick={() => setSelectedId(null)}
+          >
+            ← Inbox
+          </button>
+          <button
+            type="button"
+            className="btn btn-small btn-danger inbox-delete"
             aria-label="Delete message"
-            onClick={(e) => {
-              e.stopPropagation();
-              setPendingDelete(message);
-            }}
+            onClick={() => setPendingDelete(message)}
           >
             Delete
           </button>
         </div>
-        {expanded ? (
-          <div className="inbox-row-body">
-            <p className="inbox-body-text">{body}</p>
-            <div className="inbox-body-meta">
-              {message.from_agent_id ? <span>from agent {message.from_agent_id.slice(0, 8)}</span> : null}
-              {taskHref ? (
-                <Link className="inbox-task-link" href={taskHref} onClick={() => void markRead(message)}>
-                  Open task →
-                </Link>
-              ) : null}
-            </div>
+        <h2 className="inbox-detail-subject">{subject}</h2>
+        <div className="inbox-detail-meta">
+          <span className="inbox-detail-from">{inboxSender(message, agentName)}</span>
+          <span className={`chip ${kind.className}`}>{kind.label}</span>
+          <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
+        </div>
+        <div className="inbox-detail-body">
+          <p className="inbox-body-text">{body}</p>
+        </div>
+        {taskHref ? (
+          <div className="inbox-detail-footer">
+            <Link className="inbox-task-link" href={taskHref}>
+              Open task →
+            </Link>
           </div>
         ) : null}
       </div>
@@ -161,43 +201,47 @@ export default function InboxPage() {
             Inbox{" "}
             {unread > 0 ? <span className="chip chip-blocked">{unread} unread</span> : null}
           </h1>
-          <div className="inbox-controls">
-            <label className="inbox-filter">
-              <span>Show</span>
-              <select
-                value={unreadOnly ? "unread" : "all"}
-                onChange={(e) => setUnreadOnly(e.target.value === "unread")}
-              >
-                <option value="all">All messages</option>
-                <option value="unread">Unread only</option>
-              </select>
-            </label>
-            {isAdmin ? (
+          {!selected ? (
+            <div className="inbox-controls">
               <label className="inbox-filter">
-                <span>User</span>
+                <span>Show</span>
                 <select
-                  value={filter.mode === "user" ? filter.userId : "own"}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setFilter(v === "own" ? { mode: "own" } : { mode: "user", userId: v });
-                    setExpandedId(null);
-                  }}
+                  value={unreadOnly ? "unread" : "all"}
+                  onChange={(e) => setUnreadOnly(e.target.value === "unread")}
                 >
-                  <option value="own">My inbox</option>
-                  {users
-                    .filter((u) => u.id !== user?.id)
-                    .map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.name || u.email}
-                      </option>
-                    ))}
+                  <option value="all">All messages</option>
+                  <option value="unread">Unread only</option>
                 </select>
               </label>
-            ) : null}
-          </div>
+              {isAdmin ? (
+                <label className="inbox-filter">
+                  <span>User</span>
+                  <select
+                    value={filter.mode === "user" ? filter.userId : "own"}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setFilter(v === "own" ? { mode: "own" } : { mode: "user", userId: v });
+                      setSelectedId(null);
+                    }}
+                  >
+                    <option value="own">My inbox</option>
+                    {users
+                      .filter((u) => u.id !== user?.id)
+                      .map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name || u.email}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         {error ? <div className="notice error">{error}</div> : null}
-        {loading && messages.length === 0 ? (
+        {selected ? (
+          renderDetail(selected)
+        ) : loading && messages.length === 0 ? (
           <EmptyState title="Loading your inbox…" hint="Agent and system messages addressed to you." />
         ) : messages.length === 0 ? (
           <EmptyState

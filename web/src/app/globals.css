@@ -289,6 +289,13 @@ button {
   min-width: 0;
 }
 
+/* S-201: nav icons must never flex-shrink inside space-between nav items.
+   Long labels (e.g. "Test Squad (owner)") were squeezing the 13px squad
+   glyph smaller than a short one ("Minions") — pin the icon size. */
+.nav-item-main > svg {
+  flex: none;
+}
+
 .nav-item:hover {
   background: var(--surface-sunken);
   color: var(--ink);
@@ -338,7 +345,8 @@ button.nav-group-parent {
   color: inherit;
   cursor: pointer;
   padding: 0 var(--space-1);
-  font-size: var(--text-sm);
+  /* S-201: the expand/collapse triangle was too small to read at 13px. */
+  font-size: var(--text-lg);
   line-height: 1;
 }
 
@@ -2734,6 +2742,62 @@ button.squad-tab.active {
   margin-bottom: 0;
 }
 
+/* S-201: the single Daily Usage chart carries two sliding toggles. */
+.chart-toggles {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+/* S-201: more breathing room so the chart border isn't hugging the
+   title and the toggle switches. */
+.chart-card {
+  margin-top: var(--space-4);
+}
+
+/* S-201: axis labels render as HTML (fixed page-text size) instead of
+   SVG text that scaled up with the stretched viewBox. The frame keeps a
+   fixed pixel height so vertical viewBox units map 1:1 to CSS px. */
+.chart-frame {
+  position: relative;
+}
+
+.chart-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.chart-yaxis {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.chart-y-label {
+  position: absolute;
+  left: 2px;
+  font-size: var(--text-xs);
+  line-height: 1;
+  color: var(--ink-faint);
+}
+
+.chart-xaxis {
+  display: flex;
+  margin-top: 2px;
+}
+
+.chart-xlabel {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
 /* S-195: iOS-style sliding switch for the dashboard chart metric
    (replaces the old .chart-toggle button pair). The knob slides behind the
    active label; both labels stay visible: Tokens | Cost ($). */
@@ -2766,7 +2830,10 @@ button.squad-tab.active {
   text-align: center;
   font-size: var(--text-sm);
   font-weight: 500;
-  color: var(--ink-faint);
+  /* S-201: inactive labels were --ink-faint and hard to read; use the
+     same text color as the page buttons (--ink). The active label keeps
+     --accent-ink (white) since it sits on the accent knob. */
+  color: var(--ink);
   transition: color 180ms ease;
 }
 
@@ -3135,20 +3202,39 @@ button.squad-tab.active {
 }
 
 .inbox-row {
+  /* S-201: self-contained row layout (the old inner .inbox-row-head flex
+     wrapper is gone — the row itself lays out dot/sender/subject/chip/time). */
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   border-bottom: 1px solid var(--border);
-  padding: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  /* S-201: the whole row is the click target into the reading view. */
+  cursor: pointer;
 }
 
 .inbox-row:last-child {
   border-bottom: none;
 }
 
-.inbox-row-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  cursor: pointer;
-  min-width: 0;
+.inbox-row:hover {
+  background: var(--surface-sunken);
+}
+
+/* S-201: Gmail-style sender column in the inbox list. */
+.inbox-sender {
+  width: 140px;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+
+.inbox-row-unread .inbox-sender {
+  color: var(--ink);
+  font-weight: 700;
 }
 
 .inbox-dot {
@@ -3187,6 +3273,56 @@ button.squad-tab.active {
 
 .inbox-row-body {
   padding: var(--space-2) 0 var(--space-2) 16px;
+}
+
+/* S-201: full-message reading view (drill-through from the list). */
+.inbox-detail {
+  margin-top: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: var(--space-4);
+}
+
+.inbox-detail-topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.inbox-detail-subject {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-lg);
+  font-weight: 700;
+}
+
+.inbox-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-3);
+}
+
+.inbox-detail-from {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.inbox-detail-body {
+  font-size: var(--text-md);
+  line-height: 1.6;
+}
+
+.inbox-detail-footer {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
 }
 
 .inbox-body-text {

@@ -25,6 +25,7 @@ import {
   buildStackedChart,
   providerUsageMap,
   type ChartMode,
+  type ChartSource,
   type DashboardUsagePayload,
 } from "../../lib/usage";
 import {
@@ -39,14 +40,16 @@ const POLL_MS = 30_000;
 
 export default function DashboardPage() {
   const { data, loading, error, refresh } = useApi<DashboardPayload>("/dashboard", POLL_MS);
-  const { data: usage, error: usageError } = useApi<DashboardUsagePayload>("/dashboard/usage", POLL_MS);
+  const { data: usage, error: usageError } = useApi<DashboardUsagePayload>("/dashboard/usage?days=30", POLL_MS);
   const [mode, setMode] = useState<ChartMode>("tokens");
+  const [source, setSource] = useState<ChartSource>("squads");
   const totals = dashboardTotals(data);
   const isAdmin = data?.scope === "all";
   const currency = usage?.currency ?? "USD";
   const formatValue = mode === "cost" ? (n: number) => formatMoney(n, currency) : (n: number) => formatCompact(n);
   const squadChart = buildStackedChart(usage?.days ?? [], usage?.by_squad ?? [], mode);
   const agentChart = buildStackedChart(usage?.days ?? [], usage?.by_agent ?? [], mode);
+  const usageChart = source === "agents" ? agentChart : squadChart;
   const providerUsage = providerUsageMap(usage?.providers);
 
   return (
@@ -89,20 +92,19 @@ export default function DashboardPage() {
               ) : null}
             </div>
 
+            {/* S-201: the old per-squad + per-agent histograms are now ONE
+                chart with two sliding toggles: which series (Squads |
+                Agents) and which metric (Tokens | Cost $). The window is
+                the last 30 days. */}
             <div className="chart-header">
-              <h2 className="section-title">Daily usage — per squad (past month)</h2>
-              <ModeToggle mode={mode} onChange={setMode} />
+              <h2 className="section-title">Daily Usage</h2>
+              <div className="chart-toggles">
+                <SourceToggle source={source} onChange={setSource} />
+                <ModeToggle mode={mode} onChange={setMode} />
+              </div>
             </div>
-            <div className="card">
-              <BarChart model={squadChart} formatValue={formatValue} />
-            </div>
-
-            <div className="chart-header">
-              <h2 className="section-title">Daily usage — per agent (past month)</h2>
-              <ModeToggle mode={mode} onChange={setMode} />
-            </div>
-            <div className="card">
-              <BarChart model={agentChart} formatValue={formatValue} />
+            <div className="card chart-card">
+              <BarChart model={usageChart} formatValue={formatValue} />
             </div>
 
             <h2 className="section-title">Squads</h2>
@@ -227,17 +229,29 @@ export default function DashboardPage() {
   );
 }
 
-// ModeToggle flips both histograms between token and dollar series with an
-// iOS-style sliding switch (S-195: replaces the old two-button control).
-export function ModeToggle({ mode, onChange }: { mode: ChartMode; onChange: (mode: ChartMode) => void }) {
-  const isCost = mode === "cost";
-  const toggle = () => onChange(isCost ? "tokens" : "cost");
+// SlideSwitch is the shared iOS-style sliding switch (S-195 pattern,
+// generalized in S-201 so the chart can carry two of them). The knob
+// slides behind the active label; both labels stay visible.
+export function SlideSwitch({
+  leftLabel,
+  rightLabel,
+  isRight,
+  onChange,
+  ariaLabel,
+}: {
+  leftLabel: string;
+  rightLabel: string;
+  isRight: boolean;
+  onChange: (right: boolean) => void;
+  ariaLabel: string;
+}) {
+  const toggle = () => onChange(!isRight);
   return (
     <div
       className="switch-toggle"
       role="switch"
-      aria-checked={isCost}
-      aria-label={isCost ? "Chart metric: cost" : "Chart metric: tokens"}
+      aria-checked={isRight}
+      aria-label={ariaLabel}
       tabIndex={0}
       onClick={toggle}
       onKeyDown={(e) => {
@@ -248,11 +262,46 @@ export function ModeToggle({ mode, onChange }: { mode: ChartMode; onChange: (mod
       }}
     >
       <span className="switch-labels">
-        <span className={isCost ? undefined : "switch-label-active"}>Tokens</span>
-        <span className={isCost ? "switch-label-active" : undefined}>Cost ($)</span>
+        <span className={isRight ? undefined : "switch-label-active"}>{leftLabel}</span>
+        <span className={isRight ? "switch-label-active" : undefined}>{rightLabel}</span>
       </span>
       <span className="switch-knob" aria-hidden="true" />
     </div>
+  );
+}
+
+// ModeToggle flips the chart between the token and dollar series with the
+// iOS-style sliding switch (S-195: replaces the old two-button control).
+export function ModeToggle({ mode, onChange }: { mode: ChartMode; onChange: (mode: ChartMode) => void }) {
+  return (
+    <SlideSwitch
+      leftLabel="Tokens"
+      rightLabel="Cost ($)"
+      isRight={mode === "cost"}
+      onChange={(right) => onChange(right ? "cost" : "tokens")}
+      ariaLabel={mode === "cost" ? "Chart metric: cost" : "Chart metric: tokens"}
+    />
+  );
+}
+
+// SourceToggle (S-201) switches the single Daily Usage chart between the
+// per-squad and per-agent series — the second sliding switch beside the
+// tokens/cost control.
+export function SourceToggle({
+  source,
+  onChange,
+}: {
+  source: ChartSource;
+  onChange: (source: ChartSource) => void;
+}) {
+  return (
+    <SlideSwitch
+      leftLabel="Squads"
+      rightLabel="Agents"
+      isRight={source === "agents"}
+      onChange={(right) => onChange(right ? "agents" : "squads")}
+      ariaLabel={source === "agents" ? "Chart series: agents" : "Chart series: squads"}
+    />
   );
 }
 
