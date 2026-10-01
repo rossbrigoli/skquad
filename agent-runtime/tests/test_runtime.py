@@ -2577,5 +2577,252 @@ class ThinkingLevelPassthroughTest(unittest.TestCase):
             self.assertEqual(calls[0]["reasoning_effort"], "low")
 
 
+
+# ---------------------------------------------------------------------------
+# S-195: broken agentic loop — keep the turn alive across multiple LLM replies
+# ---------------------------------------------------------------------------
+
+
+class ProgressNoteHeuristicS195Test(unittest.TestCase):
+    def test_cliffhanger_suffixes_read_as_progress(self):
+        self.assertTrue(rt.looks_like_progress_note("Let me analyse this..."))
+        self.assertTrue(rt.looks_like_progress_note("Good question:"))
+        self.assertTrue(rt.looks_like_progress_note("Two steps today \u2014"))
+        self.assertTrue(rt.looks_like_progress_note("First up,"))
+
+    def test_intent_phrases_in_short_replies_read_as_progress(self):
+        self.assertTrue(rt.looks_like_progress_note("let me check the logs"))
+        self.assertTrue(rt.looks_like_progress_note("I'll look into that"))
+        self.assertTrue(rt.looks_like_progress_note("Now I will run the tests"))
+        self.assertTrue(rt.looks_like_progress_note("Give me a moment"))
+
+    def test_closed_answers_are_final(self):
+        self.assertFalse(rt.looks_like_progress_note("The answer is 42."))
+        self.assertFalse(rt.looks_like_progress_note("Done! Shipped."))
+        self.assertFalse(rt.looks_like_progress_note("No idea?"))
+        self.assertFalse(
+            rt.looks_like_progress_note(
+                "I'll note that the migration completed cleanly and all "
+                "checks passed; the service is healthy on both nodes and "
+                "the rollback plan is documented in the runbook."
+            )
+        )
+
+    def test_empty_is_not_progress(self):
+        self.assertFalse(rt.looks_like_progress_note("   "))
+
+
+class MultiReplyChatTurnS195Test(unittest.TestCase):
+    """The turn must survive a progress-note pause and deliver follow-ups."""
+
+    def _config(self, tmp, **extra):
+        credential = Path(tmp) / "agent"
+        credential.write_text("credential", encoding="utf-8")
+        virtual = Path(tmp) / "llm-gateway"
+        virtual.write_text("virtual-key", encoding="utf-8")
+        env = {
+            "SKQUAD_AGENT_ID": "agent-1",
+            "SKQUAD_SQUAD_ID": "squad-1",
+            "SKQUAD_AGENT_CREDENTIAL_PATH": str(credential),
+            "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH": str(virtual),
+            "SKQUAD_LLM_GATEWAY_URL": "http://llm-gateway:4000",
+            "SKQUAD_DEFAULT_MODEL": "gpt-4o",
+            "SKQUAD_AGENT_ROLE": "helper",
+            "SKQUAD_TASK_LOOP_ENABLED": "false",
+        }
+        env.update(extra)
+        return load_bootstrap_config(env)
+
+    def test_progress_note_then_final_delivers_two_visible_replies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    return fake_completion_response("Let me analyse this...")
+                return fake_completion_response("Here is the final answer.")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=completion, client=client)
+
+            result = handler.handle_message(user_msg("m-1", "why is CI red?"), config)
+
+            self.assertTrue(result.ok)
+            self.assertEqual(len(client.replies), 2)
+            interim = client.replies[0]
+            final = client.replies[1]
+            self.assertEqual(interim[0], "Let me analyse this...")
+            self.assertEqual(interim[1], "m-1")  # same correlation thread
+            self.assertTrue(interim[3]["interim"])
+            self.assertEqual(final[0], "Here is the final answer.")
+            self.assertEqual(final[1], "m-1")
+            self.assertIsNone(final[3])  # final reply is not flagged interim
+            self.assertIn("interim", result.summary)
+            # The continuation is injected into the LLM context only: the
+            # assistant progress text is preserved and a bounded continue
+            # nudge follows it on the second call.
+            second_msgs = calls[1]["messages"]
+            self.assertEqual(second_msgs[-2]["role"], "assistant")
+            self.assertEqual(second_msgs[-2]["content"], "Let me analyse this...")
+            self.assertEqual(second_msgs[-1]["role"], "user")
+            self.assertIn("skquad_continue", second_msgs[-1]["content"])
+
+    def test_interim_reply_budget_is_bounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                # Every reply looks like a progress note: the model never
+                # stops on its own. The budget must stop it for them.
+                return fake_completion_response("Still working, let me continue...")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(
+                completion=completion, client=client, max_interim_replies=1
+            )
+
+            result = handler.handle_message(user_msg("m-1", "endless please"), config)
+
+            self.assertTrue(result.ok)
+            # 1 interim + 1 forced-final (the over-budget repeat) = 2 replies,
+            # 2 LLM calls. Nothing more.
+            self.assertEqual(len(client.replies), 2)
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(client.replies[0][3]["interim"])
+            self.assertIsNone(client.replies[1][3])
+
+    def test_zero_interim_budget_restores_single_reply_behaviour(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                return fake_completion_response("Let me analyse this...")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(
+                completion=completion, client=client, max_interim_replies=0
+            )
+
+            result = handler.handle_message(user_msg("m-1", "hi"), config)
+
+            self.assertTrue(result.ok)
+            self.assertEqual(len(client.replies), 1)
+            self.assertEqual(len(calls), 1)
+            self.assertIsNone(client.replies[0][3])
+
+    def test_cancel_mid_loop_stops_after_delivered_interim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                return fake_completion_response("Let me keep digging...")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            posted = []
+            original = client.send_chat_reply
+
+            def send_then_cancel(text, **kwargs):
+                original(text, **kwargs)
+                posted.append(text)
+                # The user hits stop immediately after seeing the progress note.
+                client.cancelled_message_ids = {"m-1"}
+
+            client.send_chat_reply = send_then_cancel
+            handler = LLMMessageHandler(
+                completion=completion, client=client, max_interim_replies=3
+            )
+
+            result = handler.handle_message(user_msg("m-1", "actually stop"), config)
+
+            self.assertTrue(result.ok)
+            self.assertIn("cancelled", result.summary)
+            # Exactly the one interim reply got out; the next step boundary
+            # saw the cancel and killed the turn (S-175 semantics intact).
+            self.assertEqual(len(posted), 1)
+            self.assertEqual(len(calls), 1)
+
+    def test_single_final_reply_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                return fake_completion_response("The answer is 42.")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=completion, client=client)
+
+            result = handler.handle_message(user_msg("m-1", "what is life?"), config)
+
+            self.assertTrue(result.ok)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(client.replies, [("The answer is 42.", "m-1", "", None)])
+            self.assertNotIn("interim", result.summary)
+
+    def test_interim_reply_carries_tool_calls_and_clears_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            plugin = EchoPlugin()
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    return fake_tool_completion("c-1", "echo", {"message": "hi"})
+                if len(calls) == 2:
+                    return fake_completion_response("Echo answered; let me verify...")
+                return fake_completion_response("Verified. All good.")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(
+                completion=completion, client=client, plugins=[plugin]
+            )
+
+            result = handler.handle_message(user_msg("m-1", "ask echo twice"), config)
+
+            self.assertTrue(result.ok)
+            self.assertEqual(len(client.replies), 2)
+            interim_extra = client.replies[0][3]
+            self.assertTrue(interim_extra["interim"])
+            self.assertEqual([t["name"] for t in interim_extra["tool_calls"]], ["echo"])
+            final_extra = client.replies[1][3]
+            # The log was carried by the interim reply, not duplicated.
+            self.assertNotIn("tool_calls", final_extra or {})
+
+    def test_agent_authored_turns_never_get_continuation_injection(self):
+        # A2A chains are bounded by the control-plane correlation budget;
+        # interim injection is scoped to human chat only.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                return fake_completion_response("Let me think about that...")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(
+                completion=completion, client=client, max_interim_replies=2
+            )
+
+            result = handler.handle_message(peer_consult("m-9", "help?"), config)
+
+            self.assertTrue(result.ok)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(client.replies), 1)
+            self.assertIsNone(client.replies[0][3])
+            self.assertEqual(client.replies[0][2], "agent-mary")  # answered back
+
+
+
 if __name__ == "__main__":
     unittest.main()
