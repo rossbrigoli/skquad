@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -3738,4 +3739,38 @@ func (p *PostgresStore) DeletePromptTemplate(ctx context.Context, id string) err
 		return ErrNotFound
 	}
 	return nil
+}
+
+// --- S-194: image uploads -------------------------------------------------
+
+func (p *PostgresStore) CreateUpload(ctx context.Context, u *domain.Upload) (*domain.Upload, error) {
+	if u == nil || u.SquadID == "" {
+		return nil, ErrInvalidInput
+	}
+	row := p.pool.QueryRow(ctx, `
+		INSERT INTO uploads (squad_id, uploader_id, filename, content_type, size_bytes, data)
+		VALUES ($1, nullif($2, '')::uuid, $3, $4, $5, $6)
+		RETURNING id::text, squad_id::text, coalesce(uploader_id::text, ''), filename, content_type, size_bytes, created_at
+	`, u.SquadID, u.UploaderID, u.Filename, u.ContentType, u.SizeBytes, u.Data)
+	var out domain.Upload
+	if err := row.Scan(&out.ID, &out.SquadID, &out.UploaderID, &out.Filename, &out.ContentType, &out.SizeBytes, &out.CreatedAt); err != nil {
+		return nil, mapPgErr(err)
+	}
+	out.Data = u.Data
+	return &out, nil
+}
+
+func (p *PostgresStore) GetUpload(ctx context.Context, uploadID string) (*domain.Upload, error) {
+	if _, err := uuid.Parse(uploadID); err != nil {
+		return nil, ErrNotFound
+	}
+	row := p.pool.QueryRow(ctx, `
+		SELECT id::text, squad_id::text, coalesce(uploader_id::text, ''), filename, content_type, size_bytes, data, created_at
+		FROM uploads WHERE id = $1
+	`, uploadID)
+	var out domain.Upload
+	if err := row.Scan(&out.ID, &out.SquadID, &out.UploaderID, &out.Filename, &out.ContentType, &out.SizeBytes, &out.Data, &out.CreatedAt); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return &out, nil
 }

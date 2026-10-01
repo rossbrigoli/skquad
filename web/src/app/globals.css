@@ -2794,3 +2794,120 @@ button.squad-tab.active {
   gap: var(--space-2);
   padding-left: var(--space-2);
 }
+
+/* --- S-194: image attachments (chat + tasks) --------------------------- */
+
+.chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.chat-attachment {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 240px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface-sunken);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color var(--motion-fast) var(--ease-out);
+}
+
+.chat-attachment:hover {
+  border-color: var(--accent);
+}
+
+.chat-attachment img {
+  display: block;
+  width: 100%;
+  max-height: 180px;
+  object-fit: cover;
+}
+
+.chat-attachment-name {
+  padding: 4px var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Paperclip button beside the chat textarea. */
+.chat-attach-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-sunken);
+  color: var(--ink-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out);
+}
+
+.chat-attach-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.chat-attach-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Staged (not yet sent) attachments above the composer. */
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) 0;
+  background: var(--surface);
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  padding: 4px 8px 4px 4px;
+  background: var(--surface-sunken);
+  max-width: 260px;
+}
+
+.attachment-chip img {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  display: block;
+}
+
+.attachment-chip-name {
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.attachment-chip-remove {
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.attachment-chip-remove:hover {
+  color: var(--danger, #c0392b);
+}

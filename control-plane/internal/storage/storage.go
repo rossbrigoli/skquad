@@ -43,6 +43,14 @@ type Store interface {
 	PromptTierStore
 	PromptTemplateStore
 	BuiltinToolStore
+	UploadStore
+}
+
+// UploadStore persists image uploads (S-194). Uploads are squad-scoped:
+// the HTTP layer authorizes reads/writes against the upload's squad.
+type UploadStore interface {
+	CreateUpload(ctx context.Context, u *domain.Upload) (*domain.Upload, error)
+	GetUpload(ctx context.Context, uploadID string) (*domain.Upload, error)
 }
 
 // PromptTierStore persists the stored prompt tiers (organization via
