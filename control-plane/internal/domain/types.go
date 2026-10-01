@@ -426,7 +426,69 @@ const (
 	// InboxActionRequired is emitted when a task blocks and agents may request
 	// it explicitly (e.g. approval to proceed).
 	InboxActionRequired InboxKind = "action_required"
+	// InboxAgentMessage (S-193) is content a human explicitly asked an
+	// agent to deliver to their inbox via the send_inbox tool. Unlike the
+	// system-emitted kinds it carries agent-authored content, so consumers
+	// must treat its body as untrusted agent output.
+	InboxAgentMessage InboxKind = "agent_message"
 )
+
+// NotificationType classifies what went wrong (S-193). Notifications are
+// transient "something needs a human" alerts, deliberately separate from
+// inbox messages: an inbox message never creates a notification row.
+type NotificationType string
+
+const (
+	// NotificationTaskFailed marks a task attempt that failed (agent
+	// reported an error while executing it).
+	NotificationTaskFailed NotificationType = "task_failed"
+	// NotificationTaskStuck marks work that has made no progress while
+	// claimed. Reserved: the dedicated stuck-scanner ships as a follow-up.
+	NotificationTaskStuck NotificationType = "task_stuck"
+	// NotificationAgentDied marks an execution whose lease expired — the
+	// agent died mid-task and the task was re-queued.
+	NotificationAgentDied NotificationType = "agent_died"
+	// NotificationTaskBlocked marks a task blocked awaiting user input
+	// ("requires attention": a decision or answer).
+	NotificationTaskBlocked NotificationType = "task_blocked"
+)
+
+// NotificationSeverity orders how loud a notification is.
+type NotificationSeverity string
+
+const (
+	NotificationInfo    NotificationSeverity = "info"
+	NotificationWarning NotificationSeverity = "warning"
+	NotificationError   NotificationSeverity = "error"
+)
+
+// Notification is a recipient-scoped alert surfaced by the top-bar bell.
+// Read state is tracked; removal is not required (retention policy is a
+// follow-up concern).
+type Notification struct {
+	ID      string             `json:"id"`
+	UserID  string             `json:"user_id"`
+	SquadID string             `json:"squad_id"`
+	TaskID  string             `json:"task_id,omitempty"`
+	AgentID string             `json:"agent_id,omitempty"`
+	Type    NotificationType   `json:"type"`
+	Severity NotificationSeverity `json:"severity"`
+	Message string             `json:"message"`
+	ReadAt    time.Time        `json:"read_at,omitempty"`
+	CreatedAt time.Time        `json:"created_at"`
+}
+
+// IsRead reports whether the recipient has acknowledged the alert.
+func (n *Notification) IsRead() bool { return !n.ReadAt.IsZero() }
+
+// ReapedExecution (S-193) is the identity of one execution the reaper
+// expired, so the caller can notify the squad owner about the dead
+// attempt without a second sweep.
+type ReapedExecution struct {
+	ExecutionID string `json:"execution_id"`
+	TaskID      string `json:"task_id"`
+	AgentID     string `json:"agent_id"`
+}
 
 // InboxMessage is a notification addressed to a squad owner, not part of the
 // agent-to-agent message queue.

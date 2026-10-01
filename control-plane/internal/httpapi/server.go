@@ -112,6 +112,7 @@ type Store interface {
 	storage.AgentMemoryStore
 	storage.MessageStore
 	storage.InboxStore
+	storage.NotificationStore
 	storage.WorkNotificationStore
 	storage.PromptTierStore
 	storage.PromptTemplateStore
@@ -336,6 +337,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/peers", s.listMySquadPeers)
 			r.Post("/messages", s.createCurrentAgentMessage)
 			r.Post("/notify-owner", s.notifyOwnerFromAgent)
+			// S-193: send_inbox builtin — agent-authored content to the
+			// squad owner's inbox (kind=agent_message).
+			r.Post("/inbox", s.sendInboxFromAgent)
 			r.Post("/messages/{messageID}/ack", s.ackCurrentAgentMessage)
 			r.Post("/messages/{messageID}/fail", s.failCurrentAgentMessage)
 			// S-194: an agent can fetch images attached inside its own
@@ -386,6 +390,14 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/dashboard/usage", s.getDashboardUsage)
 			r.Get("/inbox", s.listInbox)
 			r.Post("/inbox/{messageID}/read", s.markInboxRead)
+			// S-193: explicit user delete — the only removal path inbox
+			// messages ever have.
+			r.Delete("/inbox/{messageID}", s.deleteInboxMessage)
+			// S-193: bell notifications (task failed/stuck, agent died,
+			// task blocked). ?user_id= is the platform-admin filter.
+			r.Get("/notifications", s.listNotifications)
+			r.Post("/notifications/{notificationID}/read", s.markNotificationRead)
+			r.Post("/notifications/read-all", s.markAllNotificationsRead)
 
 			// S-194: image attachments (chat composer + task threads).
 			r.Post("/uploads", s.createUpload)
@@ -2361,26 +2373,6 @@ func firstLine(text string, max int) string {
 		}
 	}
 	return ""
-}
-
-func (s *Server) listInbox(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r.Context())
-	unreadOnly := r.URL.Query().Get("unread") == "true"
-	limit := 100
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > 200 {
-			writeError(w, http.StatusBadRequest, "bad_request", "limit must be between 1 and 200")
-			return
-		}
-		limit = n
-	}
-	messages, err := s.store.ListInboxMessages(r.Context(), u.ID, unreadOnly, limit)
-	if err != nil {
-		writeStorageError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, messages)
 }
 
 func (s *Server) markInboxRead(w http.ResponseWriter, r *http.Request) {
@@ -4367,6 +4359,11 @@ func (s *Server) blockCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	s.notifySquadOwnerRich(r.Context(), updated.SquadID, domain.InboxActionRequired, principal.Agent.ID, updated.ID,
 		fmt.Sprintf("Agent %s blocked task %q%s", principal.Agent.Name, updated.Title, blockNote), subject, body)
 	s.notifyDelegationBlocked(r.Context(), updated, principal.Agent)
+	// S-193: a blocked task is also a bell notification — it awaits a
+	// human decision/answer, distinct from the inbox copy.
+	s.emitNotification(r.Context(), updated.SquadID, updated.ID, principal.Agent.ID,
+		domain.NotificationTaskBlocked, domain.NotificationWarning,
+		fmt.Sprintf("Task %s requires attention: blocked by agent %s%s", formatTaskRef(updated), principal.Agent.Name, blockNote))
 	// S-181: the agent's block turn belongs in the thread too.
 	blockedText := strings.TrimSpace(req.Summary)
 	if blockedText == "" {
@@ -4402,9 +4399,16 @@ func (s *Server) currentAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	previousStatus := principal.Agent.Status
 	if err := s.setAgentStatusAndMirror(r.Context(), principal.Agent.ID, status); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 		return
+	}
+	// S-193: a transition into error while the agent holds in-progress
+	// work is a task_failed bell alert (transition-gated so a sticky-error
+	// agent beating every interval cannot spam the owner).
+	if status == domain.AgentError {
+		s.notifyTaskFailedOnAgentError(r.Context(), principal.Agent, previousStatus)
 	}
 	agent, err := s.store.GetAgent(r.Context(), principal.Agent.ID)
 	if err != nil {

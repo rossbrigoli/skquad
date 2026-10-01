@@ -2911,3 +2911,248 @@ button.squad-tab.active {
 .attachment-chip-remove:hover {
   color: var(--danger, #c0392b);
 }
+
+/* ============================================================
+   S-193 — Notification bell + email-like inbox
+   ============================================================ */
+.btn-small {
+  padding: 2px 8px;
+  font-size: var(--text-xs, 12px);
+  border-radius: 6px;
+}
+
+.chip-info {
+  color: var(--accent, #1971c2);
+  background: rgba(25, 113, 194, 0.12);
+}
+
+.notif-bell-root {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.notif-bell-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.notif-bell-btn:hover {
+  background: var(--surface-hover, rgba(0, 0, 0, 0.05));
+}
+
+.notif-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--status-error, #c92a2a);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
+.notif-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 60;
+  width: min(380px, 92vw);
+  max-height: 420px;
+  overflow-y: auto;
+  background: var(--surface-raised, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  padding: var(--space-3);
+}
+
+.notif-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.notif-popover-title {
+  font-weight: 600;
+  font-size: var(--text-sm, 13px);
+}
+
+.notif-empty {
+  color: var(--ink-muted);
+  font-size: var(--text-sm, 13px);
+  padding: var(--space-3) 0;
+}
+
+.notif-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.notif-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+}
+
+.notif-unread {
+  background: rgba(201, 42, 42, 0.05);
+}
+
+.notif-sev-error { border-left-color: var(--status-error, #c92a2a); }
+.notif-sev-warning { border-left-color: #e8930c; }
+.notif-sev-info { border-left-color: var(--accent, #1971c2); }
+
+.notif-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.notif-item-main .chip {
+  align-self: flex-start;
+}
+
+.notif-message {
+  font-size: var(--text-sm, 13px);
+  overflow-wrap: anywhere;
+}
+
+.notif-unread .notif-message {
+  font-weight: 600;
+}
+
+.notif-message-link:hover {
+  text-decoration: underline;
+}
+
+.notif-time {
+  color: var(--ink-muted);
+  font-size: var(--text-xs, 12px);
+}
+
+/* --- email-like inbox ------------------------------------------------ */
+.inbox-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.inbox-controls {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.inbox-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm, 13px);
+  color: var(--ink-muted);
+}
+
+.inbox-filter select {
+  min-width: 140px;
+}
+
+.inbox-list {
+  margin-top: var(--space-3);
+}
+
+.inbox-row {
+  border-bottom: 1px solid var(--border);
+  padding: var(--space-2) 0;
+}
+
+.inbox-row:last-child {
+  border-bottom: none;
+}
+
+.inbox-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  min-width: 0;
+}
+
+.inbox-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: transparent;
+}
+
+.inbox-row-unread .inbox-dot {
+  background: var(--accent, #1971c2);
+}
+
+.inbox-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inbox-row-unread .inbox-subject {
+  font-weight: 700;
+}
+
+.inbox-time {
+  color: var(--ink-muted);
+  font-size: var(--text-xs, 12px);
+  white-space: nowrap;
+}
+
+.inbox-delete {
+  flex-shrink: 0;
+}
+
+.inbox-row-body {
+  padding: var(--space-2) 0 var(--space-2) 16px;
+}
+
+.inbox-body-text {
+  margin: 0 0 var(--space-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm, 13px);
+}
+
+.inbox-body-meta {
+  display: flex;
+  gap: var(--space-3);
+  color: var(--ink-muted);
+  font-size: var(--text-xs, 12px);
+}

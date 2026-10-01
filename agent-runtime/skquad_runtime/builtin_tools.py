@@ -580,11 +580,124 @@ class SendMessageTool:
         return None
 
 
+class SendInboxTool:
+    """S-193: deliver human-requested content to the squad owner's inbox.
+
+    The agent never addresses a user directly: the control plane routes the
+    message to the human who owns the agent's squad. Use this when the
+    human asked for something "to my inbox" / "notify me" — the content
+    arrives in their email-like Inbox, unread until they open it.
+    """
+
+    name = "send_inbox"
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        self.policy = policy or {}
+        self.context = context
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "send_inbox",
+                    "description": (
+                        "Send a message to your squad's human owner's "
+                        "Inbox. Use it when the human asked you to send "
+                        "something to their inbox or to notify them. The "
+                        "message is delivered unread and stays until they "
+                        "delete it. Attach task_id so the inbox entry "
+                        "links back to the task."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "message": {
+                                "type": "string",
+                                "description": (
+                                    "The content the human asked for. "
+                                    "Plain text; keep it concise."
+                                ),
+                            },
+                            "subject": {
+                                "type": "string",
+                                "description": (
+                                    "Optional one-line subject shown in "
+                                    "the inbox list."
+                                ),
+                            },
+                            "task_id": {
+                                "type": "string",
+                                "description": (
+                                    "Optional task UUID this message is "
+                                    "about (must be in your squad). Adds "
+                                    "a navigation link in the inbox."
+                                ),
+                            },
+                        },
+                        "required": ["message"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, config) -> ToolResult:  # noqa: ANN001
+        text = str(call.arguments.get("message", "")).strip()
+        if not text:
+            return ToolResult(content="send_inbox: message is required", ok=False)
+        max_chars = int(self.policy.get("maxMessageChars", 2000))
+        if len(text) > max_chars:
+            return ToolResult(
+                content=f"send_inbox: message exceeds {max_chars} characters", ok=False
+            )
+        body: dict[str, object] = {"message": text}
+        subject = str(call.arguments.get("subject", "") or "").strip()
+        if subject:
+            body["subject"] = subject
+        task_id = str(call.arguments.get("task_id", "") or "").strip()
+        if task_id:
+            body["task_id"] = task_id
+        try:
+            data = self._request("POST", "/api/v1/agents/me/inbox", body)
+        except Exception as exc:  # noqa: BLE001 - surface as tool error
+            return ToolResult(content=f"send_inbox: {exc}", ok=False)
+        message_id = str(data.get("id", "")) if isinstance(data, dict) else ""
+        return ToolResult(
+            content=(
+                "sent message to the squad owner's inbox"
+                + (f" (message {message_id})" if message_id else "")
+            ),
+            ok=True,
+        )
+
+    def _request(self, method: str, path: str, body: dict | None = None):
+        url = self.context.control_plane_url.rstrip("/") + path
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+        req = request.Request(
+            url,
+            data=payload,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {self.context.agent_credential}",
+                "X-Skquad-Agent-ID": self.context.agent_id,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        timeout = int(self.policy.get("timeoutSeconds", 15))
+        with request.urlopen(req, timeout=timeout) as response:
+            raw = response.read()
+        if not raw:
+            return {}
+        return json.loads(raw.decode("utf-8"))
+
+
 _BUILTIN_REGISTRY: dict[str, type] = {
     "exec": ExecTool,
     "web_fetch": WebFetchTool,
     "web_search": WebSearchTool,
     "send_message": SendMessageTool,
+    "send_inbox": SendInboxTool,
 }
 
 

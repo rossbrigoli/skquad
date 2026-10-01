@@ -53,6 +53,7 @@ type MemoryStore struct {
 	agentMemory     map[string]*domain.AgentMemory
 	messages        map[string]*domain.Message
 	inbox           map[string]*domain.InboxMessage
+	notifications   map[string]*domain.Notification
 	k8sOutbox       map[string]*domain.KubernetesOutboxEvent
 
 	// S-PROMPT WP2: organization tier settings (single-row, mirroring
@@ -107,6 +108,7 @@ func NewMemoryStore() *MemoryStore {
 		agentMemory:      map[string]*domain.AgentMemory{},
 		messages:         map[string]*domain.Message{},
 		inbox:            map[string]*domain.InboxMessage{},
+		notifications:    map[string]*domain.Notification{},
 		k8sOutbox:        map[string]*domain.KubernetesOutboxEvent{},
 		instanceSettings: &domain.InstanceSettings{},
 		promptRevisions:  []*domain.PromptRevision{},
@@ -1680,11 +1682,11 @@ func (m *MemoryStore) ListBoardTaskExecutions(_ context.Context, boardID string)
 // Mirrors the Postgres implementation: only active attempts whose lease
 // lapsed before cutoff are expired, and a task is re-queued to todo only
 // when no other live attempt remains.
-func (m *MemoryStore) ReapExpiredTaskExecutions(_ context.Context, cutoff time.Time) (int, error) {
+func (m *MemoryStore) ReapExpiredTaskExecutions(_ context.Context, cutoff time.Time) ([]domain.ReapedExecution, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UTC()
-	reaped := 0
+	reaped := []domain.ReapedExecution{}
 	reapedTasks := map[string]struct{}{}
 	for _, exec := range m.taskExecs {
 		if exec.Status != domain.TaskExecutionActive || !exec.LeaseExpiresAt.Before(cutoff) {
@@ -1694,7 +1696,7 @@ func (m *MemoryStore) ReapExpiredTaskExecutions(_ context.Context, cutoff time.T
 		exec.ResultSummary = "lease expired without completion"
 		exec.CompletedAt = now
 		exec.UpdatedAt = now
-		reaped++
+		reaped = append(reaped, domain.ReapedExecution{ExecutionID: exec.ID, TaskID: exec.TaskID, AgentID: exec.AgentID})
 		reapedTasks[exec.TaskID] = struct{}{}
 	}
 	for taskID := range reapedTasks {
@@ -2692,6 +2694,107 @@ func (m *MemoryStore) MarkInboxMessageRead(ctx context.Context, userID string, i
 	m.drainPendingAuditsLocked(ctx, id)
 	copyMsg := *msg
 	return &copyMsg, nil
+}
+
+func (m *MemoryStore) GetInboxMessage(_ context.Context, id string) (*domain.InboxMessage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	msg, ok := m.inbox[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	copyMsg := *msg
+	return &copyMsg, nil
+}
+
+// DeleteInboxMessage (S-193) permanently removes an inbox message.
+// Inbox semantics: messages are never auto-removed — only explicit user
+// delete reaches here. Empty userID skips recipient scoping (the handler
+// has enforced platform_admin for that path).
+func (m *MemoryStore) DeleteInboxMessage(_ context.Context, id string, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	msg, ok := m.inbox[id]
+	if !ok || (userID != "" && msg.UserID != userID) {
+		return ErrNotFound
+	}
+	delete(m.inbox, id)
+	return nil
+}
+
+// CreateNotification (S-193) files a recipient-scoped alert for the bell.
+func (m *MemoryStore) CreateNotification(_ context.Context, n *domain.Notification) (*domain.Notification, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.users[n.UserID]; !ok {
+		return nil, ErrNotFound
+	}
+	if _, ok := m.squads[n.SquadID]; !ok {
+		return nil, ErrNotFound
+	}
+	created := *n
+	created.ID = uuid.NewString()
+	if created.Severity == "" {
+		created.Severity = domain.NotificationWarning
+	}
+	created.CreatedAt = time.Now().UTC()
+	m.notifications[created.ID] = &created
+	copyN := created
+	return &copyN, nil
+}
+
+func (m *MemoryStore) ListNotifications(_ context.Context, userID string, unreadOnly bool, limit int) ([]*domain.Notification, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	out := []*domain.Notification{}
+	for _, n := range m.notifications {
+		if n.UserID != userID {
+			continue
+		}
+		if unreadOnly && !n.ReadAt.IsZero() {
+			continue
+		}
+		copyN := *n
+		out = append(out, &copyN)
+	}
+	slices.SortFunc(out, func(a, b *domain.Notification) int {
+		return b.CreatedAt.Compare(a.CreatedAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) MarkNotificationRead(_ context.Context, userID string, id string) (*domain.Notification, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n, ok := m.notifications[id]
+	if !ok || n.UserID != userID {
+		return nil, ErrNotFound
+	}
+	if n.ReadAt.IsZero() {
+		n.ReadAt = time.Now().UTC()
+	}
+	copyN := *n
+	return &copyN, nil
+}
+
+func (m *MemoryStore) MarkAllNotificationsRead(_ context.Context, userID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	now := time.Now().UTC()
+	for _, n := range m.notifications {
+		if n.UserID == userID && n.ReadAt.IsZero() {
+			n.ReadAt = now
+			count++
+		}
+	}
+	return count, nil
 }
 
 func cloneMessage(m *domain.Message) *domain.Message {
