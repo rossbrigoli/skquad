@@ -120,6 +120,10 @@ func main() {
 	}
 
 	handler := httpapi.NewWithDependencies(cfg, store, oidcAuth, crWriter, providerKeys)
+	// S-212: ensure the embedder model is registered in the LiteLLM
+	// gateway (idempotent; retries in the background while the gateway
+	// boots). No-op unless memory embeddings are enabled.
+	httpapi.RegisterEmbedderGatewayModel(context.Background(), cfg)
 
 	server := &http.Server{
 		Addr:    cfg.Addr,

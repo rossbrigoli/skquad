@@ -38,6 +38,15 @@ rules:
       - patch
       - update
       - delete
+  # S-212: the embedder GPU reconciler lists cluster Nodes to decide
+  # GPU vs CPU placement. Read-only, cluster-scoped, minimal.
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - get
+      - list
   - apiGroups:
       - ""
     resources:

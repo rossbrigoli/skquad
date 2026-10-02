@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 from urllib import error, request
+from urllib.parse import quote
 
 from .runtime import A2A_CORRELATION, ToolCall, ToolResult
 
@@ -797,6 +798,116 @@ class NotifyOwnerTool:
         return json.loads(raw.decode("utf-8"))
 
 
+class MemorySearchTool:
+    """S-212: semantic recall over the agent's own long-term memory.
+
+    The embedding + pgvector retrieval happen control-plane-side
+    (``GET /api/v1/agents/me/memory/search``); the tool only formats
+    the ranked hits for the model. Results are hard-scoped to this
+    agent's memories and exclude rejected rows — the same auth model
+    as every other ``/agents/me`` surface. The runtime never sees the
+    embedder or the gateway key.
+    """
+
+    name = "memory_search"
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        self.policy = policy or {}
+        self.context = context
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_search",
+                    "description": (
+                        "Search your own long-term memory (past task "
+                        "completions and archived chat transcripts) by "
+                        "meaning, not keywords. Returns the most "
+                        "similar memories with relevance scores."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "What to recall, in natural language.",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": (
+                                    "Maximum number of memories to "
+                                    "return (1-20, default 5)."
+                                ),
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, config) -> ToolResult:  # noqa: ANN001
+        query = str(call.arguments.get("query", ""))
+        if not query.strip():
+            return ToolResult(content="memory_search: empty query", ok=False)
+
+        params = [f"q={quote(query)}"]
+        limit = call.arguments.get("limit")
+        if limit is None:
+            limit = self.policy.get("maxResults")
+        if limit is not None:
+            params.append(f"limit={int(limit)}")
+
+        timeout = int(self.policy.get("timeoutSeconds", 30))
+        url = (
+            self.context.control_plane_url.rstrip("/")
+            + "/api/v1/agents/me/memory/search?"
+            + "&".join(params)
+        )
+        req = request.Request(
+            url,
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.context.agent_credential}",
+                "X-Skquad-Agent-ID": self.context.agent_id,
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with request.urlopen(req, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = json.loads(exc.read().decode("utf-8")).get("error", "")
+            except Exception:  # noqa: BLE001 — error body is best-effort
+                pass
+            suffix = f" — {detail}" if detail else ""
+            return ToolResult(
+                content=f"memory_search: HTTP {exc.code}{suffix}", ok=False
+            )
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return ToolResult(content=f"memory_search: request failed: {exc}", ok=False)
+
+        results = data.get("results") or []
+        if not results:
+            return ToolResult(content="memory_search: no matching memories", ok=True)
+
+        lines: list[str] = []
+        for item in results:
+            content = str(item.get("content", "")).strip()
+            score = item.get("score")
+            score_text = f"{float(score):.3f}" if isinstance(score, (int, float)) else "?"
+            memory_id = str(item.get("id", ""))
+            created = str(item.get("created_at", ""))
+            lines.append(
+                f"[score {score_text} | memory {memory_id} | {created}]\n{content}"
+            )
+        return ToolResult(content="\n\n".join(lines), ok=True)
+
+
 _BUILTIN_REGISTRY: dict[str, type] = {
     "exec": ExecTool,
     "web_fetch": WebFetchTool,
@@ -804,6 +915,7 @@ _BUILTIN_REGISTRY: dict[str, type] = {
     "send_message": SendMessageTool,
     "send_inbox": SendInboxTool,
     "notify_owner": NotifyOwnerTool,
+    "memory_search": MemorySearchTool,
 }
 
 

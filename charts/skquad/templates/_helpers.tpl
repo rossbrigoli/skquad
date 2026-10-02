@@ -79,3 +79,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- include "skquad.postgresName" . -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "skquad.embedderName" -}}
+{{- printf "%s-embedder" (include "skquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "skquad.embedderImage" -}}
+{{- printf "%s:%s" .Values.embedder.image.repository .Values.embedder.image.tag -}}
+{{- end -}}

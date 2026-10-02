@@ -1796,7 +1796,57 @@ func (m *MemoryStore) ListAgentMemory(_ context.Context, agentID string, squadID
 	return out, nil
 }
 
-// memoryVectorComparator orders memories by cosine similarity to the query
+// SearchAgentMemory (S-212) mirrors the Postgres trust-gating policy:
+// rejected rows and rows without embeddings are excluded; everything
+// else is ranked by cosine similarity to the query vector.
+func (m *MemoryStore) SearchAgentMemory(_ context.Context, agentID string, squadID string, queryEmbedding []float64, limit int) ([]MemorySearchHit, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.agents[agentID]; !ok {
+		return nil, ErrNotFound
+	}
+	if len(queryEmbedding) == 0 {
+		return nil, ErrInvalidInput
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	type scored struct {
+		memory *domain.AgentMemory
+		score  float64
+	}
+	candidates := make([]scored, 0)
+	for _, item := range m.agentMemory {
+		if item.AgentID != agentID || item.ReviewStatus == "rejected" || len(item.Embedding) == 0 {
+			continue
+		}
+		if item.SquadID != "" && item.SquadID != squadID {
+			continue
+		}
+		score, ok := cosineSimilarity(item.Embedding, queryEmbedding)
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, scored{memory: item, score: score})
+	}
+	slices.SortFunc(candidates, func(a, b scored) int {
+		if a.score != b.score {
+			if a.score > b.score {
+				return -1
+			}
+			return 1
+		}
+		return compareMemoryRecency(a.memory, b.memory)
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	hits := make([]MemorySearchHit, 0, len(candidates))
+	for _, c := range candidates {
+		hits = append(hits, MemorySearchHit{Memory: cloneAgentMemory(c.memory), Score: c.score})
+	}
+	return hits, nil
+}
 // embedding (valid matches first, higher score first), falling back to
 // recency for ties and invalid vectors.
 func memoryVectorComparator(queryEmbedding []float64) func(a, b *domain.AgentMemory) int {
@@ -2100,7 +2150,8 @@ func (m *MemoryStore) CountMessagesByCorrelation(_ context.Context, correlationI
 
 // ResetAgentChat (S-162) mirrors the Postgres implementation: archive
 // the transcript into agent memory and move the boundary to now.
-func (m *MemoryStore) ResetAgentChat(_ context.Context, agentID, squadID, transcript string, metadata json.RawMessage) (int, time.Time, error) {
+// S-212: the transcript carries its write-time embedding + model.
+func (m *MemoryStore) ResetAgentChat(_ context.Context, agentID, squadID, transcript string, metadata json.RawMessage, embedding []float64, embeddingModel string) (int, time.Time, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	agent, ok := m.agents[agentID]
@@ -2126,9 +2177,11 @@ func (m *MemoryStore) ResetAgentChat(_ context.Context, agentID, squadID, transc
 			Content:      transcript,
 			TrustLevel:   "distilled",
 			Provenance:   "chat_reset",
-			ReviewStatus: "approved",
-			Metadata:     defaultJSON(metadata, "{}"),
-			CreatedAt:    resetAt,
+			ReviewStatus:   "approved",
+			Embedding:      append([]float64(nil), embedding...),
+			EmbeddingModel: embeddingModel,
+			Metadata:       defaultJSON(metadata, "{}"),
+			CreatedAt:      resetAt,
 		}
 		m.agentMemory[mem.ID] = mem
 	}

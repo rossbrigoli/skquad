@@ -48,7 +48,10 @@ func (s *Server) resetAgentChat(w http.ResponseWriter, r *http.Request) {
 		"message_count": len(messages),
 		"reset_by":     currentUser(r.Context()).ID,
 	})
-	archived, resetAt, err := s.store.ResetAgentChat(r.Context(), target.ID, target.SquadID, transcript, metadata)
+	// S-212: embed the transcript at write time (best-effort; the
+	// backfill job catches rows stored without a vector).
+	transcriptEmbedding, transcriptEmbeddingModel := s.embedMemoryText(r.Context(), transcript)
+	archived, resetAt, err := s.store.ResetAgentChat(r.Context(), target.ID, target.SquadID, transcript, metadata, transcriptEmbedding, transcriptEmbeddingModel)
 	if err != nil {
 		writeStorageError(w, err)
 		return

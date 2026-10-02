@@ -24,11 +24,12 @@ const (
 	BuiltinToolWebSearch   = "web_search"
 	BuiltinToolSendMessage = "send_message"
 	BuiltinToolSendInbox   = "send_inbox"
-	BuiltinToolNotifyOwner = "notify_owner"
+	BuiltinToolNotifyOwner  = "notify_owner"
+	BuiltinToolMemorySearch = "memory_search"
 )
 
 // BuiltinToolNames lists the built-in tools in canonical order.
-var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner}
+var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch}
 
 // BuiltinToolDefaultEnabled reports whether a built-in ships enabled when
 // seeded. The original three are security-sensitive and ship disabled
@@ -41,8 +42,12 @@ var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToo
 // inbox — it triggers no auto-action and reaches nobody else. send_inbox
 // ships enabled to match its S-193 seed (migration 0029): same posture,
 // one capped agent_message row in the agent's own squad owner's inbox.
+// memory_search ships enabled to match its S-212 seed (migration 0035):
+// recall is read-only, hard-scoped to the calling agent's own
+// agent_memory rows, excludes rejected memories, and additionally
+// no-ops server-side unless SKQUAD_MEMORY_EMBEDDINGS_ENABLED=true.
 func BuiltinToolDefaultEnabled(name string) bool {
-	return name == BuiltinToolSendMessage || name == BuiltinToolSendInbox || name == BuiltinToolNotifyOwner
+	return name == BuiltinToolSendMessage || name == BuiltinToolSendInbox || name == BuiltinToolNotifyOwner || name == BuiltinToolMemorySearch
 }
 
 // SearchProviderNames lists the accepted web_search policy providers.
@@ -137,6 +142,13 @@ func ValidateBuiltinPolicy(name string, policy json.RawMessage) []string {
 		allowed = map[string]func(string, json.RawMessage) []string{
 			"timeoutSeconds":  requirePositiveInt,
 			"maxMessageChars": requirePositiveInt,
+		}
+	case BuiltinToolMemorySearch:
+		// S-212: timeoutSeconds bounds the embed-query + pgvector round
+		// trips through the gateway; maxResults caps top-k recall.
+		allowed = map[string]func(string, json.RawMessage) []string{
+			"timeoutSeconds": requirePositiveInt,
+			"maxResults":     requirePositiveInt,
 		}
 	default:
 		return []string{fmt.Sprintf("unknown built-in tool %q", name)}
