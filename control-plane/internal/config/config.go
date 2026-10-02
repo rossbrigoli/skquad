@@ -94,6 +94,8 @@ type Config struct {
 	ReaperGrace          time.Duration // extra time beyond the lease before an execution is declared dead
 	ConsultSweepInterval time.Duration // S-173: how often the consult-timeout sweeper runs
 	ConsultTimeout       time.Duration // S-173: default reply deadline for agent consults
+	StuckScanInterval    time.Duration // S-197: how often the stuck-task scanner sweeps
+	TaskStuckThreshold   time.Duration // S-197: silence (thread + heartbeat) before a task_stuck alert fires; also the per-task dedupe window
 
 	// Agent workspace storage (S-138). Platform-admin knobs only: squad
 	// owners pick a size within [0, MaxAgentStorage]; the StorageClass is
@@ -157,6 +159,8 @@ func Load() (*Config, error) {
 		ReaperGrace:             envSeconds("SKQUAD_REAPER_GRACE_SECONDS", 120),
 		ConsultSweepInterval:    envSeconds("SKQUAD_CONSULT_SWEEP_INTERVAL_SECONDS", 60),
 		ConsultTimeout:          envSeconds("SKQUAD_CONSULT_TIMEOUT_SECONDS", 900),
+		StuckScanInterval:       envSeconds("SKQUAD_STUCK_SCAN_INTERVAL_SECONDS", 300),
+		TaskStuckThreshold:      envSeconds("SKQUAD_TASK_STUCK_THRESHOLD_SECONDS", 86400),
 		DefaultAgentStorageSize: envOr("SKQUAD_DEFAULT_AGENT_STORAGE_SIZE", "2Gi"),
 		MaxAgentStorage:         envOr("SKQUAD_MAX_AGENT_STORAGE", "10Gi"),
 		StorageClass:            strings.TrimSpace(os.Getenv("SKQUAD_STORAGE_CLASS")),
