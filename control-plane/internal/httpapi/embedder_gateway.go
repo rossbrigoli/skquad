@@ -22,7 +22,7 @@ import (
 // embedderPlaceholderAPIKey satisfies litellm's non-empty api_key
 // requirement for the unauthenticated in-cluster embedder. It is not
 // a credential and grants nothing outside the pod network.
-const embedderPlaceholderAPIKey = "sk-skquad-internal"
+const embedderPlaceholderAPIKey = "skquad-internal" // #nosec G101 -- non-secret placeholder; embedder has no auth
 
 // RegisterEmbedderGatewayModel starts the idempotent embedder-model
 // registration in the background. No-op unless memory embeddings are
