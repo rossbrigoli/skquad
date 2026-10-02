@@ -1356,6 +1356,22 @@ func (m *MemoryStore) ListAudit(_ context.Context, squadID string, limit int) ([
 	return out, nil
 }
 
+// DeleteAuditByActionBefore (S-198) purges audit rows with the given
+// action recorded before cutoff. Action-scoped so the retention sweep
+// never touches unrelated audit history.
+func (m *MemoryStore) DeleteAuditByActionBefore(_ context.Context, action string, cutoff time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	purged := 0
+	for id, entry := range m.auditLog {
+		if entry.Action == action && entry.Timestamp.Before(cutoff) {
+			delete(m.auditLog, id)
+			purged++
+		}
+	}
+	return purged, nil
+}
+
 func (m *MemoryStore) GetBoard(_ context.Context, squadID string) (*domain.Board, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -2867,6 +2883,23 @@ func (m *MemoryStore) MarkAllNotificationsRead(_ context.Context, userID string)
 		}
 	}
 	return count, nil
+}
+
+// DeleteReadNotificationsBefore (S-198) purges READ notifications created
+// before cutoff. The read_at predicate is the guard: unread alerts are
+// never touched here, and inbox messages live in a separate table that
+// this sweep cannot reach (S-193: explicit user delete only).
+func (m *MemoryStore) DeleteReadNotificationsBefore(_ context.Context, cutoff time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	purged := 0
+	for id, n := range m.notifications {
+		if !n.ReadAt.IsZero() && n.CreatedAt.Before(cutoff) {
+			delete(m.notifications, id)
+			purged++
+		}
+	}
+	return purged, nil
 }
 
 // GetNotificationPreferences (S-199) returns the user's mute list.

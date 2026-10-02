@@ -23,6 +23,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -111,6 +112,20 @@ func (s *Server) deleteInboxMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		scope = "" // admin delete: unrestricted
+	}
+	// S-198: inbox deletes used to be a silent 204. Record who deleted
+	// which message before removing it; if the audit cannot be written,
+	// the delete fails too (same required-audit pattern as dead-letter
+	// prune). The 204 response semantics are unchanged.
+	metadata, _ := json.Marshal(map[string]any{
+		"message_kind":      string(msg.Kind),
+		"recipient_user_id": msg.UserID,
+		"from_agent_id":     msg.FromAgentID,
+		"task_id":           msg.TaskID,
+	})
+	if err := s.recordUserAuditRequired(r, auditInboxDeleted, "inbox_message", msg.ID, msg.SquadID, metadata); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to audit inbox delete")
+		return
 	}
 	if err := s.store.DeleteInboxMessage(r.Context(), id, scope); err != nil {
 		writeStorageError(w, err)
