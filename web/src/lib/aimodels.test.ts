@@ -52,6 +52,7 @@ function model(overrides: Partial<AIModel> = {}): AIModel {
     model_name: "gpt-6-sol",
     context_window: 200000,
     supports_tools: true,
+    supports_vision: true,
     pricing: {
       input_per_1m: 2.5,
       cached_input_per_1m: 0.25,
@@ -73,6 +74,7 @@ describe("buildAIModelPayload", () => {
       display_name: "GPT-6 Sol",
       context_window: 200000,
       supports_tools: true,
+      supports_vision: false,
       pricing: {
         input_per_1m: 2.5,
         cached_input_per_1m: 0.25,
@@ -85,7 +87,7 @@ describe("buildAIModelPayload", () => {
     expect(payload.pricing).not.toHaveProperty("long_context_threshold_tokens");
     // decodeJSON DisallowUnknownFields — no stray keys anywhere.
     expect(Object.keys(payload).sort((a, b) => a.localeCompare(b))).toEqual(
-      ["context_window", "display_name", "long_context_threshold_tokens", "model_name", "pricing", "provider_id", "supports_tools"],
+      ["context_window", "display_name", "long_context_threshold_tokens", "model_name", "pricing", "provider_id", "supports_tools", "supports_vision"],
     );
     expect(Object.keys(payload.pricing as object).sort((a, b) => a.localeCompare(b))).toEqual(
       [...PRICING_RATE_KEYS].sort((a, b) => a.localeCompare(b)),
@@ -135,6 +137,7 @@ describe("buildAIModelPayload", () => {
       display_name: "GPT-6 Sol",
       context_window: 200000,
       supports_tools: true,
+      supports_vision: true,
       pricing: { input_per_1m: 2.5, cached_input_per_1m: 0.25, cache_write_per_1m: 3, output_per_1m: 15 },
       long_context_threshold_tokens: 272000,
     });
@@ -299,6 +302,7 @@ function nestedModel(id: string, providerId: string, name = id): AIModel {
     model_name: name,
     context_window: 200000,
     supports_tools: true,
+    supports_vision: false,
     pricing: { input_per_1m: 1, cached_input_per_1m: 0.1, cache_write_per_1m: 1.25, output_per_1m: 2 },
     long_context_threshold_tokens: 0,
     status: "active",

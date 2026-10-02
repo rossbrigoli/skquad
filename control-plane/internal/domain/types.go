@@ -574,6 +574,12 @@ type AIModel struct {
 	// SupportsTools records tool-calling capability; fallbacks without it
 	// break the agent tool loop (ADR-0010 Risk 2).
 	SupportsTools bool `json:"supports_tools"`
+	// SupportsVision (S-200) records image-input capability. The agent
+	// runtime only embeds attached images as base64 content parts when the
+	// bound model is vision-capable; non-vision models degrade to the text
+	// reference. Provisioned into the gateway deployment model_info so the
+	// gateway can enforce it as defense-in-depth.
+	SupportsVision bool `json:"supports_vision"`
 	// Pricing holds the four per-1M rates (input_per_1m, cached_input_per_1m,
 	// cache_write_per_1m, output_per_1m) per ADR-0010 D8. Cost is
 	// snapshotted at metering time and never re-derived from live pricing.

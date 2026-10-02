@@ -19,6 +19,7 @@ function model(overrides: Partial<AIModel> = {}): AIModel {
     model_name: "gpt-6-sol",
     context_window: 200000,
     supports_tools: true,
+    supports_vision: false,
     pricing: {
       input_per_1m: 2.5,
       cached_input_per_1m: 0.25,

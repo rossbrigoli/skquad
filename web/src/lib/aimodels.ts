@@ -35,6 +35,7 @@ export type AIModel = {
   model_name: string;
   context_window: number;
   supports_tools: boolean;
+  supports_vision: boolean;
   pricing: Partial<AIModelPricing> | null;
   long_context_threshold_tokens: number;
   status: string;
@@ -102,6 +103,7 @@ export type AIModelFormValues = {
   display_name: string;
   context_window: string;
   supports_tools: boolean;
+  supports_vision: boolean;
   pricing: Record<PricingRateKey, string>;
   long_context_threshold_tokens: string;
 };
@@ -122,6 +124,7 @@ export function emptyAIModelForm(): AIModelFormValues {
     display_name: "",
     context_window: "",
     supports_tools: true,
+    supports_vision: false,
     pricing: emptyPricingForm(),
     long_context_threshold_tokens: "",
   };
@@ -139,6 +142,7 @@ export function formFromAIModel(m: AIModel): AIModelFormValues {
     display_name: m.display_name ?? "",
     context_window: m.context_window ? String(m.context_window) : "",
     supports_tools: !!m.supports_tools,
+    supports_vision: !!m.supports_vision,
     pricing,
     long_context_threshold_tokens: m.long_context_threshold_tokens
       ? String(m.long_context_threshold_tokens)
@@ -200,6 +204,7 @@ export function buildAIModelPayload(v: AIModelFormValues): Record<string, unknow
     model_name: modelName,
     context_window: contextWindow,
     supports_tools: !!v.supports_tools,
+    supports_vision: !!v.supports_vision,
     pricing,
   };
   const displayName = (v.display_name ?? "").trim();
@@ -250,6 +255,7 @@ export type AIModelRow = {
   subtitle: string;
   contextWindow: string;
   tools: string;
+  vision: string;
   rates: { key: PricingRateKey; label: string; value: string }[];
   longContextThreshold: string;
   status: string;
@@ -295,6 +301,7 @@ export function modelRowFields(m: AIModel, providerName?: string): AIModelRow {
     contextWindow:
       m.context_window > 0 ? `${m.context_window.toLocaleString("en-US")} tokens` : "unknown",
     tools: m.supports_tools ? "tools ✓" : "no tools",
+    vision: m.supports_vision ? "vision ✓" : "no vision",
     rates: PRICING_RATE_KEYS.map((key) => ({
       key,
       label: PRICING_RATE_LABELS[key],

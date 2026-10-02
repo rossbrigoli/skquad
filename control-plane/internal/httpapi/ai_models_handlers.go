@@ -127,6 +127,7 @@ func (s *Server) createAIModel(w http.ResponseWriter, r *http.Request) {
 		ModelName                  string          `json:"model_name"`
 		ContextWindow              int             `json:"context_window"`
 		SupportsTools              bool            `json:"supports_tools"`
+		SupportsVision             bool            `json:"supports_vision"`
 		Pricing                    json.RawMessage `json:"pricing"`
 		LongContextThresholdTokens *int            `json:"long_context_threshold_tokens"`
 	}
@@ -172,6 +173,7 @@ func (s *Server) createAIModel(w http.ResponseWriter, r *http.Request) {
 		ModelName:                  modelName,
 		ContextWindow:              req.ContextWindow,
 		SupportsTools:              req.SupportsTools,
+		SupportsVision:             req.SupportsVision,
 		Pricing:                    req.Pricing,
 		LongContextThresholdTokens: threshold,
 		Status:                     domain.ResourceActive,
@@ -182,7 +184,7 @@ func (s *Server) createAIModel(w http.ResponseWriter, r *http.Request) {
 	// loud error — never a silently-unusable model.
 	gatewayDeploymentID := ""
 	if s.gatewayModelsEnabled() {
-		deploymentID, err := s.provisionGatewayModel(r.Context(), provider, modelName)
+		deploymentID, err := s.provisionGatewayModel(r.Context(), provider, modelName, model.SupportsVision)
 		if err != nil {
 			writeGatewayProvisionFailure(w, "registered", err)
 			return
@@ -243,6 +245,7 @@ type updateAIModelRequest struct {
 	ModelName                  *string          `json:"model_name"`
 	ContextWindow              *int             `json:"context_window"`
 	SupportsTools              *bool            `json:"supports_tools"`
+	SupportsVision             *bool            `json:"supports_vision"`
 	Pricing                    *json.RawMessage `json:"pricing"`
 	LongContextThresholdTokens *int             `json:"long_context_threshold_tokens"`
 }
@@ -284,6 +287,9 @@ func (s *Server) applyAIModelScalarFields(w http.ResponseWriter, r *http.Request
 	}
 	if req.SupportsTools != nil {
 		model.SupportsTools = *req.SupportsTools
+	}
+	if req.SupportsVision != nil {
+		model.SupportsVision = *req.SupportsVision
 	}
 	return true
 }
@@ -348,7 +354,7 @@ func (s *Server) updateAIModel(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		if err := s.updateGatewayModelDeployment(r.Context(), oldModelName, provider, model.ModelName); err != nil {
+		if err := s.updateGatewayModelDeployment(r.Context(), oldModelName, provider, model.ModelName, model.SupportsVision); err != nil {
 			writeGatewayProvisionFailure(w, "updated", err)
 			return
 		}

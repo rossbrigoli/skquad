@@ -555,7 +555,7 @@ function ModelHierarchyTab() {
         <div className="entity-main">
           <span className="entity-title">{row.title}</span>
           <span className="entity-meta">
-            {m.model_name} · {row.contextWindow} · {row.tools} · {row.longContextThreshold}
+            {m.model_name} · {row.contextWindow} · {row.tools} · {row.vision} · {row.longContextThreshold}
           </span>
           <span className="entity-meta">
             {row.rates.map((r) => `${r.label}: ${r.value}`).join(" · ")}
@@ -973,6 +973,14 @@ function AIModelModal({
           />
           <span>Supports tool calling</span>
         </label>
+        <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={values.supports_vision}
+            onChange={(e) => setField("supports_vision", e.target.checked)}
+          />
+          <span>Supports vision (image input)</span>
+        </label>
         <div className="field-row">
           {PRICING_RATE_KEYS.map((key) => (
             <label key={key} className="field">
@@ -1216,7 +1224,8 @@ function GrantEditor({ user }: { readonly user: AdminUser }) {
                 />
                 <span className="entity-title">{m.display_name || m.model_name}</span>
                 <span className="entity-meta">
-                  {m.model_name} · {m.supports_tools ? "tools ✓" : "no tools"}
+                  {m.model_name} · {m.supports_tools ? "tools ✓" : "no tools"} ·{" "}
+                  {m.supports_vision ? "vision ✓" : "no vision"}
                 </span>
               </label>
             </div>

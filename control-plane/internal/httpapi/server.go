@@ -380,6 +380,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			// S-194: an agent can fetch images attached inside its own
 			// squad (the chat/task payload URLs).
 			r.Get("/uploads/{uploadID}", s.getMyUploadBytes)
+			// S-200: the runtime reads its bound model's vision/tool
+			// capability at wake to gate image passthrough.
+			r.Get("/model", s.getMyModel)
 			// S-175: the runtime polls a turn's status to notice user cancels.
 			r.Get("/messages/{messageID}", s.getCurrentAgentMessage)
 			r.Get("/work/wait", s.waitCurrentAgentWork)

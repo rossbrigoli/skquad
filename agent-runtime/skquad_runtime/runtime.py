@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import base64
 import inspect
 import re
 import importlib
@@ -85,6 +86,23 @@ DEFAULT_CHAT_TOOL_STEPS = 8
 # Bounds the continuation injection so a chatty model cannot loop or
 # burn unbounded tokens (mirrors OpenClaw's bounded agent-loop turns).
 DEFAULT_CHAT_INTERIM_REPLIES = 2
+
+# S-200: vision passthrough budgets. The control plane already caps
+# uploads at 5 MiB each / 8 per message; these bound what the runtime
+# actually embeds into a single LLM request so base64 inflation (~1.33x)
+# cannot blow up the request size. base64 size of N raw bytes is
+# ceil(N/3)*4. Images that would exceed the total budget are skipped
+# (their text reference is preserved), never an error. Env-overridable.
+VISION_MAX_IMAGES = int(os.environ.get("SKQUAD_VISION_MAX_IMAGES", "8"))
+VISION_MAX_TOTAL_B64_BYTES = int(
+    os.environ.get("SKQUAD_VISION_MAX_TOTAL_B64_BYTES", str(20 * 1024 * 1024))
+)
+# MIME types the runtime will embed as image_url parts. Mirrors the
+# upload-side allow-list (uploads.go: png/jpeg/gif/webp); anything else is
+# skipped so a mismatched registry entry can't smuggle a non-image.
+VISION_ALLOWED_MIME = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp"}
+)
 
 # S-195: injected (ephemeral, LLM-context-only) nudge that follows an
 # interim progress reply. It tells the model the previous text was
@@ -349,6 +367,91 @@ def format_attachment_note(raw: object) -> str:
         ctype = str(item.get("content_type") or "image").strip() or "image"
         notes.append(f"[attached {ctype}: {name} at {url}]")
     return "\n".join(notes)
+
+
+def build_image_content_parts(
+    text: str,
+    attachments: object,
+    fetch_bytes: Callable[[str], bytes],
+    *,
+    max_images: int = VISION_MAX_IMAGES,
+    max_total_b64_bytes: int = VISION_MAX_TOTAL_B64_BYTES,
+) -> tuple[object, dict[str, object]]:
+    """S-200: build OpenAI-style multimodal content for a user turn.
+
+    Returns ``(content, stats)``. ``content`` is the original ``text``
+    (a plain string) when nothing is embedded — so a non-vision model or
+    an image-less turn is byte-identical to the S-194 text-reference
+    path. When images embed, it is a content-part list:
+    ``[{"type": "text", ...}, {"type": "image_url", ...}, ...]``.
+
+    ``fetch_bytes`` resolves an upload id to raw bytes (injectable for
+    tests). Every failure mode is graceful: a disallowed MIME, an
+    unfetchable upload, or an image that would push the request past the
+    base64 budget is SKIPPED (its text reference already lives in
+    ``text``), never raised. The turn must not die because of an image.
+
+    ``stats`` = {embedded, skipped, total_b64_bytes, reasons} for
+    honest logging.
+    """
+    stats: dict[str, object] = {
+        "embedded": 0,
+        "skipped": 0,
+        "total_b64_bytes": 0,
+        "reasons": [],
+    }
+    if not isinstance(attachments, list) or not attachments:
+        return text, stats
+
+    parts: list[dict[str, object]] = [{"type": "text", "text": text}]
+    total_b64 = 0
+    embedded = 0
+    for item in attachments:
+        if not isinstance(item, dict):
+            continue
+        upload_id = str(item.get("id") or "").strip()
+        mime = str(item.get("content_type") or "").strip().lower()
+        if not upload_id:
+            continue
+        if mime not in VISION_ALLOWED_MIME:
+            stats["skipped"] = int(stats["skipped"]) + 1  # type: ignore[arg-type]
+            stats["reasons"].append(f"{upload_id}:mime_not_allowed")  # type: ignore[union-attr]
+            continue
+        if embedded >= max_images:
+            stats["skipped"] = int(stats["skipped"]) + 1  # type: ignore[arg-type]
+            stats["reasons"].append(f"{upload_id}:max_images")  # type: ignore[union-attr]
+            continue
+        try:
+            raw = fetch_bytes(upload_id)
+        except Exception as exc:  # noqa: BLE001 - a bad fetch never kills the turn
+            stats["skipped"] = int(stats["skipped"]) + 1  # type: ignore[arg-type]
+            stats["reasons"].append(f"{upload_id}:fetch_failed")  # type: ignore[union-attr]
+            LOGGER.warning("vision: upload fetch failed id=%s: %s", upload_id, exc)
+            continue
+        if not raw:
+            stats["skipped"] = int(stats["skipped"]) + 1  # type: ignore[arg-type]
+            stats["reasons"].append(f"{upload_id}:empty")  # type: ignore[union-attr]
+            continue
+        encoded = base64.b64encode(raw).decode("ascii")
+        b64_len = len(encoded)
+        if total_b64 + b64_len > max_total_b64_bytes:
+            stats["skipped"] = int(stats["skipped"]) + 1  # type: ignore[arg-type]
+            stats["reasons"].append(f"{upload_id}:budget")  # type: ignore[union-attr]
+            continue
+        parts.append(
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}
+        )
+        total_b64 += b64_len
+        embedded += 1
+
+    stats["embedded"] = embedded
+    stats["total_b64_bytes"] = total_b64
+    if embedded == 0:
+        # Nothing embedded → keep the plain-text path exactly (byte-
+        # identical to S-194), so non-vision / all-skipped turns are
+        # unchanged for the model and the logs.
+        return text, stats
+    return parts, stats
 
 
 @dataclass(frozen=True)
@@ -946,6 +1049,43 @@ class ControlPlaneClient:
             return None
         return json.loads(payload.decode("utf-8"))
 
+    def _bytes(self, method: str, path: str) -> bytes:
+        """Raw-bytes GET/POST against the control plane (S-200 uploads).
+
+        The JSON helper can't carry binary; image bytes need their own
+        path. Auth headers are identical, so own-squad enforcement on
+        the upload endpoint applies unchanged.
+        """
+        headers = {
+            "Authorization": f"Bearer {self.credential}",
+            "X-Skquad-Agent-ID": self.agent_id,
+            "Accept": "*/*",
+        }
+        req = request.Request(self.base_url + path, data=None, headers=headers, method=method)
+        try:
+            with self._opener(req) as response:
+                return response.read()
+        except error.HTTPError as exc:
+            raise RuntimeError(f"control-plane request failed: {exc.code}") from exc
+
+    def get_my_model(self) -> dict[str, object]:
+        """S-200: bound model capability (model_name/supports_vision/tools).
+
+        Best-effort at the caller: a failure means "unknown capability",
+        which the runtime treats as NOT vision-capable (text-only
+        degradation), never a fatal turn error.
+        """
+        return self._json("GET", "/api/v1/agents/me/model", None) or {}
+
+    def fetch_upload_bytes(self, upload_id: str) -> bytes:
+        """S-200: fetch attached image bytes via the own-squad upload path.
+
+        Reuses GET /api/v1/agents/me/uploads/{id} exactly as S-194
+        exposed it — the control plane enforces that the upload belongs
+        to this agent's squad. No weakening of that check.
+        """
+        return self._bytes("GET", f"/api/v1/agents/me/uploads/{upload_id}")
+
 
 def runtime_task(payload: Mapping[str, object]) -> RuntimeTask:
     return RuntimeTask(
@@ -1173,6 +1313,10 @@ class LLMMessageHandler:
         # the model whom it may message without a fetch per turn.
         self._peers_cache: list[dict[str, object]] = []
         self._peers_expires: float = 0.0
+        # S-200: bound-model vision-capability cache (60s TTL, keyed by
+        # model name) so the chat path doesn't re-fetch capability every
+        # turn. Absence/uncertainty reads as NOT vision-capable.
+        self._vision_cache: dict[str, tuple[bool, float]] = {}
 
     def _squad_roster(self, config: BootstrapConfig) -> list[dict[str, object]]:
         now = monotonic()
@@ -1396,7 +1540,7 @@ class LLMMessageHandler:
         to the chat thread from inside the loop; the caller must not re-post
         them and must tolerate an empty final response when it is non-zero.
         """
-        chat_messages = self._build_chat_messages(message, config, prompted)
+        chat_messages = self._build_chat_messages(message, config, prompted, model)
         completion = self._completion or self._default_completion()
         # BT-RUNTIME: builtin tools (when enabled) join the chat tool list.
         # A fetch failure fails the turn loudly — never answer with a
@@ -1756,6 +1900,7 @@ class LLMMessageHandler:
         message: RuntimeMessage,
         config: BootstrapConfig,
         prompted: "PromptedRuntime | None" = None,
+        model: str = "",
     ) -> list[dict[str, object]]:
         try:
             history = self._control_plane(config).list_message_history()
@@ -1793,8 +1938,55 @@ class LLMMessageHandler:
         for item in prior:
             role = "user" if item.from_type == "user" else "assistant"
             chat.append({"role": role, "content": str(item.payload.get("message", ""))})
-        chat.append({"role": "user", "content": str(message.payload.get("message", ""))})
+        # S-200: the current user turn carries attached images as base64
+        # content parts ONLY when the bound model is vision-capable. The
+        # text reference (S-194 note) is already inside the message text,
+        # so a non-vision model or a skipped image still tells the model
+        # an image exists — graceful degradation, never a dead turn.
+        current_text = str(message.payload.get("message", ""))
+        attachments = message.payload.get("attachments")
+        current_content: object = current_text
+        if attachments and self._model_supports_vision(config, model):
+            current_content, stats = build_image_content_parts(
+                current_text,
+                attachments,
+                lambda uid: self._control_plane(config).fetch_upload_bytes(uid),
+            )
+            if stats["embedded"]:
+                LOGGER.info(
+                    "S-200 vision passthrough: embedded=%s skipped=%s b64_bytes=%s model=%s",
+                    stats["embedded"],
+                    stats["skipped"],
+                    stats["total_b64_bytes"],
+                    model,
+                )
+        chat.append({"role": "user", "content": current_content})
         return chat
+
+    def _model_supports_vision(self, config: BootstrapConfig, model: str) -> bool:
+        """S-200: is the bound model vision-capable? (cached, best-effort).
+
+        Reads GET /api/v1/agents/me/model. Any failure or an unknown
+        model reads as NOT capable, so the turn degrades to the text
+        reference instead of erroring. Cached per model for 60s.
+        """
+        resolved = model or self.model or config.default_model
+        if not resolved:
+            return False
+        now = monotonic()
+        cached = self._vision_cache.get(resolved)
+        if cached is not None and now < cached[1]:
+            return cached[0]
+        capable = False
+        try:
+            payload = self._control_plane(config).get_my_model()
+            capable = bool(payload.get("supports_vision"))
+        except Exception as exc:  # noqa: BLE001 - capability is advisory, never fatal
+            LOGGER.warning(
+                "S-200: model capability fetch failed (treating as non-vision): %s", exc
+            )
+        self._vision_cache[resolved] = (capable, now + 60.0)
+        return capable
 
     def _default_completion(self) -> Callable[..., object]:
         try:
