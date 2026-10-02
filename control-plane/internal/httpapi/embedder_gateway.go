@@ -19,6 +19,11 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/config"
 )
 
+// embedderPlaceholderAPIKey satisfies litellm's non-empty api_key
+// requirement for the unauthenticated in-cluster embedder. It is not
+// a credential and grants nothing outside the pod network.
+const embedderPlaceholderAPIKey = "sk-skquad-internal"
+
 // RegisterEmbedderGatewayModel starts the idempotent embedder-model
 // registration in the background. No-op unless memory embeddings are
 // enabled with a model and gateway admin credentials configured.
@@ -40,8 +45,8 @@ func RegisterEmbedderGatewayModel(ctx context.Context, cfg *config.Config) {
 		LitellmModel: "openai/" + cfg.MemoryEmbeddingModel,
 		APIBase:      embedderServiceBaseURL(cfg),
 		// The embedder itself is unauthenticated in-cluster; litellm
-		// requires a non-empty api_key field. Nothing secret here.
-		APIKey: "sk-skquad-internal",
+		// requires a non-empty api_key field. Placeholder, not a secret.
+		APIKey: embedderPlaceholderAPIKey, // #nosec G101 -- non-secret placeholder, embedder has no auth
 	}
 	reloader := embedderReloaderOrNil(cfg)
 
