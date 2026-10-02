@@ -110,6 +110,10 @@ jobs:
           - component: web
             context: web
             image: skquad-web
+          # S-212: memory embedder (llama.cpp Vulkan + Qwen3-Embedding-0.6B).
+          - component: embedder
+            context: embedder
+            image: skquad-embedder
 
     steps:
       - uses: actions/checkout@v7
