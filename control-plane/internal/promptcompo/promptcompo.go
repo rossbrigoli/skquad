@@ -49,6 +49,18 @@ type Facts struct {
 	Resources   []string // granted resource summary lines
 	Workspace   string   // workspace description/URL
 	PlatformVer string
+	// Tools are pre-rendered enabled-tool inventory lines ("- name — desc").
+	// The caller owns description policy; the composer only joins with \n.
+	Tools []string
+	// Model facts describe the agent's bound LLM. The caller renders every
+	// field to a display string ("unknown" when unbound/unresolvable) so
+	// missing model data can never fail composition.
+	ModelDisplay       string
+	ModelName          string
+	ModelProvider      string
+	ModelContextWindow string
+	ModelSupportsTools string
+	ModelFallback      string
 }
 
 // Composition is the result of composing all tiers.
@@ -98,6 +110,16 @@ var templateVars = map[string]func(Facts) string{
 	"agent.resources":  func(f Facts) string { return strings.Join(f.Resources, "\n") },
 	"agent.workspace":  func(f Facts) string { return f.Workspace },
 	"platform.version": func(f Facts) string { return f.PlatformVer },
+	"tools.enabled":    func(f Facts) string { return strings.Join(f.Tools, "\n") },
+	"model.display":    func(f Facts) string { return f.ModelDisplay },
+	"model.name":       func(f Facts) string { return f.ModelName },
+	"model.provider":   func(f Facts) string { return f.ModelProvider },
+	// model.context_window / model.supports_tools / model.fallback are
+	// pre-rendered display strings ("128000 tokens", "supported", "none
+	// configured") — the composer never interprets them.
+	"model.context_window": func(f Facts) string { return f.ModelContextWindow },
+	"model.supports_tools": func(f Facts) string { return f.ModelSupportsTools },
+	"model.fallback":       func(f Facts) string { return f.ModelFallback },
 }
 
 // Compose builds the effective prompt from the four tiers.

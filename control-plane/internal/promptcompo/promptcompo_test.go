@@ -15,6 +15,14 @@ var testFacts = Facts{
 	Resources:   []string{"repo: skquad", "db: skquad-pg"},
 	Workspace:   "https://skquad.rossbrigoli.com/ws/build-team",
 	PlatformVer: "0.1.100",
+	Tools:       []string{"- exec — run shell commands inside your sandboxed agent pod; the container is your boundary", "- send_message — send messages to squad mates and humans (cross-squad needs an access grant)"},
+
+	ModelDisplay:       "Claude Opus 4.6",
+	ModelName:          "claude-opus-4-6",
+	ModelProvider:      "Anthropic",
+	ModelContextWindow: "200000 tokens",
+	ModelSupportsTools: "supported",
+	ModelFallback:      "none configured",
 }
 
 func TestComposeHappyPath(t *testing.T) {
@@ -151,6 +159,42 @@ func TestTemplateUnknownVarFails(t *testing.T) {
 	}
 	if len(ute.Vars) != 1 || ute.Vars[0] != "org.secret" {
 		t.Errorf("vars = %v, want [org.secret]", ute.Vars)
+	}
+}
+
+// Platform-prompt awareness upgrade: the tools/model vars substitute.
+func TestNewTemplateVarsSubstitute(t *testing.T) {
+	tmpl := "{{tools.enabled}}|{{model.display}}|{{model.name}}|{{model.provider}}|{{model.context_window}}|{{model.supports_tools}}|{{model.fallback}}"
+	c, err := Compose("", "", "", tmpl, testFacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "- exec — run shell commands inside your sandboxed agent pod; the container is your boundary\n- send_message — send messages to squad mates and humans (cross-squad needs an access grant)|Claude Opus 4.6|claude-opus-4-6|Anthropic|200000 tokens|supported|none configured"
+	if got := c.Tiers[len(c.Tiers)-1].Content; got != want {
+		t.Errorf("substitution mismatch:\ngot:  %s\nwant: %s", got, want)
+	}
+}
+
+// Unknown vars in the new namespaces must still fail closed.
+func TestNewTemplateVarsUnknownStillRejected(t *testing.T) {
+	for _, v := range []string{"tools.all", "model.secret", "model.temperature"} {
+		_, err := Compose("", "", "", "x {{"+v+"}}", testFacts)
+		var ute *UnknownTemplateVarsError
+		if !errors.As(err, &ute) {
+			t.Errorf("{{%s}}: err = %v, want *UnknownTemplateVarsError", v, err)
+		}
+	}
+}
+
+// Empty tool/model facts render as empty strings — the platform prompt's
+// own copy handles the "none" case upstream; the composer stays pure.
+func TestNewTemplateVarsEmptyFacts(t *testing.T) {
+	c, err := Compose("", "", "", "[{{tools.enabled}}][{{model.display}}]", Facts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Tiers[len(c.Tiers)-1].Content; got != "[][]" {
+		t.Errorf("got %q, want %q", got, "[][]")
 	}
 }
 

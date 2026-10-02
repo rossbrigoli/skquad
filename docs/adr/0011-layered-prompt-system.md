@@ -130,6 +130,20 @@ The composer substitutes `{{agent.name}}`, `{{agent.role}}`,
 tiers may reference these variables; unknown variables fail the save (400),
 never silently pass through.
 
+**Platform-prompt awareness upgrade (2026-10-02):** the platform block now
+carries three additional fact groups rendered via new allowlisted vars —
+`{{tools.enabled}}` (enabled built-in tool inventory), and
+`{{model.display}}`, `{{model.name}}`, `{{model.provider}}`,
+`{{model.context_window}}`, `{{model.supports_tools}}`,
+`{{model.fallback}}` (bound-LLM facts) — plus a "WHEN A TOOL CALL FAILS"
+playbook (classify errors; one retry for transient; change approach on
+4xx; blocked only when a human is truly required; never fabricate).
+Model facts render `"unknown"` when the agent has no bound/resolvable
+model — composition never fails over missing model data.
+**Operator note:** `SKQUAD_PLATFORM_PROMPT_FILE` overrides replace the
+embedded block wholesale; an override should include equivalent
+TOOLS / MODEL / FAILURE-PLAYBOOK sections or the agent loses them.
+
 ## Consequences
 
 - New control-plane package `internal/promptcompo` (pure, fully unit-tested).
