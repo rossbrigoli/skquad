@@ -355,7 +355,12 @@ embedder:
     - qwen3-embed-0.6b
   gpu:
     # auto: GPU iff a supported resource exists on some node, else CPU.
-    # gpu: force GPU (first resource in resourceNames). cpu: never GPU.
+    # This is safe on clusters with no GPU nodes: the chart installs a
+    # CPU-only embedder Deployment and the operator treats "no GPU found"
+    # as a normal CPU fallback state.
+    # gpu: force GPU (first resource in resourceNames); on clusters with
+    # no matching GPU resource this is expected to stay Pending until a
+    # matching node exists. cpu: never GPU.
     mode: auto
     # Ordered vendor-neutral detection list (SKQUAD_GPU_RESOURCE_NAMES).
     resourceNames: "nvidia.com/gpu,amd.com/gpu,gpu.intel.com/i915"

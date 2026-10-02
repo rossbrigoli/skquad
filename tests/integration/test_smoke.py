@@ -117,12 +117,64 @@ class IntegrationSmokeTest(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, rendered)
 
+    def test_helm_embedder_auto_mode_renders_cpu_only_fallback(self) -> None:
+        """Default/auto mode must install cleanly on clusters with no GPU nodes."""
+
+        renders = {
+            "default": self.run_command(
+                [
+                    "helm",
+                    "template",
+                    "skquad",
+                    "charts/skquad",
+                    "--namespace",
+                    "skquad-system",
+                ],
+                cwd=REPO_ROOT,
+            ).stdout,
+            "explicit-auto-no-gpu-resource": self.run_command(
+                [
+                    "helm",
+                    "template",
+                    "skquad",
+                    "charts/skquad",
+                    "--namespace",
+                    "skquad-system",
+                    "-f",
+                    "-",
+                ],
+                cwd=REPO_ROOT,
+                stdin=(
+                    "embedder:\n"
+                    "  gpu:\n"
+                    "    mode: auto\n"
+                    "    resourceNames: example.com/gpu\n"
+                    "    devicePaths: []\n"
+                ),
+            ).stdout,
+        }
+
+        for name, rendered in renders.items():
+            with self.subTest(render=name):
+                deployment = self.extract_rendered_doc(
+                    rendered,
+                    kind="Deployment",
+                    object_name="skquad-embedder",
+                )
+                self.assertIn('cpu: "1"', deployment)
+                self.assertNotIn("nvidia.com/gpu:", deployment)
+                self.assertNotIn("amd.com/gpu:", deployment)
+                self.assertNotIn("gpu.intel.com/i915:", deployment)
+                self.assertNotIn("example.com/gpu:", deployment)
+                self.assertNotIn("nodeAffinity:", deployment)
+
     def run_command(
         self,
         args: list[str],
         *,
         cwd: Path,
         env: dict[str, str] | None = None,
+        stdin: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         merged_env = os.environ.copy()
         if env:
@@ -134,6 +186,7 @@ class IntegrationSmokeTest(unittest.TestCase):
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            input=stdin,
             check=False,
         )
         if result.returncode != 0:
@@ -142,6 +195,12 @@ class IntegrationSmokeTest(unittest.TestCase):
                 f"{result.stdout}"
             )
         return result
+
+    def extract_rendered_doc(self, rendered: str, *, kind: str, object_name: str) -> str:
+        for doc in rendered.split("\n---"):
+            if f"\nkind: {kind}\n" in f"\n{doc}\n" and f"\n  name: {object_name}\n" in f"\n{doc}\n":
+                return doc
+        self.fail(f"rendered {kind}/{object_name} not found")
 
 
 if __name__ == "__main__":
