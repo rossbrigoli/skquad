@@ -434,6 +434,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			// S-193: bell notifications (task failed/stuck, agent died,
 			// task blocked). ?user_id= is the platform-admin filter.
 			r.Get("/notifications", s.listNotifications)
+			// S-199: per-user notification mute preferences (Settings screen).
+			r.Get("/notifications/preferences", s.getNotificationPreferences)
+			r.Put("/notifications/preferences", s.putNotificationPreferences)
 			r.Post("/notifications/{notificationID}/read", s.markNotificationRead)
 			r.Post("/notifications/read-all", s.markAllNotificationsRead)
 

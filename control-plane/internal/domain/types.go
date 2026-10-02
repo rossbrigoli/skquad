@@ -453,6 +453,46 @@ const (
 	NotificationTaskBlocked NotificationType = "task_blocked"
 )
 
+// AllNotificationTypes enumerates the mailable notification types (S-199).
+// Used for validating user preference payloads.
+var AllNotificationTypes = []NotificationType{
+	NotificationTaskFailed,
+	NotificationTaskStuck,
+	NotificationAgentDied,
+	NotificationTaskBlocked,
+}
+
+// IsKnownNotificationType reports whether t is one of the four known
+// notification types (S-199 preference validation).
+func IsKnownNotificationType(t NotificationType) bool {
+	for _, known := range AllNotificationTypes {
+		if known == t {
+			return true
+		}
+	}
+	return false
+}
+
+// NotificationPreferences (S-199) is a user's mute list for the bell.
+// MutedTypes holds the types the user does NOT want delivered; no row /
+// empty list means every type is enabled (default).
+type NotificationPreferences struct {
+	MutedTypes []NotificationType `json:"muted_types"`
+}
+
+// IsMuted reports whether the given type is muted in these preferences.
+func (p *NotificationPreferences) IsMuted(t NotificationType) bool {
+	if p == nil {
+		return false
+	}
+	for _, m := range p.MutedTypes {
+		if m == t {
+			return true
+		}
+	}
+	return false
+}
+
 // NotificationSeverity orders how loud a notification is.
 type NotificationSeverity string
 

@@ -222,12 +222,79 @@ func (s *Server) sendInboxFromAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, created)
 }
 
+// getNotificationPreferences serves the S-199 per-user mute list.
+// Response shape is stable: {"muted_types": [...]} — an empty list
+// means every notification type is enabled (the default).
+func (s *Server) getNotificationPreferences(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r.Context())
+	prefs, err := s.store.GetNotificationPreferences(r.Context(), u.ID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, prefs)
+}
+
+// putNotificationPreferences replaces the caller's mute list. Every
+// entry must be a known notification type (400 otherwise); duplicates
+// are collapsed. Only human (OIDC) users reach this route — it lives in
+// the authenticate group, same as the rest of /notifications.
+func (s *Server) putNotificationPreferences(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MutedTypes []string `json:"muted_types"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	seen := map[domain.NotificationType]bool{}
+	muted := make([]domain.NotificationType, 0, len(req.MutedTypes))
+	for raw := range req.MutedTypes {
+		t := domain.NotificationType(strings.TrimSpace(req.MutedTypes[raw]))
+		if !domain.IsKnownNotificationType(t) {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				fmt.Sprintf("unknown notification type %q (known: task_failed, task_stuck, agent_died, task_blocked)", string(t)))
+			return
+		}
+		if !seen[t] {
+			seen[t] = true
+			muted = append(muted, t)
+		}
+	}
+	u := currentUser(r.Context())
+	prefs, err := s.store.SetNotificationPreferences(r.Context(), u.ID, muted)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, prefs)
+}
+
+// notificationMuted reports whether the recipient has muted this
+// notification type (S-199). Fail-open: a preferences lookup error
+// delivers the alert rather than silently dropping it — muting is a
+// user convenience, never an alert-suppression failure mode.
+func notificationMuted(ctx context.Context, store Store, userID string, kind domain.NotificationType) bool {
+	prefs, err := store.GetNotificationPreferences(ctx, userID)
+	if err != nil {
+		slog.Warn("notification preferences lookup failed; delivering anyway",
+			"error", err, "type", string(kind), "user", userID)
+		return false
+	}
+	return prefs.IsMuted(kind)
+}
+
 // emitNotification resolves the squad owner and files one notification.
 // Best-effort: every failure path is silent (or logged) so the underlying
-// task flow never breaks on alerting.
+// task flow never breaks on alerting. S-199: the recipient's mute list
+// is checked first — a muted type is skipped (logged, no error).
 func (s *Server) emitNotification(ctx context.Context, squadID string, taskID string, agentID string, kind domain.NotificationType, severity domain.NotificationSeverity, message string) {
 	squad, err := s.store.GetSquad(ctx, squadID)
 	if err != nil || squad.OwnerID == "" {
+		return
+	}
+	if notificationMuted(ctx, s.store, squad.OwnerID, kind) {
+		slog.Info("notification skipped: type muted by user preference",
+			"type", string(kind), "user", squad.OwnerID, "squad", squadID)
 		return
 	}
 	if _, err := s.store.CreateNotification(ctx, &domain.Notification{

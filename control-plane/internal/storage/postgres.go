@@ -3120,6 +3120,52 @@ func (p *PostgresStore) MarkAllNotificationsRead(ctx context.Context, userID str
 	return int(tag.RowsAffected()), nil
 }
 
+// GetNotificationPreferences (S-199) reads the user's mute list from
+// user_notification_preferences. No row ⇒ empty MutedTypes (all types
+// enabled by default — the default is deliberately not materialized).
+func (p *PostgresStore) GetNotificationPreferences(ctx context.Context, userID string) (*domain.NotificationPreferences, error) {
+	var muted []string
+	err := p.pool.QueryRow(ctx, `
+		SELECT muted_types FROM user_notification_preferences WHERE user_id = $1
+	`, userID).Scan(&muted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &domain.NotificationPreferences{MutedTypes: []domain.NotificationType{}}, nil
+	}
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	out := make([]domain.NotificationType, 0, len(muted))
+	for _, t := range muted {
+		out = append(out, domain.NotificationType(t))
+	}
+	return &domain.NotificationPreferences{MutedTypes: out}, nil
+}
+
+// SetNotificationPreferences (S-199) upserts the user's mute list.
+// A FK violation on users(id) maps through mapPgErr to ErrNotFound.
+func (p *PostgresStore) SetNotificationPreferences(ctx context.Context, userID string, muted []domain.NotificationType) (*domain.NotificationPreferences, error) {
+	mutedStr := make([]string, 0, len(muted))
+	for _, t := range muted {
+		mutedStr = append(mutedStr, string(t))
+	}
+	var stored []string
+	err := p.pool.QueryRow(ctx, `
+		INSERT INTO user_notification_preferences (user_id, muted_types, updated_at)
+		VALUES ($1, $2, now())
+		ON CONFLICT (user_id) DO UPDATE
+		SET muted_types = EXCLUDED.muted_types, updated_at = now()
+		RETURNING muted_types
+	`, userID, mutedStr).Scan(&stored)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	out := make([]domain.NotificationType, 0, len(stored))
+	for _, t := range stored {
+		out = append(out, domain.NotificationType(t))
+	}
+	return &domain.NotificationPreferences{MutedTypes: out}, nil
+}
+
 func scanNotification(row scanner) (*domain.Notification, error) {
 	var n domain.Notification
 	var readAt sql.NullTime

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
 
@@ -348,4 +350,39 @@ func TestMemoryStoreTaskResultPersistence(t *testing.T) {
 func reapLen(store *MemoryStore, ctx context.Context, cutoff time.Time) (int, error) {
 	reaped, err := store.ReapExpiredTaskExecutions(ctx, cutoff)
 	return len(reaped), err
+}
+
+// S-199: notification preference round-trip on the memory store.
+func TestMemoryStoreNotificationPreferences(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	m := NewMemoryStore()
+	user, err := m.UpsertUser(ctx, &domain.User{Email: "prefs@example.com"})
+	require.NoError(t, err)
+
+	// Default: no row ⇒ all enabled (empty muted list).
+	prefs, err := m.GetNotificationPreferences(ctx, user.ID)
+	require.NoError(t, err)
+	require.Empty(t, prefs.MutedTypes)
+	require.False(t, prefs.IsMuted(domain.NotificationTaskFailed))
+
+	// Set round-trips.
+	_, err = m.SetNotificationPreferences(ctx, user.ID, []domain.NotificationType{domain.NotificationTaskBlocked})
+	require.NoError(t, err)
+	prefs, err = m.GetNotificationPreferences(ctx, user.ID)
+	require.NoError(t, err)
+	require.True(t, prefs.IsMuted(domain.NotificationTaskBlocked))
+	require.False(t, prefs.IsMuted(domain.NotificationAgentDied))
+
+	// Returned slices are copies: mutating them must not corrupt the store.
+	prefs.MutedTypes[0] = domain.NotificationTaskFailed
+	prefs2, err := m.GetNotificationPreferences(ctx, user.ID)
+	require.NoError(t, err)
+	require.Equal(t, []domain.NotificationType{domain.NotificationTaskBlocked}, prefs2.MutedTypes)
+
+	// Unknown user ⇒ ErrNotFound.
+	_, err = m.GetNotificationPreferences(ctx, "missing-user")
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = m.SetNotificationPreferences(ctx, "missing-user", nil)
+	require.ErrorIs(t, err, ErrNotFound)
 }

@@ -68,6 +68,12 @@ func notifyReapedExecution(ctx context.Context, store Store, r domain.ReapedExec
 	if err != nil || squad.OwnerID == "" {
 		return
 	}
+	// S-199: honor the recipient's mute list (fail-open on lookup error).
+	if notificationMuted(ctx, store, squad.OwnerID, domain.NotificationAgentDied) {
+		slog.Info("notification skipped: type muted by user preference",
+			"type", string(domain.NotificationAgentDied), "user", squad.OwnerID)
+		return
+	}
 	msg := fmt.Sprintf("Task %s failed: agent %s died mid-task (lease expired); the task was re-queued.",
 		formatTaskRef(task), agent.Name)
 	if _, err := store.CreateNotification(ctx, &domain.Notification{
