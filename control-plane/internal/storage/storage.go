@@ -267,6 +267,11 @@ type NotificationStore interface {
 	ListNotifications(ctx context.Context, userID string, unreadOnly bool, limit int) ([]*domain.Notification, error)
 	MarkNotificationRead(ctx context.Context, userID string, id string) (*domain.Notification, error)
 	MarkAllNotificationsRead(ctx context.Context, userID string) (int, error)
+	// GetNotificationPreferences returns the user's mute list (S-199).
+	// No stored row ⇒ empty MutedTypes (all types enabled by default).
+	GetNotificationPreferences(ctx context.Context, userID string) (*domain.NotificationPreferences, error)
+	// SetNotificationPreferences upserts the user's mute list (S-199).
+	SetNotificationPreferences(ctx context.Context, userID string, muted []domain.NotificationType) (*domain.NotificationPreferences, error)
 }
 
 // WorkNotificationStore lets runtimes wait for assigned task or inbox changes

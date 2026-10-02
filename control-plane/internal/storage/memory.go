@@ -54,6 +54,9 @@ type MemoryStore struct {
 	messages        map[string]*domain.Message
 	inbox           map[string]*domain.InboxMessage
 	notifications   map[string]*domain.Notification
+	// S-199: per-user notification mute lists, mirroring the Postgres
+	// user_notification_preferences table. Absent key ⇒ all enabled.
+	notifPrefs map[string][]domain.NotificationType
 	k8sOutbox       map[string]*domain.KubernetesOutboxEvent
 
 	// S-PROMPT WP2: organization tier settings (single-row, mirroring
@@ -109,6 +112,7 @@ func NewMemoryStore() *MemoryStore {
 		messages:         map[string]*domain.Message{},
 		inbox:            map[string]*domain.InboxMessage{},
 		notifications:    map[string]*domain.Notification{},
+		notifPrefs:       map[string][]domain.NotificationType{},
 		k8sOutbox:        map[string]*domain.KubernetesOutboxEvent{},
 		instanceSettings: &domain.InstanceSettings{},
 		promptRevisions:  []*domain.PromptRevision{},
@@ -2795,6 +2799,35 @@ func (m *MemoryStore) MarkAllNotificationsRead(_ context.Context, userID string)
 		}
 	}
 	return count, nil
+}
+
+// GetNotificationPreferences (S-199) returns the user's mute list.
+// No stored row ⇒ empty MutedTypes: all notification types enabled.
+func (m *MemoryStore) GetNotificationPreferences(_ context.Context, userID string) (*domain.NotificationPreferences, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.users[userID]; !ok {
+		return nil, ErrNotFound
+	}
+	muted := m.notifPrefs[userID]
+	out := make([]domain.NotificationType, len(muted))
+	copy(out, muted)
+	return &domain.NotificationPreferences{MutedTypes: out}, nil
+}
+
+// SetNotificationPreferences (S-199) upserts the user's mute list.
+func (m *MemoryStore) SetNotificationPreferences(_ context.Context, userID string, muted []domain.NotificationType) (*domain.NotificationPreferences, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.users[userID]; !ok {
+		return nil, ErrNotFound
+	}
+	stored := make([]domain.NotificationType, len(muted))
+	copy(stored, muted)
+	m.notifPrefs[userID] = stored
+	out := make([]domain.NotificationType, len(stored))
+	copy(out, stored)
+	return &domain.NotificationPreferences{MutedTypes: out}, nil
 }
 
 func cloneMessage(m *domain.Message) *domain.Message {

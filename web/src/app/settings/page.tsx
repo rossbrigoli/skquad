@@ -59,6 +59,7 @@ import {
 import { OrganizationPromptTab } from "../../components/PromptSettingsTab";
 import { DeadLettersPanel } from "../../components/DeadLettersPanel";
 import { IdleScaleToZeroPanel } from "../../components/IdleScaleToZeroPanel";
+import { NotificationPreferencesPanel } from "../../components/NotificationPreferencesPanel";
 import { BuiltinToolsPanel } from "../../components/BuiltinToolsPanel";
 import { PromptTemplatesPanel } from "../../components/PromptTemplatesPanel";
 import type { PromptTemplate } from "../../lib/promptTemplates";
@@ -202,7 +203,7 @@ function DeleteResourceButton({
 // S-117: "appearance" and "session" tabs removed — theme switching lives
 // in the top-right ThemeToggle and session details/sign-out in the
 // bottom-left UserMenu popover, both available on every page.
-type Tab = "providers" | "resources" | "ai-models" | "access" | "prompt" | "builtin-tools" | "templates" | "dead-letters" | "scaling";
+type Tab = "providers" | "resources" | "ai-models" | "access" | "prompt" | "builtin-tools" | "templates" | "dead-letters" | "scaling" | "notifications";
 
 const RESOURCE_TABS: { key: string; label: string }[] = [
   { key: "skills", label: "Skills" },
@@ -266,6 +267,13 @@ export default function SettingsPage() {
           {isAdmin ? (
             <TabButton active={activeTab === "scaling"} label="Scaling" onClick={() => setTab("scaling")} />
           ) : null}
+          {/* S-199: notification mute preferences are per-user, so every
+              signed-in human sees this tab (not admin-only). */}
+          <TabButton
+            active={activeTab === "notifications"}
+            label="Notifications"
+            onClick={() => setTab("notifications")}
+          />
         </div>
 
         {!isAdmin ? (
@@ -284,6 +292,7 @@ export default function SettingsPage() {
         {isAdmin && activeTab === "templates" ? <PromptTemplatesTab /> : null}
         {isAdmin && activeTab === "dead-letters" ? <DeadLettersPanel /> : null}
         {isAdmin && activeTab === "scaling" ? <IdleScaleToZeroPanel /> : null}
+        {activeTab === "notifications" ? <NotificationPreferencesPanel /> : null}
       </AppShell>
     </AuthGate>
   );
