@@ -274,6 +274,10 @@ type GatewayModelSpec struct {
 	// APIKey is litellm_params.api_key (resolved provider key). Empty →
 	// omitted (keyless providers such as local ollama).
 	APIKey string
+	// SupportsVision (S-200) is written into the deployment's model_info
+	// so the gateway can gate image content parts per model. It mirrors
+	// ai_models.supports_vision.
+	SupportsVision bool
 }
 
 // GatewayModelDeployment is one entry of the gateway's /model/info list.
@@ -293,6 +297,13 @@ func (c *liteLLMGatewayClient) modelParamsBody(spec GatewayModelSpec) map[string
 	return params
 }
 
+// modelInfoBody builds the litellm model_info block carried on every
+// deployment (S-200). The gateway's vision gate reads supports_vision
+// from here; keeping it always-present means the flag survives re-provision.
+func (c *liteLLMGatewayClient) modelInfoBody(spec GatewayModelSpec) map[string]any {
+	return map[string]any{"supports_vision": spec.SupportsVision}
+}
+
 // DeployModel registers a new model deployment via POST /model/new and
 // returns the gateway-side deployment id (model_info.id). Errors are
 // wrapped with a response snippet; the provider key is never included
@@ -301,6 +312,7 @@ func (c *liteLLMGatewayClient) DeployModel(ctx context.Context, spec GatewayMode
 	body := map[string]any{
 		"model_name":     spec.ModelName,
 		"litellm_params": c.modelParamsBody(spec),
+		"model_info":     c.modelInfoBody(spec),
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -345,6 +357,7 @@ func (c *liteLLMGatewayClient) UpdateModelDeployment(ctx context.Context, deploy
 		"id":             deploymentID,
 		"model_name":     spec.ModelName,
 		"litellm_params": c.modelParamsBody(spec),
+		"model_info":     c.modelInfoBody(spec),
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {

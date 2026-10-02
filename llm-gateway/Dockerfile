@@ -9,6 +9,7 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY config.yaml /etc/skquad/config.yaml
 COPY skquad_litellm_callbacks.py /app/skquad_litellm_callbacks.py
+COPY vision_gate.py /app/vision_gate.py
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libatomic1 \
     && rm -rf /var/lib/apt/lists/*

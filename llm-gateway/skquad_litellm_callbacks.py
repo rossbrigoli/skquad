@@ -11,11 +11,61 @@ from urllib import error, request
 
 from litellm.integrations.custom_logger import CustomLogger
 
+from vision_gate import apply_vision_gate
+
 
 LOGGER = logging.getLogger(__name__)
 
 
+def _default_vision_resolver(model_name: str):
+    """Production capability resolver: read the deployment's model_info.
+
+    Best-effort against the live litellm router. Any failure or a missing
+    ``supports_vision`` key returns None (passthrough) — the gateway must
+    never strip a request it cannot confidently classify. The runtime is
+    the primary gate; this is defense-in-depth.
+    """
+    if not model_name:
+        return None
+    try:
+        import litellm  # local import: keeps the stdlib-only test harness working
+
+        info = litellm.get_model_info(model_name)
+    except Exception:  # noqa: BLE001 - unknown ⇒ passthrough
+        return None
+    if not isinstance(info, dict) or "supports_vision" not in info:
+        return None
+    return bool(info.get("supports_vision"))
+
+
 class SkquadMeteringCallback(CustomLogger):
+    def __init__(self, vision_resolver=None) -> None:
+        super().__init__()
+        # S-200: injectable so tests drive the gate without a live router.
+        # Defaults to the litellm model_info resolver (best-effort).
+        self._vision_resolver = vision_resolver or _default_vision_resolver
+
+    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+        """S-200: strip image parts headed to a non-vision model.
+
+        Defense-in-depth behind the runtime gate. Never raises: any error
+        resolving capability or rewriting the body leaves the request
+        untouched (passthrough) rather than breaking the LLM call.
+        """
+        try:
+            model = str((data or {}).get("model") or "")
+            capable = self._vision_resolver(model)
+            data, stripped = apply_vision_gate(data, capable)
+            if stripped:
+                LOGGER.warning(
+                    "skquad vision gate: stripped %s image part(s) for non-vision model=%s",
+                    stripped,
+                    model,
+                )
+        except Exception as exc:  # noqa: BLE001 - never fail the proxied call
+            LOGGER.warning("skquad vision gate: skipped (error: %s)", exc)
+        return data
+
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         await send_metering_event("success", kwargs, response_obj, "")
 

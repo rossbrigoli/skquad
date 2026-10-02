@@ -1181,7 +1181,7 @@ func (p *PostgresStore) ListLLMProviders(ctx context.Context) ([]*domain.LLMProv
 // aiModelColumns is the shared SELECT list for ai_models rows.
 const aiModelColumns = `
 	id::text, provider_id::text, display_name, model_name, context_window, supports_tools,
-	pricing, long_context_threshold_tokens, status, registered_by, created_at, updated_at`
+	supports_vision, pricing, long_context_threshold_tokens, status, registered_by, created_at, updated_at`
 
 // CreateAIModel registers a model under an existing provider credential.
 // The (provider_id, model_name) pair is unique (UNIQUE violation →
@@ -1199,11 +1199,11 @@ func (p *PostgresStore) CreateAIModel(ctx context.Context, model *domain.AIModel
 	}
 	txRow := tx.QueryRow(ctx, `
 		INSERT INTO ai_models (provider_id, display_name, model_name, context_window, supports_tools,
-		                     pricing, long_context_threshold_tokens, status, registered_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		                     supports_vision, pricing, long_context_threshold_tokens, status, registered_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING `+aiModelColumns,
 		model.ProviderID, model.DisplayName, model.ModelName, model.ContextWindow, model.SupportsTools,
-		defaultJSON(model.Pricing, "{}"), model.LongContextThresholdTokens, defaultResourceStatus(model.Status), model.RegisteredBy)
+		model.SupportsVision, defaultJSON(model.Pricing, "{}"), model.LongContextThresholdTokens, defaultResourceStatus(model.Status), model.RegisteredBy)
 	created, err := scanAIModel(txRow)
 	if err != nil {
 		return nil, err
@@ -1268,14 +1268,15 @@ func (p *PostgresStore) UpdateAIModel(ctx context.Context, model *domain.AIModel
 		    model_name = $4,
 		    context_window = $5,
 		    supports_tools = $6,
-		    pricing = $7,
-		    long_context_threshold_tokens = $8,
-		    status = $9,
+		    supports_vision = $7,
+		    pricing = $8,
+		    long_context_threshold_tokens = $9,
+		    status = $10,
 		    updated_at = now()
 		WHERE id = $1
 		RETURNING `+aiModelColumns,
 		model.ID, model.ProviderID, model.DisplayName, model.ModelName, model.ContextWindow, model.SupportsTools,
-		defaultJSON(model.Pricing, "{}"), model.LongContextThresholdTokens, defaultResourceStatus(model.Status))
+		model.SupportsVision, defaultJSON(model.Pricing, "{}"), model.LongContextThresholdTokens, defaultResourceStatus(model.Status))
 	updated, err := scanAIModel(txRow)
 	if err != nil {
 		return nil, err
@@ -3401,6 +3402,7 @@ func scanAIModel(row scanner) (*domain.AIModel, error) {
 		&m.ModelName,
 		&m.ContextWindow,
 		&m.SupportsTools,
+		&m.SupportsVision,
 		&m.Pricing,
 		&m.LongContextThresholdTokens,
 		&m.Status,

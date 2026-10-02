@@ -12,3 +12,8 @@ dependencies = [
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Flat layout with two top-level modules: declare explicitly so setuptools
+# auto-discovery doesn't refuse the build (S-200 added vision_gate).
+py-modules = ["skquad_litellm_callbacks", "vision_gate"]
