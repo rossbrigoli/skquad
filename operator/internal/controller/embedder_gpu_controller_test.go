@@ -168,6 +168,9 @@ func TestCPUModeStripsGPU(t *testing.T) {
 	if _, ok := dep.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceName("nvidia.com/gpu")]; ok {
 		t.Fatal("gpu request survived cpu mode")
 	}
+	if _, ok := dep.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceName("nvidia.com/gpu")]; ok {
+		t.Fatal("gpu limit survived cpu mode")
+	}
 }
 
 func TestGPUModeForcesGPUWithoutGPUNode(t *testing.T) {
@@ -284,5 +287,34 @@ func TestCustomResourceList(t *testing.T) {
 	}
 	if !changed || sel.Resource != "example.com/fpga" {
 		t.Fatalf("changed=%v sel=%+v", changed, sel)
+	}
+}
+
+func TestCPUModeStripsConfiguredCustomResource(t *testing.T) {
+	fpga := node("fpga1", "", nil)
+	fpga.Status.Allocatable[corev1.ResourceName("example.com/fpga")] = resource.MustParse("2")
+
+	rGPU := newReconciler(t, EmbedderModeAuto, "", baseEmbedder(), fpga)
+	rGPU.Cfg.GPUResourceNames = []string{"example.com/fpga"}
+	if _, _, err := rGPU.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rCPU := newReconciler(t, EmbedderModeCPU, "", getDep(t, rGPU), fpga)
+	rCPU.Cfg.GPUResourceNames = []string{"example.com/fpga"}
+	changed, _, err := rCPU.ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("cpu mode must strip configured custom resources")
+	}
+	dep := getDep(t, rCPU)
+	c := dep.Spec.Template.Spec.Containers[0]
+	if _, ok := c.Resources.Requests[corev1.ResourceName("example.com/fpga")]; ok {
+		t.Fatal("custom gpu request survived cpu mode")
+	}
+	if _, ok := c.Resources.Limits[corev1.ResourceName("example.com/fpga")]; ok {
+		t.Fatal("custom gpu limit survived cpu mode")
 	}
 }

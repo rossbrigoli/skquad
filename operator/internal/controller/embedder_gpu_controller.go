@@ -34,9 +34,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"k8s.io/client-go/util/retry"
 )
 
 const (
@@ -90,8 +90,9 @@ func ParseGPUResourceNames(csv string) []string {
 // EmbedderGPUReconciler patches the embedder Deployment toward the
 // GPU/CPU shape implied by cluster state + configured mode.
 type EmbedderGPUReconciler struct {
-	Client client.Client
-	Cfg    EmbedderGPUConfig
+	Client            client.Client
+	Cfg               EmbedderGPUConfig
+	loggedCPUFallback bool
 }
 
 // gpuSelection is the outcome of scanning the cluster: which resource
@@ -161,7 +162,7 @@ func (r *EmbedderGPUReconciler) ReconcileOnce(ctx context.Context) (changed bool
 		if err := r.Client.Get(ctx, key, dep); err != nil {
 			return err
 		}
-		if applyGPUSpec(dep, want, r.Cfg.GPUNodeLabelKey) {
+		if applyGPUSpec(dep, want, r.Cfg.GPUNodeLabelKey, r.Cfg.GPUResourceNames) {
 			changedOut = true
 			return r.Client.Update(ctx, dep)
 		}
@@ -175,9 +176,9 @@ func (r *EmbedderGPUReconciler) ReconcileOnce(ctx context.Context) (changed bool
 
 // applyGPUSpec mutates dep toward the desired GPU shape and reports
 // whether anything changed.
-func applyGPUSpec(dep *appsv1.Deployment, want gpuSelection, labelKey string) bool {
+func applyGPUSpec(dep *appsv1.Deployment, want gpuSelection, labelKey string, managedResources []string) bool {
 	pod := &dep.Spec.Template.Spec
-	before, _ := json.Marshal(gpuProjection(pod))
+	before, _ := json.Marshal(gpuProjection(pod, managedResources))
 
 	if want.Resource != "" {
 		setGPURequest(pod, want.Resource)
@@ -187,36 +188,37 @@ func applyGPUSpec(dep *appsv1.Deployment, want gpuSelection, labelKey string) bo
 			stripGPUNodeAffinity(pod, labelKey)
 		}
 	} else {
-		stripAllGPURequests(pod)
+		stripAllGPURequests(pod, managedResources)
 		stripGPUNodeAffinity(pod, labelKey)
 	}
 
-	after, _ := json.Marshal(gpuProjection(pod))
+	after, _ := json.Marshal(gpuProjection(pod, managedResources))
 	return string(before) != string(after)
 }
 
 // gpuProjection extracts only the GPU-relevant parts of the pod spec so
 // the changed-detection ignores unrelated fields.
-func gpuProjection(pod *corev1.PodSpec) map[string]any {
+func gpuProjection(pod *corev1.PodSpec, managedResources []string) map[string]any {
 	proj := map[string]any{"affinity": pod.Affinity}
 	requests := map[string]string{}
+	limits := map[string]string{}
+	if len(managedResources) == 0 {
+		managedResources = ParseGPUResourceNames("")
+	}
 	for _, c := range pod.Containers {
-		for _, kind := range []string{"", "/limit"} {
-			for _, res := range knownGPUResources() {
-				if q, ok := c.Resources.Requests[corev1.ResourceName(res+kind)]; ok {
-					requests[c.Name+":"+res+kind] = q.String()
-				}
+		for _, res := range managedResources {
+			name := corev1.ResourceName(res)
+			if q, ok := c.Resources.Requests[name]; ok {
+				requests[c.Name+":"+res] = q.String()
+			}
+			if q, ok := c.Resources.Limits[name]; ok {
+				limits[c.Name+":"+res] = q.String()
 			}
 		}
 	}
-	proj["gpu"] = requests
+	proj["gpuRequests"] = requests
+	proj["gpuLimits"] = limits
 	return proj
-}
-
-// knownGPUResources returns every resource name the controller may
-// manage, so cpu-mode strips all vendors, not just the selected one.
-func knownGPUResources() []string {
-	return ParseGPUResourceNames("")
 }
 
 func setGPURequest(pod *corev1.PodSpec, res corev1.ResourceName) {
@@ -233,10 +235,13 @@ func setGPURequest(pod *corev1.PodSpec, res corev1.ResourceName) {
 	}
 }
 
-func stripAllGPURequests(pod *corev1.PodSpec) {
+func stripAllGPURequests(pod *corev1.PodSpec, managedResources []string) {
+	if len(managedResources) == 0 {
+		managedResources = ParseGPUResourceNames("")
+	}
 	for i := range pod.Containers {
 		c := &pod.Containers[i]
-		for _, res := range knownGPUResources() {
+		for _, res := range managedResources {
 			delete(c.Resources.Requests, corev1.ResourceName(res))
 			delete(c.Resources.Limits, corev1.ResourceName(res))
 		}
@@ -335,6 +340,11 @@ func (r *EmbedderGPUReconciler) Start(ctx context.Context) error {
 			ctrl.Log.Info("embedder GPU spec reconciled",
 				"resource", sel.Resource, "nodes", sel.Nodes, "mode", r.Cfg.Mode,
 				"deployment", r.Cfg.Namespace+"/"+r.Cfg.DeploymentName)
+		case r.Cfg.Mode == EmbedderModeAuto && !sel.active() && !r.loggedCPUFallback:
+			ctrl.Log.Info("embedder GPU auto-detect found no GPU resources; using CPU fallback",
+				"resources", r.Cfg.GPUResourceNames,
+				"deployment", r.Cfg.Namespace+"/"+r.Cfg.DeploymentName)
+			r.loggedCPUFallback = true
 		}
 		select {
 		case <-ctx.Done():
