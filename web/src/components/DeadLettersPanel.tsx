@@ -8,8 +8,8 @@
 // Bulk prune (all dead older than N days) is a deliberate v1 omission —
 // see the card; per-row prune keeps the audit trail granular.
 
-import { useState } from "react";
-import { apiDelete, apiPost, ApiError } from "../lib/api";
+import { useEffect, useState } from "react";
+import { apiDelete, apiGet, apiPost, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { buildDeadLetterQuery, isConsultTimeout, type DeadLetterQuery, type InboxMessageRow } from "../lib/inbox";
 
@@ -44,15 +44,13 @@ export function DeadLettersPanel() {
     setLoading(true);
     setNote("");
     try {
-      const res = await fetch(`${(process.env.NEXT_PUBLIC_SKQUAD_API_BASE_URL || "/api/v1").replace(/\/$/, "")}/admin/dead-letters${buildDeadLetterQuery(filters)}`, {
-        headers: authedToken.trim() === "" ? {} : { Authorization: `Bearer ${authedToken.trim()}` },
-        credentials: "same-origin",
-        cache: "no-store",
-      });
-      if (!res.ok) {
-        throw new ApiError(res.status, res.statusText);
-      }
-      const payload = (await res.json()) as DeadLettersResponse;
+      // S-205 root cause: this panel used a raw fetch against the
+      // NEXT_PUBLIC api-base env var, bypassing apiBaseUrl(). Under OIDC
+      // (the only deployed mode) every other screen routes through the
+      // server-side /proxy which attaches the bearer token; the direct
+      // /api/v1 call carried no credentials and died at 401, so the list
+      // never populated. apiGet honours the proxy override.
+      const payload = await apiGet<DeadLettersResponse>(`/admin/dead-letters${buildDeadLetterQuery(filters)}`, authedToken);
       setItems(payload.dead_letters ?? []);
       setNote(`${payload.dead_letters?.length ?? 0} dead letter(s) shown.`);
     } catch (err) {
@@ -61,6 +59,16 @@ export function DeadLettersPanel() {
       setLoading(false);
     }
   }
+
+  // S-205: load the first page on mount so the screen isn't blank until
+  // an explicit Search click.
+  useEffect(() => {
+    // Deferred off the effect's synchronous path to avoid the cascading-
+    // render lint (state only changes after the fetch resolves).
+    const timer = setTimeout(() => void search(), 0);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function replay(message: InboxMessageRow) {
     setBusyId(message.id);
@@ -101,22 +109,47 @@ export function DeadLettersPanel() {
       <p className="field-hint">
         Messages that exhausted their delivery attempts or expired. Replay puts one back on the queue; prune deletes it forever.
       </p>
-      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
-        <input aria-label="Squad id" placeholder="squad id" value={filters.squad ?? ""} onChange={(e) => setFilter("squad", e.target.value)} />
-        <input aria-label="Agent id" placeholder="agent id" value={filters.agent ?? ""} onChange={(e) => setFilter("agent", e.target.value)} />
-        <select aria-label="Message type" value={filters.type ?? ""} onChange={(e) => setFilter("type", e.target.value)}>
-          <option value="">any type</option>
-          {MESSAGE_TYPES.map((t) => (
-            <option key={t} value={t}>{t}</option>
-          ))}
-        </select>
-        <input aria-label="Reason contains" placeholder="reason contains" value={filters.reason ?? ""} onChange={(e) => setFilter("reason", e.target.value)} />
-        <input aria-label="Since" type="datetime-local" value={filters.since ?? ""} onChange={(e) => setFilter("since", e.target.value)} />
-        <input aria-label="Until" type="datetime-local" value={filters.until ?? ""} onChange={(e) => setFilter("until", e.target.value)} />
-        <button type="button" className="btn btn-sm" disabled={loading} onClick={() => void search()}>
-          {loading ? "Searching…" : "Search"}
-        </button>
+      {/* S-205: filters now use the app's standard .field / .field-row form
+          components (same styled inputs + selects as every settings dialog)
+          instead of unstyled bare controls. */}
+      <div className="field-row">
+        <label className="field">
+          <span>Squad</span>
+          <input aria-label="Squad id" placeholder="squad id" value={filters.squad ?? ""} onChange={(e) => setFilter("squad", e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Agent</span>
+          <input aria-label="Agent id" placeholder="agent id" value={filters.agent ?? ""} onChange={(e) => setFilter("agent", e.target.value)} />
+        </label>
       </div>
+      <div className="field-row">
+        <label className="field">
+          <span>Message type</span>
+          <select aria-label="Message type" value={filters.type ?? ""} onChange={(e) => setFilter("type", e.target.value)}>
+            <option value="">any type</option>
+            {MESSAGE_TYPES.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Reason contains</span>
+          <input aria-label="Reason contains" placeholder="reason contains" value={filters.reason ?? ""} onChange={(e) => setFilter("reason", e.target.value)} />
+        </label>
+      </div>
+      <div className="field-row">
+        <label className="field">
+          <span>Since</span>
+          <input aria-label="Since" type="datetime-local" value={filters.since ?? ""} onChange={(e) => setFilter("since", e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Until</span>
+          <input aria-label="Until" type="datetime-local" value={filters.until ?? ""} onChange={(e) => setFilter("until", e.target.value)} />
+        </label>
+      </div>
+      <button type="button" className="btn btn-sm" disabled={loading} onClick={() => void search()}>
+        {loading ? "Searching…" : "Search"}
+      </button>
       {note ? <p className="field-hint">{note}</p> : null}
       {items === null ? null : items.length === 0 ? <p className="field-hint">No dead letters match.</p> : null}
       {(items ?? []).map((m) => (
