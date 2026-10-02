@@ -236,6 +236,10 @@ export default function AgentProfilePage() {
   // S-174: Inbox adds the delivery-queue observability panel (owner/admin).
   const [tab, setTab] = useState<"chat" | "config" | "inbox">("chat");
   const [deleting, setDeleting] = useState(false);
+  // S-202: restart/reset go through the shared ConfirmDialog instead of
+  // window.confirm, matching every other destructive action in the app.
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [confirmRestart, setConfirmRestart] = useState(false);
   const [granting, setGranting] = useState(false);
   const [identityBusy, setIdentityBusy] = useState(false);
   const [identityError, setIdentityError] = useState("");
@@ -288,7 +292,6 @@ export default function AgentProfilePage() {
   }, [agent?.ai_model_id, myModels.data]);
 
   async function resetChat() {
-    if (!window.confirm("Reset this chat thread? Earlier turns stop being included in the agent's context. The transcript is saved to the agent's memory.")) return;
     setChatActionBusy(true);
     setChatNote("");
     try {
@@ -303,7 +306,6 @@ export default function AgentProfilePage() {
   }
 
   async function restartAgent() {
-    if (!window.confirm("Restart the agent? Its pod is evicted and a fresh one starts. Use this if the agent seems stuck.")) return;
     setRestartBusy(true);
     setRestartNote("");
     try {
@@ -338,11 +340,9 @@ export default function AgentProfilePage() {
             {/* S-169 item 9b: restart lives beside the page title now. */}
             <button
               type="button"
-              className="btn btn-sm"
+              className="btn btn-sm btn-danger"
               disabled={!agent || restartBusy}
-              onClick={() => {
-                void restartAgent();
-              }}
+              onClick={() => setConfirmRestart(true)}
             >
               {restartBusy ? "Restarting…" : "Restart agent"}
             </button>
@@ -427,11 +427,9 @@ export default function AgentProfilePage() {
               {/* S-169 item 9a: Reset chat sits in the chat header now. */}
               <button
                 type="button"
-                className="btn btn-sm"
+                className="btn btn-sm btn-danger"
                 disabled={chatActionBusy || (chat.data || []).length === 0}
-                onClick={() => {
-                  void resetChat();
-                }}
+                onClick={() => setConfirmReset(true)}
               >
                 Reset chat
               </button>
@@ -511,6 +509,32 @@ export default function AgentProfilePage() {
               router.push(`/squads/${squadId}/agents`);
             }}
             onClose={() => setDeleting(false)}
+          />
+        ) : null}
+
+        {confirmReset ? (
+          <ConfirmDialog
+            title="Reset this chat thread?"
+            body="Earlier turns stop being included in the agent's context. The transcript is saved to the agent's memory."
+            confirmLabel="Reset chat"
+            onConfirm={async () => {
+              setConfirmReset(false);
+              await resetChat();
+            }}
+            onClose={() => setConfirmReset(false)}
+          />
+        ) : null}
+
+        {confirmRestart ? (
+          <ConfirmDialog
+            title="Restart the agent?"
+            body="Its pod is evicted and a fresh one starts. Use this if the agent seems stuck."
+            confirmLabel="Restart agent"
+            onConfirm={async () => {
+              setConfirmRestart(false);
+              await restartAgent();
+            }}
+            onClose={() => setConfirmRestart(false)}
           />
         ) : null}
 
