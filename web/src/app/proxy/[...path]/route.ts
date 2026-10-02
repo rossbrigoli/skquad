@@ -65,8 +65,13 @@ async function forward(request: NextRequest, method: string, path: string[]): Pr
     // ID token, not the opaque Dex access token — see oidcServer.ts#apiBearer.
     Authorization: `Bearer ${apiBearer(session)}`,
   };
+  // Binary-safe body passthrough (S-200 follow-up #2): `request.text()`
+  // UTF-8-decodes the body, which corrupts multipart/form-data image
+  // uploads — the control-plane then fails ParseMultipartForm ("file
+  // field is required") or the magic-byte sniff ("only png, jpeg...").
+  // arrayBuffer() preserves the exact bytes for any content type.
   const body =
-    method === "GET" || method === "HEAD" ? undefined : await request.text();
+    method === "GET" || method === "HEAD" ? undefined : await request.arrayBuffer();
   if (body !== undefined) {
     headers["Content-Type"] = request.headers.get("Content-Type") || "application/json";
   }
