@@ -1865,6 +1865,20 @@ func (p *PostgresStore) ListAudit(ctx context.Context, squadID string, limit int
 	return entries, mapPgErr(rows.Err())
 }
 
+// DeleteAuditByActionBefore (S-198) purges audit rows with the given
+// action recorded before cutoff. Action-scoped so the retention sweep
+// never touches unrelated audit history (the log stays append-only for
+// everything else).
+func (p *PostgresStore) DeleteAuditByActionBefore(ctx context.Context, action string, cutoff time.Time) (int, error) {
+	tag, err := p.pool.Exec(ctx, `
+		DELETE FROM audit_log WHERE action = $1 AND timestamp < $2
+	`, action, cutoff.UTC())
+	if err != nil {
+		return 0, mapPgErr(err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (p *PostgresStore) GetBoard(ctx context.Context, squadID string) (*domain.Board, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, created_at
@@ -3172,6 +3186,21 @@ func (p *PostgresStore) MarkAllNotificationsRead(ctx context.Context, userID str
 		UPDATE notifications SET read_at = now()
 		WHERE user_id = $1 AND read_at IS NULL
 	`, userID)
+	if err != nil {
+		return 0, mapPgErr(err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// DeleteReadNotificationsBefore (S-198) purges READ notifications created
+// before cutoff. The read_at IS NOT NULL predicate is the guard: unread
+// alerts are never touched, and inbox messages live in a separate table
+// this sweep cannot reach (S-193: explicit user delete only).
+func (p *PostgresStore) DeleteReadNotificationsBefore(ctx context.Context, cutoff time.Time) (int, error) {
+	tag, err := p.pool.Exec(ctx, `
+		DELETE FROM notifications
+		WHERE read_at IS NOT NULL AND created_at < $1
+	`, cutoff.UTC())
 	if err != nil {
 		return 0, mapPgErr(err)
 	}

@@ -283,6 +283,11 @@ type NotificationStore interface {
 	// after since. The stuck scanner uses it to cap alerts at one per
 	// task per window without a new column on tasks.
 	HasRecentNotificationForTask(ctx context.Context, taskID string, typ domain.NotificationType, since time.Time) (bool, error)
+	// DeleteReadNotificationsBefore (S-198) permanently removes READ
+	// notifications created before cutoff and returns the number purged.
+	// Unread notifications are never touched, and inbox messages are
+	// never auto-removed (S-193: explicit user delete only).
+	DeleteReadNotificationsBefore(ctx context.Context, cutoff time.Time) (int, error)
 }
 
 // WorkNotificationStore lets runtimes wait for assigned task or inbox changes
@@ -387,4 +392,10 @@ type WakeLatencyStore interface {
 type AuditStore interface {
 	RecordAudit(ctx context.Context, a *domain.AuditEntry) error
 	ListAudit(ctx context.Context, squadID string, limit int) ([]*domain.AuditEntry, error)
+	// DeleteAuditByActionBefore (S-198) purges audit rows with the given
+	// action recorded before cutoff and returns the number purged. It
+	// exists so the retention sweep can clean up the audit rows it writes
+	// itself (action='inbox.deleted') without touching the rest of the
+	// append-only log.
+	DeleteAuditByActionBefore(ctx context.Context, action string, cutoff time.Time) (int, error)
 }

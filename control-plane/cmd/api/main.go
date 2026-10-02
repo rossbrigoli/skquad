@@ -94,6 +94,14 @@ func main() {
 	go httpapi.RunStuckTaskScanner(context.Background(), store, cfg.StuckScanInterval, cfg.TaskStuckThreshold)
 	slog.Info("started stuck task scanner", "interval", cfg.StuckScanInterval, "threshold", cfg.TaskStuckThreshold)
 
+	// S-198: notification retention sweep. Purges READ notifications
+	// older than the retention window (default 90 days) plus the
+	// 'inbox.deleted' audit rows written by the inbox delete endpoint.
+	// Unread notifications and inbox messages are never auto-removed
+	// (S-193). Idempotent; safe on every replica.
+	go httpapi.RunNotificationRetention(context.Background(), store, cfg.NotificationSweepInterval, cfg.NotificationRetention)
+	slog.Info("started notification retention sweep", "interval", cfg.NotificationSweepInterval, "retention", cfg.NotificationRetention)
+
 	var providerKeys httpapi.ProviderKeyStore
 	if cfg.K8sEnabled {
 		keys, err := kube.NewSecretStore(cfg)

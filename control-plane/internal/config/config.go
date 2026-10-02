@@ -96,6 +96,8 @@ type Config struct {
 	ConsultTimeout       time.Duration // S-173: default reply deadline for agent consults
 	StuckScanInterval    time.Duration // S-197: how often the stuck-task scanner sweeps
 	TaskStuckThreshold   time.Duration // S-197: silence (thread + heartbeat) before a task_stuck alert fires; also the per-task dedupe window
+	NotificationSweepInterval time.Duration // S-198: how often the notification retention sweep runs (SKQUAD_NOTIFICATION_SWEEP_INTERVAL_SECONDS)
+	NotificationRetention     time.Duration // S-198: age past which READ notifications are purged (SKQUAD_NOTIFICATION_RETENTION_DAYS, default 90d)
 
 	// Agent workspace storage (S-138). Platform-admin knobs only: squad
 	// owners pick a size within [0, MaxAgentStorage]; the StorageClass is
@@ -161,6 +163,8 @@ func Load() (*Config, error) {
 		ConsultTimeout:          envSeconds("SKQUAD_CONSULT_TIMEOUT_SECONDS", 900),
 		StuckScanInterval:       envSeconds("SKQUAD_STUCK_SCAN_INTERVAL_SECONDS", 300),
 		TaskStuckThreshold:      envSeconds("SKQUAD_TASK_STUCK_THRESHOLD_SECONDS", 86400),
+		NotificationSweepInterval: envSeconds("SKQUAD_NOTIFICATION_SWEEP_INTERVAL_SECONDS", 3600),
+		NotificationRetention:     envDays("SKQUAD_NOTIFICATION_RETENTION_DAYS", 90),
 		DefaultAgentStorageSize: envOr("SKQUAD_DEFAULT_AGENT_STORAGE_SIZE", "2Gi"),
 		MaxAgentStorage:         envOr("SKQUAD_MAX_AGENT_STORAGE", "10Gi"),
 		StorageClass:            strings.TrimSpace(os.Getenv("SKQUAD_STORAGE_CLASS")),
@@ -329,4 +333,18 @@ func envSeconds(key string, def int) time.Duration {
 		return time.Duration(def) * time.Second
 	}
 	return time.Duration(n) * time.Second
+}
+
+// envDays reads an integer-day setting (S-198 retention window) with the
+// same tolerance as envSeconds: unset/invalid falls back to the default.
+func envDays(key string, def int) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return time.Duration(def) * 24 * time.Hour
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return time.Duration(def) * 24 * time.Hour
+	}
+	return time.Duration(n) * 24 * time.Hour
 }
