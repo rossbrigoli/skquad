@@ -63,3 +63,24 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+/** S-200 follow-up: pull image files out of a paste event's clipboard
+ *  items (DataTransferItemList-shaped). Non-image items (plain text, etc.)
+ *  are ignored so text pastes fall through untouched. Pure and
+ *  ClipboardEvent-free so it can be unit-tested. */
+export function extractPastedImages(
+  items:
+    | ArrayLike<{ kind: string; type: string; getAsFile(): File | null }>
+    | null
+    | undefined,
+): File[] {
+  if (!items) return [];
+  const out: File[] = [];
+  for (const item of Array.from(items)) {
+    if (!item || item.kind !== "file") continue;
+    if (!item.type.toLowerCase().startsWith("image/")) continue;
+    const f = item.getAsFile();
+    if (f) out.push(f);
+  }
+  return out;
+}

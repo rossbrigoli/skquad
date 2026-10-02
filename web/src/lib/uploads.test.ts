@@ -7,6 +7,7 @@ import {
   MAX_MESSAGE_ATTACHMENTS,
   MAX_UPLOAD_BYTES,
   formatBytes,
+  extractPastedImages,
   messageAttachments,
   validateImageFile,
 } from "./uploads";
@@ -95,5 +96,50 @@ describe("limits", () => {
   it("mirror the control-plane constants", () => {
     expect(MAX_UPLOAD_BYTES).toBe(5 * 1024 * 1024);
     expect(MAX_MESSAGE_ATTACHMENTS).toBe(8);
+  });
+});
+
+// S-200 follow-up: the chat composer's paste handler was missing; these
+// cover the clipboard extraction the onPaste handler relies on.
+describe("extractPastedImages", () => {
+  const mkItem = (kind: string, type: string, file: File | null = null) => ({
+    kind,
+    type,
+    getAsFile: () => file,
+  });
+
+  it("returns empty for missing/empty item lists", () => {
+    expect(extractPastedImages(undefined)).toEqual([]);
+    expect(extractPastedImages(null)).toEqual([]);
+    expect(extractPastedImages([])).toEqual([]);
+  });
+
+  it("extracts image files and ignores text items", () => {
+    const png = new File([new Uint8Array([1, 2, 3])], "paste.png", { type: "image/png" });
+    const items = [
+      mkItem("string", "text/plain"),
+      mkItem("file", "image/png", png),
+    ];
+    const out = extractPastedImages(items);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toBe(png);
+  });
+
+  it("ignores non-image files and null getAsFile results", () => {
+    const items = [
+      mkItem("file", "application/pdf", new File(["x"], "a.pdf", { type: "application/pdf" })),
+      mkItem("file", "image/png", null),
+    ];
+    expect(extractPastedImages(items)).toEqual([]);
+  });
+
+  it("handles multiple pasted images", () => {
+    const a = new File(["a"], "a.png", { type: "image/png" });
+    const b = new File(["b"], "b.webp", { type: "image/webp" });
+    const out = extractPastedImages([
+      mkItem("file", "image/png", a),
+      mkItem("file", "image/webp", b),
+    ]);
+    expect(out).toEqual([a, b]);
   });
 });

@@ -50,7 +50,7 @@ import {
 import { SubagentThreadPanel } from "../../../../../components/SubagentThreadPanel";
 import { AgentInboxPanel } from "../../../../../components/AgentInboxPanel";
 import { AttachmentThumbs } from "../../../../../components/AttachmentThumbs";
-import { MAX_MESSAGE_ATTACHMENTS, messageAttachments, validateImageFile, type UploadRef } from "../../../../../lib/uploads";
+import { MAX_MESSAGE_ATTACHMENTS, extractPastedImages, messageAttachments, validateImageFile, type UploadRef } from "../../../../../lib/uploads";
 import { apiUploadImage } from "../../../../../lib/api";
 import { agentStatus } from "../../../../../lib/status";
 import { THINKING_LEVELS, resolveThinkingLevel, thinkingLevelLabel, type ThinkingLevel } from "../../../../../lib/thinking";
@@ -1085,8 +1085,36 @@ function ChatThread({
               send();
             }
           }}
+          onPaste={(e) => {
+            // S-200 follow-up: pasting an image from the clipboard stages it
+            // exactly like the paperclip picker. Plain-text pastes fall
+            // through untouched.
+            const images = extractPastedImages(e.clipboardData?.items);
+            if (images.length > 0) {
+              e.preventDefault();
+              void attachFiles(images);
+            }
+          }}
         />
-        {/* S-194: paperclip opens the file picker. */}
+        {/* S-194: paperclip opens the file picker. S-200 follow-up: this
+            hidden input was missing from the chat page (only the task page
+            had one), so fileInputRef was always null and the paperclip
+            click did nothing. */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          style={{ display: "none" }}
+          aria-hidden="true"
+          tabIndex={-1}
+          onChange={(e) => {
+            const files = e.target.files;
+            if (files && files.length > 0) void attachFiles(files);
+            // Reset so re-picking the same file fires onChange again.
+            e.target.value = "";
+          }}
+        />
         <button
           type="button"
           className="chat-attach-btn"
