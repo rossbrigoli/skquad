@@ -55,7 +55,7 @@ func TestComposePromptToolsInventory(t *testing.T) {
 	// notify_owner ships enabled by default (like send_message), and so
 	// does send_inbox (S-193 seed parity) — both described distinctly in
 	// the inventory.
-	require.Contains(t, platform, "- notify_owner — escalate to your squad owner with an action_required inbox message")
+	require.Contains(t, platform, "- notify_owner — drop an action_required message directly into your squad owner's inbox")
 	require.Contains(t, platform, "- send_inbox — deliver content a HUMAN asked you to send to your squad owner's inbox")
 	require.NotContains(t, platform, "- web_fetch")
 	require.NotContains(t, platform, "- web_search")
