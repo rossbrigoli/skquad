@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -293,6 +294,7 @@ func (s *Server) composePromptForAgent(ctx context.Context, agent *domain.Agent)
 		Tools:       renderEnabledTools(tools),
 	}
 	s.applyModelFacts(ctx, agent, &facts)
+	facts.Owner = s.resolvePlatformOwner(ctx)
 	// S-179: the squad mission is injected into the squad tier so every
 	// agent's system prompt carries it alongside the Squad Context text.
 	// The runtime fetches this composition per wake (ETag-cached), so a
@@ -396,6 +398,38 @@ func (s *Server) applyModelFacts(ctx context.Context, agent *domain.Agent, f *pr
 			f.ModelFallback = "unknown"
 		}
 	}
+}
+
+// resolvePlatformOwner renders the platform-owner display for the
+// platform block: display names of all platform_admin users,
+// comma-joined. Fail-soft like the model facts — a lookup error or an
+// empty admin set renders "unknown" rather than failing composition.
+func (s *Server) resolvePlatformOwner(ctx context.Context) string {
+	users, err := s.store.ListUsers(ctx)
+	if err != nil {
+		return "unknown"
+	}
+	names := make([]string, 0, 4)
+	for _, u := range users {
+		if u == nil || u.Role != domain.RolePlatformAdmin {
+			continue
+		}
+		name := strings.TrimSpace(u.Name)
+		if name == "" {
+			name = strings.TrimSpace(u.Email)
+		}
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return "unknown"
+	}
+	// Sorted: composition must be deterministic so the ETag/sha only
+	// changes when the admin set actually changes.
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // ifNoneMatchMatches reports whether an If-None-Match header contains the

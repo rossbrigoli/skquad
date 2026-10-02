@@ -61,6 +61,9 @@ type Facts struct {
 	ModelContextWindow string
 	ModelSupportsTools string
 	ModelFallback      string
+	// Owner is the display name(s) of the platform admin user(s),
+	// comma-joined; "unknown" when unresolvable or none exist.
+	Owner string
 }
 
 // Composition is the result of composing all tiers.
@@ -120,6 +123,7 @@ var templateVars = map[string]func(Facts) string{
 	"model.context_window": func(f Facts) string { return f.ModelContextWindow },
 	"model.supports_tools": func(f Facts) string { return f.ModelSupportsTools },
 	"model.fallback":       func(f Facts) string { return f.ModelFallback },
+	"platform.owner":       func(f Facts) string { return f.Owner },
 }
 
 // Compose builds the effective prompt from the four tiers.

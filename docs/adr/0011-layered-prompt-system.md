@@ -132,14 +132,20 @@ never silently pass through.
 
 **Platform-prompt awareness upgrade (2026-10-02):** the platform block now
 carries three additional fact groups rendered via new allowlisted vars —
-`{{tools.enabled}}` (enabled built-in tool inventory), and
-`{{model.display}}`, `{{model.name}}`, `{{model.provider}}`,
-`{{model.context_window}}`, `{{model.supports_tools}}`,
+`{{tools.enabled}}` (enabled built-in tool inventory),
+`{{squad.roster}}` (live squad-mate list, now surfaced in the platform
+tier via a YOUR SQUAD section), `{{platform.owner}}` (display names of
+platform_admin users, sorted and comma-joined; `"unknown"` when none or
+lookup fails), and `{{model.display}}`, `{{model.name}}`,
+`{{model.provider}}`, `{{model.context_window}}`, `{{model.supports_tools}}`,
 `{{model.fallback}}` (bound-LLM facts) — plus a "WHEN A TOOL CALL FAILS"
 playbook (classify errors; one retry for transient; change approach on
 4xx; blocked only when a human is truly required; never fabricate).
 Model facts render `"unknown"` when the agent has no bound/resolvable
-model — composition never fails over missing model data.
+model — composition never fails over missing model data. The YOUR
+PLATFORM OWNER section also pins the human-contact rule: agents reach
+humans only through the task lifecycle (blocked/review), never
+out-of-band.
 **Operator note:** `SKQUAD_PLATFORM_PROMPT_FILE` overrides replace the
 embedded block wholesale; an override should include equivalent
 TOOLS / MODEL / FAILURE-PLAYBOOK sections or the agent loses them.

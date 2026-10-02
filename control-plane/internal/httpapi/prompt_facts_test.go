@@ -170,3 +170,52 @@ func TestComposePromptSerializes(t *testing.T) {
 	require.Contains(t, string(b), "YOUR TOOLS")
 	require.Contains(t, string(b), "WHEN A TOOL CALL FAILS")
 }
+
+// --- YOUR SQUAD / YOUR PLATFORM OWNER sections --------------------------
+
+func TestComposePromptSquadSection(t *testing.T) {
+	s, store, agent := factTestSetup(t)
+	ctx := context.Background()
+	// Add a second squad-mate so the roster has more than the agent itself.
+	_, err := store.CreateAgent(ctx, &domain.Agent{SquadID: agent.SquadID, Name: "watson", Role: "investigator", Status: domain.AgentIdle})
+	require.NoError(t, err)
+
+	platform := composedPlatformTier(t, s, agent)
+	require.Contains(t, platform, "YOUR SQUAD")
+	require.Contains(t, platform, "You belong to squad facts-squad. Your squad-mates are:")
+	require.Contains(t, platform, "facts-agent (worker); watson (investigator)")
+	require.Contains(t, platform, "`send_message` reaches these squad-mates only.")
+}
+
+func TestComposePromptOwnerRendered(t *testing.T) {
+	s, store, agent := factTestSetup(t)
+	ctx := context.Background()
+	_, err := store.UpsertUser(ctx, &domain.User{Email: "ross@acme.test", Name: "Ross Brigoli", Role: domain.RolePlatformAdmin})
+	require.NoError(t, err)
+	// Admin with no display name falls back to email.
+	_, err = store.UpsertUser(ctx, &domain.User{Email: "admin2@acme.test", Role: domain.RolePlatformAdmin})
+	require.NoError(t, err)
+	// Plain user must never appear in the owner line.
+	_, err = store.UpsertUser(ctx, &domain.User{Email: "pleb@acme.test", Name: "Just A User", Role: domain.RoleUser})
+	require.NoError(t, err)
+
+	platform := composedPlatformTier(t, s, agent)
+	// Names are sorted for deterministic composition (ETag stability).
+	require.Contains(t, platform, "The platform owner of this skquad instance is: Ross Brigoli, admin2@acme.test.")
+	require.NotContains(t, platform, "Just A User")
+}
+
+func TestComposePromptOwnerUnknown(t *testing.T) {
+	s, store, agent := factTestSetup(t)
+	ctx := context.Background()
+	_, err := store.UpsertUser(ctx, &domain.User{Email: "pleb@acme.test", Name: "Just A User", Role: domain.RoleUser})
+	require.NoError(t, err)
+
+	platform := composedPlatformTier(t, s, agent)
+	require.Contains(t, platform, "The platform owner of this skquad instance is: unknown.")
+}
+
+func TestResolvePlatformOwnerEmptyStore(t *testing.T) {
+	s, _, _ := factTestSetup(t)
+	require.Equal(t, "unknown", s.resolvePlatformOwner(context.Background()))
+}
