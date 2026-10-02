@@ -3098,6 +3098,64 @@ func (p *PostgresStore) ListNotifications(ctx context.Context, userID string, un
 	return out, nil
 }
 
+// HasRecentNotificationForTask (S-197) backs the stuck-scanner dedupe:
+// one prior task_stuck row with created_at >= since suppresses re-filing.
+func (p *PostgresStore) HasRecentNotificationForTask(ctx context.Context, taskID string, typ domain.NotificationType, since time.Time) (bool, error) {
+	if taskID == "" {
+		return false, nil
+	}
+	var exists bool
+	err := p.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM notifications
+			WHERE task_id = $1::uuid AND type = $2 AND created_at >= $3
+		)
+	`, taskID, typ, since).Scan(&exists)
+	if err != nil {
+		return false, mapPgErr(err)
+	}
+	return exists, nil
+}
+
+// ListStaleInProgressTasks (S-197) finds in-progress tasks whose every
+// liveness signal — task row, task thread messages, execution heartbeats
+// — predates cutoff. NOT EXISTS keeps it a single indexed-ish sweep; the
+// thread-activity check rides the squad_id index on messages.
+func (p *PostgresStore) ListStaleInProgressTasks(ctx context.Context, cutoff time.Time) ([]*domain.Task, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT t.id::text, t.board_id::text, t.squad_id::text, t.title, t.description, t.status,
+		       coalesce(t.assignee_agent_id::text, ''), t.created_by_type, t.created_by_id::text,
+		       t.position, t.created_at, t.updated_at, coalesce(t.origin_message_id, ''), coalesce(t.workspace_resource_id, ''), coalesce(t.workspace_branch, ''), coalesce(t.workspace_commit_sha, ''), coalesce(t.result, ''), coalesce(t.result_status, ''), t.result_at, t.task_number
+		FROM tasks t
+		WHERE t.status = $1
+		  AND t.updated_at < $2
+		  AND NOT EXISTS (
+		      SELECT 1 FROM messages m
+		      WHERE m.squad_id = t.squad_id
+		        AND m.created_at >= $2
+		        AND m.payload->>'task_id' = t.id::text
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM task_executions e
+		      WHERE e.task_id = t.id AND e.updated_at >= $2
+		  )
+		ORDER BY t.updated_at
+	`, domain.TaskInProgress, cutoff)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+	tasks := []*domain.Task{}
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, mapPgErr(rows.Err())
+}
+
 func (p *PostgresStore) MarkNotificationRead(ctx context.Context, userID string, id string) (*domain.Notification, error) {
 	row := p.pool.QueryRow(ctx, `
 		UPDATE notifications

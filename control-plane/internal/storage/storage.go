@@ -184,6 +184,12 @@ type TaskStore interface {
 	// concurrently: the updates are conditional, so a heartbeat or complete
 	// that lands after cutoff wins and the row is left untouched.
 	ReapExpiredTaskExecutions(ctx context.Context, cutoff time.Time) ([]domain.ReapedExecution, error)
+	// ListStaleInProgressTasks (S-197) returns in-progress tasks with no
+	// sign of life since cutoff: the task row itself untouched, no task
+	// thread message (messages.payload->>'task_id') arrived, and no
+	// execution heartbeat (task_executions.updated_at) landed. The stuck
+	// scanner alerts squad owners about exactly these tasks.
+	ListStaleInProgressTasks(ctx context.Context, cutoff time.Time) ([]*domain.Task, error)
 }
 
 // AgentMemoryStore persists bounded agent long-term memory.
@@ -272,6 +278,11 @@ type NotificationStore interface {
 	GetNotificationPreferences(ctx context.Context, userID string) (*domain.NotificationPreferences, error)
 	// SetNotificationPreferences upserts the user's mute list (S-199).
 	SetNotificationPreferences(ctx context.Context, userID string, muted []domain.NotificationType) (*domain.NotificationPreferences, error)
+	// HasRecentNotificationForTask (S-197) reports whether a notification
+	// of the given type already exists for the task with created_at at or
+	// after since. The stuck scanner uses it to cap alerts at one per
+	// task per window without a new column on tasks.
+	HasRecentNotificationForTask(ctx context.Context, taskID string, typ domain.NotificationType, since time.Time) (bool, error)
 }
 
 // WorkNotificationStore lets runtimes wait for assigned task or inbox changes

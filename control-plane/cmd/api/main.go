@@ -87,6 +87,13 @@ func main() {
 	go httpapi.RunConsultTimeoutSweeper(context.Background(), store, cfg.ConsultSweepInterval)
 	slog.Info("started consult timeout sweeper", "interval", cfg.ConsultSweepInterval, "default_deadline", cfg.ConsultTimeout)
 
+	// S-197: stuck-task scanner. Alerts squad owners when an in-progress
+	// task shows no thread activity and no heartbeat progress for the
+	// threshold (default 24h). Deduped per task via the notifications
+	// table; safe on every replica.
+	go httpapi.RunStuckTaskScanner(context.Background(), store, cfg.StuckScanInterval, cfg.TaskStuckThreshold)
+	slog.Info("started stuck task scanner", "interval", cfg.StuckScanInterval, "threshold", cfg.TaskStuckThreshold)
+
 	var providerKeys httpapi.ProviderKeyStore
 	if cfg.K8sEnabled {
 		keys, err := kube.NewSecretStore(cfg)

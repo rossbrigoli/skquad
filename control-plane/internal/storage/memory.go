@@ -57,7 +57,7 @@ type MemoryStore struct {
 	// S-199: per-user notification mute lists, mirroring the Postgres
 	// user_notification_preferences table. Absent key ⇒ all enabled.
 	notifPrefs map[string][]domain.NotificationType
-	k8sOutbox       map[string]*domain.KubernetesOutboxEvent
+	k8sOutbox  map[string]*domain.KubernetesOutboxEvent
 
 	// S-PROMPT WP2: organization tier settings (single-row, mirroring
 	// the Postgres instance_settings table) and the append-only revision
@@ -2771,6 +2771,74 @@ func (m *MemoryStore) ListNotifications(_ context.Context, userID string, unread
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+// HasRecentNotificationForTask (S-197) backs the stuck-scanner dedupe:
+// one prior task_stuck row created at or after since suppresses re-filing.
+func (m *MemoryStore) HasRecentNotificationForTask(_ context.Context, taskID string, typ domain.NotificationType, since time.Time) (bool, error) {
+	if taskID == "" {
+		return false, nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, n := range m.notifications {
+		if n.TaskID == taskID && n.Type == typ && !n.CreatedAt.Before(since) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ListStaleInProgressTasks (S-197) mirrors the Postgres sweep: in-progress
+// tasks whose row, thread messages, and execution heartbeats all predate
+// cutoff. Thread activity is the payload task_id linkage written by
+// appendTaskThreadEvent (S-181/183).
+func (m *MemoryStore) ListStaleInProgressTasks(_ context.Context, cutoff time.Time) ([]*domain.Task, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := []*domain.Task{}
+	for _, t := range m.tasks {
+		if t.Status != domain.TaskInProgress || !t.UpdatedAt.Before(cutoff) {
+			continue
+		}
+		if m.taskThreadActivitySinceLocked(t.ID, cutoff) || m.taskExecutionActivitySinceLocked(t.ID, cutoff) {
+			continue
+		}
+		copyT := *t
+		out = append(out, &copyT)
+	}
+	slices.SortFunc(out, func(a, b *domain.Task) int {
+		return a.UpdatedAt.Compare(b.UpdatedAt)
+	})
+	return out, nil
+}
+
+// taskThreadActivitySinceLocked reports whether any task-thread message
+// (payload carries task_id) was created at or after cutoff.
+func (m *MemoryStore) taskThreadActivitySinceLocked(taskID string, cutoff time.Time) bool {
+	for _, msg := range m.messages {
+		if msg.CreatedAt.Before(cutoff) {
+			continue
+		}
+		var payload struct {
+			TaskID string `json:"task_id"`
+		}
+		if err := json.Unmarshal(msg.Payload, &payload); err == nil && payload.TaskID == taskID {
+			return true
+		}
+	}
+	return false
+}
+
+// taskExecutionActivitySinceLocked reports whether any execution row for
+// the task (heartbeat or state change) was updated at or after cutoff.
+func (m *MemoryStore) taskExecutionActivitySinceLocked(taskID string, cutoff time.Time) bool {
+	for _, e := range m.taskExecs {
+		if e.TaskID == taskID && !e.UpdatedAt.Before(cutoff) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *MemoryStore) MarkNotificationRead(_ context.Context, userID string, id string) (*domain.Notification, error) {
