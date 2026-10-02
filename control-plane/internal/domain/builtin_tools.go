@@ -23,10 +23,12 @@ const (
 	BuiltinToolWebFetch    = "web_fetch"
 	BuiltinToolWebSearch   = "web_search"
 	BuiltinToolSendMessage = "send_message"
+	BuiltinToolSendInbox   = "send_inbox"
+	BuiltinToolNotifyOwner = "notify_owner"
 )
 
 // BuiltinToolNames lists the built-in tools in canonical order.
-var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage}
+var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner}
 
 // BuiltinToolDefaultEnabled reports whether a built-in ships enabled when
 // seeded. The original three are security-sensitive and ship disabled
@@ -34,8 +36,13 @@ var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToo
 // primitive, its blast radius is bounded by squad isolation plus the
 // correlation-chain budget, and disabling it by default would make the
 // card's feature invisible until an admin noticed the toggle.
+// notify_owner ships enabled for the same reason: its blast radius is
+// one capped-length action_required row in the agent's own squad owner's
+// inbox — it triggers no auto-action and reaches nobody else. send_inbox
+// ships enabled to match its S-193 seed (migration 0029): same posture,
+// one capped agent_message row in the agent's own squad owner's inbox.
 func BuiltinToolDefaultEnabled(name string) bool {
-	return name == BuiltinToolSendMessage
+	return name == BuiltinToolSendMessage || name == BuiltinToolSendInbox || name == BuiltinToolNotifyOwner
 }
 
 // SearchProviderNames lists the accepted web_search policy providers.
@@ -111,6 +118,22 @@ func ValidateBuiltinPolicy(name string, policy json.RawMessage) []string {
 		// S-164: timeoutSeconds bounds the peers-fetch and send round trips.
 		// maxMessageChars caps the message body so one agent cannot flood a
 		// peer's context with a novel.
+		allowed = map[string]func(string, json.RawMessage) []string{
+			"timeoutSeconds":  requirePositiveInt,
+			"maxMessageChars": requirePositiveInt,
+		}
+	case BuiltinToolSendInbox:
+		// S-193: send_inbox delivers human-requested content to the
+		// squad owner's inbox (kind agent_message). Policy keys mirror
+		// send_message; maxMessageChars matches the server-side inbox cap.
+		allowed = map[string]func(string, json.RawMessage) []string{
+			"timeoutSeconds":  requirePositiveInt,
+			"maxMessageChars": requirePositiveInt,
+		}
+	case BuiltinToolNotifyOwner:
+		// notify_owner: timeoutSeconds bounds the POST round trip;
+		// maxMessageChars mirrors the server-side maxInboxMessageChars cap
+		// (2000) so the tool fails fast instead of being silently trimmed.
 		allowed = map[string]func(string, json.RawMessage) []string{
 			"timeoutSeconds":  requirePositiveInt,
 			"maxMessageChars": requirePositiveInt,

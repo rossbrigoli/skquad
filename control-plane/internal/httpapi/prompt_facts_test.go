@@ -51,7 +51,9 @@ func TestComposePromptToolsInventory(t *testing.T) {
 
 	platform := composedPlatformTier(t, s, agent)
 	require.Contains(t, platform, "- exec — run shell commands inside your sandboxed agent pod; the container is your boundary")
-	require.Contains(t, platform, "- send_message — send messages to squad mates and humans (cross-squad needs an access grant)")
+	require.Contains(t, platform, "- send_message — send a message to a squad-mate agent (cross-squad needs an access grant; humans are NOT reachable via send_message)")
+	// notify_owner ships enabled by default (like send_message).
+	require.Contains(t, platform, "- notify_owner — drop an action_required message directly into your squad owner's inbox")
 	require.NotContains(t, platform, "- web_fetch")
 	require.NotContains(t, platform, "- web_search")
 	require.NotContains(t, platform, "(none — you have no tools this run)")

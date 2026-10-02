@@ -15,7 +15,7 @@ var testFacts = Facts{
 	Resources:   []string{"repo: skquad", "db: skquad-pg"},
 	Workspace:   "https://skquad.rossbrigoli.com/ws/build-team",
 	PlatformVer: "0.1.100",
-	Tools:       []string{"- exec — run shell commands inside your sandboxed agent pod; the container is your boundary", "- send_message — send messages to squad mates and humans (cross-squad needs an access grant)"},
+	Tools:       []string{"- exec — run shell commands inside your sandboxed agent pod; the container is your boundary", "- send_message — send a message to a squad-mate agent (cross-squad needs an access grant; humans are NOT reachable via send_message)"},
 
 	ModelDisplay:       "Claude Opus 4.6",
 	ModelName:          "claude-opus-4-6",
@@ -170,7 +170,7 @@ func TestNewTemplateVarsSubstitute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "- exec — run shell commands inside your sandboxed agent pod; the container is your boundary\n- send_message — send messages to squad mates and humans (cross-squad needs an access grant)|Claude Opus 4.6|claude-opus-4-6|Anthropic|200000 tokens|supported|none configured|Ross Brigoli, admin@acme.test"
+	want := "- exec — run shell commands inside your sandboxed agent pod; the container is your boundary\n- send_message — send a message to a squad-mate agent (cross-squad needs an access grant; humans are NOT reachable via send_message)|Claude Opus 4.6|claude-opus-4-6|Anthropic|200000 tokens|supported|none configured|Ross Brigoli, admin@acme.test"
 	if got := c.Tiers[len(c.Tiers)-1].Content; got != want {
 		t.Errorf("substitution mismatch:\ngot:  %s\nwant: %s", got, want)
 	}
