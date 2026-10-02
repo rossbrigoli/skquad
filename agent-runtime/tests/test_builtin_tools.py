@@ -1149,5 +1149,146 @@ class SendInboxToolTests(BuiltinToolsTestBase):
         assert isinstance(tools[0], bt.SendInboxTool)
 
 
+class NotifyOwnerToolTests(BuiltinToolsTestBase):
+    """Fake HTTP: POST /api/v1/agents/me/notify-owner is captured."""
+
+    def patch_http(self, fake):
+        return mock.patch(
+            "skquad_runtime.builtin_tools.request.urlopen", side_effect=fake
+        )
+
+    def test_registry_contains_notify_owner(self):
+        assert "notify_owner" in bt._BUILTIN_REGISTRY
+
+    def test_tool_schema_shape(self):
+        tool = bt.NotifyOwnerTool({}, self.ctx())
+        (schema,) = tool.tools()
+        fn = schema["function"]
+        assert fn["name"] == "notify_owner"
+        assert fn["parameters"]["required"] == ["message"]
+        assert set(fn["parameters"]["properties"]) == {"message"}
+
+    def test_posts_message_to_notify_owner_endpoint(self):
+        tool = bt.NotifyOwnerTool({}, self.ctx(credential="cred-own"))
+        captured = {}
+
+        def fake(req, timeout=None):
+            assert req.get_method() == "POST"
+            assert req.full_url.endswith("/api/v1/agents/me/notify-owner")
+            assert req.headers.get("Authorization") == "Bearer cred-own"
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return FakeHTTPResponse(
+                201,
+                json.dumps({"id": "inb-7", "kind": "action_required"}).encode("utf-8"),
+                "application/json",
+            )
+
+        with self.patch_http(fake):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="notify_owner",
+                    arguments={"message": "need approval to proceed"},
+                ),
+                None,
+            )
+        assert result.ok is True
+        assert "inb-7" in result.content
+        assert captured["body"] == {"message": "need approval to proceed"}
+
+    def test_empty_message_rejected_without_http(self):
+        tool = bt.NotifyOwnerTool({}, self.ctx())
+
+        def fake(req, timeout=None):  # pragma: no cover
+            raise AssertionError("must not call HTTP")
+
+        with self.patch_http(fake):
+            result = tool.invoke(
+                ToolCall(id="c1", name="notify_owner", arguments={"message": "   "}), None
+            )
+        assert result.ok is False
+        assert "message is required" in result.content
+
+    def test_policy_max_chars_enforced(self):
+        tool = bt.NotifyOwnerTool({"maxMessageChars": 10}, self.ctx())
+
+        def fake(req, timeout=None):  # pragma: no cover
+            raise AssertionError("must not call HTTP")
+
+        with self.patch_http(fake):
+            result = tool.invoke(
+                ToolCall(id="c1", name="notify_owner", arguments={"message": "x" * 11}),
+                None,
+            )
+        assert result.ok is False
+        assert "exceeds 10 characters" in result.content
+
+    def test_default_cap_matches_control_plane_2000(self):
+        # Server-side maxInboxMessageChars is 2000; the tool default must
+        # match so over-long messages fail fast, not get silently trimmed.
+        def ok_fake(req, timeout=None):
+            return FakeHTTPResponse(201, b'{"id": "inb-9"}', "application/json")
+
+        def no_http(req, timeout=None):  # pragma: no cover
+            raise AssertionError("must not call HTTP")
+
+        tool = bt.NotifyOwnerTool({}, self.ctx())
+        with self.patch_http(ok_fake):
+            at_cap = tool.invoke(
+                ToolCall(id="c1", name="notify_owner", arguments={"message": "x" * 2000}),
+                None,
+            )
+        assert at_cap.ok is True
+        with self.patch_http(no_http):
+            over_cap = tool.invoke(
+                ToolCall(id="c1", name="notify_owner", arguments={"message": "x" * 2001}),
+                None,
+            )
+        assert over_cap.ok is False
+        assert "exceeds 2000 characters" in over_cap.content
+
+    def test_http_error_surfaces_as_tool_failure(self):
+        tool = bt.NotifyOwnerTool({}, self.ctx())
+
+        def fake(req, timeout=None):
+            raise error.HTTPError(
+                req.full_url,
+                404,
+                "not found",
+                {},
+                io.BytesIO(b'{"error":"squad owner not found for notification"}'),
+            )
+
+        with self.patch_http(fake):
+            result = tool.invoke(
+                ToolCall(id="c1", name="notify_owner", arguments={"message": "hi"}), None
+            )
+        assert result.ok is False
+        assert "notify_owner" in result.content
+        assert "404" in result.content
+        assert "squad owner not found" in result.content
+
+    def test_timeout_policy_used(self):
+        tool = bt.NotifyOwnerTool({"timeoutSeconds": 3}, self.ctx())
+        seen = {}
+
+        def fake(req, timeout=None):
+            seen["timeout"] = timeout
+            return FakeHTTPResponse(201, b'{"id": "inb-8"}', "application/json")
+
+        with self.patch_http(fake):
+            result = tool.invoke(
+                ToolCall(id="c1", name="notify_owner", arguments={"message": "hi"}), None
+            )
+        assert result.ok is True
+        assert seen["timeout"] == 3
+
+    def test_build_builtin_tools_includes_enabled_notify_owner(self):
+        fetched = {"tools": [{"name": "notify_owner", "enabled": True, "policy": {}}]}
+        tools = bt.build_builtin_tools(fetched, self.ctx())
+        assert [t.name for t in tools] == ["notify_owner"]
+        assert isinstance(tools[0], bt.NotifyOwnerTool)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -692,12 +692,118 @@ class SendInboxTool:
         return json.loads(raw.decode("utf-8"))
 
 
+class NotifyOwnerTool:
+    """Platform-prompt awareness: direct escalation to the squad owner.
+
+    Wraps ``POST /api/v1/agents/me/notify-owner``: the control plane
+    files an ``action_required`` InboxMessage against the agent's squad
+    owner (audited; 404 when the squad has no owner). No squad-mate
+    resolution happens runtime-side — the control plane owns routing. The
+    message cap mirrors the server-side ``maxInboxMessageChars`` (2000)
+    so an over-long message fails fast with a clear error instead of
+    being silently trimmed.
+    """
+
+    name = "notify_owner"
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        self.policy = policy or {}
+        self.context = context
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "notify_owner",
+                    "description": (
+                        "Drop a message directly into your squad owner's "
+                        "inbox (action_required). Use for escalations "
+                        "that need the owner regardless of task lifecycle "
+                        "— approvals, blockers outside your task, urgent "
+                        "notices."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "message": {
+                                "type": "string",
+                                "description": (
+                                    "What the owner needs to see and act "
+                                    "on. Plain text; be precise and "
+                                    "self-contained."
+                                ),
+                            },
+                        },
+                        "required": ["message"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, config) -> ToolResult:  # noqa: ANN001
+        text = str(call.arguments.get("message", "")).strip()
+        if not text:
+            return ToolResult(content="notify_owner: message is required", ok=False)
+        max_chars = int(self.policy.get("maxMessageChars", 2000))
+        if len(text) > max_chars:
+            return ToolResult(
+                content=f"notify_owner: message exceeds {max_chars} characters", ok=False
+            )
+        try:
+            data = self._request(
+                "POST", "/api/v1/agents/me/notify-owner", {"message": text}
+            )
+        except error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = json.loads(exc.read().decode("utf-8")).get("error", "")
+            except Exception:  # noqa: BLE001 — error body is best-effort
+                pass
+            suffix = f" — {detail}" if detail else ""
+            return ToolResult(
+                content=f"notify_owner: HTTP {exc.code}{suffix}", ok=False
+            )
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return ToolResult(content=f"notify_owner: {exc}", ok=False)
+        message_id = str(data.get("id", "")) if isinstance(data, dict) else ""
+        return ToolResult(
+            content=(
+                "notified the squad owner (action_required)"
+                + (f" (message {message_id})" if message_id else "")
+            ),
+            ok=True,
+        )
+
+    def _request(self, method: str, path: str, body: dict | None = None):
+        url = self.context.control_plane_url.rstrip("/") + path
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+        req = request.Request(
+            url,
+            data=payload,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {self.context.agent_credential}",
+                "X-Skquad-Agent-ID": self.context.agent_id,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        timeout = int(self.policy.get("timeoutSeconds", 15))
+        with request.urlopen(req, timeout=timeout) as response:
+            raw = response.read()
+        if not raw:
+            return {}
+        return json.loads(raw.decode("utf-8"))
+
+
 _BUILTIN_REGISTRY: dict[str, type] = {
     "exec": ExecTool,
     "web_fetch": WebFetchTool,
     "web_search": WebSearchTool,
     "send_message": SendMessageTool,
     "send_inbox": SendInboxTool,
+    "notify_owner": NotifyOwnerTool,
 }
 
 

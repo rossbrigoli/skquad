@@ -18,16 +18,18 @@ func TestMemoryStoreSeedsBuiltinTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	// S-164 added send_message as a fourth builtin, seeded ENABLED; the
-	// original three stay disabled-by-default (ADR-0012 §1).
-	if len(tools) != 4 {
-		t.Fatalf("seeded tools = %d, want 4", len(tools))
+	// original three stay disabled-by-default (ADR-0012 §1). send_inbox
+	// (S-193) and notify_owner (platform-prompt awareness) ship ENABLED
+	// like send_message — bounded blast radius, own squad owner's inbox.
+	if len(tools) != 6 {
+		t.Fatalf("seeded tools = %d, want 6", len(tools))
 	}
-	wantNames := []string{"exec", "web_fetch", "web_search", "send_message"}
+	wantNames := []string{"exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner"}
 	for i, tool := range tools {
 		if tool.Name != wantNames[i] {
 			t.Fatalf("tool[%d] = %q, want %q", i, tool.Name, wantNames[i])
 		}
-		wantEnabled := tool.Name == "send_message"
+		wantEnabled := tool.Name == "send_message" || tool.Name == "send_inbox" || tool.Name == "notify_owner"
 		if tool.Enabled != wantEnabled {
 			t.Fatalf("tool %s enabled = %v, want %v", tool.Name, tool.Enabled, wantEnabled)
 		}
