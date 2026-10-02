@@ -182,6 +182,7 @@ func applyGPUSpec(dep *appsv1.Deployment, want gpuSelection, labelKey string, ma
 
 	if want.Resource != "" {
 		setGPURequest(pod, want.Resource)
+		ensureGPUToleration(pod, want.Resource)
 		if len(want.Nodes) > 0 {
 			ensureNodeAffinity(pod, labelKey, want.Resource, want.Nodes)
 		} else {
@@ -189,6 +190,7 @@ func applyGPUSpec(dep *appsv1.Deployment, want gpuSelection, labelKey string, ma
 		}
 	} else {
 		stripAllGPURequests(pod, managedResources)
+		stripGPUTolerations(pod, managedResources)
 		stripGPUNodeAffinity(pod, labelKey)
 	}
 
@@ -218,7 +220,57 @@ func gpuProjection(pod *corev1.PodSpec, managedResources []string) map[string]an
 	}
 	proj["gpuRequests"] = requests
 	proj["gpuLimits"] = limits
+	tolerations := []string{}
+	for _, t := range pod.Tolerations {
+		for _, res := range managedResources {
+			if t.Key == res {
+				tolerations = append(tolerations, t.Key+"/"+string(t.Operator))
+			}
+		}
+	}
+	proj["gpuTolerations"] = tolerations
 	return proj
+}
+
+// ensureGPUToleration makes the pod tolerate GPU-node taints for the
+// bound resource (e.g. nvidia.com/gpu=true:NoSchedule, applied by the
+// device plugin / admin to reserve GPU nodes). Without it a pod that
+// requests the GPU resource can never schedule on the tainted node.
+// Empty Effect tolerates every effect for that key. Chart-authored
+// tolerations for the same key are left untouched (no duplicates).
+func ensureGPUToleration(pod *corev1.PodSpec, res corev1.ResourceName) {
+	for _, t := range pod.Tolerations {
+		if t.Key == string(res) {
+			return
+		}
+	}
+	pod.Tolerations = append(pod.Tolerations, corev1.Toleration{
+		Key:      string(res),
+		Operator: corev1.TolerationOpExists,
+	})
+}
+
+// stripGPUTolerations removes tolerations whose keys are managed GPU
+// resource names — the CPU-fallback counterpart of ensureGPUToleration.
+// Non-GPU tolerations (not-ready, unreachable, chart-specific) are kept.
+func stripGPUTolerations(pod *corev1.PodSpec, managedResources []string) {
+	if len(managedResources) == 0 {
+		managedResources = ParseGPUResourceNames("")
+	}
+	keep := make([]corev1.Toleration, 0, len(pod.Tolerations))
+	for _, t := range pod.Tolerations {
+		managed := false
+		for _, res := range managedResources {
+			if t.Key == res {
+				managed = true
+				break
+			}
+		}
+		if !managed {
+			keep = append(keep, t)
+		}
+	}
+	pod.Tolerations = keep
 }
 
 func setGPURequest(pod *corev1.PodSpec, res corev1.ResourceName) {

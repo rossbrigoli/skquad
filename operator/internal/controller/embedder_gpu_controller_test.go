@@ -318,3 +318,121 @@ func TestCPUModeStripsConfiguredCustomResource(t *testing.T) {
 		t.Fatal("custom gpu limit survived cpu mode")
 	}
 }
+
+// S-212 fix: a pod requesting the GPU resource must tolerate the
+// GPU-node taint (nvidia.com/gpu=true:NoSchedule) or it can never
+// schedule on the very node it was pinned to.
+func TestGPURequestAddsToleration(t *testing.T) {
+	r := newReconciler(t, EmbedderModeAuto, "",
+		baseEmbedder(),
+		node("gpu1", "1", nil),
+	)
+	if _, _, err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	dep := getDep(t, r)
+	found := false
+	for _, tol := range dep.Spec.Template.Spec.Tolerations {
+		if tol.Key == "nvidia.com/gpu" {
+			found = true
+			if tol.Operator != corev1.TolerationOpExists {
+				t.Fatalf("toleration operator = %v, want Exists", tol.Operator)
+			}
+			if tol.Effect != "" {
+				t.Fatalf("toleration effect = %v, want empty (all effects)", tol.Effect)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("missing gpu toleration: %+v", dep.Spec.Template.Spec.Tolerations)
+	}
+}
+
+// Forced gpu mode (no node yet) must also carry the toleration so the
+// pod schedules the moment a matching tainted node appears.
+func TestGPUModeForcedAddsToleration(t *testing.T) {
+	r := newReconciler(t, EmbedderModeGPU, "", baseEmbedder(), node("cpu1", "", nil))
+	if _, _, err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	dep := getDep(t, r)
+	found := false
+	for _, tol := range dep.Spec.Template.Spec.Tolerations {
+		if tol.Key == "nvidia.com/gpu" && tol.Operator == corev1.TolerationOpExists {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("forced-gpu pod missing toleration: %+v", dep.Spec.Template.Spec.Tolerations)
+	}
+}
+
+// CPU fallback strips the controller-added GPU toleration but keeps
+// unrelated tolerations (node lifecycle, chart-specific).
+func TestCPUFallbackStripsGPUTolerationKeepsOthers(t *testing.T) {
+	base := baseEmbedder()
+	base.Spec.Template.Spec.Tolerations = []corev1.Toleration{
+		{Key: "node.kubernetes.io/not-ready", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute},
+		{Key: "workload", Value: "special", Operator: corev1.TolerationOpEqual, Effect: corev1.TaintEffectNoSchedule},
+	}
+	r := newReconciler(t, EmbedderModeAuto, "", base, node("gpu1", "1", nil))
+	if _, _, err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mid := getDep(t, r)
+	gpuTols := 0
+	for _, tol := range mid.Spec.Template.Spec.Tolerations {
+		if tol.Key == "nvidia.com/gpu" {
+			gpuTols++
+		}
+	}
+	if gpuTols != 1 {
+		t.Fatalf("after gpu bind: gpu tolerations = %d, want 1", gpuTols)
+	}
+	// GPU node disappears → CPU fallback strips the gpu toleration only.
+	r2 := newReconciler(t, EmbedderModeAuto, "", mid, node("cpu1", "", nil))
+	if _, _, err := r2.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	dep := getDep(t, r2)
+	for _, tol := range dep.Spec.Template.Spec.Tolerations {
+		if tol.Key == "nvidia.com/gpu" {
+			t.Fatalf("gpu toleration survived cpu fallback: %+v", dep.Spec.Template.Spec.Tolerations)
+		}
+	}
+	if len(dep.Spec.Template.Spec.Tolerations) != 2 {
+		t.Fatalf("non-gpu tolerations not preserved: %+v", dep.Spec.Template.Spec.Tolerations)
+	}
+}
+
+// A chart-authored toleration for the same GPU key must not be
+// duplicated on repeated reconciles.
+func TestChartGPUTolerationNotDuplicated(t *testing.T) {
+	base := baseEmbedder()
+	base.Spec.Template.Spec.Tolerations = []corev1.Toleration{
+		{Key: "nvidia.com/gpu", Value: "true", Operator: corev1.TolerationOpEqual, Effect: corev1.TaintEffectNoSchedule},
+	}
+	r := newReconciler(t, EmbedderModeAuto, "", base, node("gpu1", "1", nil))
+	if _, _, err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	dep := getDep(t, r)
+	gpuTols := 0
+	for _, tol := range dep.Spec.Template.Spec.Tolerations {
+		if tol.Key == "nvidia.com/gpu" {
+			gpuTols++
+		}
+	}
+	if gpuTols != 1 {
+		t.Fatalf("gpu tolerations = %d, want 1 (chart's own kept, no duplicate)", gpuTols)
+	}
+	// Second reconcile must be a no-op (idempotence with tolerations).
+	r2 := newReconciler(t, EmbedderModeAuto, "", dep, node("gpu1", "1", nil))
+	changed, _, err := r2.ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Fatal("second reconcile changed a already-converged spec")
+	}
+}
