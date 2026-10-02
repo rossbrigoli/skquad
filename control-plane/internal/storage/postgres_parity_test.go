@@ -479,7 +479,7 @@ func TestPostgresStoreAgentMemoryTrustAndEmbeddingRoundTrip(t *testing.T) {
 	f := newPGFixture(t, store)
 	ctx := context.Background()
 
-	embedding := make([]float64, 1536)
+	embedding := make([]float64, 1024)
 	embedding[0] = 1
 
 	created, err := store.CreateAgentMemory(ctx, &domain.AgentMemory{
@@ -509,13 +509,13 @@ func TestPostgresStoreAgentMemoryTrustAndEmbeddingRoundTrip(t *testing.T) {
 	if listed[0].EmbeddingModel != testModel {
 		t.Fatalf("embedding model = %q", listed[0].EmbeddingModel)
 	}
-	if len(listed[0].Embedding) != 1536 || listed[0].Embedding[0] != 1 {
+	if len(listed[0].Embedding) != 1024 || listed[0].Embedding[0] != 1 {
 		t.Fatalf("embedding round-trip failed (len=%d)", len(listed[0].Embedding))
 	}
 
 	// A second, semantically distant memory plus a query embedding must rank the
 	// close one first even though the far one is newer.
-	far := make([]float64, 1536)
+	far := make([]float64, 1024)
 	far[1] = 1
 	if _, err := store.CreateAgentMemory(ctx, &domain.AgentMemory{
 		AgentID:        f.agent.ID,

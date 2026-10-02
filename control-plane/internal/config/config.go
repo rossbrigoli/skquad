@@ -87,6 +87,10 @@ type Config struct {
 	// Memory
 	MemoryEmbeddingsEnabled bool   // semantic memory retrieval uses embeddings only when true
 	MemoryEmbeddingModel    string // embedding model name for generated vectors
+	// MemoryEmbedderURL overrides the in-cluster embedder endpoint used
+	// for gateway registration (S-212). Empty → the chart-standard
+	// skquad-embedder.<release-ns>.svc:8080/v1.
+	MemoryEmbedderURL string
 
 	// Behaviour
 	DefaultIdleTimeout   time.Duration
@@ -156,6 +160,7 @@ func Load() (*Config, error) {
 		SearchPerplexityAPIKey:  strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_PERPLEXITY_API_KEY")),
 		MemoryEmbeddingsEnabled: envBool("SKQUAD_MEMORY_EMBEDDINGS_ENABLED", false),
 		MemoryEmbeddingModel:    os.Getenv("SKQUAD_MEMORY_EMBEDDING_MODEL"),
+		MemoryEmbedderURL:       os.Getenv("SKQUAD_MEMORY_EMBEDDER_URL"),
 		DefaultIdleTimeout:      envDuration("SKQUAD_DEFAULT_IDLE_TIMEOUT", 15*time.Minute),
 		ReaperInterval:          envSeconds("SKQUAD_REAPER_INTERVAL_SECONDS", 30),
 		ReaperGrace:             envSeconds("SKQUAD_REAPER_GRACE_SECONDS", 120),

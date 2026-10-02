@@ -2474,6 +2474,120 @@ func (p *PostgresStore) ListAgentMemory(ctx context.Context, agentID string, squ
 	return memories, mapPgErr(rows.Err())
 }
 
+// SearchAgentMemory (S-212) ranks the agent's own memories by cosine
+// similarity. Trust-gating policy: review_status='rejected' rows are
+// never recalled; pending_review and approved rows are recallable across
+// every trust level (raw_model_output, distilled, verified) — pending
+// review means "not yet curated", not "untrustworthy", and withholding
+// it would starve recall. Rows without an embedding cannot participate
+// in cosine ranking and are excluded. Score = 1 - cosine distance.
+func (p *PostgresStore) SearchAgentMemory(ctx context.Context, agentID string, squadID string, queryEmbedding []float64, limit int) ([]MemorySearchHit, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	queryVector := vectorLiteral(queryEmbedding)
+	if queryVector == "" {
+		return nil, ErrInvalidInput
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT id::text, agent_id::text, coalesce(squad_id::text, ''), content,
+		       raw_content, trust_level, provenance, review_status,
+		       coalesce(embedding::text, ''), embedding_model,
+		       coalesce(source_task_id::text, ''), metadata, created_at,
+		       1 - (embedding <=> $4::vector) AS score
+		FROM agent_memory
+		WHERE agent_id = $1
+		  AND (squad_id IS NULL OR squad_id = nullif($2, '')::uuid)
+		  AND review_status <> 'rejected'
+		  AND embedding IS NOT NULL
+		ORDER BY embedding <=> $4::vector
+		LIMIT $3
+	`, agentID, squadID, limit, queryVector)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+
+	hits := make([]MemorySearchHit, 0)
+	for rows.Next() {
+		var memory domain.AgentMemory
+		var embeddingText string
+		var score float64
+		if err := rows.Scan(
+			&memory.ID,
+			&memory.AgentID,
+			&memory.SquadID,
+			&memory.Content,
+			&memory.RawContent,
+			&memory.TrustLevel,
+			&memory.Provenance,
+			&memory.ReviewStatus,
+			&embeddingText,
+			&memory.EmbeddingModel,
+			&memory.SourceTaskID,
+			&memory.Metadata,
+			&memory.CreatedAt,
+			&score,
+		); err != nil {
+			return nil, mapPgErr(err)
+		}
+		memory.Embedding = parseVectorText(embeddingText)
+		hits = append(hits, MemorySearchHit{Memory: &memory, Score: score})
+	}
+	return hits, mapPgErr(rows.Err())
+}
+
+// ListMemoriesNeedingEmbedding (S-212 backfill) returns rows whose
+// embedding_model differs from the current model — including rows
+// without any embedding (embedding_model = ''). Ordered by created_at
+// so the oldest memories are embedded first.
+func (p *PostgresStore) ListMemoriesNeedingEmbedding(ctx context.Context, currentModel string, limit int) ([]*domain.AgentMemory, error) {
+	if limit <= 0 {
+		limit = 32
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT id::text, agent_id::text, coalesce(squad_id::text, ''), content,
+		       raw_content, trust_level, provenance, review_status,
+		       coalesce(embedding::text, ''), embedding_model,
+		       coalesce(source_task_id::text, ''), metadata, created_at
+		FROM agent_memory
+		WHERE embedding_model IS DISTINCT FROM $1
+		ORDER BY created_at, id
+		LIMIT $2
+	`, currentModel, limit)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+	memories := make([]*domain.AgentMemory, 0)
+	for rows.Next() {
+		memory, err := scanAgentMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		memories = append(memories, memory)
+	}
+	return memories, mapPgErr(rows.Err())
+}
+
+// SetAgentMemoryEmbedding (S-212 backfill) writes a freshly generated
+// vector plus the model that produced it.
+func (p *PostgresStore) SetAgentMemoryEmbedding(ctx context.Context, id string, embedding []float64, model string) error {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE agent_memory
+		SET embedding = nullif($2, '')::vector,
+		    embedding_model = $3
+		WHERE id = $1::uuid
+	`, id, vectorLiteral(embedding), model)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (p *PostgresStore) LeaseKubernetesOutbox(ctx context.Context, limit int, leaseFor time.Duration) ([]*domain.KubernetesOutboxEvent, error) {
 	if limit <= 0 {
 		limit = 10
@@ -2745,7 +2859,7 @@ func (p *PostgresStore) CountMessagesByCorrelation(ctx context.Context, correlat
 // at or before the new boundary) and the boundary timestamp. The
 // transcript text is rendered by the caller; memory carries it with
 // provenance 'chat_reset' so the agent can still recall it semantically.
-func (p *PostgresStore) ResetAgentChat(ctx context.Context, agentID, squadID, transcript string, metadata json.RawMessage) (int, time.Time, error) {
+func (p *PostgresStore) ResetAgentChat(ctx context.Context, agentID, squadID, transcript string, metadata json.RawMessage, embedding []float64, embeddingModel string) (int, time.Time, error) {
 	resetAt := time.Now().UTC()
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -2773,8 +2887,8 @@ func (p *PostgresStore) ResetAgentChat(ctx context.Context, agentID, squadID, tr
 			)
 			VALUES (
 				nullif($1, '')::uuid, nullif($2, '')::uuid, $3, '', 'distilled', 'chat_reset',
-				'approved', NULL, '', NULL, $4
-			)`, agentID, squadID, transcript, defaultJSON(metadata, "{}"))
+				'approved', nullif($5, '')::vector, $6, NULL, $4
+			)`, agentID, squadID, transcript, defaultJSON(metadata, "{}"), vectorLiteral(embedding), embeddingModel)
 		if err != nil {
 			return 0, time.Time{}, mapPgErr(err)
 		}

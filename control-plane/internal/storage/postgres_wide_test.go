@@ -498,7 +498,7 @@ func TestPostgresWideMessagesInboxAndWait(t *testing.T) {
 		t.Fatalf("delete message: %v", err)
 	}
 
-	archived, resetAt, err := store.ResetAgentChat(ctx, f.agent.ID, f.squad.ID, "transcript", json.RawMessage(`{"source":"test"}`))
+	archived, resetAt, err := store.ResetAgentChat(ctx, f.agent.ID, f.squad.ID, "transcript", json.RawMessage(`{"source":"test"}`), nil, "test-embed-model")
 	if err != nil {
 		t.Fatalf("reset agent chat: %v", err)
 	}

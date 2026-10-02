@@ -26,6 +26,7 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/breakglass"
 	"github.com/rossbrigoli/skquad/control-plane/internal/config"
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
+	"github.com/rossbrigoli/skquad/control-plane/internal/embeddings"
 	"github.com/rossbrigoli/skquad/control-plane/internal/kube"
 	"github.com/rossbrigoli/skquad/control-plane/internal/promptcompo"
 	"github.com/rossbrigoli/skquad/control-plane/internal/search"
@@ -162,6 +163,19 @@ type Server struct {
 	// models on pod restart — docs/llm-gateway.md). Built from K8s
 	// config; nil in dev → reload skipped with a warning.
 	gwReloader GatewayReloader
+	// embeddings (S-212) generates memory embeddings through the
+	// LiteLLM gateway's /v1/embeddings endpoint. Built at startup only
+	// when SKQUAD_MEMORY_EMBEDDINGS_ENABLED=true and a model + gateway
+	// are configured; nil otherwise — write paths then store rows
+	// without vectors and the search endpoint answers 503.
+	embeddings EmbeddingsClient
+}
+
+// EmbeddingsClient generates text embeddings via the gateway (S-212).
+// Production implementation is *embeddings.Client; tests inject fakes
+// (or point the config at an httptest fake gateway).
+type EmbeddingsClient interface {
+	Embed(ctx context.Context, text string) ([]float64, error)
 }
 
 // OIDCAuthenticator authenticates OIDC Authorization headers.
@@ -218,24 +232,24 @@ func New(cfg *config.Config, store Store) http.Handler {
 // NewWithCRWriter returns an HTTP handler that mirrors squad/agent mutations
 // to Kubernetes CRs.
 func NewWithCRWriter(cfg *config.Config, store Store, crWriter CRWriter) http.Handler {
-	return newServer(cfg, store, nil, crWriter, nil, nil, nil, nil)
+	return newServer(cfg, store, nil, crWriter, nil, nil, nil, nil, nil)
 }
 
 // NewWithDependencies returns an HTTP handler with explicit optional
 // integrations for tests and production startup.
 func NewWithDependencies(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, providerKeys ProviderKeyStore) http.Handler {
-	return newServer(cfg, store, oidcAuth, crWriter, nil, providerKeys, nil, nil)
+	return newServer(cfg, store, oidcAuth, crWriter, nil, providerKeys, nil, nil, nil)
 }
 
 // NewWithPodRestarter wires an explicit PodRestarter (S-162 tests).
 func NewWithPodRestarter(cfg *config.Config, store Store, restarter PodRestarter) http.Handler {
-	return newServer(cfg, store, nil, nil, nil, nil, restarter, nil)
+	return newServer(cfg, store, nil, nil, nil, nil, restarter, nil, nil)
 }
 
 // NewWithOIDCAuthenticator returns an HTTP handler using oidcAuth when
 // SKQUAD_AUTH_MODE=oidc.
 func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator) http.Handler {
-	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil, nil)
+	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil, nil, nil)
 }
 
 // NewWithSearchProviders returns an HTTP handler whose web_search proxy
@@ -243,7 +257,7 @@ func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuth
 // from config secrets (duckduckgo always; brave/perplexity only when
 // their API keys are set). Tests inject stub providers here.
 func NewWithSearchProviders(cfg *config.Config, store Store, providers map[string]search.Provider) http.Handler {
-	return newServer(cfg, store, nil, nil, providers, nil, nil, nil)
+	return newServer(cfg, store, nil, nil, providers, nil, nil, nil, nil)
 }
 
 // NewWithProviderKeyStore returns an HTTP handler whose pasted provider
@@ -251,7 +265,7 @@ func NewWithSearchProviders(cfg *config.Config, store Store, providers map[strin
 // this to inject a fake; production builds the store from config inside
 // newServer.
 func NewWithProviderKeyStore(cfg *config.Config, store Store, keys ProviderKeyStore) http.Handler {
-	return newServer(cfg, store, nil, nil, nil, keys, nil, nil)
+	return newServer(cfg, store, nil, nil, nil, keys, nil, nil, nil)
 }
 
 // NewWithGatewayReload returns an HTTP handler using the given gateway
@@ -259,10 +273,10 @@ func NewWithProviderKeyStore(cfg *config.Config, store Store, keys ProviderKeySt
 // is built from cfg.LiteLLMAdminURL/master key (point those at an
 // httptest fake gateway in tests); the reloader is injected here.
 func NewWithGatewayReload(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, reloader GatewayReloader) http.Handler {
-	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil, reloader)
+	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil, reloader, nil)
 }
 
-func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, searchProviders map[string]search.Provider, providerKeys ProviderKeyStore, restarter PodRestarter, gwReloader GatewayReloader) http.Handler {
+func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, searchProviders map[string]search.Provider, providerKeys ProviderKeyStore, restarter PodRestarter, gwReloader GatewayReloader, injectedEmbeddings EmbeddingsClient) http.Handler {
 	if crWriter == nil {
 		crWriter = noopCRWriter{}
 	}
@@ -316,10 +330,34 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 	}
 	s.gwReloader = gwReloader
 	s.gwModels = gwModels
+	// S-212: embeddings client for memory RAG. Built only when the
+	// feature is enabled with a model and a reachable gateway config.
+	// Gateway base prefers the admin URL (same LiteLLM instance) and
+	// falls back to the agent-facing gateway URL; the master key
+	// authenticates the control plane as a platform caller.
+	if cfg != nil && cfg.MemoryEmbeddingsEnabled && cfg.MemoryEmbeddingModel != "" {
+		gatewayBase := cfg.LiteLLMAdminURL
+		if gatewayBase == "" {
+			gatewayBase = cfg.LLMGatewayURL
+		}
+		if gatewayBase != "" && cfg.LiteLLMMasterKey != "" {
+			embedder, err := embeddings.NewClient(gatewayBase, cfg.LiteLLMMasterKey, cfg.MemoryEmbeddingModel)
+			if err != nil {
+				log.Printf("memory embeddings client unavailable (memories stored without vectors): %v", err)
+			} else {
+				s.embeddings = embedder
+			}
+		}
+	}
 	if searchProviders == nil {
 		searchProviders = defaultSearchProviders(cfg)
 	}
 	s.searchProviders = searchProviders
+	// S-212 test seam: an injected embeddings client wins over the
+	// config-built one (mirrors the providerKeys/restarter pattern).
+	if injectedEmbeddings != nil {
+		s.embeddings = injectedEmbeddings
+	}
 
 	// Platform-prompt override is loaded at startup and fails loudly: an
 	// operator who configured a platform prompt must never silently get
@@ -401,6 +439,8 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/prompt", s.getMyComposedPrompt)
 			// BT-2: built-in tools config for the runtime (ETag, ADR-0012 §2).
 			r.Get("/tools", s.getMyBuiltinTools)
+			// S-212: semantic recall over the agent's own long-term memory.
+			r.Get("/memory/search", s.searchMyAgentMemory)
 		})
 
 		// BT-2: built-in tool proxies (agent-credential auth). Keys stay
@@ -4290,6 +4330,7 @@ func (s *Server) persistCompletionMemory(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusInternalServerError, "internal", "failed to prepare memory metadata")
 		return
 	}
+	embedding, embeddingModel := s.embedMemoryText(r.Context(), summary)
 	if _, err := s.store.CreateAgentMemory(r.Context(), &domain.AgentMemory{
 		AgentID:      principal.Agent.ID,
 		SquadID:      updated.SquadID,
@@ -4299,11 +4340,31 @@ func (s *Server) persistCompletionMemory(w http.ResponseWriter, r *http.Request,
 		TrustLevel:   "raw_model_output",
 		Provenance:   "task_completion",
 		ReviewStatus: "pending_review",
+		Embedding:    embedding,
+		EmbeddingModel: embeddingModel,
 		Metadata:     metadata,
 	}); err != nil {
 		auditMetadata, _ := json.Marshal(map[string]string{"error": err.Error(), "execution_id": executionID})
 		s.recordAgentAudit(r, principal.Agent.ID, "task.memory_persist_failed", "task", updated.ID, updated.SquadID, auditMetadata)
 	}
+}
+
+// embedMemoryText (S-212) produces the write-time embedding for memory
+// content. Best-effort by contract: when the embedder is unconfigured
+// or fails, the memory is still stored — without a vector — and the
+// backfill job (cmd/embed-backfill) re-embeds it later. Returns
+// (nil, "") in those cases; errors are logged, never surfaced to the
+// completion path.
+func (s *Server) embedMemoryText(ctx context.Context, content string) ([]float64, string) {
+	if s.embeddings == nil || s.cfg == nil || s.cfg.MemoryEmbeddingModel == "" {
+		return nil, ""
+	}
+	vec, err := s.embeddings.Embed(ctx, content)
+	if err != nil {
+		log.Printf("memory embedding generation failed (storing without vector): %v", err)
+		return nil, ""
+	}
+	return vec, s.cfg.MemoryEmbeddingModel
 }
 
 func (s *Server) reportCurrentAgentTaskWorkspace(w http.ResponseWriter, r *http.Request) {

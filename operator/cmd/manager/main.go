@@ -169,6 +169,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// S-212: GPU-aware embedder reconciliation. Polls cluster Nodes and
+	// patches the skquad-embedder Deployment between GPU and CPU shapes
+	// per the configured mode (auto|gpu|cpu). Leader-elected via the
+	// manager; idempotent per pass.
+	embedderReconciler := &controller.EmbedderGPUReconciler{
+		Client: mgr.GetClient(),
+		Cfg: controller.EmbedderGPUConfig{
+			Namespace:       envOrDefault("SKQUAD_EMBEDDER_NAMESPACE", envOrDefault("SKQUAD_NAMESPACE", "skquad")),
+			DeploymentName:  envOrDefault("SKQUAD_EMBEDDER_DEPLOYMENT", "skquad-embedder"),
+			Mode:            envOrDefault("SKQUAD_EMBEDDER_GPU_MODE", "auto"),
+			GPUNodeLabelKey:    envOrDefault("SKQUAD_GPU_NODE_LABEL_KEY", ""),
+			GPUResourceNames: controller.ParseGPUResourceNames(envOrDefault("SKQUAD_GPU_RESOURCE_NAMES", controller.DefaultGPUResourceNames)),
+		},
+	}
+	if err := mgr.Add(embedderReconciler); err != nil {
+		ctrl.Log.Error(err, "unable to add embedder GPU reconciler")
+		os.Exit(1)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		ctrl.Log.Error(err, "unable to set up health check")
 		os.Exit(1)

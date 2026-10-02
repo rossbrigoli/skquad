@@ -445,6 +445,106 @@ class WebSearchToolTests(BuiltinToolsTestBase):
 
 
 # --------------------------------------------------------------------------
+# MemorySearchTool — S-212 semantic recall via the control-plane endpoint
+# --------------------------------------------------------------------------
+
+
+class MemorySearchToolTests(BuiltinToolsTestBase):
+    def _hit(self, i=1, score=0.9):
+        return {
+            "id": f"mem-{i}",
+            "content": f"memory number {i}",
+            "score": score,
+            "trust_level": "distilled",
+            "review_status": "approved",
+            "provenance": "task_completion",
+            "created_at": "2026-10-01T00:00:00Z",
+        }
+
+    def test_memory_search_gets_control_plane_with_auth(self):
+        tool = bt.MemorySearchTool({}, self.ctx(credential="cred-7", agent_id="agent-42"))
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            captured["auth"] = req.headers.get("Authorization")
+            captured["agent_id"] = req.headers.get("X-skquad-agent-id")
+            return FakeHTTPResponse(
+                200,
+                json.dumps({"results": [self._hit(1, 0.91), self._hit(2, 0.42)]}).encode("utf-8"),
+                content_type="application/json",
+            )
+
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=fake_urlopen):
+            result = tool.invoke(
+                ToolCall(id="c", name="memory_search", arguments={"query": "k3s etcd tuning"}), None
+            )
+        assert captured["method"] == "GET"
+        assert captured["url"].startswith("http://control-plane/api/v1/agents/me/memory/search?")
+        assert "q=k3s%20etcd%20tuning" in captured["url"]
+        assert captured["auth"] == "Bearer cred-7"
+        assert captured["agent_id"] == "agent-42"
+        assert result.ok is True
+        assert "score 0.910" in result.content
+        assert "memory mem-1" in result.content
+        assert "memory number 2" in result.content
+
+    def test_memory_search_limit_argument_and_policy(self):
+        tool = bt.MemorySearchTool({"maxResults": 4}, self.ctx())
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["url"] = req.full_url
+            return FakeHTTPResponse(200, b'{"results": []}', content_type="application/json")
+
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=fake_urlopen):
+            result = tool.invoke(
+                ToolCall(id="c", name="memory_search", arguments={"query": "x", "limit": 7}), None
+            )
+        assert "limit=7" in captured["url"]  # explicit arg wins
+        assert result.ok is True
+        assert "no matching memories" in result.content
+
+        # policy fallback when the model omits limit
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=fake_urlopen):
+            tool.invoke(ToolCall(id="c", name="memory_search", arguments={"query": "y"}), None)
+        assert "limit=4" in captured["url"]
+
+    def test_memory_search_http_error_surfaces_detail(self):
+        tool = bt.MemorySearchTool({}, self.ctx())
+
+        def fake_urlopen(req, timeout=None):
+            raise error.HTTPError(
+                req.full_url, 503, "down", {}, io.BytesIO(json.dumps({"error": "memory_search_disabled"}).encode())
+            )
+
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=fake_urlopen):
+            result = tool.invoke(ToolCall(id="c", name="memory_search", arguments={"query": "x"}), None)
+        assert result.ok is False
+        assert "503" in result.content
+        assert "memory_search_disabled" in result.content
+
+    def test_memory_search_empty_query_rejected(self):
+        tool = bt.MemorySearchTool({}, self.ctx())
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen") as urlopen:
+            result = tool.invoke(ToolCall(id="c", name="memory_search", arguments={"query": "  "}), None)
+        assert result.ok is False
+        urlopen.assert_not_called()
+
+    def test_memory_search_schema_shape(self):
+        tool = bt.MemorySearchTool({}, self.ctx())
+        schemas = tool.tools()
+        assert len(schemas) == 1
+        fn = schemas[0]["function"]
+        assert fn["name"] == "memory_search"
+        props = fn["parameters"]["properties"]
+        assert props["query"]["type"] == "string"
+        assert props["limit"]["type"] == "integer"
+        assert fn["parameters"]["required"] == ["query"]
+
+
+# --------------------------------------------------------------------------
 # BuiltinToolsConfigCache — ETag fetch semantics
 # --------------------------------------------------------------------------
 

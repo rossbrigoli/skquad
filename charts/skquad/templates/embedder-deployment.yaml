@@ -1,0 +1,106 @@
+{{- if .Values.embedder.enabled }}
+# S-212: skquad-embedder — llama.cpp llama-server serving
+# Qwen3-Embedding-0.6B (OpenAI-compatible /v1/embeddings, 1024-dim,
+# last-token pooling). The GGUF model is baked into the image; no
+# external downloads at pod start.
+#
+# GPU placement is owned by the operator's EmbedderGPUReconciler
+# (gpu.mode=auto|cpu|gpu): the chart renders the CPU fallback shape
+# and the operator patches in nvidia.com/gpu + nodeAffinity when a
+# GPU node exists (or per forced mode).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "skquad.embedderName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: embedder
+spec:
+  replicas: {{ .Values.embedder.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: embedder
+  template:
+    metadata:
+      labels:
+        {{- include "skquad.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: embedder
+    spec:
+      {{- if eq .Values.embedder.gpu.mode "cpu" }}
+      # cpu mode: keep the reconciler from ever adding GPU back.
+      {{- end }}
+      containers:
+        - name: embedder
+          image: {{ include "skquad.embedderImage" . | quote }}
+          imagePullPolicy: {{ .Values.embedder.imagePullPolicy }}
+          args:
+            {{- toYaml .Values.embedder.args | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.embedder.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.embedder.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- range .Values.embedder.gpu.devicePaths }}
+            - name: {{ printf "dev-%s" (trimPrefix "/dev/" . | replace "/" "-") }}
+              mountPath: {{ . }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- range .Values.embedder.gpu.devicePaths }}
+        - name: {{ printf "dev-%s" (trimPrefix "/dev/" . | replace "/" "-") }}
+          hostPath:
+            path: {{ . }}
+            type: Directory
+        {{- end }}
+      {{- with .Values.embedder.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.embedder.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "skquad.embedderName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: embedder
+spec:
+  selector:
+    {{- include "skquad.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: embedder
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- end }}

@@ -65,6 +65,17 @@ spec:
               value: {{ include "skquad.apiServerName" . | quote }}
             - name: SKQUAD_MAX_AGENT_STORAGE
               value: {{ .Values.operator.maxAgentStorage | quote }}
+            # S-212: embedder GPU reconciliation knobs.
+            - name: SKQUAD_EMBEDDER_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: SKQUAD_EMBEDDER_DEPLOYMENT
+              value: {{ include "skquad.embedderName" . | quote }}
+            - name: SKQUAD_EMBEDDER_GPU_MODE
+              value: {{ .Values.embedder.gpu.mode | quote }}
+            - name: SKQUAD_GPU_RESOURCE_NAMES
+              value: {{ .Values.embedder.gpu.resourceNames | quote }}
+            - name: SKQUAD_GPU_NODE_LABEL_KEY
+              value: {{ .Values.embedder.gpu.nodeLabelKey | quote }}
           livenessProbe:
             httpGet:
               path: /healthz

@@ -134,8 +134,13 @@ apiServer:
   maxAgentStorageSize: 10Gi
   storageClass: ""
   memoryEmbeddings:
-    enabled: false
-    model: ""
+    # S-212: semantic memory search (RAG). Requires the embedder
+    # (see embedder.* below) registered in the gateway.
+    enabled: true
+    model: "qwen3-embed-0.6b"
+    # Optional override of the embedder endpoint used for gateway
+    # registration (SKQUAD_MEMORY_EMBEDDER_URL). "" → chart default.
+    embedderUrl: ""
   databaseUrlSecret:
     name: ""
     key: database-url
@@ -321,3 +326,58 @@ ingressRoute:
   enabled: false
   entryPoints:
     - web
+
+# S-212: skquad-embedder — llama.cpp (Vulkan backend) serving
+# Qwen3-Embedding-0.6B for agent memory RAG. Vendor-neutral GPU:
+# the operator auto-detects nvidia.com/gpu, amd.com/gpu or
+# gpu.intel.com/i915 on cluster nodes and binds the embedder to
+# whichever is present; none found → CPU.
+embedder:
+  enabled: true
+  replicas: 1
+  image:
+    repository: ghcr.io/rossbrigoli/skquad-embedder
+    tag: "0.1.0"
+  imagePullPolicy: IfNotPresent
+  model:
+    name: qwen3-embed-0.6b
+  args:
+    - --model
+    - /models/qwen3-embed-0.6b-q8_0.gguf
+    - --embeddings
+    - --pooling
+    - last
+    - --host
+    - 0.0.0.0
+    - --port
+    - "8080"
+    - --alias
+    - qwen3-embed-0.6b
+  gpu:
+    # auto: GPU iff a supported resource exists on some node, else CPU.
+    # gpu: force GPU (first resource in resourceNames). cpu: never GPU.
+    mode: auto
+    # Ordered vendor-neutral detection list (SKQUAD_GPU_RESOURCE_NAMES).
+    resourceNames: "nvidia.com/gpu,amd.com/gpu,gpu.intel.com/i915"
+    # Optional node label restricting GPU placement ("skquad.io/gpu").
+    nodeLabelKey: ""
+    # Host device paths mounted into the pod for Vulkan access.
+    # /dev/dri covers AMD/Intel/ASPEED GPU render nodes; /dev/kfd
+    # is required for AMD ROCm compute. Add both on AMD hosts.
+    devicePaths: []
+    # - /dev/dri
+    # - /dev/kfd
+  resources:
+    requests:
+      cpu: "1"
+      memory: 1536Mi
+    limits:
+      memory: 2Gi
+  nodeSelector: {}
+  tolerations: []
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+    runAsNonRoot: true
+    runAsUser: 1000

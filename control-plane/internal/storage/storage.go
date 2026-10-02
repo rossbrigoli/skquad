@@ -196,6 +196,19 @@ type TaskStore interface {
 type AgentMemoryStore interface {
 	CreateAgentMemory(ctx context.Context, memory *domain.AgentMemory) (*domain.AgentMemory, error)
 	ListAgentMemory(ctx context.Context, agentID string, squadID string, queryEmbedding []float64, limit int) ([]*domain.AgentMemory, error)
+	// SearchAgentMemory (S-212) ranks the agent's own memories by cosine
+	// similarity to queryEmbedding. Trust gating: rows with
+	// review_status='rejected' and rows without an embedding are excluded;
+	// pending_review/approved rows across all trust levels
+	// (raw_model_output/distilled/verified) are recallable. Score is
+	// cosine similarity in [-1, 1] (1 = identical direction).
+	SearchAgentMemory(ctx context.Context, agentID string, squadID string, queryEmbedding []float64, limit int) ([]MemorySearchHit, error)
+}
+
+// MemorySearchHit is one ranked result of SearchAgentMemory.
+type MemorySearchHit struct {
+	Memory *domain.AgentMemory
+	Score  float64
 }
 
 // MessageStore persists queued agent collaboration messages.
@@ -212,7 +225,10 @@ type MessageStore interface {
 	// ResetAgentChat (S-162) archives the current chat transcript into
 	// agent memory and moves the agent's chat_reset_at boundary to now.
 	// Returns the number of messages archived and the boundary time.
-	ResetAgentChat(ctx context.Context, agentID, squadID, transcript string, metadata json.RawMessage) (int, time.Time, error)
+	// S-212: the transcript is embedded at write time — embedding +
+	// embeddingModel carry the generated vector and the model that
+	// produced it (empty embedding = embeddings disabled/failed).
+	ResetAgentChat(ctx context.Context, agentID, squadID, transcript string, metadata json.RawMessage, embedding []float64, embeddingModel string) (int, time.Time, error)
 	AckMessage(ctx context.Context, agentID string, messageID string) (*domain.Message, error)
 	FailMessage(ctx context.Context, agentID string, messageID string, reason string) (*domain.Message, error)
 	// CancelChatTurn (S-175) marks the newest still-live user chat message
