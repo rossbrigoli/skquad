@@ -209,22 +209,43 @@ func d7RouterSettings(primary, fallback string) map[string]any {
 }
 
 // RevokeAgentKey deletes the virtual key identified by its token.
+//
+// S-222: LiteLLM's /key/delete takes the tokens in a "keys" list — a
+// bare {"key": token} body is rejected 422 ("At least one of 'keys' or
+// 'key_aliases' must be provided"), which made every squad/agent delete
+// fail with 502. A 404 from the gateway means the key is already gone
+// there — the desired end state — so revoke is idempotent and returns
+// nil for it; only genuine failures (connection error, 422, 5xx) are
+// returned as errors.
 func (c *liteLLMGatewayClient) RevokeAgentKey(ctx context.Context, token string) error {
 	if strings.TrimSpace(token) == "" {
 		return fmt.Errorf("litellm: revoke key requires a token")
 	}
-	return c.postKeyAdmin(ctx, "/key/delete", map[string]any{"key": token}, "delete key")
+	status, err := c.postKeyAdminStatus(ctx, "/key/delete", map[string]any{"keys": []string{token}}, "delete key")
+	if status == http.StatusNotFound {
+		// Key already absent at the gateway: idempotent success.
+		return nil
+	}
+	return err
 }
 
 func (c *liteLLMGatewayClient) postKeyAdmin(ctx context.Context, path string, body map[string]any, op string) error {
+	_, err := c.postKeyAdminStatus(ctx, path, body, op)
+	return err
+}
+
+// postKeyAdminStatus posts a key-admin request and returns the HTTP
+// status alongside the error so callers can distinguish not-found (an
+// idempotent no-op for revoke, S-222) from genuine gateway failures.
+func (c *liteLLMGatewayClient) postKeyAdminStatus(ctx context.Context, path string, body map[string]any, op string) (int, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("litellm: marshal %s request: %w", op, err)
+		return 0, fmt.Errorf("litellm: marshal %s request: %w", op, err)
 	}
 	// #nosec G704 -- c.baseURL is validated admin-supplied config, not user input
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("litellm: build %s request: %w", op, err)
+		return 0, fmt.Errorf("litellm: build %s request: %w", op, err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -233,13 +254,13 @@ func (c *liteLLMGatewayClient) postKeyAdmin(ctx context.Context, path string, bo
 	// path; no user-controlled component reaches this request.
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("litellm: %s: %w", op, err)
+		return 0, fmt.Errorf("litellm: %s: %w", op, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("litellm: %s: %s: %s", op, resp.Status, gatewayResponseSnippet(resp.Body))
+		return resp.StatusCode, fmt.Errorf("litellm: %s: %s: %s", op, resp.Status, gatewayResponseSnippet(resp.Body))
 	}
-	return nil
+	return resp.StatusCode, nil
 }
 
 func gatewayResponseSnippet(r io.Reader) string {

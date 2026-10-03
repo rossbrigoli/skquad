@@ -33,6 +33,10 @@ type recordingGateway struct {
 	failGenerate bool
 	failUpdate   bool
 	failDelete   bool
+	// unknownKeys404 makes /key/delete answer 404 "No keys found" for
+	// tokens the fake never issued — mirroring LiteLLM (S-222). Off by
+	// default so existing lenient lifecycle tests are unaffected.
+	unknownKeys404 bool
 	// enforceUniqueAlias makes /key/generate reject a duplicate alias with
 	// 400 "already exists", mirroring LiteLLM. Off by default so existing
 	// lifecycle tests keep their lenient stand-in.
@@ -241,24 +245,62 @@ func (g *recordingGateway) handleUpdate(w http.ResponseWriter, body map[string]a
 }
 
 // handleDelete records a /key/delete call (S-126 / S3776 split).
+// S-222: LiteLLM takes the tokens in a "keys" list — a body without it
+// is rejected 422 exactly like the real gateway.
 func (g *recordingGateway) handleDelete(w http.ResponseWriter, body map[string]any) {
 	if g.failDelete {
 		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
-	if token, ok := body["key"].(string); ok && g.live != nil {
-		delete(g.live, token)
+	keys := gatewayKeyList(body["keys"])
+	if len(keys) == 0 {
+		// Faithful to LiteLLM's request validation (S-222).
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": "At least one of 'keys' or 'key_aliases' must be provided.",
+		})
+		return
 	}
-	// Faithful to LiteLLM: deleting a key frees its alias for reuse.
-	if g.aliases != nil {
-		for alias, tok := range g.aliases {
-			if tok == body["key"] {
-				delete(g.aliases, alias)
+	missing := 0
+	for _, token := range keys {
+		if g.live != nil {
+			if _, ok := g.live[token]; !ok {
+				missing++
+				continue
+			}
+			delete(g.live, token)
+		}
+		// Faithful to LiteLLM: deleting a key frees its alias for reuse.
+		if g.aliases != nil {
+			for alias, tok := range g.aliases {
+				if tok == token {
+					delete(g.aliases, alias)
+				}
 			}
 		}
+		g.deleted = append(g.deleted, token)
 	}
-	g.deleted = append(g.deleted, body["key"].(string))
+	if missing > 0 && missing == len(keys) && g.unknownKeys404 {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "No keys found."})
+		return
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"deleted": true})
+}
+
+// gatewayKeyList coerces a JSON-decoded "keys" body field to []string.
+func gatewayKeyList(v any) []string {
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (g *recordingGateway) counts() (gen, upd int, del []string) {
