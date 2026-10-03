@@ -21,7 +21,7 @@ export type BreadcrumbHints = {
 const STATIC_LABELS: Record<string, string> = {
   dashboard: "Dashboard",
   inbox: "Inbox",
-  costs: "Costs",
+  costs: "Cost Management",
   settings: "Settings",
   squads: "Squads",
   agents: "Agents",
