@@ -47,6 +47,9 @@ rules:
     verbs:
       - get
       - list
+      # ADR-0013: the embedder runtime layer watches Nodes to keep GPU
+      # detection (cuda/vulkan/cpu) current without polling.
+      - watch
   - apiGroups:
       - ""
     resources:
