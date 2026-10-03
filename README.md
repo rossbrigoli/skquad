@@ -82,7 +82,8 @@ detail.
 | [`agent-runtime/`](agent-runtime/) | Python, FastAPI | Claims tasks, assembles context, loads granted plugins, calls models, drains messages, and reports outcomes. |
 | [`llm-gateway/`](llm-gateway/) | LiteLLM | Central model proxy and per-agent virtual-key boundary. |
 | [`web/`](web/) | Next.js | User interface with an authenticated shell plus squad, agent, task, registry, grant, admin, identity, and chat workflows. |
-| [`charts/skquad/`](charts/skquad/) | Helm | Installs the control plane, CRDs, operator, gateway, web app, and optional PostgreSQL. |
+| [`embedder/`](embedder/) | llama.cpp (llama-server) | Embedding service for agent-memory RAG: Qwen3-Embedding-0.6B, OpenAI-compatible `/v1/embeddings`, CUDA/Vulkan/CPU runtime variants (see [embedder README](embedder/README.md), [ADR-0013](docs/adr/0013-embedder-runtime-selection.md)). |
+| [`charts/skquad/`](charts/skquad/) | Helm | Installs the control plane, CRDs, operator, gateway, embedder, web app, and optional PostgreSQL. |
 
 ## Built-in Tools
 
@@ -91,6 +92,7 @@ Skquad ships three first-class platform tools (no external plugins required), av
 - **`exec`** — run terminal commands in the agent's environment.
 - **`web_fetch`** — fetch a URL and extract readable content.
 - **`web_search`** — web search (Brave/Perplexity backends).
+- **`memory_search`** — semantic search over the agent's own stored memories (pgvector cosine ranking; query embedded through the gateway → embedder). See [embedder README §4](embedder/README.md).
 
 Key properties:
 
@@ -220,7 +222,7 @@ suite and cluster-required checks.
 | Product scope | [Requirements](docs/REQUIREMENTS.md), [domain model](docs/domain-model.md) |
 | System design | [Architecture](docs/ARCHITECTURE.md), [data model](docs/data-model.md), [API design](docs/api-design.md), [implementation status](docs/implementation-status.md), [ADRs](docs/adr/) |
 | Agent execution | [Runtime](docs/agent-runtime.md), [task lifecycle](docs/kanban-task-lifecycle.md), [messaging](docs/collaboration-messaging.md), [plugins](docs/plugin-architecture.md) |
-| Platform services | [LLM gateway](docs/llm-gateway.md), [resource registry](docs/resource-registry.md), [operator and deployment](docs/deployment-operator.md), [operator runbook](docs/operator-runbook.md) |
+| Platform services | [LLM gateway](docs/llm-gateway.md), [resource registry](docs/resource-registry.md), [operator and deployment](docs/deployment-operator.md), [operator runbook](docs/operator-runbook.md), [embedder / memory RAG](embedder/README.md) |
 | Operations and security | [Identity and security](docs/identity-security.md), [threat model](docs/security-threat-model.md), [observability and metering](docs/observability-metering.md), [CI/CD](docs/ci-cd.md), [testing strategy](docs/testing-strategy.md) |
 | Releases | [Versioning](docs/versioning.md) — `major.minor.build`, CI auto-increment, where the version is displayed |
 | User experience | [Web application UX](docs/web-app-ux.md) |

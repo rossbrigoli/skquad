@@ -1,7 +1,8 @@
 # ADR-0013 — Embedder Runtime Selection (CUDA / Vulkan / CPU)
 
-- **Status:** Proposed
+- **Status:** Accepted — implemented and live (releases 0.1.193–0.1.196, S-212)
 - **Date:** 2026-10-03
+- **Ops docs:** [`embedder/README.md`](../../embedder/README.md) (install/runtime behaviour, RAG flow, verification)
 - **Relates to:** S-212 (memory_search RAG), ADR-0012 (built-in tools)
 
 ## Context

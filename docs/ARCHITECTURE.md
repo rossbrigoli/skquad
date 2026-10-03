@@ -99,6 +99,7 @@ flowchart TB
 |-----------|----------------|-------|
 | **Agent Pod** | Runs the **agent runtime** (thin custom runtime + LiteLLM + plugins). Picks up tasks, calls the LLM gateway, uses permitted resources, sends/receives async messages. | One pod per agent. Scales 0↔1. |
 | **Agent Secrets** | The agent's credentials (LLM keys, resource credentials). | Per-agent, in the squad namespace. |
+| **Embedder** | llama.cpp + Qwen3-Embedding-0.6B; platform embedding service for agent-memory RAG. Runtime (CUDA/Vulkan/CPU) auto-selected and reconciled by the operator per available GPU. | Reached only via the LLM gateway. See [`embedder/README.md`](../embedder/README.md). |
 | **Network Policies** | Isolate the squad namespace; allow only the paths the agent needs (LLM gateway, message queue, permitted resources). | Enforce squad isolation. |
 
 ---
