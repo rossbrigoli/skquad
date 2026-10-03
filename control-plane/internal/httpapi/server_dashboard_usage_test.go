@@ -20,13 +20,25 @@ import (
 const pathDashboardUsage = "/api/v1/dashboard/usage"
 
 // meterNow records a metering event for the agent/squad pair with the
-// given age relative to now.
+// given age. The relative `ago` is anchored to midday UTC today rather
+// than the wall clock so that "fresh" events (ago < ~12h) always land on
+// the current UTC calendar day.
+//
+// Without the midday anchor, running the suite just after 00:00 UTC (e.g.
+// 00:00:57) pushes the 1h/2h/3h-old events into YESTERDAY's bucket, so
+// the "today" day-axis assertions (input/output/token/cost totals) see
+// zeros and the test fails every morning in the 00:00–03:00 UTC window.
+// The metering query has no upper bound, so a midday-today timestamp is
+// always included; the 40-day-old event still falls outside both the
+// 30-day axis and the current month regardless of the anchor.
 func meterNow(t *testing.T, store *storage.MemoryStore, squad domain.Squad, agent domain.Agent, providerID, model string, ago time.Duration, in, out int, cost float64) {
 	t.Helper()
+	now := time.Now().UTC()
+	anchor := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.UTC)
 	require.NoError(t, store.RecordMetering(context.Background(), &domain.MeteringEvent{
 		AgentID: agent.ID, SquadID: squad.ID, ProviderID: providerID, Model: model,
 		InputTokens: in, OutputTokens: out, Cost: cost, Currency: "USD",
-		Timestamp: time.Now().UTC().Add(-ago),
+		Timestamp: anchor.Add(-ago),
 	}))
 }
 
