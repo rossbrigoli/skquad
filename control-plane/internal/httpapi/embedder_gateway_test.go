@@ -50,7 +50,7 @@ func TestRegisterEmbedderOnceCreatesAndReloads(t *testing.T) {
 	require.Equal(t, 1, reloader.calls)
 }
 
-func TestRegisterEmbedderOnceIdempotentUpdate(t *testing.T) {
+func TestRegisterEmbedderOnceSkipsExisting(t *testing.T) {
 	var updated []map[string]any
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -76,9 +76,8 @@ func TestRegisterEmbedderOnceIdempotentUpdate(t *testing.T) {
 
 	createdFlag, err := registerEmbedderOnce(context.Background(), client, reloader, spec)
 	require.NoError(t, err)
-	require.False(t, createdFlag, "existing deployment must update in place, not create")
-	require.Len(t, updated, 1)
-	require.Equal(t, "dep-9", updated[0]["id"])
+	require.False(t, createdFlag, "existing deployment must not create")
+	require.Len(t, updated, 0, "static embedder config: existing model is already correct, must NOT attempt /model/update (litellm rejects it as 'model not found')")
 	require.Equal(t, 0, reloader.calls, "no reload when nothing was created")
 }
 
