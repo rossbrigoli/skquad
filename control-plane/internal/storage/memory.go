@@ -53,6 +53,9 @@ type MemoryStore struct {
 	agentMemory     map[string]*domain.AgentMemory
 	messages        map[string]*domain.Message
 	inbox           map[string]*domain.InboxMessage
+	// S-216: inbox attachments, keyed by attachment id. Cascade with
+	// the message delete mirrors the Postgres ON DELETE CASCADE.
+	inboxAttachments map[string]*domain.InboxAttachment
 	notifications   map[string]*domain.Notification
 	// S-199: per-user notification mute lists, mirroring the Postgres
 	// user_notification_preferences table. Absent key ⇒ all enabled.
@@ -121,6 +124,7 @@ func NewMemoryStore() *MemoryStore {
 		agentMemory:      map[string]*domain.AgentMemory{},
 		messages:         map[string]*domain.Message{},
 		inbox:            map[string]*domain.InboxMessage{},
+		inboxAttachments: map[string]*domain.InboxAttachment{},
 		notifications:    map[string]*domain.Notification{},
 		notifPrefs:       map[string][]domain.NotificationType{},
 		k8sOutbox:        map[string]*domain.KubernetesOutboxEvent{},
@@ -2811,7 +2815,70 @@ func (m *MemoryStore) DeleteInboxMessage(_ context.Context, id string, userID st
 		return ErrNotFound
 	}
 	delete(m.inbox, id)
+	// S-216: cascade — deleting the message reclaims its attachments
+	// (mirrors the Postgres ON DELETE CASCADE).
+	for attID, att := range m.inboxAttachments {
+		if att.MessageID == id {
+			delete(m.inboxAttachments, attID)
+		}
+	}
 	return nil
+}
+
+// CreateInboxAttachment (S-216) stores one attachment against an
+// existing inbox message.
+func (m *MemoryStore) CreateInboxAttachment(_ context.Context, a *domain.InboxAttachment) (*domain.InboxAttachment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.inbox[a.MessageID]; !ok {
+		return nil, ErrNotFound
+	}
+	created := *a
+	if created.ID == "" {
+		created.ID = uuid.NewString()
+	}
+	created.CreatedAt = time.Now().UTC()
+	stored := created
+	m.inboxAttachments[created.ID] = &stored
+	return &created, nil
+}
+
+// GetInboxAttachment (S-216) returns one attachment including bytes.
+func (m *MemoryStore) GetInboxAttachment(_ context.Context, id string) (*domain.InboxAttachment, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	att, ok := m.inboxAttachments[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	out := *att
+	return &out, nil
+}
+
+// ListInboxAttachmentMeta (S-216) batch-fetches metadata (no bytes)
+// grouped by message id, oldest first.
+func (m *MemoryStore) ListInboxAttachmentMeta(_ context.Context, messageIDs []string) (map[string][]domain.InboxAttachment, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	wanted := make(map[string]bool, len(messageIDs))
+	for _, id := range messageIDs {
+		wanted[id] = true
+	}
+	out := map[string][]domain.InboxAttachment{}
+	for _, att := range m.inboxAttachments {
+		if !wanted[att.MessageID] {
+			continue
+		}
+		meta := *att
+		meta.Data = nil
+		out[att.MessageID] = append(out[att.MessageID], meta)
+	}
+	for k := range out {
+		slices.SortFunc(out[k], func(a, b domain.InboxAttachment) int {
+			return a.CreatedAt.Compare(b.CreatedAt)
+		})
+	}
+	return out, nil
 }
 
 // CreateNotification (S-193) files a recipient-scoped alert for the bell.

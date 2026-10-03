@@ -1138,7 +1138,12 @@ class SendInboxToolTests(BuiltinToolsTestBase):
         fn = schema["function"]
         assert fn["name"] == "send_inbox"
         assert fn["parameters"]["required"] == ["message"]
-        assert set(fn["parameters"]["properties"]) == {"message", "subject", "task_id"}
+        assert set(fn["parameters"]["properties"]) == {
+            "message",
+            "subject",
+            "task_id",
+            "attachments",
+        }
 
     def test_posts_message_subject_and_task(self):
         tool = bt.SendInboxTool({}, self.ctx(credential="cred-inbox"))
@@ -1193,6 +1198,108 @@ class SendInboxToolTests(BuiltinToolsTestBase):
             )
         assert result.ok is True
         assert captured["body"] == {"message": "ping"}
+
+    def test_attachments_upload_multipart(self):
+        # S-216: files inside the workspace are read and posted as
+        # multipart parts named "attachments"; response attachment list
+        # is surfaced in the tool result.
+        tool = bt.SendInboxTool({}, self.ctx(credential="cred-inbox"))
+        ws = self.tmp_path / "ws"
+        ws.mkdir(parents=True, exist_ok=True)
+        (ws / "report.txt").write_text("hello owner")
+        captured = {}
+
+        def fake(req, timeout=None):
+            assert req.get_method() == "POST"
+            assert req.full_url.endswith("/api/v1/agents/me/inbox")
+            ctype = req.headers.get("Content-type") or req.headers.get("Content-Type")
+            assert ctype.startswith("multipart/form-data")
+            body = req.data.decode("utf-8", errors="replace")
+            captured["body"] = body
+            return FakeHTTPResponse(
+                201,
+                json.dumps(
+                    {
+                        "id": "inb-9",
+                        "attachments": [{"filename": "report.txt", "id": "att-1"}],
+                    }
+                ).encode("utf-8"),
+                "application/json",
+            )
+
+        with self.patch_http(fake):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_inbox",
+                    arguments={"message": "file attached", "attachments": ["report.txt"]},
+                ),
+                None,
+            )
+        assert result.ok is True
+        assert "report.txt" in result.content
+        assert 'name="attachments"; filename="report.txt"' in captured["body"]
+        assert "hello owner" in captured["body"]
+        assert 'name="message"' in captured["body"]
+
+    def test_attachments_outside_workspace_rejected_without_http(self):
+        tool = bt.SendInboxTool({}, self.ctx())
+
+        def fake(req, timeout=None):  # pragma: no cover
+            raise AssertionError("must not hit HTTP")
+
+        with self.patch_http(fake):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_inbox",
+                    arguments={"message": "x", "attachments": ["/etc/passwd"]},
+                ),
+                None,
+            )
+        assert result.ok is False
+        assert "outside your workspace" in result.content
+
+    def test_attachments_missing_file_rejected(self):
+        tool = bt.SendInboxTool({}, self.ctx())
+        with self.patch_http(lambda *a, **k: (_ for _ in ()).throw(AssertionError)):
+            result = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_inbox",
+                    arguments={"message": "x", "attachments": ["nope.txt"]},
+                ),
+                None,
+            )
+        assert result.ok is False
+        assert "not found" in result.content
+
+    def test_attachments_non_list_rejected(self):
+        tool = bt.SendInboxTool({}, self.ctx())
+        result = tool.invoke(
+            ToolCall(
+                id="c1",
+                name="send_inbox",
+                arguments={"message": "x", "attachments": "report.txt"},
+            ),
+            None,
+        )
+        assert result.ok is False
+        assert "must be a list" in result.content
+
+    def test_too_many_attachments_rejected(self):
+        tool = bt.SendInboxTool({}, self.ctx())
+        paths = [f"f{i}.txt" for i in range(bt.SendInboxTool.MAX_ATTACHMENTS + 1)]
+        result = tool.invoke(
+            ToolCall(
+                id="c1",
+                name="send_inbox",
+                arguments={"message": "x", "attachments": paths},
+            ),
+            None,
+        )
+        assert result.ok is False
+        assert "too many attachments" in result.content
 
     def test_empty_message_rejected_without_http(self):
         tool = bt.SendInboxTool({}, self.ctx())

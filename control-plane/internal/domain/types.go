@@ -573,10 +573,32 @@ type InboxMessage struct {
 	Body      string    `json:"body,omitempty"`
 	ReadAt    *time.Time `json:"read_at,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+	// Attachments (S-216) carries the file attachments delivered with
+	// this message via send_inbox. It is populated by the HTTP layer
+	// (list/detail enrichment) — storage scans leave it empty. Bytes
+	// never ride on this struct; see InboxAttachment.Data.
+	Attachments []InboxAttachment `json:"attachments,omitempty"`
 }
 
 // IsRead reports whether the owner has acknowledged the notification.
 func (m *InboxMessage) IsRead() bool { return m.ReadAt != nil }
+
+// InboxAttachment (S-216) is one file attached to an inbox message.
+// Metadata (filename, sniffed content type, size, sha256) is always
+// safe to serialize; Data carries the raw bytes only on the download
+// path and is excluded from JSON.
+type InboxAttachment struct {
+	ID          string    `json:"id"`
+	MessageID   string    `json:"message_id"`
+	SquadID     string    `json:"squad_id"`
+	Filename    string    `json:"filename"`
+	ContentType string    `json:"content_type"`
+	SizeBytes   int64     `json:"size_bytes"`
+	SHA256      string    `json:"sha256"`
+	URL         string    `json:"url"`
+	CreatedAt   time.Time `json:"created_at"`
+	Data        []byte    `json:"-"`
+}
 
 // Board is a squad's Kanban board (one per squad).
 type Board struct {
