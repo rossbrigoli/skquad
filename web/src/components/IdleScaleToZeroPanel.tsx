@@ -93,7 +93,7 @@ export function IdleScaleToZeroPanel() {
             disabled={loading || saving}
           />
         </label>
-        <button type="button" className="btn btn-sm" disabled={loading || saving} onClick={() => void save()}>
+        <button type="button" className="btn btn-primary" disabled={loading || saving} onClick={() => void save()}>
           {saving ? "Saving…" : "Save"}
         </button>
       </div>
