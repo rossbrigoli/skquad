@@ -85,9 +85,14 @@ func registerEmbedderOnce(ctx context.Context, gw *liteLLMGatewayClient, reloade
 	}
 	for _, d := range deployments {
 		if d.ModelName == spec.ModelName {
-			if err := gw.UpdateModelDeployment(ctx, d.DeploymentID, spec); err != nil {
-				return false, err
-			}
+			// The embedder's gateway config is static (fixed in-cluster
+			// service URL + non-secret placeholder key), so an existing
+			// deployment is already correct and routable. litellm's
+			// /model/update rejects re-applying it ("model not found" on
+			// the by-id lookup) even though the deployment is present and
+			// serving embeddings, so we treat existence as success rather
+			// than looping on a doomed update. Any real config change ships
+			// via redeploy, which re-runs DeployModel against the gateway.
 			return false, nil
 		}
 	}
