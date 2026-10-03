@@ -3777,3 +3777,118 @@ button.squad-tab.active {
   color: var(--ink-muted);
   font-weight: 400;
 }
+
+/* --- S-224 (S-203 WP2): Cost Management --- */
+
+/* Horizontal month-vs-budget bar. */
+.budget-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.budget-bar-track {
+  position: relative;
+  height: 14px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.budget-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-pill) 0 0 var(--radius-pill);
+  transition: width 0.25s ease;
+}
+
+.budget-bar-fill.over {
+  background: var(--status-over-budget);
+}
+
+.budget-bar-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+  flex-wrap: wrap;
+}
+
+.budget-bar-over-label {
+  color: var(--status-over-budget);
+  font-weight: 700;
+}
+
+.budget-bar-note {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+/* Segmented grouping control above the daily cost chart. */
+.chart-group-tabs {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 2px;
+}
+
+.chart-group-tabs button {
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-pill);
+  padding: 4px var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.chart-group-tabs button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Admin Budget tab: per-user rows (id | spend | state | editor). */
+.budget-user-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) auto auto auto;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.budget-user-id {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.budget-user-id .entity-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.budget-user-spend,
+.budget-user-state {
+  display: flex;
+  flex-direction: column;
+  white-space: nowrap;
+}
+
+.budget-user-edit {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.budget-user-edit .form-control {
+  width: 110px;
+}
+
+.budget-user-error {
+  grid-column: 1 / -1;
+}

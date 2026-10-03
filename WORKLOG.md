@@ -927,3 +927,16 @@
   - web: api.ts (apiDeleteWithBody), promptTemplates.ts (bulkDeletePromptTemplates + toggle/selectAll/prune selection helpers), PromptTemplatesPanel.tsx (rewritten: .section-head/.entity-list/.entity-row/.btn family, EmptyState, ConfirmDialog, select-all with indeterminate, bulk "Delete selected", refresh callback instead of window.location.reload), settings/page.tsx (pass loading + refresh), globals.css (.templates-toolbar/.templates-selectall/.bulk-count/.entity-checkbox), PromptTemplatesPanel.test.tsx (new), promptTemplates.test.ts (bulk + helper tests).
 - Commands/tests run: go vet ./... (clean); go test ./... (all pass); tsc --noEmit (clean); eslint (clean); vitest run (50 files, 616 tests pass).
 - Result: ready for PR.
+## 2026-10-04 00:20 ACST — S-224 (S-203 WP2): Cost Management UI
+- objective: Rename Costs → Cost Management; tabbed page (Cost tab: scoped metric tiles + daily cost chart grouped by squad/agent/model/provider + month-vs-budget bar; admin Budget tab: platform knobs + per-user budget editor) wired to WP1 APIs.
+- files changed:
+  - `web/src/lib/costs.ts` (new) — WP1 response types (CostSummaryPayload, PlatformBudget, AdminBudgetsPayload, budget status), resolveCostTab admin gating, seriesForSource grouping mapper, buildBudgetModel (fraction/over/remaining), parseBudgetInput/knobToInput/budgetKnobsChanged for knob forms (explicit-null clears).
+  - `web/src/components/BudgetBar.tsx` (new) — horizontal MTD-vs-budget bar, over-budget color, no-limit state.
+  - `web/src/components/AdminBudgetPanel.tsx` (new) — platform default/max/monthly-limit form (clearable knobs, clamped_user_budgets notice) + per-user budget rows with MTD spend, max-exceed guard, PUT /admin/budgets/users/{id}.
+  - `web/src/app/costs/page.tsx` — rewritten: "Cost Management" title, Cost/Budget tabs (Budget admin-only, defence-in-depth gating), metric tiles, BarChart via buildStackedChart(cost) with Squads/Agents/Models/Providers segmented toggle, 60s poll.
+  - `web/src/components/AppShell.tsx` — nav label "Costs" → "Cost Management".
+  - `web/src/lib/breadcrumbs.ts` — /costs crumb → "Cost Management".
+  - `web/src/app/globals.css` — budget-bar, chart-group-tabs, budget-user-row styles (theme vars only).
+  - Tests: `web/src/lib/costs.test.ts` (new, 17 tests), `web/src/components/BudgetBar.test.tsx` (new, 3), breadcrumbs.test.ts updated.
+- command/test run: `npx tsc --noEmit` clean; `npx vitest run` 51 files / 624 tests passed; `npx eslint` clean on all changed files (pre-existing errors in untouched files left alone — CI does not gate eslint); `npm run build` succeeded.
+- result: Cost Management page live-ready on branch feat/s203-wp2-cost-ui; PR → main.

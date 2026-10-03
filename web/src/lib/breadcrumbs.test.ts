@@ -14,7 +14,7 @@ describe("breadcrumbsForPath", () => {
   it("renders single-segment routes as one plain crumb", () => {
     expect(breadcrumbsForPath("/dashboard")).toEqual([{ label: "Dashboard", href: null }]);
     expect(breadcrumbsForPath("/inbox")).toEqual([{ label: "Inbox", href: null }]);
-    expect(breadcrumbsForPath("/costs")).toEqual([{ label: "Costs", href: null }]);
+    expect(breadcrumbsForPath("/costs")).toEqual([{ label: "Cost Management", href: null }]);
     expect(breadcrumbsForPath("/settings")).toEqual([{ label: "Settings", href: null }]);
   });
 

@@ -41,7 +41,8 @@ const simpleNav = [
   { href: "/inbox", label: "Inbox", Icon: IconInbox },
 ];
 const tailNav = [
-  { href: "/costs", label: "Costs", Icon: IconCosts },
+  // S-224: "Costs" → "Cost Management" (tabbed cost + budget surface).
+  { href: "/costs", label: "Cost Management", Icon: IconCosts },
   { href: "/settings", label: "Settings", Icon: IconSettings },
   { href: "/about", label: "About", Icon: IconAbout },
 ];
