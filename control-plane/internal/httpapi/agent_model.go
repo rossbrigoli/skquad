@@ -20,10 +20,14 @@ import (
 )
 
 // agentModelResponse is the lean capability projection the runtime reads.
+// S-208 adds ContextWindow so the runtime derives its compaction limit
+// from the registered model config instead of a static env default
+// (0 = unknown → runtime falls back to SKQUAD_MODEL_CONTEXT_TOKENS).
 type agentModelResponse struct {
 	ModelName      string `json:"model_name"`
 	SupportsVision bool   `json:"supports_vision"`
 	SupportsTools  bool   `json:"supports_tools"`
+	ContextWindow  int    `json:"context_window"`
 }
 
 // getMyModel serves GET /api/v1/agents/me/model. An agent with no bound
@@ -46,5 +50,6 @@ func (s *Server) getMyModel(w http.ResponseWriter, r *http.Request) {
 	resp.ModelName = model.ModelName
 	resp.SupportsVision = model.SupportsVision
 	resp.SupportsTools = model.SupportsTools
+	resp.ContextWindow = model.ContextWindow
 	writeJSON(w, http.StatusOK, resp)
 }

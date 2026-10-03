@@ -25,6 +25,8 @@ import {
   formFromAIModel,
   formatCascadeReport,
   formatInUseMessage,
+  formatMetadataResult,
+  applyProviderMetadata,
   grantedModelIds,
   grantDiff,
   groupModelsByProvider,
@@ -35,9 +37,11 @@ import {
   modelRowFields,
   PLATFORM_ADMIN_ROLE,
   parseProviderModels,
+  parseProviderModelMetadata,
   PRICING_RATE_KEYS,
   PRICING_RATE_LABELS,
   withForce,
+  MAX_CONTEXT_WINDOW,
   type AIModel,
   type AIModelFormValues,
   type AdminUser,
@@ -599,10 +603,43 @@ function AIModelModal({
   // registered; nothing is persisted by the test.
   const [testState, setTestState] = useState<TestState>("idle");
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+  // S-208: "Fetch from provider" metadata prefill (context window +
+  // pricing). Empty fields only — never overwrites admin edits; missing
+  // values surface as a "not available from provider" hint.
+  const [metaState, setMetaState] = useState<"idle" | "loading" | "done">("idle");
+  const [metaMessage, setMetaMessage] = useState("");
 
   function resetTest() {
     setTestState("idle");
     setTestResult(null);
+    setMetaState("idle");
+    setMetaMessage("");
+  }
+
+  async function fetchProviderMetadata() {
+    const providerId = values.provider_id;
+    const modelName = values.model_name.trim();
+    if (providerId === "" || modelName === "") return;
+    setMetaState("loading");
+    setMetaMessage("");
+    try {
+      const body = await apiGet<unknown>(
+        `/registry/llm-providers/${providerId}/model-metadata?model=${encodeURIComponent(modelName)}`,
+        token,
+      );
+      const meta = parseProviderModelMetadata(body);
+      let message = "";
+      setValues((v) => {
+        const result = applyProviderMetadata(v, meta);
+        message = formatMetadataResult(result);
+        return result.values;
+      });
+      setMetaMessage(message);
+    } catch (err) {
+      setMetaMessage(`Fetch failed: ${errorMessage(err, "provider metadata fetch failed")}`);
+    } finally {
+      setMetaState("done");
+    }
   }
 
   async function runModelTest() {
@@ -798,18 +835,40 @@ function AIModelModal({
               placeholder="GPT-6 Sol"
             />
           </label>
-          <label className="field">
+          <div className="field">
             <span>Context window (tokens)</span>
             <input
               type="number"
               min={0}
+              max={MAX_CONTEXT_WINDOW}
               value={values.context_window}
               onChange={(e) => setField("context_window", e.target.value)}
               placeholder="200000"
             />
-          </label>
+            {/* S-208: prefill context window + pricing from the provider's
+                model metadata. Empty fields only; never fabricated. */}
+            <span style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={
+                  metaState === "loading" || values.provider_id === "" || values.model_name.trim() === ""
+                }
+                onClick={() => {
+                  void fetchProviderMetadata();
+                }}
+              >
+                {metaState === "loading" ? "Fetching…" : "Fetch from provider"}
+              </button>
+              {metaState === "done" && metaMessage !== "" ? (
+                <span className="field-hint">{metaMessage}</span>
+              ) : null}
+            </span>
+          </div>
         </div>
-        <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        {/* S-208: checkbox rows use .field-checkbox so the full-width
+            .field input treatment no longer stretches the boxes. */}
+        <label className="field field-checkbox">
           <input
             type="checkbox"
             checked={values.supports_tools}
@@ -817,7 +876,7 @@ function AIModelModal({
           />
           <span>Supports tool calling</span>
         </label>
-        <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <label className="field field-checkbox">
           <input
             type="checkbox"
             checked={values.supports_vision}

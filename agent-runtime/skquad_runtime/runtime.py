@@ -62,7 +62,55 @@ from .builtin_tools_config import (
     BuiltinToolsConfigCache,
     BuiltinToolsFetchError,
 )
-from .context_compaction import ContextCompactor
+from .context_compaction import (
+    ENV_CONTEXT_LIMIT,
+    ContextCompactor,
+    context_token_limit,
+)
+
+
+def model_context_window_cached(
+    cache: dict[str, tuple[int, float]],
+    model: str,
+    fetch: Callable[[], dict[str, object]],
+) -> int:
+    """S-208: the bound model's context window (tokens), cached 60s.
+
+    0 means unknown — the model registration carries no context_window
+    or the control-plane read failed. Callers fall back to the env-based
+    compaction limit (see ``compactor_for_model``).
+    """
+    now = monotonic()
+    cached = cache.get(model)
+    if cached is not None and now < cached[1]:
+        return cached[0]
+    window = 0
+    try:
+        payload = fetch() or {}
+        raw = payload.get("context_window")
+        value = int(raw) if raw is not None else 0
+        window = value if value > 0 else 0
+    except Exception as exc:  # noqa: BLE001 — advisory metadata, never fatal
+        LOGGER.warning("S-208: model context_window fetch failed: %s", exc)
+    cache[model] = (window, now + 60.0)
+    return window
+
+
+def compactor_for_model(context_window: int) -> ContextCompactor:
+    """S-208: derive the compaction limit from the model's context_window.
+
+    Unknown window → the pre-S-208 env behaviour
+    (SKQUAD_MODEL_CONTEXT_TOKENS, default 32768) with a warning, so
+    compaction never stops running just because metadata is missing.
+    """
+    if context_window > 0:
+        return ContextCompactor(limit=context_window)
+    LOGGER.warning(
+        "S-208: no context_window on the bound model; compaction falls back to %s=%d",
+        ENV_CONTEXT_LIMIT,
+        context_token_limit(),
+    )
+    return ContextCompactor()
 
 
 DEFAULT_CREDENTIALS_DIR = Path("/var/run/skquad/credentials")
@@ -1071,6 +1119,9 @@ class ControlPlaneClient:
     def get_my_model(self) -> dict[str, object]:
         """S-200: bound model capability (model_name/supports_vision/tools).
 
+        S-208 adds ``context_window`` (0 = unknown) so the runtime can
+        derive its compaction limit from the registered model config.
+
         Best-effort at the caller: a failure means "unknown capability",
         which the runtime treats as NOT vision-capable (text-only
         degradation), never a fatal turn error.
@@ -1317,6 +1368,20 @@ class LLMMessageHandler:
         # model name) so the chat path doesn't re-fetch capability every
         # turn. Absence/uncertainty reads as NOT vision-capable.
         self._vision_cache: dict[str, tuple[bool, float]] = {}
+        # S-208: bound-model context-window cache (60s TTL, keyed by
+        # model name) feeding the compaction limit (see compactor_for_model).
+        self._context_window_cache: dict[str, tuple[int, float]] = {}
+
+    def _model_context_window(self, config: BootstrapConfig, model: str) -> int:
+        """S-208: bound model's context window via GET /agents/me/model."""
+        resolved = model or self.model or config.default_model
+        if not resolved:
+            return 0
+        return model_context_window_cached(
+            self._context_window_cache,
+            resolved,
+            lambda: self._control_plane(config).get_my_model(),
+        )
 
     def _squad_roster(self, config: BootstrapConfig) -> list[dict[str, object]]:
         now = monotonic()
@@ -1589,7 +1654,9 @@ class LLMMessageHandler:
         interim_delivered = 0
         response: object = None
         # S-161: tiered context compaction before each LLM call.
-        compactor = ContextCompactor()
+        # S-208: the window comes from the bound model's registered
+        # context_window; unknown falls back to the env limit.
+        compactor = compactor_for_model(self._model_context_window(config, model))
         for step in range(max_steps):
             # S-175: check for a user cancel at every step boundary so a
             # multi-step tool loop stops burning tokens promptly.
@@ -2017,6 +2084,20 @@ class LiteLLMTaskHandler:
         # to the control-plane task thread. None = no streaming (tests,
         # embedded use).
         self.thread_sink: Callable[[str], None] | None = None
+        # S-208: bound-model context-window cache (60s TTL) feeding the
+        # compaction limit (see compactor_for_model).
+        self._context_window_cache: dict[str, tuple[int, float]] = {}
+
+    def _model_context_window(self, config: BootstrapConfig, model: str) -> int:
+        """S-208: bound model's context window via GET /agents/me/model."""
+        resolved = model or self.model or config.default_model
+        if not resolved:
+            return 0
+        return model_context_window_cached(
+            self._context_window_cache,
+            resolved,
+            lambda: ControlPlaneClient.from_bootstrap(config).get_my_model(),
+        )
 
     def attach_thread_sink(self, sink: Callable[[str], None] | None) -> None:
         """S-183: set the per-task thread sink (see ``thread_sink``).
@@ -2088,7 +2169,9 @@ class LiteLLMTaskHandler:
 
         max_steps = max(1, self.max_steps or config.max_llm_steps)
         # S-161: tiered context compaction before each LLM call.
-        compactor = ContextCompactor()
+        # S-208: the window comes from the bound model's registered
+        # context_window; unknown falls back to the env limit.
+        compactor = compactor_for_model(self._model_context_window(config, model))
         for _ in range(max_steps):
             messages, compaction = compactor.maybe_compact(messages)
             if compaction.changed:
