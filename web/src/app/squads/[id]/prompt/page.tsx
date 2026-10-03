@@ -9,14 +9,17 @@ import { Modal } from "../../../../components/Modal";
 import { EffectivePromptPanel } from "../../../../components/EffectivePromptPanel";
 import { PromptRevisionsPanel } from "../../../../components/PromptRevisionsPanel";
 import { PromptTierEditor } from "../../../../components/PromptTierEditor";
+import { buildContextSavePayload } from "../../../../lib/squadStats";
 import { useApi } from "../../../../lib/useApi";
 import { useAuth } from "../../../../lib/auth";
 import { apiPatch, type Agent, type Squad } from "../../../../lib/api";
 
-// Squad Prompt tab (S-PROMPT WP4, plan §6.2). Layer-3 editor for the
-// squad prompt. The short `mission` field stays where it already lives
-// (Overview → Edit) — mission and prompt coexist by resolved decision Q4:
-// mission = short summary for listings, prompt = full layer 3.
+// Squad Context tab (S-PROMPT WP4, plan §6.2). Layer-3 editor for the
+// squad prompt. S-211: the mission field moved here from the Overview
+// Configuration section and is displayed ABOVE the context editor — a
+// single "Save context" action persists both. Mission keeps its own DB
+// field; the control plane prepends it to the squad context at
+// injection time (prompt_handlers.go, S-179 composition).
 export default function SquadPromptPage() {
   const params = useParams<{ id: string }>();
   const squadId = String(params?.id ?? "");
@@ -26,6 +29,7 @@ export default function SquadPromptPage() {
   const squad = (squads.data || []).find((item) => item.id === squadId);
 
   const [prompt, setPrompt] = useState("");
+  const [mission, setMission] = useState("");
   const [loadedOnce, setLoadedOnce] = useState(false);
   const [previewAgent, setPreviewAgent] = useState<Agent | null>(null);
 
@@ -34,12 +38,14 @@ export default function SquadPromptPage() {
     if (squad && !loadedOnce) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot prefill from the loaded entity
       setPrompt(squad.prompt ?? "");
+      setMission(squad.mission ?? "");
       setLoadedOnce(true);
     }
   }, [squad, loadedOnce]);
 
+  // S-211: one click saves BOTH the mission and the squad context.
   async function save() {
-    await apiPatch<Squad>(`/squads/${squadId}`, token, { prompt });
+    await apiPatch<Squad>(`/squads/${squadId}`, token, buildContextSavePayload(mission, prompt));
     setLoadedOnce(false);
     squads.refresh();
   }
@@ -56,10 +62,26 @@ export default function SquadPromptPage() {
         </div>
         <p className="field-hint" style={{ marginBottom: "var(--space-4)" }}>
           Layer 3 of the prompt hierarchy: injected into every agent in this squad, below the
-          platform and organization blocks. The squad&rsquo;s <strong>mission</strong> stays on the
-          Overview page as the short listing summary.
+          platform and organization blocks. Saving here persists both the squad&rsquo;s
+          <strong> mission</strong> and its context in one action; the mission is injected on top
+          of the context at compose time.
         </p>
         {squads.error ? <div className="notice error">{squads.error}</div> : null}
+
+        {/* S-211: mission lives above the context editor and is saved with it. */}
+        <label className="field" style={{ marginBottom: "var(--space-4)" }}>
+          <span>Mission</span>
+          <textarea
+            value={mission}
+            placeholder="What is this squad for?"
+            onChange={(e) => setMission(e.target.value)}
+            disabled={false}
+          />
+          <small className="field-hint">
+            Short purpose statement. Prepended to the squad context in every agent&apos;s system
+            prompt on its next wake.
+          </small>
+        </label>
 
         <PromptTierEditor
           scope="squad"
@@ -67,7 +89,7 @@ export default function SquadPromptPage() {
           content={prompt}
           onChange={setPrompt}
           onSave={save}
-          saveLabel="Save squad prompt"
+          saveLabel="Save context"
           placeholder="What this squad is working toward, shared conventions, standing constraints…"
           hint="Template variables like {{agent.name}} or {{squad.roster}} are substituted at compose time. Reserved <skquad_…> delimiters are rejected."
         />

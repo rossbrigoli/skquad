@@ -3456,6 +3456,114 @@ button.squad-tab.active {
   padding: 1px var(--space-2);
 }
 
+/* S-211: agent tiles on the squad Overview screen. Robot icon left,
+   name + role, status chip. Running agents pulse a soft blue halo;
+   failed/error agents get a static red outline. */
+.agent-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-3);
+}
+
+.agent-tile {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  text-decoration: none;
+  color: inherit;
+  transition:
+    border-color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
+}
+
+.agent-tile:hover {
+  border-color: var(--accent);
+  background: var(--surface-sunken);
+}
+
+.agent-tile-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  color: var(--ink-faint);
+}
+
+.agent-tile-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.agent-tile-name {
+  font-weight: 600;
+  font-size: var(--text-md);
+  overflow-wrap: anywhere;
+}
+
+.agent-tile-role {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.agent-tile-status {
+  flex: 0 0 auto;
+  align-self: flex-start;
+}
+
+/* Running: pulsating blue halo around the tile outline (2s loop). */
+@keyframes agent-tile-halo {
+  0% {
+    border-color: var(--status-running);
+    box-shadow: 0 0 0 0 rgba(25, 113, 194, 0.45);
+  }
+  70% {
+    border-color: var(--status-running);
+    box-shadow: 0 0 0 6px rgba(25, 113, 194, 0);
+  }
+  100% {
+    border-color: var(--status-running);
+    box-shadow: 0 0 0 0 rgba(25, 113, 194, 0);
+  }
+}
+
+.agent-tile--running {
+  border-color: var(--status-running);
+  animation: agent-tile-halo 2s ease-out infinite;
+}
+
+.agent-tile--running .agent-tile-icon {
+  color: var(--status-running);
+}
+
+/* Failed: static red outline. */
+.agent-tile--failed {
+  border-color: var(--status-error);
+  box-shadow: inset 0 0 0 1px var(--status-error);
+}
+
+.agent-tile--failed .agent-tile-icon {
+  color: var(--status-error);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-tile--running {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--status-running-bg);
+  }
+}
+
 /* S-204 follow-up: Resources index page (/settings/resources). */
 .page-subtitle {
   margin: 0 0 var(--space-4);
