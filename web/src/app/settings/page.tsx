@@ -61,11 +61,11 @@ import { DeadLettersPanel } from "../../components/DeadLettersPanel";
 import { IdleScaleToZeroPanel } from "../../components/IdleScaleToZeroPanel";
 import { EmbedderRuntimePanel } from "../../components/EmbedderRuntimePanel";
 import { NotificationPreferencesPanel } from "../../components/NotificationPreferencesPanel";
-import { BuiltinToolsPanel } from "../../components/BuiltinToolsPanel";
+import { ToolsPanel } from "../../components/ToolsPanel";
+import { DeleteResourceButton } from "../../components/DeleteResourceButton";
 import { PromptTemplatesPanel } from "../../components/PromptTemplatesPanel";
 import type { PromptTemplate } from "../../lib/promptTemplates";
 
-type DeleteUsage = { agent_id: string; agent_name: string; squad_id: string };
 
 // S-180: shared one-line status shown next to the pre-save Test buttons.
 type TestState = "idle" | "testing" | "done";
@@ -95,9 +95,9 @@ function resolveSettingsTab(tab: Tab, isAdmin: boolean): Tab {
   }
   // S-PROMPT WP4: the organization prompt tier is platform-admin only
   // (mirrors requirePlatformAdmin on PUT /settings/prompt).
-  // BT-4 (S-151): built-in tools settings is platform-admin only
-  // (mirrors requirePlatformAdmin on /admin/tools).
-  return tab === "ai-models" || tab === "access" || tab === "prompt" || tab === "builtin-tools" || tab === "templates" || tab === "dead-letters" || tab === "scaling" ? "providers" : tab;
+  // S-204: the standalone built-in-tools tab is gone — built-in tools
+  // are managed on the unified Resources > Tools panel.
+  return tab === "ai-models" || tab === "access" || tab === "prompt" || tab === "templates" || tab === "dead-letters" || tab === "scaling" ? "providers" : tab;
 }
 
 // TabButton: one settings tab button (S-126 / S3358: keeps the ternary
@@ -127,84 +127,13 @@ function duplicateModelMessage(err: unknown): string {
   return `Duplicate model: ${detail}`;
 }
 
-// DeleteResourceButton (S-103): tries a plain delete; if the API reports
-// the resource is granted to agents (409), warns with the usage list and
-// offers a force delete that also revokes those grants.
-function DeleteResourceButton({
-  path,
-  name,
-  onDeleted,
-}: {
-  readonly path: string;
-  readonly name: string;
-  readonly onDeleted: () => void;
-}) {
-  const { token } = useAuth();
-  const [usage, setUsage] = useState<DeleteUsage[] | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  async function attempt(force: boolean) {
-    setBusy(true);
-    setError("");
-    try {
-      await apiDelete(path + (force ? "?force=true" : ""), token);
-      setUsage(null);
-      onDeleted();
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        const body = err.body as { usage?: DeleteUsage[] } | undefined;
-        setUsage(body?.usage ?? []);
-      } else {
-        setError(err instanceof Error ? err.message : "delete failed");
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <>
-      <button
-        type="button"
-        className="btn btn-sm btn-danger"
-        disabled={busy}
-        onClick={() => {
-              attempt(false);
-            }}
-      >
-        Delete
-      </button>
-      {error ? (
-        <span className="notice error" role="alert" style={{ marginLeft: 8 }}>
-          {error}
-        </span>
-      ) : null}
-      {usage !== null ? (
-        <ConfirmDialog
-          title={`Delete “${name}”?`}
-          body={
-            usage.length > 0
-              ? `This is currently granted to ${usage.length} agent(s): ${usage
-                  .map((u) => u.agent_name)
-                  .join(", ")}. Deleting will revoke those grants.`
-              : "Delete this resource?"
-          }
-          confirmLabel="Delete and revoke"
-          onConfirm={async () => {
-            await attempt(true);
-          }}
-          onClose={() => setUsage(null)}
-        />
-      ) : null}
-    </>
-  );
-}
+// S-103: DeleteResourceButton moved to components/DeleteResourceButton.tsx
+// (shared with the S-204 tool configuration page).
 
 // S-117: "appearance" and "session" tabs removed — theme switching lives
 // in the top-right ThemeToggle and session details/sign-out in the
 // bottom-left UserMenu popover, both available on every page.
-type Tab = "providers" | "resources" | "ai-models" | "access" | "prompt" | "builtin-tools" | "templates" | "dead-letters" | "scaling" | "notifications";
+type Tab = "providers" | "resources" | "ai-models" | "access" | "prompt" | "templates" | "dead-letters" | "scaling" | "notifications";
 
 const RESOURCE_TABS: { key: string; label: string }[] = [
   { key: "skills", label: "Skills" },
@@ -246,13 +175,6 @@ export default function SettingsPage() {
           ) : null}
           {isAdmin ? (
             <TabButton
-              active={activeTab === "builtin-tools"}
-              label="Built-in Tools"
-              onClick={() => setTab("builtin-tools")}
-            />
-          ) : null}
-          {isAdmin ? (
-            <TabButton
               active={activeTab === "templates"}
               label="Prompt Templates"
               onClick={() => setTab("templates")}
@@ -289,7 +211,6 @@ export default function SettingsPage() {
         {isAdmin && activeTab === "ai-models" ? <ModelHierarchyTab /> : null}
         {isAdmin && activeTab === "access" ? <AccessTab /> : null}
         {isAdmin && activeTab === "prompt" ? <OrganizationPromptTab /> : null}
-        {isAdmin && activeTab === "builtin-tools" ? <BuiltinToolsPanel /> : null}
         {isAdmin && activeTab === "templates" ? <PromptTemplatesTab /> : null}
         {isAdmin && activeTab === "dead-letters" ? <DeadLettersPanel /> : null}
         {isAdmin && activeTab === "scaling" ? <IdleScaleToZeroPanel /> : null}
@@ -423,7 +344,13 @@ function ResourcesTab({ isAdmin }: { readonly isAdmin: boolean }) {
         ) : null}
       </div>
       {resources.error ? <div className="notice error">{resources.error}</div> : null}
-      {items.length === 0 && !resources.loading ? (
+      {active.key === "tools" ? (
+        // S-204: Tools gets the unified tile-grid panel — built-in tools
+        // (pre-installed, undeletable) and registered tools side by side,
+        // with a name/description filter. Other resource types keep the
+        // classic entity list.
+        <ToolsPanel isAdmin={isAdmin} />
+      ) : items.length === 0 && !resources.loading ? (
         <EmptyState title={`No ${active.label.toLowerCase()} registered`} hint="Register one so agents can be granted access." />
       ) : (
         <div className="entity-list">

@@ -1,25 +1,25 @@
 "use client";
 
-// BT-4 (S-151): "Built-in Tools" admin settings panel.
-// One card per built-in tool (exec / web_fetch / web_search /
-// send_message) with an
-// enable toggle, the tool's pinned policy form (ADR-0012 §3), inline
-// validation errors from the server (400), success feedback, and the
-// per-tool updatedAt/updatedBy line. Rendered only for platform_admin —
-// gating lives in the settings page (mirrors the Access/Prompt tabs);
-// the server enforces the same check on every admin endpoint.
+// BT-4 (S-151) / S-204: built-in tool configuration form.
+// ToolCard renders one built-in tool (exec / web_fetch / web_search /
+// send_message) with an enable toggle, the tool's pinned policy form
+// (ADR-0012 §3), inline validation errors from the server (400),
+// success feedback, and the per-tool updatedAt/updatedBy line.
+//
+// S-204: built-in tools are no longer a separate settings screen —
+// they live on the unified Tools page and each tool's form opens on the
+// tool configuration route (/settings/resources/tools/{name}). This
+// component is the form itself; loading/saving lives in the route.
 
 import { useMemo, useState } from "react";
 import { apiPatch, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { useApi } from "../lib/useApi";
 import {
-  BUILTIN_TOOL_NAMES,
-  SEARCH_PROVIDERS,
   buildToolPayload,
+  SEARCH_PROVIDERS,
   formFromTool,
   formatToolUpdate,
-  isBuiltinToolName,
   toolsFromList,
   toolSaveErrorMessage,
   validateToolForm,
@@ -43,50 +43,52 @@ const TOOL_HINTS: Record<BuiltinToolName, string> = {
   send_message: "Queued through the control plane: same-squad always allowed, cross-squad needs an access grant. Reply threads are capped at 12 messages per correlation chain (S-164).",
 };
 
-export function BuiltinToolsPanel() {
+// BuiltinToolConfig is the admin config surface for ONE built-in tool,
+// loaded from GET /admin/tools (platform_admin only). Rendered by the
+// S-204 tool configuration route. Built-in tools are shipped with the
+// platform and cannot be deleted — there is deliberately no delete
+// affordance (and no delete route on the API).
+export function BuiltinToolConfig({ name }: { readonly name: BuiltinToolName }) {
   const { token, mode } = useAuth();
   const list = useApi<BuiltinToolsList>("/admin/tools", 0);
-  // Locally-saved cards overlay the loaded list (no effect-driven setState).
-  const [overrides, setOverrides] = useState<Record<string, BuiltinTool>>({});
-  const tools = useMemo(
-    () =>
-      toolsFromList(list.data)
-        .filter((t) => isBuiltinToolName(t.name))
-        .map((t) => overrides[t.name] ?? t),
-    [list.data, overrides],
-  );
+  // Locally-saved config overlays the loaded list (no effect-driven setState).
+  const [saved, setSaved] = useState<BuiltinTool | null>(null);
 
-  const missing = BUILTIN_TOOL_NAMES.filter((n) => !tools.some((t) => t.name === n));
+  const tool = useMemo(() => {
+    if (saved && saved.name === name) return saved;
+    return toolsFromList(list.data).find((t) => t.name === name) ?? null;
+  }, [list.data, saved, name]);
 
-  async function saveTool(name: BuiltinToolName, form: ToolFormValues): Promise<BuiltinTool> {
+  async function saveTool(n: BuiltinToolName, form: ToolFormValues): Promise<BuiltinTool> {
     const authedToken = mode === "oidc" ? "" : token;
-    return apiPatch<BuiltinTool>(`/admin/tools/${name}`, authedToken, buildToolPayload(name, form));
-  }
-
-  function applyUpdated(updated: BuiltinTool) {
-    setOverrides((prev) => ({ ...prev, [updated.name]: updated }));
+    return apiPatch<BuiltinTool>(`/admin/tools/${n}`, authedToken, buildToolPayload(n, form));
   }
 
   return (
-    <section>
-      <div className="section-head">
-        <h2>Built-in tools</h2>
+    <>
+      <div className="section-head" style={{ marginTop: "var(--space-3)" }}>
+        <h1 className="page-title">Built-in tool: {name}</h1>
+        <span className="tool-badge">Built-in</span>
       </div>
+      <p className="entity-meta">
+        Built-in tools ship pre-installed with the platform. They can be enabled/disabled and
+        policy-tuned here, but they cannot be deleted.
+      </p>
       {list.error ? <div className="notice error">{list.error}</div> : null}
-      {list.loading && tools.length === 0 ? (
-        <div className="notice">Loading built-in tool configuration…</div>
-      ) : null}
-      {missing.length > 0 && !list.loading && !list.error ? (
+      {!tool && list.loading ? <div className="notice">Loading tool configuration…</div> : null}
+      {!tool && !list.loading && !list.error ? (
         <div className="notice">
-          The control plane has not seeded: {missing.join(", ")}. (BT-2 migration pending?)
+          The control plane has not seeded <code>{name}</code>. (BT-2 migration pending?)
         </div>
       ) : null}
-      <div className="entity-list">
-        {tools.map((tool) => (
-          <ToolCard key={tool.name} tool={tool} onSave={saveTool} onUpdated={applyUpdated} />
-        ))}
-      </div>
-    </section>
+      {tool ? (
+        <ToolCard
+          tool={tool}
+          onSave={saveTool}
+          onUpdated={(updated) => setSaved(updated)}
+        />
+      ) : null}
+    </>
   );
 }
 

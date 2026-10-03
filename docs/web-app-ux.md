@@ -180,6 +180,18 @@ Current implementation: platform admins can register and deprecate resources,
 other users see a read-only catalog, and squad owners can grant/revoke selected
 resources to the selected agent.
 
+**Tools sub-tab (S-204):** the Tools tab is a unified surface — built-in
+platform tools (exec, web_fetch, web_search, send_message) are listed
+alongside registered tools because they are just tools the platform ships
+pre-installed. There is no separate "Built-in Tools" screen. The page renders
+a compact responsive grid of square tiles (logo — Skquad logo for built-ins,
+placeholder glyph otherwise — plus name and short description) instead of
+the old vertical list rows, and carries a search box that filters tiles by
+tool name or description. Clicking a tile opens the tool's configuration
+page (`/settings/resources/tools/{toolId}`) where its parameters are
+edited. Built-in tools carry a "Built-in" badge and **cannot be deleted**;
+registered tools keep the install/delete flow.
+
 ### 4.7 Audit (admin / owner)
 - Queryable log: filter by actor, squad, action, time range.
 - Shows who did what (user + agent actions).
