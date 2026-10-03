@@ -83,6 +83,11 @@ type EmbedderGPUConfig struct {
 	// The reconciler patches container[0].Image to the entry for the
 	// effective runtime. Missing entries leave the image untouched.
 	ImageByRuntime map[Runtime]string
+	// CUDARuntimeClass is the Kubernetes RuntimeClass applied to the
+	// embedder pod for the CUDA runtime (default "nvidia"). Required on
+	// k3s so the nvidia container runtime injects the driver; empty
+	// disables RuntimeClass management.
+	CUDARuntimeClass string
 }
 
 // ParseGPUResourceNames splits a comma-separated list, dropping blanks;
@@ -253,7 +258,10 @@ func (r *EmbedderGPUReconciler) shapeForEffectiveRuntime(eff Runtime, nodes []co
 		if res == "" {
 			res = firstOrEmpty(vr.nvidia)
 		}
-		return runtimeShape{Runtime: RuntimeCUDA, GPUResource: res, Nodes: matched}
+		// NVIDIA GPUs need the nvidia container runtime to inject the
+		// driver into the container; without runtimeClassName=nvidia the
+		// CUDA build silently runs CPU-only (S-212, k3s cluster).
+		return runtimeShape{Runtime: RuntimeCUDA, GPUResource: res, Nodes: matched, RuntimeClass: r.Cfg.CUDARuntimeClass}
 	case RuntimeVulkan:
 		amdIntel := append(append([]string{}, vr.amd...), vr.intel...)
 		res, matched := firstResourceOnNodes(nodes, amdIntel)
@@ -333,8 +341,22 @@ func applyRuntimeShape(dep *appsv1.Deployment, shape runtimeShape, imageByRuntim
 	// 3. /dev/dri mount for the Vulkan runtime.
 	applyDRIMount(pod, shape.NeedsDRI)
 
+	// 4. RuntimeClass — NVIDIA driver injection for the CUDA runtime
+	// (required on k3s; without it the CUDA image runs CPU-only).
+	applyRuntimeClass(pod, shape.RuntimeClass)
+
 	after, _ := json.Marshal(runtimeProjection(pod, managedResources))
 	return string(before) != string(after)
+}
+
+// applyRuntimeClass sets or clears the pod RuntimeClass name.
+func applyRuntimeClass(pod *corev1.PodSpec, name string) {
+	if name == "" {
+		pod.RuntimeClassName = nil
+		return
+	}
+	np := name
+	pod.RuntimeClassName = &np
 }
 
 // runtimeProjection extends gpuProjection with the image + dri-mount
@@ -347,6 +369,11 @@ func runtimeProjection(pod *corev1.PodSpec, managedResources []string) map[strin
 	}
 	proj["images"] = images
 	proj["hasDRI"] = hasDRIMount(pod)
+	rc := ""
+	if pod.RuntimeClassName != nil {
+		rc = *pod.RuntimeClassName
+	}
+	proj["runtimeClass"] = rc
 	return proj
 }
 

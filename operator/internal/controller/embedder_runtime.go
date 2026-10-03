@@ -140,6 +140,10 @@ type runtimeShape struct {
 	Nodes []string
 	// NeedsDRI is true when /dev/dri must be mounted (vulkan).
 	NeedsDRI bool
+	// RuntimeClass is the Kubernetes RuntimeClass name for the pod
+	// ("nvidia" for the CUDA runtime; "" = cluster default). Required
+	// on k3s for driver injection into NVIDIA GPU containers.
+	RuntimeClass string
 }
 
 // shapeForRuntime builds the pod shape for a resolved runtime given the

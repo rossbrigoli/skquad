@@ -184,3 +184,32 @@ func TestApplyDRIMount_Toggle(t *testing.T) {
 		t.Fatalf("expected exactly 1 dri volume, got %d", driVols)
 	}
 }
+
+func TestReconcileRuntime_CUDARuntimeClass(t *testing.T) {
+	r := newRuntimeReconciler(t, baseEmbedder(), node("nv", "1", nil))
+	r.Cfg.CUDARuntimeClass = "nvidia"
+	rt, changed, err := r.ReconcileRuntime(context.Background())
+	if err != nil || rt != RuntimeCUDA || !changed {
+		t.Fatalf("rt=%q changed=%v err=%v", rt, changed, err)
+	}
+	dep := getEmbedder(t, r)
+	if dep.Spec.Template.Spec.RuntimeClassName == nil || *dep.Spec.Template.Spec.RuntimeClassName != "nvidia" {
+		t.Fatalf("cuda runtime must set runtimeClassName=nvidia, got %v", dep.Spec.Template.Spec.RuntimeClassName)
+	}
+	// Idempotent: second pass reports no change.
+	if _, changed, err := r.ReconcileRuntime(context.Background()); err != nil || changed {
+		t.Fatalf("expected idempotent, changed=%v err=%v", changed, err)
+	}
+	// Switch to CPU override: runtime class must be cleared.
+	if err := r.Client.Create(context.Background(), runtimeConfigMap("cpu")); err != nil {
+		t.Fatal(err)
+	}
+	rt, changed, err = r.ReconcileRuntime(context.Background())
+	if err != nil || rt != RuntimeCPU || !changed {
+		t.Fatalf("rt=%q changed=%v err=%v", rt, changed, err)
+	}
+	dep = getEmbedder(t, r)
+	if dep.Spec.Template.Spec.RuntimeClassName != nil {
+		t.Fatalf("cpu runtime must clear runtimeClassName, got %q", *dep.Spec.Template.Spec.RuntimeClassName)
+	}
+}
