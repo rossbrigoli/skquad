@@ -3064,19 +3064,22 @@ button.squad-tab.active {
 }
 
 .notif-badge {
+  /* S-209: same visual language as the Inbox .nav-badge pill — same
+     colour, radius, font size and weight — just pinned to the bell. */
   position: absolute;
-  top: -5px;
-  right: -5px;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 3px;
-  border-radius: 8px;
+  top: -7px;
+  right: -9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  border-radius: var(--radius-pill, 999px);
   background: var(--status-error, #c92a2a);
   color: #fff;
-  font-size: 10px;
+  font-size: var(--text-xs, 11px);
   font-weight: 700;
-  line-height: 15px;
-  text-align: center;
+  padding: 1px 5px;
+  line-height: 1.3;
 }
 
 .notif-popover {
@@ -3134,6 +3137,12 @@ button.squad-tab.active {
 
 .notif-unread {
   background: rgba(201, 42, 42, 0.05);
+  cursor: pointer; /* S-209: whole row is click-to-read */
+}
+
+/* S-209: read rows recede so unread items stand out in the popup. */
+.notif-read {
+  opacity: 0.72;
 }
 
 .notif-sev-error { border-left-color: var(--status-error, #c92a2a); }

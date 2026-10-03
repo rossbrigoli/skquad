@@ -125,8 +125,10 @@ export function NotificationBell() {
           <path d="M13.7 21a2 2 0 0 1-3.4 0" />
         </svg>
         {unread > 0 ? (
+          // S-209: the bell badge mirrors the Inbox nav badge — same pill
+          // styling and the real unread count, hidden at zero.
           <span className="notif-badge" aria-hidden="true">
-            {unread > 9 ? "9+" : unread}
+            {unread}
           </span>
         ) : null}
       </button>
@@ -151,18 +153,17 @@ export function NotificationBell() {
                 return (
                   <li
                     key={n.id}
-                    className={`notif-item ${isUnread(n.read_at) ? "notif-unread" : ""} ${notificationSeverityClass(n.severity)}`}
+                    className={`notif-item ${isUnread(n.read_at) ? "notif-unread" : "notif-read"} ${notificationSeverityClass(n.severity)}`}
+                    // S-209: clicking anywhere on the item marks it read
+                    // (links inside still navigate; bubbling covers both).
+                    onClick={() => {
+                      if (isUnread(n.read_at)) void markRead(n.id);
+                    }}
                   >
                     <div className="notif-item-main">
                       <span className={`chip ${meta.className}`}>{meta.label}</span>
                       {href ? (
-                        <Link
-                          className="notif-message notif-message-link"
-                          href={href}
-                          onClick={() => {
-                            if (isUnread(n.read_at)) void markRead(n.id);
-                          }}
-                        >
+                        <Link className="notif-message notif-message-link" href={href}>
                           {n.message}
                         </Link>
                       ) : (
@@ -171,7 +172,14 @@ export function NotificationBell() {
                       <span className="notif-time">{formatRelativeTime(n.created_at)}</span>
                     </div>
                     {isUnread(n.read_at) ? (
-                      <button type="button" className="btn btn-small" onClick={() => void markRead(n.id)}>
+                      <button
+                        type="button"
+                        className="btn btn-small"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void markRead(n.id);
+                        }}
+                      >
                         Mark read
                       </button>
                     ) : null}
