@@ -386,3 +386,67 @@ func TestMemoryStoreNotificationPreferences(t *testing.T) {
 	_, err = m.SetNotificationPreferences(ctx, "missing-user", nil)
 	require.ErrorIs(t, err, ErrNotFound)
 }
+
+// S-209 retest regression: ReadAt is *time.Time. Unread rows must carry a
+// nil ReadAt (so JSON omits read_at) and MarkRead/MarkAllRead must return
+// rows with a populated read_at.
+func TestMemoryStoreNotificationReadAtPointers(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewMemoryStore()
+	user, squad := retentionFixture(t, store)
+
+	mk := func(msg string) *domain.Notification {
+		n, err := store.CreateNotification(ctx, &domain.Notification{
+			UserID:   user.ID,
+			SquadID:  squad.ID,
+			Type:     domain.NotificationTaskFailed,
+			Severity: domain.NotificationError,
+			Message:  msg,
+		})
+		require.NoError(t, err)
+		return n
+	}
+
+	a := mk("a")
+	b := mk("b")
+	require.Nil(t, a.ReadAt, "fresh notification must have nil ReadAt")
+
+	unread, err := store.ListNotifications(ctx, user.ID, true, 10)
+	require.NoError(t, err)
+	require.Len(t, unread, 2)
+	for _, n := range unread {
+		require.Nil(t, n.ReadAt)
+	}
+
+	got, err := store.MarkNotificationRead(ctx, user.ID, a.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.ReadAt, "MarkNotificationRead must return populated read_at")
+	require.True(t, got.IsRead())
+
+	stillUnread, err := store.ListNotifications(ctx, user.ID, true, 10)
+	require.NoError(t, err)
+	require.Len(t, stillUnread, 1)
+	require.Equal(t, b.ID, stillUnread[0].ID)
+
+	count, err := store.MarkAllNotificationsRead(ctx, user.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	unread, err = store.ListNotifications(ctx, user.ID, true, 10)
+	require.NoError(t, err)
+	require.Empty(t, unread)
+
+	// Inbox message equivalent.
+	msg, err := store.CreateInboxMessage(ctx, &domain.InboxMessage{
+		UserID:  user.ID,
+		SquadID: squad.ID,
+		Kind:    domain.InboxTaskCompleted,
+		Message: "inbox",
+	})
+	require.NoError(t, err)
+	require.Nil(t, msg.ReadAt)
+	readMsg, err := store.MarkInboxMessageRead(ctx, user.ID, msg.ID)
+	require.NoError(t, err)
+	require.NotNil(t, readMsg.ReadAt, "MarkInboxMessageRead must return populated read_at")
+}

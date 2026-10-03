@@ -2739,7 +2739,7 @@ func (m *MemoryStore) ListInboxMessages(_ context.Context, userID string, unread
 		if msg.UserID != userID {
 			continue
 		}
-		if unreadOnly && !msg.ReadAt.IsZero() {
+		if unreadOnly && msg.ReadAt != nil {
 			continue
 		}
 		copyMsg := *msg
@@ -2761,8 +2761,9 @@ func (m *MemoryStore) MarkInboxMessageRead(ctx context.Context, userID string, i
 	if !ok || msg.UserID != userID {
 		return nil, ErrNotFound
 	}
-	if msg.ReadAt.IsZero() {
-		msg.ReadAt = time.Now().UTC()
+	if msg.ReadAt == nil {
+		t := time.Now().UTC()
+		msg.ReadAt = &t
 	}
 	m.drainPendingAuditsLocked(ctx, id)
 	copyMsg := *msg
@@ -2827,7 +2828,7 @@ func (m *MemoryStore) ListNotifications(_ context.Context, userID string, unread
 		if n.UserID != userID {
 			continue
 		}
-		if unreadOnly && !n.ReadAt.IsZero() {
+		if unreadOnly && n.ReadAt != nil {
 			continue
 		}
 		copyN := *n
@@ -2917,8 +2918,9 @@ func (m *MemoryStore) MarkNotificationRead(_ context.Context, userID string, id 
 	if !ok || n.UserID != userID {
 		return nil, ErrNotFound
 	}
-	if n.ReadAt.IsZero() {
-		n.ReadAt = time.Now().UTC()
+	if n.ReadAt == nil {
+		t := time.Now().UTC()
+		n.ReadAt = &t
 	}
 	copyN := *n
 	return &copyN, nil
@@ -2930,8 +2932,9 @@ func (m *MemoryStore) MarkAllNotificationsRead(_ context.Context, userID string)
 	count := 0
 	now := time.Now().UTC()
 	for _, n := range m.notifications {
-		if n.UserID == userID && n.ReadAt.IsZero() {
-			n.ReadAt = now
+		if n.UserID == userID && n.ReadAt == nil {
+			t := now
+			n.ReadAt = &t
 			count++
 		}
 	}
@@ -2947,7 +2950,7 @@ func (m *MemoryStore) DeleteReadNotificationsBefore(_ context.Context, cutoff ti
 	defer m.mu.Unlock()
 	purged := 0
 	for id, n := range m.notifications {
-		if !n.ReadAt.IsZero() && n.CreatedAt.Before(cutoff) {
+		if n.ReadAt != nil && n.CreatedAt.Before(cutoff) {
 			delete(m.notifications, id)
 			purged++
 		}

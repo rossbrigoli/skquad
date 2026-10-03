@@ -3385,7 +3385,8 @@ func scanNotification(row scanner) (*domain.Notification, error) {
 		return nil, mapPgErr(err)
 	}
 	if readAt.Valid {
-		n.ReadAt = readAt.Time
+		t := readAt.Time
+		n.ReadAt = &t
 	}
 	return &n, nil
 }
@@ -3889,7 +3890,8 @@ func scanInboxMessage(row scanner) (*domain.InboxMessage, error) {
 		return nil, mapPgErr(err)
 	}
 	if readAt.Valid {
-		msg.ReadAt = readAt.Time
+		t := readAt.Time
+		msg.ReadAt = &t
 	}
 	return &msg, nil
 }
