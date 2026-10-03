@@ -4,18 +4,20 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 import { ActivityFeed } from "../../../components/ActivityFeed";
+import { AgentFormModal } from "../../../components/AgentForm";
+import { AgentTilesGrid } from "../../../components/AgentTiles";
 import { Collapsible } from "../../../components/Collapsible";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
-import { SquadMissionConfig } from "../../../components/SquadMissionConfig";
 import { AuthGate } from "../../../components/AuthGate";
 import { AppShell } from "../../../components/AppShell";
 import { MetricTile } from "../../../components/MetricTile";
 import { StatusChip } from "../../../components/StatusChip";
 import { useApi } from "../../../lib/useApi";
 import { useAuth } from "../../../lib/auth";
-import { apiDelete, apiPatch } from "../../../lib/api";
+import { apiDelete, apiPost } from "../../../lib/api";
 import { formatCost, formatRelativeTime, leaseState } from "../../../lib/format";
-import { agentStatus } from "../../../lib/status";
+import { workInFlight } from "../../../lib/squadStats";
+import type { AIModel } from "../../../lib/aimodels";
 import type { Agent, BoardPayload, MeteringSummary, Squad, AuditEntry } from "../../../lib/api";
 
 export default function SquadCockpitPage() {
@@ -25,6 +27,9 @@ export default function SquadCockpitPage() {
   const { token } = useAuth();
   const squads = useApi<Squad[]>("/squads");
   const [deleting, setDeleting] = useState(false);
+  // S-211: the new-agent dialog now lives on Overview (the Agents tab is gone).
+  const [creating, setCreating] = useState(false);
+  const myModels = useApi<AIModel[]>("/models/me", 60000);
   const agents = useApi<Agent[]>(`/squads/${squadId}/agents`, 15000);
   const board = useApi<BoardPayload>(`/squads/${squadId}/board`, 15000);
   const metering = useApi<MeteringSummary>(`/squads/${squadId}/metering`, 30000);
@@ -35,7 +40,7 @@ export default function SquadCockpitPage() {
   const tasks = board.data?.tasks || [];
   const running = tasks.filter((task) => leaseState(task) === "running");
   const stalled = tasks.filter((task) => leaseState(task) === "stalled");
-  const blocked = tasks.filter((task) => task.status === "blocked");
+  const wip = workInFlight(tasks);
   const done = tasks.filter((task) => task.status === "done");
   const busyAgents = agentItems.filter((agent) => (agent.status ?? "") === "busy");
   const errorAgents = agentItems.filter((agent) => {
@@ -81,7 +86,7 @@ export default function SquadCockpitPage() {
           <MetricTile
             label="Work in flight"
             value={running.length}
-            sub={`${tasks.length - done.length} open · ${blocked.length} blocked${stalled.length > 0 ? ` · ${stalled.length} stalled` : ""}`}
+            sub={`${wip.open} open · ${wip.blocked} blocked${stalled.length > 0 ? ` · ${stalled.length} stalled` : ""}`}
             attention={stalled.length > 0}
           />
           <MetricTile
@@ -99,13 +104,9 @@ export default function SquadCockpitPage() {
             the running count. The Stalled section below stays because it
             is actionable (expired leases need a human). */}
 
-        {/* S-179: inline squad configuration. */}
-        {squad ? (
-          <section style={{ marginTop: "var(--space-5)" }}>
-            <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>Configuration</h2>
-            <SquadMissionConfig squad={squad} token={token} onSaved={() => squads.refresh()} />
-          </section>
-        ) : null}
+        {/* S-211: the inline Configuration section was removed. The
+            mission now lives on the Squad Context tab (above the context
+            editor) and is saved together with it in one action. */}
 
         {stalled.length > 0 ? (
           <section style={{ marginTop: "var(--space-5)" }}>
@@ -131,23 +132,13 @@ export default function SquadCockpitPage() {
         <section style={{ marginTop: "var(--space-5)" }}>
           <div className="section-head">
             <h2>Agents</h2>
-            <Link href={`/squads/${squadId}/agents`} className="btn btn-sm">
-              Manage agents
-            </Link>
+            {/* S-211: "Manage agents" is gone — the Agents tab was folded
+                into Overview, so the create-agent affordance moved here. */}
+            <button type="button" className="btn btn-sm btn-primary" onClick={() => setCreating(true)}>
+              + New agent
+            </button>
           </div>
-          <div className="entity-list">
-            {agentItems.map((agent) => (
-              <Link key={agent.id} href={`/squads/${squadId}/agents/${agent.id}`} className="entity-row">
-                <div className="entity-main">
-                  <span className="entity-title">{agent.name}</span>
-                  <span className="entity-meta">{agent.role || "no role set"}</span>
-                </div>
-                <div className="entity-side">
-                  <StatusChip status={agentStatus(agent)} />
-                </div>
-              </Link>
-            ))}
-          </div>
+          <AgentTilesGrid agents={agentItems} />
         </section>
 
         <Collapsible id="squad-recent-activity" title="Recent activity">
@@ -159,6 +150,21 @@ export default function SquadCockpitPage() {
             nameFor={auditName}
           />
         </Collapsible>
+
+        {creating ? (
+          <AgentFormModal
+            title="New agent"
+            submitLabel="Create agent"
+            models={myModels.data ?? []}
+            modelsLoading={myModels.loading}
+            onClose={() => setCreating(false)}
+            onSubmit={async (values) => {
+              await apiPost<Agent>(`/squads/${squadId}/agents`, token, values);
+              setCreating(false);
+              agents.refresh();
+            }}
+          />
+        ) : null}
 
         {deleting && squad ? (
           <ConfirmDialog

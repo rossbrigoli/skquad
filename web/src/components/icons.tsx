@@ -93,6 +93,22 @@ export function IconAgents({ size }: IconProps) {
 
 // S-172: icons for squad-section tabs and nav sub-items. Same stroke
 // style as the rail icons; sized down by callers.
+// S-211: robot glyph for the squad Overview agent tiles.
+export function IconRobot({ size }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <rect x="5" y="8" width="14" height="11" rx="2" />
+      <line x1="12" y1="4" x2="12" y2="8" />
+      <circle cx="12" cy="3.5" r="1" />
+      <circle cx="9.5" cy="13" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="14.5" cy="13" r="1.2" fill="currentColor" stroke="none" />
+      <line x1="9" y1="16.5" x2="15" y2="16.5" />
+      <line x1="2.5" y1="11.5" x2="5" y2="11.5" />
+      <line x1="19" y1="11.5" x2="21.5" y2="11.5" />
+    </svg>
+  );
+}
+
 export function IconOverview({ size }: IconProps) {
   return (
     <svg {...base(size)}>

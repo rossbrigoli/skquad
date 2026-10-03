@@ -20,7 +20,7 @@ export default defineConfig({
       include: [
         "src/lib/**/*.ts",
         "src/components/MarkdownMessage.tsx",
-        "src/components/SquadMissionConfig.tsx",
+        "src/components/AgentTiles.tsx",
       ],
       exclude: [
         "src/**/*.test.ts",
