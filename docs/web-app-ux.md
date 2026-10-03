@@ -192,6 +192,16 @@ page (`/settings/resources/tools/{toolId}`) where its parameters are
 edited. Built-in tools carry a "Built-in" badge and **cannot be deleted**;
 registered tools keep the install/delete flow.
 
+**Real routes (S-204 follow-up):** the Resources surface lives on real
+routes so every breadcrumb level resolves — `/settings/resources` is a
+category index (Skills, Tools, APIs, Knowledge bases, Project
+workspaces), `/settings/resources/tools` is the canonical tile-grid
+page, and `/settings/resources/tools/{toolId}` is the tool configuration
+page with a "← Back to Tools" link. The other categories render the
+classic registry list at `/settings/resources/{type}`; unknown types
+404. The Settings "Resources" tab navigates to the index instead of
+rendering an in-page panel (deep links and breadcrumbs work everywhere).
+
 ### 4.7 Audit (admin / owner)
 - Queryable log: filter by actor, squad, action, time range.
 - Shows who did what (user + agent actions).

@@ -16,7 +16,8 @@
 //    the S-103 grant-aware flow.
 
 import { useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import Link from "next/link";
+import { useRouter, useParams } from "next/navigation";
 import { AppShell } from "../../../../../components/AppShell";
 import { AuthGate } from "../../../../../components/AuthGate";
 import { BuiltinToolConfig } from "../../../../../components/BuiltinToolConfig";
@@ -49,10 +50,14 @@ export default function ToolConfigPage() {
 }
 
 function BackLink() {
+  // S-204 follow-up: a real link to the canonical Tools tiles page.
+  // The old implementation relied on browser history, which strands
+  // deep-link visitors (no in-app history) — a real href always works
+  // and matches the "Tools" breadcrumb.
   return (
-    <button type="button" className="btn btn-sm" onClick={() => window.history.back()}>
+    <Link href="/settings/resources/tools" className="btn btn-sm">
       ← Back to Tools
-    </button>
+    </Link>
   );
 }
 
@@ -73,7 +78,12 @@ function BuiltinToolRoute({ name, isAdmin }: { readonly name: BuiltinToolName; r
       </section>
     );
   }
-  return <BuiltinToolConfig name={name} />;
+  return (
+    <section>
+      <BackLink />
+      <BuiltinToolConfig name={name} />
+    </section>
+  );
 }
 
 // RegistryToolRoute edits one registered tool inline.
@@ -120,6 +130,7 @@ function RegistryToolForm({
   readonly onSaved: () => void;
 }) {
   const { token } = useAuth();
+  const router = useRouter();
   const [name, setName] = useState(resource.name);
   const [description, setDescription] = useState(resource.description ?? "");
   const [endpoint, setEndpoint] = useState(resource.endpoint ?? "");
@@ -173,7 +184,7 @@ function RegistryToolForm({
             <DeleteResourceButton
               path={`/registry/tools/${resource.id}`}
               name={resource.name}
-              onDeleted={() => window.history.back()}
+              onDeleted={() => router.push("/settings/resources/tools")}
             />
           ) : null}
         </span>
