@@ -1,0 +1,81 @@
+{{- if and .Values.apiServer.memoryEmbeddings.enabled .Values.embedder.backfillOnUpgrade }}
+# S-212: memory re-embed hook. When the configured embedding model
+# changes, existing memory rows still carry the old embedding_model and
+# are invisible to semantic search under the new model. This post-
+# upgrade hook runs the control-plane image's embed-backfill binary,
+# which re-embeds exactly those rows and is idempotent (a re-run after
+# completion is a no-op, exit 0).
+#
+# Runs AFTER the workloads are applied (hook-weight 5) so the new
+# embedder is up; backoffLimit covers a still-rolling embedder/gateway.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: skquad-embed-backfill
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: embed-backfill
+  annotations:
+    "helm.sh/hook": post-upgrade,post-install
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 6
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        {{- include "skquad.labels" . | nindent 8 }}
+        app.kubernetes.io/component: embed-backfill
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "skquad.apiServerName" . }}
+      containers:
+        - name: embed-backfill
+          image: {{ include "skquad.apiServerImage" . | quote }}
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "IfNotPresent" }}
+          command:
+            - embed-backfill
+          env:
+            - name: SKQUAD_MEMORY_EMBEDDINGS_ENABLED
+              value: "true"
+            - name: SKQUAD_MEMORY_EMBEDDING_MODEL
+              value: {{ .Values.apiServer.memoryEmbeddings.model | quote }}
+            - name: SKQUAD_LLM_GATEWAY_URL
+              value: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "skquad.llmGatewayName" .) .Release.Namespace .Values.llmGateway.port) .Values.apiServer.runtimeLlmGatewayUrl | quote }}
+            - name: SKQUAD_LITELLM_ADMIN_URL
+              value: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "skquad.llmGatewayName" .) .Release.Namespace .Values.llmGateway.port) .Values.apiServer.runtimeLlmGatewayUrl | quote }}
+            - name: SKQUAD_LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "skquad.llmGatewayMasterKeySecretName" . }}
+                  key: {{ .Values.llmGateway.masterKeySecret.key }}
+            {{- if .Values.apiServer.databaseUrlSecret.name }}
+            - name: SKQUAD_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.apiServer.databaseUrlSecret.name }}
+                  key: {{ .Values.apiServer.databaseUrlSecret.key }}
+            {{- else if .Values.apiServer.databaseUrl }}
+            - name: SKQUAD_DATABASE_URL
+              value: {{ .Values.apiServer.databaseUrl | quote }}
+            {{- else if .Values.postgres.enabled }}
+            - name: SKQUAD_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "skquad.postgresSecretName" . }}
+                  key: {{ .Values.postgres.secretKeys.databaseUrl }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+{{- end }}

@@ -832,6 +832,13 @@ func ValidPromptTemplateAppliesTo(appliesTo string) bool {
 // by migration 0026; platform admins change it from the Settings screen.
 const PlatformSettingIdleScaleToZeroSeconds = "idle_scale_to_zero_seconds"
 
+// PlatformSettingEmbedderRuntime is the platform_settings key (S-212,
+// ADR-0013 §4) holding the platform admin's embedder runtime choice:
+// "auto" | "cuda" | "vulkan" | "cpu". The Settings screen writes it
+// here AND mirrors it into the ConfigMap the operator reads
+// (kube.EmbedderConfigStore); unset means "auto".
+const PlatformSettingEmbedderRuntime = "embedder_runtime"
+
 // InstanceSettings is the single-row organization-level configuration
 // (layer 2 of the prompt hierarchy). Seeded by migration 0016.
 type InstanceSettings struct {

@@ -59,6 +59,7 @@ import {
 import { OrganizationPromptTab } from "../../components/PromptSettingsTab";
 import { DeadLettersPanel } from "../../components/DeadLettersPanel";
 import { IdleScaleToZeroPanel } from "../../components/IdleScaleToZeroPanel";
+import { EmbedderRuntimePanel } from "../../components/EmbedderRuntimePanel";
 import { NotificationPreferencesPanel } from "../../components/NotificationPreferencesPanel";
 import { BuiltinToolsPanel } from "../../components/BuiltinToolsPanel";
 import { PromptTemplatesPanel } from "../../components/PromptTemplatesPanel";
@@ -292,6 +293,7 @@ export default function SettingsPage() {
         {isAdmin && activeTab === "templates" ? <PromptTemplatesTab /> : null}
         {isAdmin && activeTab === "dead-letters" ? <DeadLettersPanel /> : null}
         {isAdmin && activeTab === "scaling" ? <IdleScaleToZeroPanel /> : null}
+        {isAdmin && activeTab === "scaling" ? <EmbedderRuntimePanel /> : null}
         {activeTab === "notifications" ? <NotificationPreferencesPanel /> : null}
       </AppShell>
     </AuthGate>
