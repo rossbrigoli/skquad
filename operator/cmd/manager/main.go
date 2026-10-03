@@ -10,6 +10,7 @@ import (
 	"flag"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -181,6 +182,13 @@ func main() {
 			Mode:            envOrDefault("SKQUAD_EMBEDDER_GPU_MODE", "auto"),
 			GPUNodeLabelKey:    envOrDefault("SKQUAD_GPU_NODE_LABEL_KEY", ""),
 			GPUResourceNames: controller.ParseGPUResourceNames(envOrDefault("SKQUAD_GPU_RESOURCE_NAMES", controller.DefaultGPUResourceNames)),
+			// ADR-0013: runtime selection. The control-plane writes the
+			// platform-admin's choice into this ConfigMap; the operator
+			// reads it and selects the image variant + pod shape. Image
+			// refs per runtime come from the chart via env.
+			RuntimeConfigMapName: envOrDefault("SKQUAD_EMBEDDER_RUNTIME_CONFIGMAP", "skquad-embedder-config"),
+			RuntimeConfigMapKey:  envOrDefault("SKQUAD_EMBEDDER_RUNTIME_KEY", "runtime"),
+			ImageByRuntime:       embedderImagesFromEnv(),
 		},
 	}
 	if err := mgr.Add(embedderReconciler); err != nil {
@@ -220,4 +228,23 @@ func envIntOrDefault(name string, fallback int) int {
 		return value
 	}
 	return fallback
+}
+
+// embedderImagesFromEnv builds the runtime->image map from chart-provided
+// env (ADR-0013). Only non-empty entries are included, so a runtime with
+// no configured image leaves the container image untouched rather than
+// blanking it.
+func embedderImagesFromEnv() map[controller.Runtime]string {
+	src := map[controller.Runtime]string{
+		controller.RuntimeCUDA:   os.Getenv("SKQUAD_EMBEDDER_IMAGE_CUDA"),
+		controller.RuntimeVulkan: os.Getenv("SKQUAD_EMBEDDER_IMAGE_VULKAN"),
+		controller.RuntimeCPU:    os.Getenv("SKQUAD_EMBEDDER_IMAGE_CPU"),
+	}
+	out := map[controller.Runtime]string{}
+	for rt, img := range src {
+		if strings.TrimSpace(img) != "" {
+			out[rt] = strings.TrimSpace(img)
+		}
+	}
+	return out
 }
