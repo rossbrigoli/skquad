@@ -927,6 +927,12 @@ dialog.modal-backdrop::backdrop {
   }
 }
 
+/* S-215: create-dialog variant — 50% wider than the standard 520px card
+   (780px), capped to the viewport so it never overflows small screens. */
+.modal-card.modal-wider {
+  max-width: min(780px, 96vw);
+}
+
 .modal-head {
   display: flex;
   align-items: center;
@@ -999,6 +1005,60 @@ dialog.modal-backdrop::backdrop {
 .field textarea {
   min-height: 88px;
   resize: vertical;
+}
+
+/* S-215: prompt textboxes in the create dialogs are twice the standard
+   height so template-scale prompt text is editable without scrolling. */
+.field textarea.prompt-tall {
+  min-height: 176px;
+}
+
+/* S-215: "From template" button + dropdown menu, placed beside the
+   prompt field label. Mirrors the small-menu pattern used elsewhere. */
+.template-picker {
+  position: relative;
+  display: inline-flex;
+}
+
+.template-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 260px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+  padding: var(--space-1);
+  display: flex;
+  flex-direction: column;
+}
+
+.template-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.template-menu-item:hover {
+  background: var(--accent-soft);
+}
+
+.template-menu-item .template-menu-desc {
+  display: block;
+  color: var(--ink-faint);
+  font-size: var(--text-xs);
+  margin-top: 2px;
 }
 
 .field input:focus,
