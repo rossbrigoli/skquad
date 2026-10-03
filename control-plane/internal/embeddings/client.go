@@ -29,10 +29,21 @@ type Client struct {
 	client  *http.Client
 }
 
+// DefaultTimeout bounds a single /v1/embeddings call. The previous 30s
+// default was too short for large memories on CPU embedders (~17k-token
+// rows measured >90s CPU-only; S-212). The CUDA GPU path finishes well
+// inside this bound; the timeout only guards against a wedged gateway.
+const DefaultTimeout = 180 * time.Second
+
 // NewClient validates the gateway base URL (admin-supplied config,
 // never per-request input — same contract as the LiteLLM admin client)
 // and returns a client bound to the given embedding model name.
 func NewClient(baseURL, apiKey, model string) (*Client, error) {
+	return NewClientWithTimeout(baseURL, apiKey, model, DefaultTimeout)
+}
+
+// NewClientWithTimeout is NewClient with an explicit per-call timeout.
+func NewClientWithTimeout(baseURL, apiKey, model string, timeout time.Duration) (*Client, error) {
 	u, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("embeddings: gateway URL %q must be an absolute http/https URL", baseURL)
@@ -44,7 +55,7 @@ func NewClient(baseURL, apiKey, model string) (*Client, error) {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  strings.TrimSpace(apiKey),
 		model:   strings.TrimSpace(model),
-		client:  &http.Client{Timeout: 30 * time.Second},
+		client:  &http.Client{Timeout: timeout},
 	}, nil
 }
 

@@ -339,6 +339,15 @@ embedder:
     repository: ghcr.io/rossbrigoli/skquad-embedder
     tag: "0.1.0"
   imagePullPolicy: IfNotPresent
+  # ADR-0013: per-runtime image variants. The operator patches the
+  # embedder container image to the entry matching the effective runtime
+  # (admin override ?? auto-detect). Empty entries leave the image
+  # untouched. Set cuda to the -cuda tagged build for NVIDIA nodes
+  # (the Vulkan image has no NVIDIA proprietary ICD and CPU-falls back).
+  images:
+    cuda: ""
+    vulkan: ""
+    cpu: ""
   model:
     name: qwen3-embed-0.6b
   args:

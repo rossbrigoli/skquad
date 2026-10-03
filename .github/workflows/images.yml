@@ -114,6 +114,15 @@ jobs:
           - component: embedder
             context: embedder
             image: skquad-embedder
+          # S-212 / ADR-0013: CUDA embedder variant for NVIDIA GPUs. The
+          # Vulkan image ships only Mesa ICDs (no NVIDIA proprietary driver),
+          # so on Turing+ hardware it silently falls back to CPU. The operator
+          # selects this variant via SKQUAD_EMBEDDER_IMAGE_CUDA.
+          - component: embedder-cuda
+            context: embedder
+            image: skquad-embedder
+            tag_suffix: -cuda
+            extra_build_args: BASE_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b11347
 
     steps:
       - uses: actions/checkout@v7
@@ -129,6 +138,7 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ env.GHCR_NAMESPACE }}/${{ matrix.image }}
+          flavor: suffix=${{ matrix.tag_suffix }}
           tags: |
             type=sha,prefix=sha-
             type=semver,pattern={{version}}
@@ -155,6 +165,7 @@ jobs:
           build-args: |
             SKQUAD_VERSION=${{ needs.version.outputs.version }}
             SKQUAD_COMMIT=${{ needs.version.outputs.commit }}
+            ${{ matrix.extra_build_args }}
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
 
@@ -164,6 +175,7 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}
+          flavor: suffix=${{ matrix.tag_suffix }}
           tags: |
             type=sha,prefix=sha-
             type=semver,pattern={{version}}
@@ -179,8 +191,10 @@ jobs:
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
 
+      # The CUDA embedder variant is ~3GB+ per release and only ever pulled
+      # from GHCR in-cluster, so it is not mirrored to Docker Hub.
       - name: Mirror image to Docker Hub
-        if: github.event_name != 'pull_request' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        if: github.event_name != 'pull_request' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' && matrix.component != 'embedder-cuda'
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
@@ -190,4 +204,5 @@ jobs:
           build-args: |
             SKQUAD_VERSION=${{ needs.version.outputs.version }}
             SKQUAD_COMMIT=${{ needs.version.outputs.commit }}
+            ${{ matrix.extra_build_args }}
           cache-from: type=gha,scope=${{ matrix.component }}
