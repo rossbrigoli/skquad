@@ -91,6 +91,11 @@ export type AdminUser = {
 
 export const PLATFORM_ADMIN_ROLE = "platform_admin";
 
+// S-208: sanity ceiling for the context_window field. Values above this
+// are typos or fabricated provider metadata, not real models; the
+// control-plane enforces the same bound.
+export const MAX_CONTEXT_WINDOW = 10_000_000;
+
 export function isPlatformAdmin(role?: string | null): boolean {
   return (role ?? "") === PLATFORM_ADMIN_ROLE;
 }
@@ -191,6 +196,10 @@ export function buildAIModelPayload(v: AIModelFormValues): Record<string, unknow
   if (modelName === "") throw new Error("model_name is required");
 
   const contextWindow = parseNonNegativeInt("context_window", v.context_window, true) ?? 0;
+  // S-208: bound the field so a typo can't poison compaction thresholds.
+  if (contextWindow > MAX_CONTEXT_WINDOW) {
+    throw new Error(`context_window must be at most ${MAX_CONTEXT_WINDOW}`);
+  }
 
   const pricing: AIModelPricing = {
     input_per_1m: parseRate("input_per_1m", v.pricing.input_per_1m),
@@ -391,6 +400,104 @@ export function modelFieldMode(providerSelected: boolean, loading: boolean, erro
   if (loading) return "loading";
   if (error !== "") return "fallback";
   return "dropdown";
+}
+
+// --- S-208: provider model metadata prefill --------------------------
+
+// ProviderModelMetadata is the normalised "Fetch from provider" result
+// (GET /registry/llm-providers/{id}/model-metadata). Zero/absent
+// fields mean the provider did not expose the value — the UI shows a
+// "not available from provider" hint and never fabricates.
+export type ProviderModelMetadata = {
+  contextWindow: number;
+  pricing: Partial<AIModelPricing>;
+  found: boolean;
+  source: string;
+};
+
+export function parseProviderModelMetadata(body: unknown): ProviderModelMetadata {
+  const raw = body as
+    | { context_window?: unknown; pricing?: unknown; source?: unknown }
+    | null;
+  const cw =
+    typeof raw?.context_window === "number" &&
+    Number.isInteger(raw.context_window) &&
+    raw.context_window > 0 &&
+    raw.context_window <= MAX_CONTEXT_WINDOW
+      ? raw.context_window
+      : 0;
+  const pricing: Partial<AIModelPricing> = {};
+  const rates = raw?.pricing as Record<string, unknown> | null | undefined;
+  if (rates && typeof rates === "object") {
+    for (const key of PRICING_RATE_KEYS) {
+      const value = rates[key];
+      if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+        pricing[key] = value;
+      }
+    }
+  }
+  return {
+    contextWindow: cw,
+    pricing,
+    found: cw > 0 || Object.keys(pricing).length > 0,
+    source: typeof raw?.source === "string" ? raw.source : "",
+  };
+}
+
+export type MetadataApplyResult = {
+  values: AIModelFormValues;
+  filled: string[];
+  unavailable: string[];
+  kept: string[];
+};
+
+// applyProviderMetadata pre-fills EMPTY fields only — an admin's
+// existing input is never overwritten. Per-field outcomes are reported
+// so the dialog can hint what came from the provider.
+export function applyProviderMetadata(
+  v: AIModelFormValues,
+  meta: ProviderModelMetadata,
+): MetadataApplyResult {
+  const next: AIModelFormValues = { ...v, pricing: { ...v.pricing } };
+  const filled: string[] = [];
+  const unavailable: string[] = [];
+  const kept: string[] = [];
+
+  if ((v.context_window ?? "").trim() === "") {
+    if (meta.contextWindow > 0) {
+      next.context_window = String(meta.contextWindow);
+      filled.push("Context window");
+    } else {
+      unavailable.push("Context window");
+    }
+  } else {
+    kept.push("Context window");
+  }
+
+  for (const key of PRICING_RATE_KEYS) {
+    const label = PRICING_RATE_LABELS[key];
+    if ((v.pricing[key] ?? "").trim() === "") {
+      const value = meta.pricing[key];
+      if (value !== undefined) {
+        next.pricing[key] = String(value);
+        filled.push(label);
+      } else {
+        unavailable.push(label);
+      }
+    } else {
+      kept.push(label);
+    }
+  }
+  return { values: next, filled, unavailable, kept };
+}
+
+export function formatMetadataResult(r: MetadataApplyResult): string {
+  const parts: string[] = [];
+  if (r.filled.length > 0) parts.push(`Prefilled: ${r.filled.join(", ")}.`);
+  if (r.kept.length > 0) parts.push(`Kept your values for: ${r.kept.join(", ")}.`);
+  if (r.unavailable.length > 0) parts.push(`Not available from provider: ${r.unavailable.join(", ")}.`);
+  if (parts.length === 0) parts.push("Provider returned no metadata — fields left editable.");
+  return parts.join(" ");
 }
 
 // --- Grant editor helpers ----------------------------------------------

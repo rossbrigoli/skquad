@@ -3487,6 +3487,24 @@ button.squad-tab.active {
   color: var(--ink-muted);
 }
 
+/* S-208: checkbox rows inside .field. The blanket `.field input`
+   full-width/bordered treatment must not stretch checkboxes — reset the
+   box to its native size and align it with the label text. */
+.field-checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.field-checkbox > input[type="checkbox"] {
+  width: auto;
+  height: 1.1em;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--accent);
+  flex: none;
+}
+
 /* --- S-207: inbox enhancements -------------------------------------- */
 
 /* Platform-standard form control (matches the .field input/textarea/select

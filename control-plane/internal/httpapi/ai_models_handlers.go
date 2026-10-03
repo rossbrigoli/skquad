@@ -84,6 +84,21 @@ func validateLongContextThreshold(value *int) (string, bool) {
 	return "", true
 }
 
+// maxContextWindowTokens bounds the context_window field (S-208). Values
+// above this are typos or fabricated metadata, not real models; rejecting
+// them keeps compaction thresholds sane.
+const maxContextWindowTokens = 10_000_000
+
+func validateContextWindow(value int) (string, bool) {
+	if value < 0 {
+		return "context_window must be non-negative", false
+	}
+	if value > maxContextWindowTokens {
+		return "context_window must be at most 10000000 tokens", false
+	}
+	return "", true
+}
+
 // ensureAIModelProviderExists validates the internal provider credential
 // reference (D2). Providers have no new public CRUD; the reference must
 // point at an already-registered provider. The provider record is
@@ -142,6 +157,10 @@ func (s *Server) createAIModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if msg, ok := validateLongContextThreshold(req.LongContextThresholdTokens); !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", msg)
+		return
+	}
+	if msg, ok := validateContextWindow(req.ContextWindow); !ok {
 		writeError(w, http.StatusBadRequest, "bad_request", msg)
 		return
 	}
@@ -279,8 +298,8 @@ func (s *Server) applyAIModelScalarFields(w http.ResponseWriter, r *http.Request
 		model.DisplayName = displayName
 	}
 	if req.ContextWindow != nil {
-		if *req.ContextWindow < 0 {
-			writeError(w, http.StatusBadRequest, "bad_request", "context_window must be non-negative")
+		if msg, ok := validateContextWindow(*req.ContextWindow); !ok {
+			writeError(w, http.StatusBadRequest, "bad_request", msg)
 			return false
 		}
 		model.ContextWindow = *req.ContextWindow
@@ -359,7 +378,7 @@ func (s *Server) updateAIModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		gatewayTouched = true
-	} else if (model.ProviderID != oldProviderID || model.ModelName != oldModelName) {
+	} else if model.ProviderID != oldProviderID || model.ModelName != oldModelName {
 		log.Printf("aimodel: LLM gateway not configured — skipping gateway update for %q (dev mode; gateway deployment NOT converged)", model.ModelName)
 	}
 	updated, err := s.store.UpdateAIModel(s.pendingUserAuditCtx(r, "aimodel.update", "ai_model", model.ID, "", nil), model)

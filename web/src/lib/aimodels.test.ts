@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "./api";
 import {
+  applyProviderMetadata,
   buildAIModelPayload,
   emptyAIModelForm,
+  emptyPricingForm,
   filterModelOptions,
   formFromAIModel,
   formatCascadeReport,
   formatInUseMessage,
+  formatMetadataResult,
   formatRate,
   grantedModelIds,
   grantDiff,
@@ -17,6 +20,7 @@ import {
   modelFieldMode,
   modelRowFields,
   parseProviderModels,
+  parseProviderModelMetadata,
   PRICING_RATE_KEYS,
   withForce,
   type AIModel,
@@ -391,5 +395,92 @@ describe("modelFieldMode", () => {
 
   it("shows the dropdown on success", () => {
     expect(modelFieldMode(true, false, "")).toBe("dropdown");
+  });
+});
+
+// --- S-208: context window validation + provider metadata prefill ---
+
+describe("context_window validation (S-208)", () => {
+  it("accepts a sane positive integer", () => {
+    expect(buildAIModelPayload(form({ context_window: "128000" })).context_window).toBe(128000);
+  });
+
+  it("rejects values above MAX_CONTEXT_WINDOW", () => {
+    expect(() => buildAIModelPayload(form({ context_window: "10000001" }))).toThrow(/at most/);
+    expect(() => buildAIModelPayload(form({ context_window: "999999999" }))).toThrow(/at most/);
+  });
+
+  it("rejects negative and non-integer values", () => {
+    expect(() => buildAIModelPayload(form({ context_window: "-1" }))).toThrow(/non-negative/);
+    expect(() => buildAIModelPayload(form({ context_window: "1.5" }))).toThrow(/non-negative integer/);
+  });
+
+  it("empty context_window means unknown (0)", () => {
+    expect(buildAIModelPayload(form({ context_window: "" })).context_window).toBe(0);
+  });
+});
+
+describe("parseProviderModelMetadata (S-208)", () => {
+  it("parses OpenRouter-style metadata", () => {
+    const meta = parseProviderModelMetadata({
+      context_window: 128000,
+      pricing: { input_per_1m: 2.5, output_per_1m: 10 },
+      source: "openai-compatible models API",
+    });
+    expect(meta.contextWindow).toBe(128000);
+    expect(meta.pricing.input_per_1m).toBe(2.5);
+    expect(meta.pricing.output_per_1m).toBe(10);
+    expect(meta.found).toBe(true);
+  });
+
+  it("treats zero/absent values as not found", () => {
+    expect(parseProviderModelMetadata({ context_window: 0 }).found).toBe(false);
+    expect(parseProviderModelMetadata({}).found).toBe(false);
+    expect(parseProviderModelMetadata(null).found).toBe(false);
+    expect(parseProviderModelMetadata("garbage").found).toBe(false);
+  });
+
+  it("drops out-of-range and non-numeric values", () => {
+    const meta = parseProviderModelMetadata({
+      context_window: 99_999_999_999,
+      pricing: { input_per_1m: -1, output_per_1m: "ten", cache_write_per_1m: 3 },
+    });
+    expect(meta.contextWindow).toBe(0);
+    expect(meta.pricing.input_per_1m).toBeUndefined();
+    expect(meta.pricing.output_per_1m).toBeUndefined();
+    expect(meta.pricing.cache_write_per_1m).toBe(3);
+  });
+});
+
+describe("applyProviderMetadata (S-208)", () => {
+  const meta = parseProviderModelMetadata({
+    context_window: 200000,
+    pricing: { input_per_1m: 2.5, output_per_1m: 10 },
+  });
+
+  it("fills only empty fields", () => {
+    const empty = { ...emptyAIModelForm(), provider_id: "p", model_name: "m" };
+    const r = applyProviderMetadata(empty, meta);
+    expect(r.values.context_window).toBe("200000");
+    expect(r.values.pricing.input_per_1m).toBe("2.5");
+    expect(r.values.pricing.output_per_1m).toBe("10");
+    expect(r.filled).toContain("Context window");
+    expect(r.unavailable).toContain("Cached input");
+  });
+
+  it("never overwrites existing values", () => {
+    const f = form({ context_window: "12345", pricing: { ...emptyPricingForm(), input_per_1m: "9" } });
+    const r = applyProviderMetadata(f, meta);
+    expect(r.values.context_window).toBe("12345");
+    expect(r.values.pricing.input_per_1m).toBe("9");
+    expect(r.kept).toContain("Context window");
+    expect(r.kept).toContain("Input");
+  });
+
+  it("reports unavailable fields when provider has nothing", () => {
+    const r = applyProviderMetadata(emptyAIModelForm(), parseProviderModelMetadata({}));
+    expect(r.filled).toHaveLength(0);
+    expect(r.unavailable).toContain("Context window");
+    expect(formatMetadataResult(r)).toMatch(/Not available from provider/);
   });
 });

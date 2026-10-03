@@ -582,6 +582,7 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			// S-125: live model list from the provider (OpenAI-compatible
 			// passthrough) for the register-model dropdown.
 			r.Get("/registry/llm-providers/{providerID}/models", s.listLLMProviderModels)
+			r.Get("/registry/llm-providers/{providerID}/model-metadata", s.getLLMProviderModelMetadata)
 			// S-180: pre-save Test buttons (provider connection + model round-trip).
 			r.Post("/registry/llm-providers/test", s.testProviderConnection)
 
