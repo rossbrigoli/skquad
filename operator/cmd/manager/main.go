@@ -92,6 +92,11 @@ func managerOptions(cfg config) ctrl.Options {
 					&rbacv1.RoleBinding{},
 					&networkingv1.NetworkPolicy{},
 					&corev1.ResourceQuota{},
+					// ADR-0013: the embedder runtime override ConfigMap is
+					// read by fixed name each reconcile; a cached read would
+					// demand cluster-wide configmaps list/watch (forbidden by
+					// design — same posture as Secrets above).
+					&corev1.ConfigMap{},
 				},
 			},
 		},
