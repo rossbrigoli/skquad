@@ -872,3 +872,14 @@
   - agent-runtime/skquad_runtime/runtime.py — handle_task keeps last NON-EMPTY assistant content (final empty/tool-only round no longer wipes the summary); _finalize_task_result replaces empty summary with explicit placeholder.
   - tests: server_thread_events_test.go (new), server_taskmessages_test.go (updated to new thread contract), test_runtime.py (placeholder test + updated old empty-summary assertion).
 - Tests run: go test ./... full suite vs pgvector/pg16 PASS; runtime pytest 258 pass / 2 skip / 1 pre-existing fail (test_empty_user_text_fails, fails on clean main too).
+
+## 2026-10-03 — S-212: CUDA embedder runtime (ADR-0013) shipped to 0.1.193 + watch-RBAC fix #126
+- **Objective:** Make the embedder actually use the RTX A1000 (Vulkan image CPU-falls back: no NVIDIA proprietary ICD).
+- **Changes (PR #125, squash 695ac0d):**
+  - images.yml: `embedder-cuda` matrix entry → `skquad-embedder:<ver>-cuda` from `llama.cpp:server-cuda-b11347`; no Docker Hub mirror (size).
+  - chart: `embedder.images.{cuda,vulkan,cpu}` → `SKQUAD_EMBEDDER_IMAGE_*` env (ADR-0013 operator runtime layer).
+  - control-plane: embeddings client timeout 30s → 180s (`DefaultTimeout`, `NewClientWithTimeout`).
+  - ci.yml: npm audit gate → `--omit=dev` (braces GHSA-vfj7-8cjw-p6xm has NO patched release; dev-only eslint chain; prod deps clean — verified `npm audit --omit=dev` = 0).
+- **Deploy:** GitOps k3s-cluster f71c1e0 → 0.1.193. Embedder pod on optiplex w/ nvidia toleration.
+- **Found post-deploy:** operator SA lacks `watch` on nodes (new runtime layer watches Nodes) → reflector error, image not patched to -cuda. Fix PR #126 (chart operator-rbac +watch) merged → 0.1.194 cycle.
+- **Next:** promote 0.1.194, verify operator patches embedder to `-cuda`, CUDA init in llama-server logs, embed 4 remaining large rows, memory_search latency test.

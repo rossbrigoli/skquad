@@ -194,6 +194,7 @@ func main() {
 			RuntimeConfigMapName: envOrDefault("SKQUAD_EMBEDDER_RUNTIME_CONFIGMAP", "skquad-embedder-config"),
 			RuntimeConfigMapKey:  envOrDefault("SKQUAD_EMBEDDER_RUNTIME_KEY", "runtime"),
 			ImageByRuntime:       embedderImagesFromEnv(),
+			CUDARuntimeClass:   envOrDefault("SKQUAD_EMBEDDER_CUDA_RUNTIME_CLASS", "nvidia"),
 		},
 	}
 	if err := mgr.Add(embedderReconciler); err != nil {
