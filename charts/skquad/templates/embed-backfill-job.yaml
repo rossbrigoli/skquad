@@ -17,9 +17,17 @@ metadata:
     {{- include "skquad.labels" . | nindent 4 }}
     app.kubernetes.io/component: embed-backfill
   annotations:
+    # Helm-native hooks (for a direct `helm upgrade`).
     "helm.sh/hook": post-upgrade,post-install
     "helm.sh/hook-weight": "5"
     "helm.sh/hook-delete-policy": before-hook-creation
+    # ArgoCD ignores helm.sh/hook — it has its own hook mechanism. Without
+    # these, ArgoCD would treat the Job as a normal tracked resource and
+    # fail on the next sync (Jobs are immutable). PostSync + delete-before-
+    # create makes ArgoCD re-run the backfill after each deploy, mirroring
+    # the Helm post-upgrade semantics.
+    "argocd.argoproj.io/hook": PostSync
+    "argocd.argoproj.io/hook-delete-policy": BeforeHookCreation,HookSucceeded
 spec:
   backoffLimit: 6
   activeDeadlineSeconds: 1800
