@@ -3079,7 +3079,7 @@ func (p *PostgresStore) CreateInboxMessage(ctx context.Context, msg *domain.Inbo
 
 	row := tx.QueryRow(ctx, `
 		INSERT INTO inbox_messages (squad_id, user_id, from_agent_id, task_id, kind, message, subject, body)
-		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7, $8)
+		VALUES (NULLIF($1, '')::uuid, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7, $8)
 		RETURNING id::text, squad_id::text, user_id::text, coalesce(from_agent_id::text, ''),
 		          coalesce(task_id::text, ''), kind, message, subject, body, read_at, created_at
 	`, msg.SquadID, msg.UserID, msg.FromAgentID, msg.TaskID, kind, msg.Message, msg.Subject, msg.Body)
@@ -3101,7 +3101,7 @@ func (p *PostgresStore) ListInboxMessages(ctx context.Context, userID string, un
 		limit = 100
 	}
 	rows, err := p.pool.Query(ctx, `
-		SELECT id::text, squad_id::text, user_id::text, coalesce(from_agent_id::text, ''),
+		SELECT id::text, coalesce(squad_id::text, ''), user_id::text, coalesce(from_agent_id::text, ''),
 		       coalesce(task_id::text, ''), kind, message, subject, body, read_at, created_at
 		FROM inbox_messages
 		WHERE user_id = $1 AND (NOT $2::boolean OR read_at IS NULL)
@@ -3155,7 +3155,7 @@ func (p *PostgresStore) MarkInboxMessageRead(ctx context.Context, userID string,
 
 func (p *PostgresStore) GetInboxMessage(ctx context.Context, id string) (*domain.InboxMessage, error) {
 	row := p.pool.QueryRow(ctx, `
-		SELECT id::text, squad_id::text, user_id::text, coalesce(from_agent_id::text, ''),
+		SELECT id::text, coalesce(squad_id::text, ''), user_id::text, coalesce(from_agent_id::text, ''),
 		       coalesce(task_id::text, ''), kind, message, subject, body, read_at, created_at
 		FROM inbox_messages WHERE id = $1
 	`, id)
