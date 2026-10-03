@@ -76,6 +76,14 @@ spec:
               value: {{ .Values.embedder.gpu.resourceNames | quote }}
             - name: SKQUAD_GPU_NODE_LABEL_KEY
               value: {{ .Values.embedder.gpu.nodeLabelKey | quote }}
+            # ADR-0013: per-runtime embedder image variants (empty = leave
+            # the Deployment image untouched for that runtime).
+            - name: SKQUAD_EMBEDDER_IMAGE_CUDA
+              value: {{ .Values.embedder.images.cuda | quote }}
+            - name: SKQUAD_EMBEDDER_IMAGE_VULKAN
+              value: {{ .Values.embedder.images.vulkan | quote }}
+            - name: SKQUAD_EMBEDDER_IMAGE_CPU
+              value: {{ .Values.embedder.images.cpu | quote }}
           livenessProbe:
             httpGet:
               path: /healthz
