@@ -23,6 +23,7 @@ package httpapi
 // the user's squads, not squads merely granted to them for reading).
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -82,7 +83,13 @@ func validateBudgetRange(w http.ResponseWriter, amount float64) bool {
 // userMTDCost sums the current-calendar-month metering cost across the
 // squads owned by userID. A user with no squads costs nothing.
 func (s *Server) userMTDCost(r *http.Request, userID string, mtdStart time.Time) (float64, error) {
-	squads, err := s.store.ListSquads(r.Context(), userID)
+	return s.userMTDCostCtx(r.Context(), userID, mtdStart)
+}
+
+// userMTDCostCtx is the context-based variant used by the WP3
+// enforcement paths (no HTTP request in scope).
+func (s *Server) userMTDCostCtx(ctx context.Context, userID string, mtdStart time.Time) (float64, error) {
+	squads, err := s.store.ListSquads(ctx, userID)
 	if err != nil {
 		return 0, err
 	}
@@ -93,7 +100,7 @@ func (s *Server) userMTDCost(r *http.Request, userID string, mtdStart time.Time)
 	for _, sq := range squads {
 		squadIDs = append(squadIDs, sq.ID)
 	}
-	rows, err := s.store.SumMeteringDaily(r.Context(), mtdStart, squadIDs)
+	rows, err := s.store.SumMeteringDaily(ctx, mtdStart, squadIDs)
 	if err != nil {
 		return 0, err
 	}
@@ -105,7 +112,13 @@ func (s *Server) userMTDCost(r *http.Request, userID string, mtdStart time.Time)
 }
 
 func (s *Server) platformMTDCost(r *http.Request, mtdStart time.Time) (float64, error) {
-	rows, err := s.store.SumMeteringDaily(r.Context(), mtdStart, nil)
+	return s.platformMTDCostCtx(r.Context(), mtdStart)
+}
+
+// platformMTDCostCtx sums the month-to-date metering cost across all
+// squads (WP3 platform-limit evaluation).
+func (s *Server) platformMTDCostCtx(ctx context.Context, mtdStart time.Time) (float64, error) {
+	rows, err := s.store.SumMeteringDaily(ctx, mtdStart, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -299,6 +312,11 @@ func (s *Server) putPlatformBudget(w http.ResponseWriter, r *http.Request) {
 	})
 	_ = s.recordSystemAudit(r.Context(), "budget.platform.update", "platform_settings", "", "", meta)
 
+	// S-203 WP3: platform budget changes can newly block (lowered
+	// limit/clamped budgets) or resume (raised limit) users — sweep the
+	// whole platform so enforcement tracks the change immediately.
+	s.sweepBudgets(r.Context())
+
 	budgets, err := s.store.GetPlatformBudgets(r.Context())
 	if err != nil {
 		writeStorageError(w, err)
@@ -374,9 +392,20 @@ func (s *Server) putUserBudgetAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 	meta, _ := json.Marshal(map[string]any{"user_id": userID, "monthly_budget_usd": *req.MonthlyBudgetUSD})
 	_ = s.recordSystemAudit(r.Context(), "budget.user.update", "user", userID, "", meta)
+	// S-203 WP3: re-evaluate the user so raising the budget above the
+	// current MTD spend clears the block and resumes scheduling, while
+	// lowering it below spend blocks (and notifies) immediately.
+	if err := s.evaluateUserBudget(r.Context(), userID, time.Now().UTC(), budgets); err != nil {
+		log.Printf("budget-enforce: post-update evaluation failed for %s: %v", userID, err)
+	}
+	blocked := false
+	if block, err := s.store.GetBudgetBlock(r.Context(), userID); err == nil {
+		blocked = block.EffectiveBlocked(currentBudgetPeriod(time.Now()))
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id":            userID,
 		"monthly_budget_usd": *req.MonthlyBudgetUSD,
+		"blocked":            blocked,
 	})
 }
 

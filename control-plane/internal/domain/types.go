@@ -444,6 +444,13 @@ const (
 	// system-emitted kinds it carries agent-authored content, so consumers
 	// must treat its body as untrusted agent output.
 	InboxAgentMessage InboxKind = "agent_message"
+	// InboxBudgetWarning (S-203 WP3) warns a user that their monthly
+	// budget (or the platform-wide limit) reached a warning threshold.
+	// System-emitted, user-level (no squad context).
+	InboxBudgetWarning InboxKind = "budget_warning"
+	// InboxBudgetStopped (S-203 WP3) tells a user their budget/limit is
+	// exhausted and their agents were stopped at end of turn.
+	InboxBudgetStopped InboxKind = "budget_stopped"
 )
 
 // NotificationType classifies what went wrong (S-193). Notifications are

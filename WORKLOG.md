@@ -940,3 +940,20 @@
   - Tests: `web/src/lib/costs.test.ts` (new, 17 tests), `web/src/components/BudgetBar.test.tsx` (new, 3), breadcrumbs.test.ts updated.
 - command/test run: `npx tsc --noEmit` clean; `npx vitest run` 51 files / 624 tests passed; `npx eslint` clean on all changed files (pre-existing errors in untouched files left alone — CI does not gate eslint); `npm run build` succeeded.
 - result: Cost Management page live-ready on branch feat/s203-wp2-cost-ui; PR → main.
+
+## 2026-10-04 S-225 WP3 budget enforcement (sherlock)
+- Objective: stop agents at budget limit + 80/90/100% inbox notifications + resume on raise.
+- Files: domain/budget_enforcement.go (new), storage/budget_enforcement.go (new),
+  storage/migrations/0037_budget_enforcement.sql (new), httpapi/budget_guard.go (new),
+  budgets.go (ctx cost helpers + PUT hooks), server.go (metering ingest hook,
+  setAgentStatusAndMirror busy-guard, wake guard, Store += BudgetEnforcementStore),
+  kube/outbox_worker.go (blocked owner → idleTimeout 0 at CR apply),
+  domain/types.go (InboxBudgetWarning/Stopped kinds), web notifications.ts (kind meta),
+  memory.go + postgres.go (user-level inbox messages: squad_id optional).
+- Tests: 12 new httpapi guard tests (thresholds 79/80/89/90/99/100, once-per-month,
+  platform aggregation, resume-on-raise, unlimited, concurrency, rollover, wake refusal),
+  1 kube outbox override test. go vet + full control-plane/operator/web suites green.
+- Design notes: block never kills mid-turn (busy agents keep status; idle mirror +
+  zeroed idle timeout tears pod down at end of turn); platform limit blocks every
+  squad owner via blocked_by_platform so clearing it resumes only them; zero budget
+  blocks on first spend; period-scoped state auto-resets monthly.

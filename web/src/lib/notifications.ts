@@ -67,6 +67,9 @@ export const INBOX_KIND_META: Record<string, { label: string; className: string 
   task_completed: { label: "completed", className: "chip chip-done" },
   action_required: { label: "needs you", className: "chip chip-blocked" },
   agent_message: { label: "from agent", className: "chip chip-info" },
+  // S-203 WP3: budget enforcement notifications (user-level, no squad link).
+  budget_warning: { label: "budget", className: "chip chip-info" },
+  budget_stopped: { label: "budget", className: "chip chip-blocked" },
 };
 
 export function inboxKindMeta(kind: string): { label: string; className: string } {

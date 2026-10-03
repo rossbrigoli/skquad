@@ -120,6 +120,7 @@ type Store interface {
 	storage.BuiltinToolStore
 	storage.PlatformSettingsStore
 	storage.BudgetStore
+	storage.BudgetEnforcementStore
 	storage.AgentMirrorQueue
 	storage.UploadStore
 }
@@ -3331,6 +3332,9 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.recordSystemAudit(r.Context(), "llm.metering.ingest", "agent", req.AgentID, req.SquadID, metadata)
+	// S-203 WP3: every recorded cost is an enforcement evaluation point
+	// for the squad owner's budget and the platform-wide limit.
+	s.enforceBudgetsAfterMetering(r.Context(), req.SquadID)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -3941,6 +3945,15 @@ func (s *Server) wakeAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if target.Status != domain.AgentIdle {
 		writeJSON(w, http.StatusOK, map[string]any{"waking": false, "status": string(target.Status)})
+		return
+	}
+	// S-203 WP3: budget-blocked owners cannot pre-warm their agents.
+	if s.agentBudgetBlocked(r.Context(), target.ID) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"waking": false,
+			"status": string(target.Status),
+			"reason": budgetStopNotice,
+		})
 		return
 	}
 	if err := s.setAgentStatusAndMirror(r.Context(), target.ID, domain.AgentBusy); err != nil {
@@ -5189,6 +5202,17 @@ func (s *Server) agentHasPendingWork(ctx context.Context, agentID string) (bool,
 }
 
 func (s *Server) setAgentStatusAndMirror(ctx context.Context, agentID string, status domain.AgentStatus) error {
+	// S-203 WP3: a budget-blocked owner's agents never *start*. A busy
+	// heartbeat from an already-running (busy) agent is allowed through —
+	// the pod is mid-turn and must not be killed; it tears down at end of
+	// turn via the idle mirror with the blocked idle-timeout override.
+	if status == domain.AgentBusy && s.agentBudgetBlocked(ctx, agentID) {
+		agent, err := s.store.GetAgent(ctx, agentID)
+		if err == nil && agent.Status != domain.AgentBusy {
+			log.Printf("budget-enforce: refused busy transition for agent %s (owner over budget)", agentID)
+			return nil
+		}
+	}
 	return s.store.SetAgentStatus(ctx, agentID, status)
 }
 

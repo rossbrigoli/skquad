@@ -63,6 +63,12 @@ type MemoryStore struct {
 	// user_budgets table (migration 0036).
 	userBudgets map[string]*domain.UserBudget
 
+	// S-203 WP3: budget enforcement state, mirroring budget_blocks and
+	// budget_notify_markers (migration 0037). Key for the marker set is
+	// "userID|period|marker".
+	budgetBlocks       map[string]*domain.BudgetBlock
+	budgetNotifyMarkers map[string]bool
+
 	// S-PROMPT WP2: organization tier settings (single-row, mirroring
 	// the Postgres instance_settings table) and the append-only revision
 	// history. Revisions are never pruned (retention: forever).
@@ -119,6 +125,8 @@ func NewMemoryStore() *MemoryStore {
 		notifPrefs:       map[string][]domain.NotificationType{},
 		k8sOutbox:        map[string]*domain.KubernetesOutboxEvent{},
 		userBudgets:      map[string]*domain.UserBudget{},
+		budgetBlocks:       map[string]*domain.BudgetBlock{},
+		budgetNotifyMarkers: map[string]bool{},
 		instanceSettings: &domain.InstanceSettings{},
 		promptRevisions:  []*domain.PromptRevision{},
 		builtinTools:     map[string]*domain.BuiltinToolConfig{},
@@ -2719,8 +2727,12 @@ func (m *MemoryStore) CreateInboxMessage(ctx context.Context, msg *domain.InboxM
 	if _, ok := m.users[msg.UserID]; !ok {
 		return nil, ErrNotFound
 	}
-	if _, ok := m.squads[msg.SquadID]; !ok {
-		return nil, ErrNotFound
+	// S-203 WP3: squad_id is optional — user-level notifications
+	// (budget warnings) carry no squad context.
+	if msg.SquadID != "" {
+		if _, ok := m.squads[msg.SquadID]; !ok {
+			return nil, ErrNotFound
+		}
 	}
 	created := *msg
 	created.ID = uuid.NewString()

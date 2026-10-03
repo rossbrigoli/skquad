@@ -263,7 +263,29 @@ func upsertAgentFromOutbox(ctx context.Context, store storage.KubernetesOutboxSt
 	// fan-out without redeploying Helm. 0 on the agent means "follow the
 	// platform setting".
 	payload.Agent.IdleTimeoutSec = deriveEffectiveIdleTimeout(ctx, store, payload.Agent.IdleTimeoutSec)
+	// S-203 WP3: a budget-blocked owner's agents get a zero idle timeout
+	// so the operator scales the pod to zero the moment desiredActive
+	// goes false (end of turn) instead of holding it idle-warm. A busy
+	// agent still mirrors desiredActive=true, so this never kills a
+	// mid-turn pod. A failed check keeps the normal timeout (fail-open on
+	// CR sync, same posture as the other derivations).
+	if checker, ok := store.(budgetBlockChecker); ok {
+		blocked, err := checker.IsAgentBudgetBlocked(ctx, payload.Agent.ID, time.Now().UTC().Format("2006-01"))
+		if err != nil {
+			slog.Warn("budget enforcement: block check failed; keeping normal idle timeout",
+				"agent", payload.Agent.ID, "error", err)
+		} else if blocked {
+			payload.Agent.IdleTimeoutSec = 0
+		}
+	}
 	return writer.UpsertAgent(ctx, payload.Agent, payload.Identity)
+}
+
+// budgetBlockChecker resolves the S-203 WP3 owner-block state for an
+// agent at CR-apply time. Satisfied by stores implementing
+// storage.BudgetEnforcementStore.
+type budgetBlockChecker interface {
+	IsAgentBudgetBlocked(ctx context.Context, agentID, period string) (bool, error)
 }
 
 func retryDelay(attempts int) time.Duration {
