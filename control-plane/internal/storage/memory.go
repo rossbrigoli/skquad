@@ -1490,7 +1490,8 @@ func (m *MemoryStore) ListAgentTasks(_ context.Context, agentID string) ([]*doma
 	}
 	out := []*domain.Task{}
 	for _, t := range m.tasks {
-		if t.AssigneeAgentID == agentID {
+		// S-213: backlog tasks are not agent-facing until a human moves them out.
+		if t.AssigneeAgentID == agentID && t.Status != domain.TaskBacklog {
 			out = append(out, cloneTask(t))
 		}
 	}

@@ -41,6 +41,8 @@
   --status-paused-bg: #faf3e0;
   --status-todo: #495057;
   --status-todo-bg: #e9ecef;
+  --status-backlog: #6741d8;
+  --status-backlog-bg: #f1ecfb;
   --status-done: #2b8a3e;
   --status-done-bg: #e6f4ea;
 
@@ -116,6 +118,8 @@
     --status-paused-bg: #302713;
     --status-todo: #b6bcc2;
     --status-todo-bg: #26282b;
+    --status-backlog: #b197fc;
+    --status-backlog-bg: #2a2140;
     --status-done: #79c489;
     --status-done-bg: #16281b;
 }
@@ -151,6 +155,8 @@
     --status-paused-bg: #302713;
     --status-todo: #b6bcc2;
     --status-todo-bg: #26282b;
+    --status-backlog: #b197fc;
+    --status-backlog-bg: #2a2140;
     --status-done: #79c489;
     --status-done-bg: #16281b;
   }
@@ -454,6 +460,7 @@ button.nav-group-parent {
 .chip-over-budget { color: var(--status-over-budget); background: var(--status-over-budget-bg); }
 .chip-paused { color: var(--status-paused); background: var(--status-paused-bg); }
 .chip-todo { color: var(--status-todo); background: var(--status-todo-bg); }
+.chip-backlog { color: var(--status-backlog); background: var(--status-backlog-bg); }
 .chip-done { color: var(--status-done); background: var(--status-done-bg); }
 
 .card {

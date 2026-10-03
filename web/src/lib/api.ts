@@ -53,7 +53,7 @@ export type AgentIdentity = {
   rotated_at?: string;
 };
 
-export type TaskStatus = "todo" | "in-progress" | "in-review" | "done" | "blocked";
+export type TaskStatus = "backlog" | "todo" | "in-progress" | "in-review" | "done" | "blocked";
 
 export type Task = {
   id: string;

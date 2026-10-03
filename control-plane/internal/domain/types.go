@@ -213,6 +213,11 @@ type KubernetesOutboxPayload struct {
 type TaskStatus string
 
 const (
+	// TaskBacklog (S-213) is the parking column for tasks that are NOT yet
+	// ready to be started. It sits left of "todo" on the board and is
+	// deliberately excluded from every agent-facing pickup/listing path:
+	// a human moving a card out of Backlog is the instruction to start it.
+	TaskBacklog    TaskStatus = "backlog"
 	TaskTodo       TaskStatus = "todo"
 	TaskInProgress TaskStatus = "in-progress"
 	TaskInReview   TaskStatus = "in-review"
@@ -223,10 +228,18 @@ const (
 // Valid reports whether s is a known task status.
 func (s TaskStatus) Valid() bool {
 	switch s {
-	case TaskTodo, TaskInProgress, TaskInReview, TaskDone, TaskBlocked:
+	case TaskBacklog, TaskTodo, TaskInProgress, TaskInReview, TaskDone, TaskBlocked:
 		return true
 	}
 	return false
+}
+
+// AgentPickupStatuses lists the statuses an agent may claim/start work from
+// (S-213). Backlog is intentionally absent: agents must never pick up
+// backlog tasks unless a human moves them out (the move IS the instruction).
+// Agent-facing queries must use this as an allowlist, never a denylist.
+func AgentPickupStatuses() []TaskStatus {
+	return []TaskStatus{TaskTodo, TaskInProgress}
 }
 
 // Task is the unit of work on a squad's Kanban board.

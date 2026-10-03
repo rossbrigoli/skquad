@@ -2078,8 +2078,9 @@ func (p *PostgresStore) ListAgentTasks(ctx context.Context, agentID string) ([]*
 		       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
 		FROM tasks
 		WHERE assignee_agent_id = $1
+		  AND status <> $2 -- S-213: backlog tasks are not agent-facing until a human moves them out
 		ORDER BY status, position
-	`, agentID)
+	`, agentID, domain.TaskBacklog)
 	if err != nil {
 		return nil, mapPgErr(err)
 	}

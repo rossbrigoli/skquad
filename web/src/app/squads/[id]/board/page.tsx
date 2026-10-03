@@ -222,14 +222,15 @@ function TaskCreateModal({
           setBusy(true);
           setError("");
           try {
-            const created = await apiPost<Task>(`/squads/${squadId}/board/tasks`, token, {
+            await apiPost<Task>(`/squads/${squadId}/board/tasks`, token, {
               title: title.trim(),
               description: description.trim(),
               assignee_agent_id: assignee,
+              // S-213: create lands directly in the target column (e.g.
+              // Backlog) — no create-in-todo-then-move race an agent
+              // could win in between.
+              status: targetStatus,
             });
-            if (targetStatus !== "todo") {
-              await apiPost(`/tasks/${created.id}/move`, token, { status: targetStatus });
-            }
             onCreated();
           } catch (err) {
             setError(err instanceof Error ? err.message : "create failed");
