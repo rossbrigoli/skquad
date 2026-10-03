@@ -214,7 +214,7 @@ func fetchOllamaModelMetadata(ctx context.Context, client *http.Client, baseURL,
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload)) // #nosec G704 -- endpoint built from admin-registered base_url + fixed path on an admin-only route; model name goes in the POST body, not the URL
 	if err != nil {
 		return nil, errors.New("could not build ollama model-metadata request")
 	}
