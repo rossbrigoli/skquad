@@ -1657,11 +1657,9 @@ func (s *Server) deleteSquad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Revoke live gateway keys before the squad rows disappear so no
-	// untracked key survives the delete.
-	if err := s.revokeLiveGatewayKeys(r.Context(), identities); err != nil {
-		writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to revoke LLM gateway virtual key")
-		return
-	}
+	// untracked key survives the delete. S-222: best-effort — a gateway
+	// outage must not block squad deletion (see deleteAgent).
+	s.revokeLiveGatewayKeys(r.Context(), identities)
 	if err := s.store.DeleteSquad(s.pendingUserAuditCtx(r, "squad.delete", "squad", squad.ID, squad.ID, nil), squad.ID); err != nil {
 		writeStorageError(w, err)
 		return
@@ -1690,17 +1688,19 @@ func (s *Server) collectAgentIdentities(ctx context.Context, agents []*domain.Ag
 	return identities, nil
 }
 
-// revokeLiveGatewayKeys revokes the active gateway virtual keys held by the
-// given identities.
-func (s *Server) revokeLiveGatewayKeys(ctx context.Context, identities []*domain.AgentIdentity) error {
+// revokeLiveGatewayKeys revokes the active gateway virtual keys held by
+// the given identities. S-222: revocation is best-effort — failures are
+// logged (with the identity id for later reconciliation) and never abort
+// the surrounding delete flow.
+func (s *Server) revokeLiveGatewayKeys(ctx context.Context, identities []*domain.AgentIdentity) {
 	for _, identity := range identities {
 		if identity.GatewayKeyStatus == domain.GatewayKeyActive && identity.GatewayKeyToken != "" {
 			if err := s.llmGateway.RevokeAgentKey(ctx, identity.GatewayKeyToken); err != nil {
-				return err
+				slog.Warn("squad delete: llm gateway key revoke failed (continuing with delete)",
+					"agent_id", identity.AgentID, "identity_id", identity.ID, "error", err)
 			}
 		}
 	}
-	return nil
 }
 
 func (s *Server) createGrant(w http.ResponseWriter, r *http.Request) {
@@ -2307,11 +2307,15 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Revoke the live gateway key before the identity row disappears so no
-	// untracked key survives the delete.
+	// untracked key survives the delete. S-222: revocation is best-effort —
+	// a gateway hiccup must not block agent deletion. The credential refs
+	// are already captured above, so k8s cleanup proceeds; an orphaned
+	// gateway key is a reconcile problem, not a reason to fail the user's
+	// delete with 502.
 	if identity != nil && identity.GatewayKeyStatus == domain.GatewayKeyActive && identity.GatewayKeyToken != "" {
 		if err := s.llmGateway.RevokeAgentKey(r.Context(), identity.GatewayKeyToken); err != nil {
-			writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to revoke LLM gateway virtual key")
-			return
+			slog.Warn("agent delete: llm gateway key revoke failed (continuing with delete)",
+				"agent_id", agent.ID, "identity_id", identity.ID, "error", err)
 		}
 	}
 	if err := s.store.DeleteAgent(s.pendingUserAuditCtx(r, "agent.delete", "agent", agent.ID, agent.SquadID, nil), agent.ID); err != nil {
