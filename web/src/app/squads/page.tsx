@@ -97,7 +97,7 @@ function SquadCreateModal({
   const [error, setError] = useState("");
 
   return (
-    <Modal title="New squad" onClose={onClose}>
+    <Modal title="New squad" wider onClose={onClose}>
       <ModalForm
         busy={busy}
         error={error}
@@ -128,10 +128,11 @@ function SquadCreateModal({
           <span>Mission</span>
           <textarea value={mission} onChange={(e) => setMission(e.target.value)} placeholder="What this squad is for" />
         </label>
-        <PromptTemplatePicker target="squad" onApply={(content) => setPrompt(content)} />
+        <PromptTemplatePicker target="squad" currentPrompt={prompt} onApply={(content) => setPrompt(content)} />
         <label className="field">
           <span>Squad context (optional)</span>
           <textarea
+            className="prompt-tall"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             placeholder="Operating instructions for every agent in this squad"

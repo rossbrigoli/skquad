@@ -7,7 +7,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Modal } from "./Modal";
 
-function render(props: { wide?: boolean; danger?: boolean } = {}): string {
+function render(props: { wide?: boolean; danger?: boolean; wider?: boolean } = {}): string {
   return renderToStaticMarkup(
     createElement(Modal, {
       title: "Effective prompt — test agent",
@@ -33,5 +33,12 @@ describe("Modal width variants", () => {
   it("combines .modal-wide with .modal-danger", () => {
     const html = render({ wide: true, danger: true });
     expect(html).toContain("modal-card modal-danger modal-wide");
+  });
+
+  // S-215: New Squad / New Agent create dialogs get the 50%-wider card.
+  it("adds .modal-wider when wider is set", () => {
+    const html = render({ wider: true });
+    expect(html).toContain("modal-card modal-wider");
+    expect(html).not.toContain("modal-wide ");
   });
 });

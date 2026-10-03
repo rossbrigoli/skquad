@@ -11,6 +11,7 @@ export function Modal({
   footer,
   danger = false,
   wide = false,
+  wider = false,
 }: {
   title: string;
   onClose: () => void;
@@ -20,6 +21,10 @@ export function Modal({
   // S-186: wide dialogs (e.g. the effective-prompt preview) get ~70vw so
   // long prompt text is readable without cramped line lengths.
   wide?: boolean;
+  // S-215: the New Squad / New Agent create dialogs get 50% more width
+  // (520px → 780px) so the prompt textarea and template controls breathe,
+  // while staying responsive on small viewports.
+  wider?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
 
@@ -47,7 +52,7 @@ export function Modal({
           if (event.target === event.currentTarget) onClose();
         }}
       >
-        <div className={`modal-card${danger ? " modal-danger" : ""}${wide ? " modal-wide" : ""}`}>
+        <div className={`modal-card${danger ? " modal-danger" : ""}${wide ? " modal-wide" : ""}${wider ? " modal-wider" : ""}`}>
         <div className="modal-head">
           <h2>{title}</h2>
           <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>

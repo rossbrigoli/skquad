@@ -78,7 +78,7 @@ export function AgentFormModal({
       : "";
 
   return (
-    <Modal title={title} onClose={onClose}>
+    <Modal title={title} wider onClose={onClose}>
       <ModalForm
         busy={busy}
         error={error}
@@ -146,12 +146,14 @@ export function AgentFormModal({
         {!initial?.name ? (
           <PromptTemplatePicker
             target="agent"
+            currentPrompt={systemPrompt}
             onApply={(content) => setSystemPrompt(content)}
           />
         ) : null}
         <label className="field">
           <span>Agent prompt (layer 4 — your agent&rsquo;s identity and personality)</span>
           <textarea
+            className="prompt-tall"
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value)}
             placeholder="Persona and operating instructions for this agent"
@@ -207,7 +209,7 @@ export function AgentFormModal({
           </label>
         ) : null}
         <div className="field">
-          <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
+          <label className="field-checkbox">
             <input
               type="checkbox"
               checked={storageEnabled}
