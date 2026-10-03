@@ -2,7 +2,7 @@
 // squad and agent system prompts. Selecting a template COPIES its content
 // into the draft prompt; templates are never live references.
 
-import { apiDelete, apiPatch, apiPost } from "./api";
+import { apiDelete, apiDeleteWithBody, apiPatch, apiPost } from "./api";
 import { apiGet } from "./api";
 
 export type TemplateAppliesTo = "squad" | "agent" | "both";
@@ -83,4 +83,49 @@ export async function updatePromptTemplate(
 
 export async function deletePromptTemplate(token: string, id: string): Promise<void> {
   return apiDelete(`/prompt-templates/${id}`, token);
+}
+
+// S-214: bulk delete. Returns the number of templates actually removed
+// (unknown ids are skipped server-side).
+export async function bulkDeletePromptTemplates(token: string, ids: string[]): Promise<number> {
+  const res = await apiDeleteWithBody<{ deleted?: number }>("/prompt-templates/bulk", token, { ids });
+  return res?.deleted ?? 0;
+}
+
+// --- S-214: selection helpers (pure, unit-tested) ---------------------
+
+export function toggleTemplateSelection(
+  selected: ReadonlySet<string>,
+  id: string,
+): Set<string> {
+  const next = new Set(selected);
+  if (next.has(id)) {
+    next.delete(id);
+  } else {
+    next.add(id);
+  }
+  return next;
+}
+
+// selectAllTemplates returns every template id when selectAll is true,
+// or an empty set when false.
+export function selectAllTemplates(
+  templates: readonly { id: string }[],
+  selectAll: boolean,
+): Set<string> {
+  return selectAll ? new Set(templates.map((t) => t.id)) : new Set();
+}
+
+// pruneTemplateSelection drops selected ids that no longer exist in the
+// template list (e.g. after a refresh or delete).
+export function pruneTemplateSelection(
+  selected: ReadonlySet<string>,
+  templates: readonly { id: string }[],
+): Set<string> {
+  const live = new Set(templates.map((t) => t.id));
+  const next = new Set<string>();
+  for (const id of selected) {
+    if (live.has(id)) next.add(id);
+  }
+  return next;
 }

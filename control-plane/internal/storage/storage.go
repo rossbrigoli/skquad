@@ -82,6 +82,11 @@ type PromptTemplateStore interface {
 	UpdatePromptTemplate(ctx context.Context, t *domain.PromptTemplate) (*domain.PromptTemplate, error)
 	// DeletePromptTemplate removes a template.
 	DeletePromptTemplate(ctx context.Context, id string) error
+	// BulkDeletePromptTemplates (S-214) removes many templates in one
+	// atomic operation and returns how many rows actually existed and were
+	// deleted. Unknown ids are skipped silently; an empty id list returns
+	// ErrInvalidInput.
+	BulkDeletePromptTemplates(ctx context.Context, ids []string) (int, error)
 }
 
 // KubernetesOutboxStore persists durable Kubernetes reconciliation intents.

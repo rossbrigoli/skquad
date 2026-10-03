@@ -143,3 +143,56 @@ func TestS158SquadCreateWithTemplatePrompt(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 	require.Contains(t, rec.Body.String(), "prompt_contains_reserved_tokens")
 }
+
+// S-214: bulk delete of prompt templates.
+func TestS214BulkDeletePromptTemplates(t *testing.T) {
+	t.Parallel()
+	handler := newS158Handler(t)
+
+	create := func(name string) string {
+		var tmpl domain.PromptTemplate
+		doJSONAuth(t, handler, authAdmin, http.MethodPost, pathPromptTemplates, map[string]any{
+			"name":       name,
+			"content":  "You are a helpful " + name + ".",
+			"applies_to": "agent",
+		}, http.StatusCreated, &tmpl)
+		return tmpl.ID
+	}
+	idA := create("Bulk One")
+	idB := create("Bulk Two")
+	idC := create("Bulk Three")
+
+	// Non-admin cannot bulk delete.
+	rec := doRaw(t, handler, http.MethodDelete, pathPromptTemplates+"/bulk",
+		`{"ids":["`+idA+`"]}`, authOwner)
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+
+	// Empty ids rejected.
+	rec = doRaw(t, handler, http.MethodDelete, pathPromptTemplates+"/bulk", `{"ids":[]}`, authAdmin)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+
+	// Blank id rejected.
+	rec = doRaw(t, handler, http.MethodDelete, pathPromptTemplates+"/bulk", `{"ids":["  "]}`, authAdmin)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+
+	// Bulk delete two known ids + one unknown → deleted counts only real rows.
+	var out struct {
+		Deleted int `json:"deleted"`
+	}
+	doJSONAuth(t, handler, authAdmin, http.MethodDelete, pathPromptTemplates+"/bulk", map[string]any{
+		"ids": []string{idA, idB, "00000000-0000-0000-0000-000000000000"},
+	}, http.StatusOK, &out)
+	require.Equal(t, 2, out.Deleted)
+
+	// The deleted templates are gone; the third survives.
+	rec = doRaw(t, handler, http.MethodGet, pathPromptTemplates+"/"+idA, "", authAdmin)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	rec = doRaw(t, handler, http.MethodGet, pathPromptTemplates+"/"+idC, "", authAdmin)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Duplicate ids are deduped: re-deleting idC + idC counts once.
+	doJSONAuth(t, handler, authAdmin, http.MethodDelete, pathPromptTemplates+"/bulk", map[string]any{
+		"ids": []string{idC, idC},
+	}, http.StatusOK, &out)
+	require.Equal(t, 1, out.Deleted)
+}

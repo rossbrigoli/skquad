@@ -9,17 +9,22 @@ const api = vi.hoisted(() => ({
   apiPost: vi.fn(),
   apiPatch: vi.fn(),
   apiDelete: vi.fn(),
+  apiDeleteWithBody: vi.fn(),
 }));
 
 vi.mock("./api", () => api);
 
 import {
+  bulkDeletePromptTemplates,
   createPromptTemplate,
   deletePromptTemplate,
   emptyTemplateForm,
   formFromTemplate,
   listPromptTemplates,
+  pruneTemplateSelection,
+  selectAllTemplates,
   templateMatchesAppliesTo,
+  toggleTemplateSelection,
   updatePromptTemplate,
   validateTemplateForm,
   type PromptTemplate,
@@ -149,5 +154,47 @@ describe("api wrappers", () => {
     api.apiDelete.mockResolvedValue(undefined);
     await deletePromptTemplate("tok", "tpl-3");
     expect(api.apiDelete).toHaveBeenCalledWith("/prompt-templates/tpl-3", "tok");
+  });
+});
+
+// S-214: bulk delete wrapper + selection helpers.
+describe("bulkDeletePromptTemplates (S-214)", () => {
+  it("DELETEs /prompt-templates/bulk with the id list and returns the deleted count", async () => {
+    api.apiDeleteWithBody.mockResolvedValue({ deleted: 2 });
+    const deleted = await bulkDeletePromptTemplates("tok", ["a", "b", "c"]);
+    expect(api.apiDeleteWithBody).toHaveBeenCalledWith("/prompt-templates/bulk", "tok", {
+      ids: ["a", "b", "c"],
+    });
+    expect(deleted).toBe(2);
+  });
+
+  it("returns 0 when the server reports no rows deleted", async () => {
+    api.apiDeleteWithBody.mockResolvedValue({});
+    expect(await bulkDeletePromptTemplates("tok", ["gone"])).toBe(0);
+  });
+});
+
+describe("selection helpers (S-214)", () => {
+  it("toggleTemplateSelection adds and removes ids", () => {
+    const empty = new Set<string>();
+    const added = toggleTemplateSelection(empty, "x");
+    expect(added.has("x")).toBe(true);
+    const removed = toggleTemplateSelection(added, "x");
+    expect(removed.has("x")).toBe(false);
+    // Originals are never mutated.
+    expect(empty.size).toBe(0);
+    expect(added.size).toBe(1);
+  });
+
+  it("selectAllTemplates returns every id or none", () => {
+    const tpls = [{ id: "a" }, { id: "b" }];
+    expect([...selectAllTemplates(tpls, true).values()].sort()).toEqual(["a", "b"]);
+    expect(selectAllTemplates(tpls, false).size).toBe(0);
+  });
+
+  it("pruneTemplateSelection drops ids missing from the live list", () => {
+    const selected = new Set(["a", "b", "ghost"]);
+    const pruned = pruneTemplateSelection(selected, [{ id: "a" }, { id: "b" }]);
+    expect([...pruned].sort()).toEqual(["a", "b"]);
   });
 });

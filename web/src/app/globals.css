@@ -3633,6 +3633,42 @@ button.squad-tab.active {
   flex: none;
 }
 
+/* S-214: prompt templates bulk-selection toolbar. Mirrors the S-207
+   inbox bulk bar (flex row, muted count, danger button) so multi-select
+   looks the same everywhere. */
+.templates-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-3);
+}
+
+.templates-selectall {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.bulk-count {
+  font-size: var(--text-xs, 12px);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+/* Checkbox inside .entity-row list items — native size, accent-coloured,
+   never stretched by row flex. */
+.entity-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent, #1971c2);
+  cursor: pointer;
+  flex: none;
+  margin: 0;
+}
+
 /* --- S-207: inbox enhancements -------------------------------------- */
 
 /* Platform-standard form control (matches the .field input/textarea/select

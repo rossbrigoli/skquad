@@ -4114,6 +4114,21 @@ func (p *PostgresStore) DeletePromptTemplate(ctx context.Context, id string) err
 	return nil
 }
 
+// BulkDeletePromptTemplates (S-214) deletes many templates in a single
+// statement — atomic by construction. Ids are compared as text so a
+// malformed id can't blow up the uuid cast; unknown ids simply don't
+// match and are excluded from the returned count.
+func (p *PostgresStore) BulkDeletePromptTemplates(ctx context.Context, ids []string) (int, error) {
+	if len(ids) == 0 {
+		return 0, ErrInvalidInput
+	}
+	res, err := p.pool.Exec(ctx, `DELETE FROM prompt_templates WHERE id::text = ANY($1)`, ids)
+	if err != nil {
+		return 0, mapPgErr(err)
+	}
+	return int(res.RowsAffected()), nil
+}
+
 // --- S-194: image uploads -------------------------------------------------
 
 func (p *PostgresStore) CreateUpload(ctx context.Context, u *domain.Upload) (*domain.Upload, error) {

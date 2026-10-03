@@ -221,10 +221,17 @@ export default function SettingsPage() {
   );
 }
 
-// S-158: admin-managed prompt templates.
+// S-158: admin-managed prompt templates. S-214: refresh instead of a
+// full page reload after mutations.
 function PromptTemplatesTab() {
   const list = useApi<PromptTemplate[]>("/prompt-templates", 0);
-  return <PromptTemplatesPanel templates={list.data ?? []} />;
+  return (
+    <PromptTemplatesPanel
+      templates={list.data ?? []}
+      loading={list.loading}
+      onChanged={() => list.refresh()}
+    />
+  );
 }
 
 function ProvidersTab({ isAdmin }: { readonly isAdmin: boolean }) {
