@@ -140,7 +140,7 @@ old `embedding_model` and must be re-embedded.
 
 **Automation (S-212 follow-up):** the control-plane image ships
 `embed-backfill` at `/usr/local/bin/embed-backfill`, and the chart
-renders a **Helm post-upgrade/post-install Job**
+renders a **post-upgrade/post-install Job**
 (`embedder.backfillOnUpgrade`, default `true`, requires
 `apiServer.memoryEmbeddings.enabled`) that runs it after the new
 embedder is applied (`backoffLimit: 6` covers a still-rolling
@@ -149,6 +149,15 @@ embedder). Manual run any time:
 ```bash
 kubectl -n skquad-system exec deploy/skquad-control-plane -- embed-backfill
 ```
+
+**⚠ GitOps note (why the Job carries TWO hook annotations):** this
+platform deploys via ArgoCD, which **ignores `helm.sh/hook`**. The Job
+therefore also declares `argocd.argoproj.io/hook: PostSync` +
+`hook-delete-policy: BeforeHookCreation,HookSucceeded`. Without the
+ArgoCD annotations ArgoCD treats the Job as a normal tracked resource
+and fails on the next sync (Jobs are immutable). On a successful sync
+the Job runs, completes, and is auto-deleted (so `get job` after a good
+sync shows nothing — that's expected).
 
 ## 6. Verifying a deployment
 
