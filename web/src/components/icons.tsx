@@ -40,6 +40,31 @@ export function IconInbox({ size }: IconProps) {
   );
 }
 
+// S-207: Gmail/Outlook-style read-state markers for inbox rows.
+// Unread = closed, filled envelope (the flap crease is punched out of
+// the fill with an even-odd rule so it reads on any theme). Read =
+// the same envelope as a plain outline.
+export function IconEnvelopeUnread({ size }: IconProps) {
+  return (
+    <svg {...base(size)} fill="currentColor" stroke="none">
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M2 6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6zm2 -.4 8 6.2 8-6.2v1.8l-8 6.2-8-6.2z"
+      />
+    </svg>
+  );
+}
+
+export function IconEnvelopeRead({ size }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+    </svg>
+  );
+}
+
 export function IconSquads({ size }: IconProps) {
   return (
     <svg {...base(size)}>
