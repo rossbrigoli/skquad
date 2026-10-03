@@ -2837,7 +2837,11 @@ button.squad-tab.active {
   transition: color 180ms ease;
 }
 
-.switch-label-active {
+/* S-210: needed the descendant selector because the base
+   `.switch-labels span` rule (0,1,1) outranked the bare class (0,1,0),
+   leaving the selected label dark on the orange knob. The selected
+   option now renders white (--accent-ink) for readability. */
+.switch-labels .switch-label-active {
   color: var(--accent-ink);
 }
 
