@@ -119,6 +119,7 @@ type Store interface {
 	storage.PromptTemplateStore
 	storage.BuiltinToolStore
 	storage.PlatformSettingsStore
+	storage.BudgetStore
 	storage.AgentMirrorQueue
 	storage.UploadStore
 }
@@ -573,6 +574,13 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/admin/settings", s.getAdminSettings)
 			r.Put("/admin/settings", s.putAdminSettings)
 
+			// S-203 WP1: budget control plane (platform_admin only).
+			r.Get("/admin/budgets", s.listBudgetsAdmin)
+			r.Get("/admin/budgets/platform", s.getPlatformBudget)
+			r.Put("/admin/budgets/platform", s.putPlatformBudget)
+			r.Get("/admin/budgets/users/{userID}", s.getUserBudgetAdmin)
+			r.Put("/admin/budgets/users/{userID}", s.putUserBudgetAdmin)
+
 			r.Post("/registry/llm-providers", s.createLLMProvider)
 			r.Get("/registry/llm-providers", s.listLLMProviders)
 			r.Get(routeLLMProvider, s.getLLMProvider)
@@ -613,6 +621,9 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Delete(routeRegistryResource, s.deleteRegistryResource)
 
 			r.Get("/metering/summary", s.getMeteringSummary)
+			// S-203 WP1: scoped cost aggregation for the WP2 Cost
+			// Management UI (admin sees all, users see owned+granted).
+			r.Get("/costs/summary", s.getCostSummary)
 			r.Get("/audit", s.listAudit)
 			r.Post("/admin/gateway/keys/reconcile", s.reconcileGatewayKeys)
 			// S-GWREG: model-deployment drift reconcile — registers active
@@ -739,6 +750,7 @@ func (s *Server) serveDevAuth(w http.ResponseWriter, r *http.Request, next http.
 		writeError(w, http.StatusInternalServerError, "internal", "failed to load dev principal")
 		return
 	}
+	s.ensureDefaultBudget(r, user.ID)
 	if err := s.store.SetUserRole(r.Context(), user.ID, domain.RolePlatformAdmin); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to promote dev principal")
 		return
@@ -778,6 +790,7 @@ func (s *Server) serveOIDCAuth(w http.ResponseWriter, r *http.Request, next http
 		writeError(w, http.StatusInternalServerError, "internal", "failed to load authenticated principal")
 		return
 	}
+	s.ensureDefaultBudget(r, user.ID)
 	// Group claims bootstrap the role on FIRST login (INSERT) only.
 	// After the row exists, the role is app-managed exclusively via
 	// PATCH /api/v1/users/{userID}/role: in-app promotions and

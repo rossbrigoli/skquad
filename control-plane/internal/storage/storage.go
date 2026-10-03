@@ -44,6 +44,7 @@ type Store interface {
 	PromptTemplateStore
 	BuiltinToolStore
 	UploadStore
+	BudgetStore
 }
 
 // UploadStore persists image uploads (S-194). Uploads are squad-scoped:

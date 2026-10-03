@@ -59,6 +59,10 @@ type MemoryStore struct {
 	notifPrefs map[string][]domain.NotificationType
 	k8sOutbox  map[string]*domain.KubernetesOutboxEvent
 
+	// S-203 WP1: per-user monthly budgets, mirroring the Postgres
+	// user_budgets table (migration 0036).
+	userBudgets map[string]*domain.UserBudget
+
 	// S-PROMPT WP2: organization tier settings (single-row, mirroring
 	// the Postgres instance_settings table) and the append-only revision
 	// history. Revisions are never pruned (retention: forever).
@@ -114,6 +118,7 @@ func NewMemoryStore() *MemoryStore {
 		notifications:    map[string]*domain.Notification{},
 		notifPrefs:       map[string][]domain.NotificationType{},
 		k8sOutbox:        map[string]*domain.KubernetesOutboxEvent{},
+		userBudgets:      map[string]*domain.UserBudget{},
 		instanceSettings: &domain.InstanceSettings{},
 		promptRevisions:  []*domain.PromptRevision{},
 		builtinTools:     map[string]*domain.BuiltinToolConfig{},
