@@ -286,6 +286,16 @@ type InboxStore interface {
 	// userID is empty the user scoping is skipped: the handler has already
 	// enforced platform-admin for that path.
 	DeleteInboxMessage(ctx context.Context, id string, userID string) error
+	// CreateInboxAttachment stores one S-216 attachment (bytes +
+	// server-computed metadata) against an existing inbox message.
+	CreateInboxAttachment(ctx context.Context, a *domain.InboxAttachment) (*domain.InboxAttachment, error)
+	// GetInboxAttachment fetches one attachment including its bytes
+	// (download path).
+	GetInboxAttachment(ctx context.Context, id string) (*domain.InboxAttachment, error)
+	// ListInboxAttachmentMeta batch-fetches attachment metadata (no
+	// bytes) for a set of messages, grouped by message id — keeps the
+	// inbox list free of N+1 queries.
+	ListInboxAttachmentMeta(ctx context.Context, messageIDs []string) (map[string][]domain.InboxAttachment, error)
 }
 
 // NotificationStore persists recipient-scoped "something went wrong"

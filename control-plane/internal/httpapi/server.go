@@ -507,6 +507,11 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			// S-193: explicit user delete — the only removal path inbox
 			// messages ever have.
 			r.Delete("/inbox/{messageID}", s.deleteInboxMessage)
+			// S-216: inbox attachments — recipient/admin-only metadata and
+			// authenticated byte downloads (the agent upload path is the
+			// multipart variant of POST /agents/me/inbox).
+			r.Get("/inbox/{messageID}/attachments", s.listInboxMessageAttachments)
+			r.Get("/inbox/{messageID}/attachments/{attachmentID}", s.serveInboxAttachment)
 			// S-193: bell notifications (task failed/stuck, agent died,
 			// task blocked). ?user_id= is the platform-admin filter.
 			r.Get("/notifications", s.listNotifications)

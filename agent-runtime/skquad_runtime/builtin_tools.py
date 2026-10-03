@@ -588,9 +588,19 @@ class SendInboxTool:
     message to the human who owns the agent's squad. Use this when the
     human asked for something "to my inbox" / "notify me" — the content
     arrives in their email-like Inbox, unread until they open it.
+
+    S-216: optional ``attachments`` — a list of file paths inside the
+    agent's workspace. The runtime reads each file and uploads it as a
+    multipart part on the same agent-authenticated endpoint; the control
+    plane validates the bytes server-side (documents, images, video,
+    audio, text scripts are fine; executables are rejected with a clear
+    reason). Limits: max 8 files, 25 MiB each.
     """
 
     name = "send_inbox"
+
+    MAX_ATTACHMENTS = 8
+    MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
     def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
         self.policy = policy or {}
@@ -608,7 +618,12 @@ class SendInboxTool:
                         "something to their inbox or to notify them. The "
                         "message is delivered unread and stays until they "
                         "delete it. Attach task_id so the inbox entry "
-                        "links back to the task."
+                        "links back to the task. To deliver FILES (a "
+                        "report, an image, a script), pass attachments: "
+                        "a list of file paths inside your workspace — "
+                        "max 8 files, 25 MB each. Executables are "
+                        "rejected; documents, images, video, audio and "
+                        "text files are fine."
                     ),
                     "parameters": {
                         "type": "object",
@@ -635,6 +650,17 @@ class SendInboxTool:
                                     "a navigation link in the inbox."
                                 ),
                             },
+                            "attachments": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Optional file paths (relative to "
+                                    "your workspace, or absolute inside "
+                                    "it) to attach to the message. Max "
+                                    "8 files, 25 MB each. Executable "
+                                    "binaries are rejected server-side."
+                                ),
+                            },
                         },
                         "required": ["message"],
                     },
@@ -658,18 +684,119 @@ class SendInboxTool:
         task_id = str(call.arguments.get("task_id", "") or "").strip()
         if task_id:
             body["task_id"] = task_id
+
+        raw_attachments = call.arguments.get("attachments") or []
+        if not isinstance(raw_attachments, list):
+            return ToolResult(
+                content="send_inbox: attachments must be a list of file paths", ok=False
+            )
         try:
-            data = self._request("POST", "/api/v1/agents/me/inbox", body)
+            if raw_attachments:
+                files = self._read_attachments(raw_attachments)
+                data = self._post_multipart(body, files)
+            else:
+                data = self._request("POST", "/api/v1/agents/me/inbox", body)
         except Exception as exc:  # noqa: BLE001 - surface as tool error
             return ToolResult(content=f"send_inbox: {exc}", ok=False)
         message_id = str(data.get("id", "")) if isinstance(data, dict) else ""
+        att_note = ""
+        if isinstance(data, dict) and isinstance(data.get("attachments"), list) and data["attachments"]:
+            names = ", ".join(
+                str(a.get("filename", "?"))
+                for a in data["attachments"]
+                if isinstance(a, dict)
+            )
+            if names:
+                att_note = f" with {len(data['attachments'])} attachment(s): {names}"
         return ToolResult(
             content=(
                 "sent message to the squad owner's inbox"
                 + (f" (message {message_id})" if message_id else "")
+                + att_note
             ),
             ok=True,
         )
+
+    def _read_attachments(self, paths: list[object]) -> list[tuple[str, bytes]]:
+        """Read attachment files, enforcing the workspace boundary and
+        size/count caps before any bytes hit the network."""
+        if len(paths) > self.MAX_ATTACHMENTS:
+            raise ValueError(
+                f"too many attachments (max {self.MAX_ATTACHMENTS})"
+            )
+        workspace = Path(self.context.workspace_dir).resolve()
+        files: list[tuple[str, bytes]] = []
+        for raw in paths:
+            path = Path(str(raw))
+            if not path.is_absolute():
+                path = workspace / path
+            resolved = path.resolve()
+            if resolved != workspace and workspace not in resolved.parents:
+                raise ValueError(
+                    f"attachment {str(raw)!r} is outside your workspace"
+                )
+            if not resolved.is_file():
+                raise ValueError(f"attachment {str(raw)!r} not found")
+            size = resolved.stat().st_size
+            if size > self.MAX_ATTACHMENT_BYTES:
+                raise ValueError(
+                    f"attachment {resolved.name!r} exceeds "
+                    f"{self.MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB"
+                )
+            files.append((resolved.name, resolved.read_bytes()))
+        return files
+
+    def _post_multipart(self, fields: dict[str, object], files: list[tuple[str, bytes]]) -> dict:
+        """POST the message fields + file parts as multipart/form-data."""
+        boundary = f"----skquad-inbox-{os.urandom(16).hex()}"
+        buf = bytearray()
+        for key, value in fields.items():
+            buf += f"--{boundary}\r\n".encode()
+            buf += (
+                f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
+            )
+            buf += str(value).encode("utf-8")
+            buf += b"\r\n"
+        for filename, data in files:
+            safe_name = filename.replace('"', "")
+            buf += f"--{boundary}\r\n".encode()
+            buf += (
+                f'Content-Disposition: form-data; name="attachments"; '
+                f'filename="{safe_name}"\r\n'.encode()
+            )
+            buf += b"Content-Type: application/octet-stream\r\n\r\n"
+            buf += data
+            buf += b"\r\n"
+        buf += f"--{boundary}--\r\n".encode()
+
+        url = self.context.control_plane_url.rstrip("/") + "/api/v1/agents/me/inbox"
+        req = request.Request(
+            url,
+            data=bytes(buf),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.context.agent_credential}",
+                "X-Skquad-Agent-ID": self.context.agent_id,
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Accept": "application/json",
+            },
+        )
+        timeout = int(self.policy.get("timeoutSeconds", 30))
+        try:
+            with request.urlopen(req, timeout=timeout) as response:
+                raw = response.read()
+        except error.HTTPError as exc:
+            detail = ""
+            try:
+                err_body = json.loads(exc.read().decode("utf-8"))
+                detail = str(err_body.get("error", {}).get("message", "")) or ""
+            except Exception:  # noqa: BLE001
+                pass
+            suffix = f" — {detail}" if detail else ""
+            raise RuntimeError(f"send failed: HTTP {exc.code}{suffix}") from exc
+        if not raw:
+            return {}
+        return json.loads(raw.decode("utf-8"))
 
     def _request(self, method: str, path: str, body: dict | None = None):
         url = self.context.control_plane_url.rstrip("/") + path

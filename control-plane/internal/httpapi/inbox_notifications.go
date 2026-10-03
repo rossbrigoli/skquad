@@ -92,6 +92,9 @@ func (s *Server) listInbox(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
+	// S-216: batch-attach attachment metadata (no bytes) so the UI can
+	// render chips/previews without N+1 queries.
+	s.enrichInboxAttachments(r, messages)
 	writeJSON(w, http.StatusOK, messages)
 }
 
@@ -176,65 +179,6 @@ func (s *Server) markAllNotificationsRead(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"marked_read": count})
-}
-
-// sendInboxFromAgent is the send_inbox builtin's endpoint: an agent
-// delivers human-requested content to its squad owner's inbox. The
-// agent→human addressing is squad-based: agents never name a user — the
-// control plane routes to squad.OwnerID. task_id is optional and must
-// belong to the agent's squad so the UI can render an internal link.
-func (s *Server) sendInboxFromAgent(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Message string `json:"message"`
-		Subject string `json:"subject"`
-		TaskID  string `json:"task_id"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	message := trimRunes(strings.TrimSpace(req.Message), maxInboxMessageChars)
-	if message == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "message is required")
-		return
-	}
-	principal := currentAgent(r.Context())
-	squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
-	if err != nil {
-		writeStorageError(w, err)
-		return
-	}
-	if squad.OwnerID == "" {
-		writeError(w, http.StatusNotFound, "not_found", "squad owner not found for notification")
-		return
-	}
-	taskID := strings.TrimSpace(req.TaskID)
-	if taskID != "" {
-		task, err := s.store.GetTask(r.Context(), taskID)
-		if err != nil || task.SquadID != principal.Agent.SquadID {
-			writeError(w, http.StatusNotFound, "not_found", "task not found in your squad")
-			return
-		}
-	}
-	subject := trimRunes(strings.TrimSpace(req.Subject), 200)
-	created, err := s.store.CreateInboxMessage(s.pendingAgentAuditCtx(r, principal.Agent.ID, "inbox.send_inbox", "inbox_message", "", principal.Agent.SquadID, nil), &domain.InboxMessage{
-		SquadID:     principal.Agent.SquadID,
-		UserID:      squad.OwnerID,
-		FromAgentID: principal.Agent.ID,
-		TaskID:      taskID,
-		Kind:        domain.InboxAgentMessage,
-		Message:     message,
-		Subject:     subject,
-		Body:        message,
-	})
-	if errors.Is(err, storage.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "squad owner not found for notification")
-		return
-	}
-	if err != nil {
-		writeStorageError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, created)
 }
 
 // getNotificationPreferences serves the S-199 per-user mute list.
