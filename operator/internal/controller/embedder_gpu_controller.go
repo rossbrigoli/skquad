@@ -58,7 +58,9 @@ type EmbedderGPUConfig struct {
 	// (chart-rendered, e.g. skquad / skquad-embedder).
 	Namespace      string
 	DeploymentName string
-	// Mode is auto|gpu|cpu.
+	// Mode is auto|gpu|cpu. Retained for backward compatibility with
+	// the pre-ADR-0013 chart; when RuntimeConfigMapName is set the
+	// runtime layer takes precedence. See effectiveModeForRuntime.
 	Mode string
 	// GPUResourceNames is the ordered list of extended GPU resource
 	// names to scan for (vendor-neutral). In auto mode the first
@@ -69,6 +71,18 @@ type EmbedderGPUConfig struct {
 	// carrying this label with value "true" (e.g. skquad.io/gpu=true).
 	// Empty = any node advertising the resource.
 	GPUNodeLabelKey string
+	// RuntimeConfigMapName (ADR-0013) is the ConfigMap the control-plane
+	// writes the platform-admin's embedder.runtime choice into
+	// (data key RuntimeConfigMapKey). Empty disables the admin-override
+	// layer (pure mode-based behavior).
+	RuntimeConfigMapName string
+	// RuntimeConfigMapKey is the data key holding the runtime value.
+	RuntimeConfigMapKey string
+	// ImageByRuntime maps a resolved Runtime to a full container image
+	// ref (e.g. cuda -> ghcr.io/rossbrigoli/skquad-embedder:0.1.192-cuda).
+	// The reconciler patches container[0].Image to the entry for the
+	// effective runtime. Missing entries leave the image untouched.
+	ImageByRuntime map[Runtime]string
 }
 
 // ParseGPUResourceNames splits a comma-separated list, dropping blanks;
@@ -172,6 +186,168 @@ func (r *EmbedderGPUReconciler) ReconcileOnce(ctx context.Context) (changed bool
 		return false, sel, err
 	}
 	return changedOut, want, nil
+}
+
+// ReconcileRuntime performs one ADR-0013 runtime-aware pass: resolve the
+// effective runtime (admin override ?? auto-detect), then patch the
+// embedder Deployment's image + GPU shape toward that runtime. Returns
+// the resolved runtime and whether the Deployment changed. When
+// RuntimeConfigMapName is unset this still runs detection + image/shape
+// selection (mode is mapped onto a runtime), so it fully supersedes
+// ReconcileOnce for runtime-managed installs.
+func (r *EmbedderGPUReconciler) ReconcileRuntime(ctx context.Context) (Runtime, bool, error) {
+	nodes := &corev1.NodeList{}
+	if err := r.Client.List(ctx, nodes); err != nil {
+		return RuntimeAuto, false, fmt.Errorf("list nodes: %w", err)
+	}
+	detected, _, _ := detectRuntime(nodes.Items, r.Cfg.GPUResourceNames)
+
+	override, err := r.readRuntimeOverride(ctx)
+	if err != nil {
+		// A missing/unreadable override ConfigMap is not fatal: fall back
+		// to detection (same posture as a missing embedder Deployment).
+		ctrl.Log.V(2).Info("embedder runtime override unreadable; using detection", "error", err)
+		override = RuntimeAuto
+	}
+
+	effective := detected
+	if override != RuntimeAuto {
+		effective = override
+	}
+
+	// Resolve the resource + nodes for the effective runtime by scanning
+	// for THAT runtime's vendor specifically — not the resource the
+	// overall detection "won" (which may be a different vendor when an
+	// override forces cuda over a detected amd node, etc.).
+	shape := r.shapeForEffectiveRuntime(effective, nodes.Items)
+
+	key := types.NamespacedName{Namespace: r.Cfg.Namespace, Name: r.Cfg.DeploymentName}
+	var changed bool
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		dep := &appsv1.Deployment{}
+		if err := r.Client.Get(ctx, key, dep); err != nil {
+			return err
+		}
+		if applyRuntimeShape(dep, shape, r.Cfg.ImageByRuntime, r.Cfg.GPUNodeLabelKey, r.Cfg.GPUResourceNames) {
+			changed = true
+			return r.Client.Update(ctx, dep)
+		}
+		return nil
+	})
+	if err != nil {
+		return effective, false, err
+	}
+	return effective, changed, nil
+}
+
+// shapeForEffectiveRuntime builds the pod shape for the effective
+// runtime by scanning nodes for THAT runtime's vendor resources. When
+// the effective runtime's GPU is absent it forces the runtime's
+// canonical resource with no nodes, so the pod pends rather than
+// silently running unaccelerated (ADR-0013 Q2).
+func (r *EmbedderGPUReconciler) shapeForEffectiveRuntime(eff Runtime, nodes []corev1.Node) runtimeShape {
+	vr := classifyGPUResources(r.Cfg.GPUResourceNames)
+	switch eff {
+	case RuntimeCUDA:
+		res, matched := firstResourceOnNodes(nodes, vr.nvidia)
+		if res == "" {
+			res = firstOrEmpty(vr.nvidia)
+		}
+		return runtimeShape{Runtime: RuntimeCUDA, GPUResource: res, Nodes: matched}
+	case RuntimeVulkan:
+		amdIntel := append(append([]string{}, vr.amd...), vr.intel...)
+		res, matched := firstResourceOnNodes(nodes, amdIntel)
+		if res == "" {
+			res = firstOrEmpty(amdIntel)
+		}
+		return runtimeShape{Runtime: RuntimeVulkan, GPUResource: res, Nodes: matched, NeedsDRI: true}
+	default:
+		return runtimeShape{Runtime: RuntimeCPU}
+	}
+}
+
+// firstOrEmpty returns the first non-empty string or "".
+func firstOrEmpty(ss []string) corev1.ResourceName {
+	for _, s := range ss {
+		if strings.TrimSpace(s) != "" {
+			return corev1.ResourceName(s)
+		}
+	}
+	return ""
+}
+
+// readRuntimeOverride reads the platform-admin runtime choice from the
+// override ConfigMap. Returns RuntimeAuto when the ConfigMap is absent
+// or the key is unset/blank.
+func (r *EmbedderGPUReconciler) readRuntimeOverride(ctx context.Context) (Runtime, error) {
+	if r.Cfg.RuntimeConfigMapName == "" {
+		return RuntimeAuto, nil
+	}
+	key := r.Cfg.RuntimeConfigMapKey
+	if key == "" {
+		key = "runtime"
+	}
+	cm := &corev1.ConfigMap{}
+	err := r.Client.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: r.Cfg.RuntimeConfigMapName}, cm)
+	if err != nil {
+		return RuntimeAuto, err
+	}
+	raw, ok := cm.Data[key]
+	if !ok || strings.TrimSpace(raw) == "" {
+		return RuntimeAuto, nil
+	}
+	return normalizeRuntime(raw), nil
+}
+
+// applyRuntimeShape mutates dep toward the runtime's full shape (image +
+// GPU resource/toleration/affinity + /dev/dri) and reports change.
+func applyRuntimeShape(dep *appsv1.Deployment, shape runtimeShape, imageByRuntime map[Runtime]string, labelKey string, managedResources []string) bool {
+	pod := &dep.Spec.Template.Spec
+	before, _ := json.Marshal(runtimeProjection(pod, managedResources))
+
+	// 1. Image variant for the resolved runtime (only if configured).
+	if img, ok := imageByRuntime[shape.Runtime]; ok && img != "" {
+		for i := range pod.Containers {
+			pod.Containers[i].Image = img
+		}
+	}
+
+	// 2. GPU resource + toleration + affinity (reuse the GPU spec logic).
+	want := gpuSelection{Resource: shape.GPUResource, Nodes: shape.Nodes}
+	if want.active() || want.Resource != "" {
+		if want.Resource != "" {
+			setGPURequest(pod, want.Resource)
+			ensureGPUToleration(pod, want.Resource)
+			if len(want.Nodes) > 0 {
+				ensureNodeAffinity(pod, labelKey, want.Resource, want.Nodes)
+			} else {
+				stripGPUNodeAffinity(pod, labelKey)
+			}
+		}
+	} else {
+		stripAllGPURequests(pod, managedResources)
+		stripGPUTolerations(pod, managedResources)
+		stripGPUNodeAffinity(pod, labelKey)
+	}
+
+	// 3. /dev/dri mount for the Vulkan runtime.
+	applyDRIMount(pod, shape.NeedsDRI)
+
+	after, _ := json.Marshal(runtimeProjection(pod, managedResources))
+	return string(before) != string(after)
+}
+
+// runtimeProjection extends gpuProjection with the image + dri-mount
+// state so change detection covers the runtime-controlled fields.
+func runtimeProjection(pod *corev1.PodSpec, managedResources []string) map[string]any {
+	proj := gpuProjection(pod, managedResources)
+	images := make([]string, 0, len(pod.Containers))
+	for _, c := range pod.Containers {
+		images = append(images, c.Image)
+	}
+	proj["images"] = images
+	proj["hasDRI"] = hasDRIMount(pod)
+	return proj
 }
 
 // applyGPUSpec mutates dep toward the desired GPU shape and reports
@@ -354,6 +530,54 @@ func stripGPUNodeAffinity(pod *corev1.PodSpec, labelKey string) {
 	}
 }
 
+// applyDRIMount adds or removes the /dev/dri hostPath volume + mount
+// on the first container (the embedder). Idempotent.
+func applyDRIMount(pod *corev1.PodSpec, needed bool) {
+	const driName = "dev-dri"
+	const driPath = "/dev/dri"
+	// Remove any existing dri volume/mount first.
+	vols := pod.Volumes[:0]
+	for _, v := range pod.Volumes {
+		if v.Name != driName {
+			vols = append(vols, v)
+		}
+	}
+	pod.Volumes = vols
+	for i := range pod.Containers {
+		mounts := pod.Containers[i].VolumeMounts[:0]
+		for _, m := range pod.Containers[i].VolumeMounts {
+			if m.Name != driName {
+				mounts = append(mounts, m)
+			}
+		}
+		pod.Containers[i].VolumeMounts = mounts
+	}
+	if needed {
+		pod.Volumes = append(pod.Volumes, corev1.Volume{
+			Name: driName,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{Path: driPath},
+			},
+		})
+		if len(pod.Containers) > 0 {
+			pod.Containers[0].VolumeMounts = append(pod.Containers[0].VolumeMounts, corev1.VolumeMount{
+				Name:      driName,
+				MountPath: driPath,
+			})
+		}
+	}
+}
+
+// hasDRIMount reports whether the pod mounts /dev/dri.
+func hasDRIMount(pod *corev1.PodSpec) bool {
+	for _, v := range pod.Volumes {
+		if v.HostPath != nil && v.HostPath.Path == "/dev/dri" {
+			return true
+		}
+	}
+	return false
+}
+
 // termReferencesGPU reports whether a selector term was authored by
 // this controller (hostname-in list or the GPU node label).
 func termReferencesGPU(t corev1.NodeSelectorTerm, labelKey string) bool {
@@ -381,7 +605,30 @@ func (r *EmbedderGPUReconciler) Start(ctx context.Context) error {
 	interval := time.Duration(intervalSeconds) * time.Second
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// ADR-0013: when the runtime layer is configured (override ConfigMap
+	// present), reconcile via the runtime-aware path which selects the
+	// image variant + pod shape. Otherwise keep the legacy mode-based
+	// GPU/CPU reconcile.
+	runtimeMode := r.Cfg.RuntimeConfigMapName != "" || len(r.Cfg.ImageByRuntime) > 0
 	for {
+		if runtimeMode {
+			rt, changed, err := r.ReconcileRuntime(ctx)
+			switch {
+			case err != nil && !apierrors.IsNotFound(err):
+				ctrl.Log.Error(err, "embedder runtime reconcile failed", "runtime", rt)
+			case err != nil:
+				ctrl.Log.Info("embedder Deployment not found yet; will retry", "deployment", r.Cfg.DeploymentName)
+			case changed:
+				ctrl.Log.Info("embedder runtime reconciled",
+					"runtime", rt, "deployment", r.Cfg.Namespace+"/"+r.Cfg.DeploymentName)
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+			}
+			continue
+		}
 		changed, sel, err := r.ReconcileOnce(ctx)
 		switch {
 		case err != nil && !apierrors.IsNotFound(err):
