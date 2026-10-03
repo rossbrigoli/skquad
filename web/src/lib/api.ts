@@ -265,6 +265,11 @@ export async function apiDelete(path: string, token: string): Promise<void> {
   await apiRequest<void>(path, token, { method: "DELETE" });
 }
 
+// S-214: DELETE with a JSON body — used by bulk-delete routes.
+export async function apiDeleteWithBody<T>(path: string, token: string, body: unknown): Promise<T> {
+  return apiRequest<T>(path, token, { method: "DELETE", body });
+}
+
 // S-194: multipart image upload for the chat composer and task threads.
 // Kept separate from apiRequest because the body is FormData (the JSON
 // Content-Type header must NOT be set — the browser adds the boundary).

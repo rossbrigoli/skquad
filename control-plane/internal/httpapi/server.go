@@ -650,6 +650,7 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			r.Get("/prompt-templates/{templateID}", s.getPromptTemplate)
 			r.Post("/prompt-templates", s.createPromptTemplate)
 			r.Patch("/prompt-templates/{templateID}", s.updatePromptTemplate)
+			r.Delete("/prompt-templates/bulk", s.bulkDeletePromptTemplates)
 			r.Delete("/prompt-templates/{templateID}", s.deletePromptTemplate)
 		})
 	})

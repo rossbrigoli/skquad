@@ -919,3 +919,11 @@
   - Tests: `server_backlog_test.go` (3: backlog invisible to /agents/me/tasks + claim 204 + start 409 + visible/claimable after human move; create status validation; backlog move doesn't set agent busy), `boardColumns.test.ts` updated + 3 new backlog ordering tests.
 - command/test run: `go vet ./...` clean; `go test ./...` all green; `npx tsc --noEmit` clean; `npx vitest run` 49 files / 604 tests passed; eslint clean on changed files.
 - result: Backlog is a first-class column ordered left of To do in every squad board (auto-inserted for existing persisted column configs); human-visible/editable everywhere; agent-facing pickup (claim, work-wait, pending-work sync, task listing, start) excludes it by allowlist + explicit guards.
+
+## 2026-10-03 23:55 — S-214 Prompt Templates UI look and feel
+- Objective: make the Prompt Templates screen match the app design system; add checkbox multi-select + top bulk-delete.
+- Files changed:
+  - control-plane: storage.go (BulkDeletePromptTemplates interface), memory.go + postgres.go (atomic bulk delete), prompt_templates_handlers.go (bulk delete handler, platform_admin-gated, dedupe/validate ids, returns {deleted}), server.go (route DELETE /prompt-templates/bulk), server_s158_test.go (TestS214BulkDeletePromptTemplates).
+  - web: api.ts (apiDeleteWithBody), promptTemplates.ts (bulkDeletePromptTemplates + toggle/selectAll/prune selection helpers), PromptTemplatesPanel.tsx (rewritten: .section-head/.entity-list/.entity-row/.btn family, EmptyState, ConfirmDialog, select-all with indeterminate, bulk "Delete selected", refresh callback instead of window.location.reload), settings/page.tsx (pass loading + refresh), globals.css (.templates-toolbar/.templates-selectall/.bulk-count/.entity-checkbox), PromptTemplatesPanel.test.tsx (new), promptTemplates.test.ts (bulk + helper tests).
+- Commands/tests run: go vet ./... (clean); go test ./... (all pass); tsc --noEmit (clean); eslint (clean); vitest run (50 files, 616 tests pass).
+- Result: ready for PR.

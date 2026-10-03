@@ -3258,6 +3258,25 @@ func (m *MemoryStore) DeletePromptTemplate(_ context.Context, id string) error {
 	return nil
 }
 
+// BulkDeletePromptTemplates (S-214) removes many templates under one
+// store lock — the whole batch either happens or it doesn't, mirroring
+// the single-statement atomicity of the Postgres implementation.
+func (m *MemoryStore) BulkDeletePromptTemplates(_ context.Context, ids []string) (int, error) {
+	if len(ids) == 0 {
+		return 0, ErrInvalidInput
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	deleted := 0
+	for _, id := range ids {
+		if _, ok := m.promptTemplates[id]; ok {
+			delete(m.promptTemplates, id)
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
 // --- S-194: image uploads -------------------------------------------------
 
 func cloneUpload(u *domain.Upload) *domain.Upload {

@@ -194,6 +194,53 @@ func (s *Server) deletePromptTemplate(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// promptTemplateBulkDeleteRequest (S-214) carries the template ids to
+// remove in one transactional batch.
+type promptTemplateBulkDeleteRequest struct {
+	IDs []string `json:"ids"`
+}
+
+// bulkDeletePromptTemplates deletes multiple templates at once, gated
+// by the same platform_admin check as the single-delete route. Returns
+// the count of rows actually deleted (unknown ids are skipped).
+func (s *Server) bulkDeletePromptTemplates(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePlatformAdmin(w, r) {
+		return
+	}
+	var req promptTemplateBulkDeleteRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	ids := make([]string, 0, len(req.IDs))
+	seen := make(map[string]bool, len(req.IDs))
+	for _, raw := range req.IDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "ids must not contain blank values")
+			return
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "ids is required")
+		return
+	}
+	if len(ids) > 200 {
+		writeError(w, http.StatusBadRequest, "bad_request", "at most 200 templates per bulk delete")
+		return
+	}
+	deleted, err := s.store.BulkDeletePromptTemplates(r.Context(), ids)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"deleted": deleted})
+}
+
 func derefString(v *string) string {
 	if v == nil {
 		return ""
