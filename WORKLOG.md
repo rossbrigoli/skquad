@@ -900,3 +900,22 @@
 - **Deploy:** GitOps k3s-cluster f71c1e0 → 0.1.193. Embedder pod on optiplex w/ nvidia toleration.
 - **Found post-deploy:** operator SA lacks `watch` on nodes (new runtime layer watches Nodes) → reflector error, image not patched to -cuda. Fix PR #126 (chart operator-rbac +watch) merged → 0.1.194 cycle.
 - **Next:** promote 0.1.194, verify operator patches embedder to `-cuda`, CUDA init in llama-server logs, embed 4 remaining large rows, memory_search latency test.
+
+## 2026-10-03 22:55 ACST
+
+- objective: S-213 — Backlog column left of To do on the squad board. Backlog = tasks not ready to start; excluded from all agent pickup/listing paths until a human moves them out.
+- files changed:
+  - `control-plane/internal/domain/types.go` — `TaskBacklog = "backlog"` added to TaskStatus + Valid(); `AgentPickupStatuses()` helper documents the todo/in-progress allowlist.
+  - `control-plane/internal/storage/migrations/0036_task_backlog.sql` (new) — extends `tasks_status_check` with 'backlog'.
+  - `control-plane/internal/storage/postgres.go` — `ListAgentTasks` excludes backlog (`status <> 'backlog'`). Claim (`claimTodoTask`), wake (`hasReadyWork`) and reaper paths already allowlist todo/in-progress → backlog excluded by construction.
+  - `control-plane/internal/storage/memory.go` — same exclusion in `ListAgentTasks`.
+  - `control-plane/internal/httpapi/server.go` — `createTask` accepts optional `status` (validated; default todo) so the UI creates directly in Backlog (no create-in-todo→move race); `startCurrentAgentTask` rejects backlog-sourced starts with 409 `task_in_backlog`.
+  - `web/src/lib/api.ts` — TaskStatus union gains "backlog".
+  - `web/src/lib/boardColumns.ts` — CANONICAL_STATUSES: backlog first; label "Backlog"; `normalizeColumns` inserts backlog immediately left of todo for pre-S-213 persisted configs (respects hidden backlog).
+  - `web/src/lib/status.ts` — "backlog" StatusKey, label, attention rank (least urgent), `taskStatus()` maps backlog.
+  - `web/src/app/globals.css` — `--status-backlog` vars (light+dark) + `.chip-backlog`.
+  - `web/src/app/squads/[id]/board/page.tsx` — TaskCreateModal sends `status: targetStatus` on create (replaces create+move).
+  - `web/src/app/squads/[id]/tasks/[tid]/page.tsx` — Backlog added to move targets.
+  - Tests: `server_backlog_test.go` (3: backlog invisible to /agents/me/tasks + claim 204 + start 409 + visible/claimable after human move; create status validation; backlog move doesn't set agent busy), `boardColumns.test.ts` updated + 3 new backlog ordering tests.
+- command/test run: `go vet ./...` clean; `go test ./...` all green; `npx tsc --noEmit` clean; `npx vitest run` 49 files / 604 tests passed; eslint clean on changed files.
+- result: Backlog is a first-class column ordered left of To do in every squad board (auto-inserted for existing persisted column configs); human-visible/editable everywhere; agent-facing pickup (claim, work-wait, pending-work sync, task listing, start) excludes it by allowlist + explicit guards.

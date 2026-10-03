@@ -3408,6 +3408,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		Title           string            `json:"title"`
 		Description     string            `json:"description"`
 		AssigneeAgentID string            `json:"assignee_agent_id"`
+		Status          domain.TaskStatus `json:"status"`
 		Metadata        map[string]string `json:"metadata"`
 	}
 	if !decodeJSON(w, r, &req) {
@@ -3416,6 +3417,17 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	req.Title = strings.TrimSpace(req.Title)
 	if req.Title == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "title is required")
+		return
+	}
+	// S-213: allow creating directly into a non-default column (Backlog).
+	// Without this the UI would create in todo and move afterwards, leaving
+	// a race where an agent can claim the task before the move lands.
+	initialStatus := req.Status
+	if initialStatus == "" {
+		initialStatus = domain.TaskTodo
+	}
+	if !initialStatus.Valid() {
+		writeError(w, http.StatusBadRequest, "bad_request", "status is invalid")
 		return
 	}
 	if req.AssigneeAgentID != "" {
@@ -3435,7 +3447,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		SquadID:         squad.ID,
 		Title:           req.Title,
 		Description:     req.Description,
-		Status:          domain.TaskTodo,
+		Status:          initialStatus,
 		AssigneeAgentID: req.AssigneeAgentID,
 		CreatedByType:   "user",
 		CreatedByID:     u.ID,
@@ -4223,6 +4235,14 @@ func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	promptSHA := strings.TrimSpace(req.PromptSHA)
 	if promptSHA != "" && !validRunPromptSHA(promptSHA) {
 		writeError(w, http.StatusBadRequest, "invalid_prompt_sha", "prompt_sha must be a 64-char hex sha256 or the literal env_legacy")
+		return
+	}
+	// S-213: an agent may never start a Backlog task by id — pickup must go
+	// through the claim path, which only serves todo. A human moving the card
+	// out of Backlog is the instruction to start it. Missing/foreign tasks
+	// are still reported by updateCurrentAgentTaskStatus below.
+	if existing, err := s.store.GetTask(r.Context(), chi.URLParam(r, "taskID")); err == nil && existing.Status == domain.TaskBacklog {
+		writeError(w, http.StatusConflict, "task_in_backlog", "task is in the backlog and must be moved out by a human before it can be started")
 		return
 	}
 	updated, ok := s.updateCurrentAgentTaskStatus(w, r, domain.TaskInProgress, domain.AgentBusy, "task.start")

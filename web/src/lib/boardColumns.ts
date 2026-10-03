@@ -5,9 +5,13 @@ import type { TaskStatus } from "./api";
 // domain.TaskStatus). Per-squad configuration may reorder, rename, and hide
 // columns, but cannot introduce new statuses without breaking the agent
 // runtime contract. See docs/KANBAN-BOARD-DESIGN rationale in UIv2-11 card.
-export const CANONICAL_STATUSES: TaskStatus[] = ["todo", "in-progress", "in-review", "done", "blocked"];
+// S-213: "backlog" is the parking column left of "todo". Tasks there are
+// NOT ready to start; the control plane excludes them from every agent
+// pickup/listing path until a human moves them out.
+export const CANONICAL_STATUSES: TaskStatus[] = ["backlog", "todo", "in-progress", "in-review", "done", "blocked"];
 
 export const DEFAULT_COLUMN_LABELS: Record<TaskStatus, string> = {
+  backlog: "Backlog",
   todo: "To do",
   "in-progress": "In progress",
   "in-review": "In review",
@@ -50,7 +54,18 @@ export function normalizeColumns(raw: unknown): BoardColumnConfig[] {
     out.push({ status: rec.status, label, visible: rec.visible !== false });
   }
   for (const status of CANONICAL_STATUSES) {
-    if (!seen.has(status)) out.push({ status, label: DEFAULT_COLUMN_LABELS[status], visible: true });
+    if (seen.has(status) || status === "backlog") continue;
+    out.push({ status, label: DEFAULT_COLUMN_LABELS[status], visible: true });
+  }
+  // S-213: squads configured before Backlog existed must get it inserted
+  // immediately left of "todo" (its canonical home). Handled after the
+  // other missing columns so the relative order stays canonical even when
+  // "todo" itself was absent from the persisted config.
+  if (!seen.has("backlog")) {
+    const backlog: BoardColumnConfig = { status: "backlog", label: DEFAULT_COLUMN_LABELS.backlog, visible: true };
+    const todoIdx = out.findIndex((c) => c.status === "todo");
+    if (todoIdx >= 0) out.splice(todoIdx, 0, backlog);
+    else out.unshift(backlog);
   }
   return out;
 }

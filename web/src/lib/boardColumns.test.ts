@@ -22,9 +22,34 @@ describe("normalizeColumns", () => {
       { status: "blocked", label: "Stuck", visible: false },
       { status: "todo", label: "Backlog" },
     ]);
-    expect(cols.map((c) => c.status)).toEqual(["blocked", "todo", "in-progress", "in-review", "done"]);
+    // S-213: the missing backlog column lands immediately left of todo.
+    expect(cols.map((c) => c.status)).toEqual(["blocked", "backlog", "todo", "in-progress", "in-review", "done"]);
     expect(cols[0]).toEqual({ status: "blocked", label: "Stuck", visible: false });
-    expect(cols[1].label).toBe("Backlog");
+    expect(cols[2].label).toBe("Backlog");
+  });
+
+  it("inserts backlog left of todo for pre-S-213 configs", () => {
+    const cols = normalizeColumns([
+      { status: "todo", label: "Now" },
+      { status: "in-progress" },
+      { status: "done" },
+    ]);
+    expect(cols.map((c) => c.status)).toEqual(["backlog", "todo", "in-progress", "done", "in-review", "blocked"]);
+    expect(cols[0]).toEqual({ status: "backlog", label: "Backlog", visible: true });
+  });
+
+  it("keeps backlog immediately left of todo even when the config starts elsewhere", () => {
+    const cols = normalizeColumns([{ status: "in-progress" }, { status: "done" }]);
+    const backlogIdx = cols.findIndex((c) => c.status === "backlog");
+    const todoIdx = cols.findIndex((c) => c.status === "todo");
+    expect(backlogIdx).toBeGreaterThanOrEqual(0);
+    expect(backlogIdx).toBe(todoIdx - 1);
+  });
+
+  it("respects a hidden backlog instead of re-adding it", () => {
+    const cols = normalizeColumns([{ status: "backlog", visible: false }, { status: "todo" }]);
+    expect(cols.map((c) => c.status)).toEqual(["backlog", "todo", "in-progress", "in-review", "done", "blocked"]);
+    expect(cols[0].visible).toBe(false);
   });
 
   it("drops unknown statuses and duplicates", () => {
@@ -59,7 +84,7 @@ describe("boardColumnsFromOperatingModel", () => {
       board: { columns: [{ status: "in-review", label: "QA" }] },
     });
     expect(cols[0]).toEqual({ status: "in-review", label: "QA", visible: true });
-    expect(cols).toHaveLength(5);
+    expect(cols).toHaveLength(6);
   });
 
   it("defaults when board or columns missing", () => {
@@ -72,15 +97,15 @@ describe("boardColumnsFromOperatingModel", () => {
 describe("visibleColumns / moveColumn", () => {
   it("filters hidden columns", () => {
     const cols = defaultColumns().map((c) => ({ ...c, visible: c.status !== "blocked" }));
-    expect(visibleColumns(cols).map((c) => c.status)).toEqual(["todo", "in-progress", "in-review", "done"]);
+    expect(visibleColumns(cols).map((c) => c.status)).toEqual(["backlog", "todo", "in-progress", "in-review", "done"]);
   });
 
   it("moves columns without mutating the input", () => {
     const cols = defaultColumns();
     const next = moveColumn(cols, "done", -1);
-    expect(next.map((c) => c.status)).toEqual(["todo", "in-progress", "done", "in-review", "blocked"]);
+    expect(next.map((c) => c.status)).toEqual(["backlog", "todo", "in-progress", "done", "in-review", "blocked"]);
     expect(cols.map((c) => c.status)).toEqual(CANONICAL_STATUSES);
-    expect(moveColumn(cols, "todo", -1)).toEqual(cols);
+    expect(moveColumn(cols, "backlog", -1)).toEqual(cols);
     expect(moveColumn(cols, "nope" as TaskStatus, 1)).toEqual(cols);
   });
 });

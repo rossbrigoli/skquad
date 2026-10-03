@@ -14,6 +14,7 @@ export type StatusKey =
   | "error"
   | "over-budget"
   | "paused"
+  | "backlog"
   | "todo"
   | "done";
 
@@ -26,6 +27,7 @@ export const statusLabels: Record<StatusKey, string> = {
   error: "Error",
   "over-budget": "Over budget",
   paused: "Paused",
+  backlog: "Backlog",
   todo: "To do",
   done: "Done",
 };
@@ -42,12 +44,15 @@ export const statusAttention: Record<StatusKey, number> = {
   todo: 7,
   idle: 8,
   done: 9,
+  backlog: 10,
 };
 
 export function taskStatus(task: Task): StatusKey {
   if (task.status === "blocked") return "blocked";
   if (task.status === "in-review") return "in-review";
   if (task.status === "done") return "done";
+  // S-213: backlog tasks are parked, never lease-checked — no agent runs them.
+  if (task.status === "backlog") return "backlog";
   const lease = leaseState(task);
   if (lease === "running") return "running";
   if (lease === "stalled") return "stalled";

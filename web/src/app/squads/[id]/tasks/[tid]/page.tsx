@@ -21,6 +21,7 @@ import { taskResultInfo } from "../../../../../lib/taskResult";
 import { taskStatus } from "../../../../../lib/status";
 
 const MOVE_TARGETS: { status: string; label: string }[] = [
+  { status: "backlog", label: "Backlog" },
   { status: "todo", label: "To do" },
   { status: "in-progress", label: "In progress" },
   { status: "in-review", label: "In review" },
