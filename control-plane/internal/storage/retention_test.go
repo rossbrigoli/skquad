@@ -55,7 +55,8 @@ func TestMemoryDeleteReadNotificationsBefore(t *testing.T) {
 	}
 
 	oldRead := mk("old read")
-	store.notifications[oldRead.ID].ReadAt = time.Now().UTC().Add(-95 * 24 * time.Hour)
+	oldReadAt := time.Now().UTC().Add(-95 * 24 * time.Hour)
+	store.notifications[oldRead.ID].ReadAt = &oldReadAt
 	store.notifications[oldRead.ID].CreatedAt = time.Now().UTC().Add(-95 * 24 * time.Hour)
 
 	youngRead := mk("young read")

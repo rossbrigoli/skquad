@@ -514,12 +514,16 @@ type Notification struct {
 	Type    NotificationType   `json:"type"`
 	Severity NotificationSeverity `json:"severity"`
 	Message string             `json:"message"`
-	ReadAt    time.Time        `json:"read_at,omitempty"`
+	// ReadAt is a pointer so that unread rows serialize without the
+	// read_at key at all: time.Time + omitempty still emits
+	// "0001-01-01T00:00:00Z" for unset values, which the frontend
+	// treats as read (S-209 retest bug).
+	ReadAt    *time.Time       `json:"read_at,omitempty"`
 	CreatedAt time.Time        `json:"created_at"`
 }
 
 // IsRead reports whether the recipient has acknowledged the alert.
-func (n *Notification) IsRead() bool { return !n.ReadAt.IsZero() }
+func (n *Notification) IsRead() bool { return n.ReadAt != nil }
 
 // ReapedExecution (S-193) is the identity of one execution the reaper
 // expired, so the caller can notify the squad owner about the dead
@@ -547,12 +551,12 @@ type InboxMessage struct {
 	// Message.
 	Subject   string    `json:"subject,omitempty"`
 	Body      string    `json:"body,omitempty"`
-	ReadAt    time.Time `json:"read_at,omitempty"`
+	ReadAt    *time.Time `json:"read_at,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
 // IsRead reports whether the owner has acknowledged the notification.
-func (m *InboxMessage) IsRead() bool { return !m.ReadAt.IsZero() }
+func (m *InboxMessage) IsRead() bool { return m.ReadAt != nil }
 
 // Board is a squad's Kanban board (one per squad).
 type Board struct {
