@@ -2,8 +2,11 @@
 // embedding_model differs from the currently configured model.
 //
 // Idempotent: a re-run after completion is a no-op (exit 0,
-// embedded=0). Run as a Helm hook Job (or manually): the control-plane
-// image ships this binary at /embed-backfill.
+// embedded=0). The control-plane image ships this binary at
+// /usr/local/bin/embed-backfill; the chart runs it as a Helm
+// post-upgrade/post-install Job (embedder.backfillOnUpgrade), and it
+// can also be run manually:
+//   kubectl -n <ns> exec deploy/skquad-control-plane -- embed-backfill
 package main
 
 import (

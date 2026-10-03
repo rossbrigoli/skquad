@@ -85,3 +85,107 @@ func TestAdminSettingsFallsBackToConfigDefault(t *testing.T) {
 	doJSONAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/admin/settings", nil, http.StatusOK, &view)
 	require.Equal(t, 5, view.IdleScaleToZeroMinutes)
 }
+
+// S-212 (ADR-0013 §5): embedder runtime override via admin settings.
+
+type fakeEmbedderConfigWriter struct {
+	written []string
+	err     error
+}
+
+func (f *fakeEmbedderConfigWriter) SetEmbedderRuntime(_ context.Context, runtime string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.written = append(f.written, runtime)
+	return nil
+}
+
+func newEmbedderRuntimeFixture(t *testing.T) (http.Handler, *storage.MemoryStore, *fakeEmbedderConfigWriter) {
+	t.Helper()
+	cfg := testConfig()
+	cfg.AuthMode = config.AuthOIDC
+	cfg.OIDCAdminGroups = []string{platformAdminGroup}
+	store := storage.NewMemoryStore()
+	fake := &fakeEmbedderConfigWriter{}
+	handler := NewWithEmbedderRuntimeWriter(cfg, store, headerOIDC{
+		authOwner: {Issuer: testIssuer, Subject: "own-1", Email: "owner@example.com", EmailVerified: true, Name: "Owner"},
+		authAdmin: {Issuer: testIssuer, Subject: "adm-1", Email: adminEmail, EmailVerified: true, Name: "Admin", Groups: []string{platformAdminGroup}},
+		authAlice: {Issuer: testIssuer, Subject: "alice-1", Email: aliceEmail, EmailVerified: true, Name: "Alice"},
+	}, &fakeCRWriter{}, fake)
+	return handler, store, fake
+}
+
+func TestAdminSettingsEmbedderRuntimeDefaultAuto(t *testing.T) {
+	handler, _ := newIdleSettingsFixture(t)
+	var view adminSettingsView
+	doJSONAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/admin/settings", nil, http.StatusOK, &view)
+	require.Equal(t, "auto", view.EmbedderRuntime)
+}
+
+func TestAdminSettingsEmbedderRuntimeSet(t *testing.T) {
+	handler, store, fake := newEmbedderRuntimeFixture(t)
+	ctx := context.Background()
+
+	var out map[string]any
+	doJSONAuth(t, handler, authAdmin, http.MethodPut, "/api/v1/admin/settings",
+		map[string]any{"embedder_runtime": "cuda"}, http.StatusOK, &out)
+	require.Equal(t, "cuda", out["embedder_runtime"])
+	require.Equal(t, []string{"cuda"}, fake.written)
+	raw, found, err := store.GetPlatformSetting(ctx, domain.PlatformSettingEmbedderRuntime)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "cuda", raw)
+
+	// GET reflects the stored choice.
+	var view adminSettingsView
+	doJSONAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/admin/settings", nil, http.StatusOK, &view)
+	require.Equal(t, "cuda", view.EmbedderRuntime)
+
+	// Case-insensitive input is normalized to lowercase.
+	doJSONAuth(t, handler, authAdmin, http.MethodPut, "/api/v1/admin/settings",
+		map[string]any{"embedder_runtime": " Vulkan "}, http.StatusOK, &out)
+	require.Equal(t, "vulkan", out["embedder_runtime"])
+	require.Equal(t, []string{"cuda", "vulkan"}, fake.written)
+}
+
+func TestAdminSettingsEmbedderRuntimeValidation(t *testing.T) {
+	handler, store, fake := newEmbedderRuntimeFixture(t)
+	doJSONAuth(t, handler, authAdmin, http.MethodPut, "/api/v1/admin/settings",
+		map[string]any{"embedder_runtime": "quantum"}, http.StatusBadRequest, &map[string]any{})
+	require.Empty(t, fake.written)
+	_, found, err := store.GetPlatformSetting(context.Background(), domain.PlatformSettingEmbedderRuntime)
+	require.NoError(t, err)
+	require.False(t, found, "invalid value must not be stored")
+}
+
+func TestAdminSettingsEmbedderRuntimeWriterUnavailable(t *testing.T) {
+	// Fixture WITHOUT the writer (dev mode): PUT must 503, not silently store.
+	handler, store := newIdleSettingsFixture(t)
+	doJSONAuth(t, handler, authAdmin, http.MethodPut, "/api/v1/admin/settings",
+		map[string]any{"embedder_runtime": "cuda"}, http.StatusServiceUnavailable, &map[string]any{})
+	_, found, err := store.GetPlatformSetting(context.Background(), domain.PlatformSettingEmbedderRuntime)
+	require.NoError(t, err)
+	require.False(t, found)
+}
+
+func TestAdminSettingsEmbedderRuntimeWriterFailureStoresNothing(t *testing.T) {
+	handler, store, fake := newEmbedderRuntimeFixture(t)
+	fake.err = context.DeadlineExceeded
+	doJSONAuth(t, handler, authAdmin, http.MethodPut, "/api/v1/admin/settings",
+		map[string]any{"embedder_runtime": "cpu"}, http.StatusServiceUnavailable, &map[string]any{})
+	_, found, err := store.GetPlatformSetting(context.Background(), domain.PlatformSettingEmbedderRuntime)
+	require.NoError(t, err)
+	require.False(t, found, "ConfigMap write failure must not store the setting")
+}
+
+func TestAdminSettingsBothFieldsTogether(t *testing.T) {
+	handler, _, fake := newEmbedderRuntimeFixture(t)
+	var out map[string]any
+	doJSONAuth(t, handler, authAdmin, http.MethodPut, "/api/v1/admin/settings",
+		map[string]any{"embedder_runtime": "cpu", "idle_scale_to_zero_minutes": 30}, http.StatusOK, &out)
+	require.Equal(t, "cpu", out["embedder_runtime"])
+	require.EqualValues(t, 30, out["idle_scale_to_zero_minutes"])
+	require.Contains(t, out, "mirrored_agents")
+	require.Equal(t, []string{"cpu"}, fake.written)
+}

@@ -334,6 +334,13 @@ ingressRoute:
 # whichever is present; none found → CPU.
 embedder:
   enabled: true
+  # S-212: run embed-backfill as a Helm post-upgrade/post-install Job
+  # (needs apiServer.memoryEmbeddings.enabled). Re-embeds memory rows
+  # whose embedding_model differs from the configured model; the
+  # binary is idempotent, so a no-change upgrade costs one quick Job.
+  # Set false to keep backfill fully manual (kubectl exec ...
+  # embed-backfill).
+  backfillOnUpgrade: true
   replicas: 1
   image:
     repository: ghcr.io/rossbrigoli/skquad-embedder

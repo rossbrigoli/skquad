@@ -94,8 +94,11 @@ Notes:
   ArgoCD sync (learned the hard way, S-212).
 - Admin override is read live from the ConfigMap; changing
   `data.runtime` switches the runtime without any redeploy (the pod
-  rolls once). The control-plane Settings UI writer for this ConfigMap
-  is **pending automation** — today it is `kubectl patch`.
+  rolls once). The Settings → Scaling **Embedder runtime** panel writes
+  this ConfigMap for platform admins (`PUT /admin/settings
+  {embedder_runtime}` → control-plane writes the CM *first*, then
+  persists the setting — a CM write failure returns 503 and stores
+  nothing).
 - Switching runtime rolls the embedder pod: embeddings are briefly
   unavailable; callers retry/backfill after.
 
@@ -135,11 +138,17 @@ old `embedding_model` and must be re-embedded.
 `control-plane/cmd/embed-backfill` does this idempotently (rows whose
 `embedding_model` ≠ configured model; re-run is a no-op).
 
-**Current state (0.1.196):** the control-plane image ships only
-`skquad-api`; `embed-backfill` must be built and run manually (e.g.
-`go build -o embed-backfill ./cmd/embed-backfill` + port-forward the
-gateway/DB). Automating it as a Helm hook Job / adding it to the CP
-image is a tracked follow-up.
+**Automation (S-212 follow-up):** the control-plane image ships
+`embed-backfill` at `/usr/local/bin/embed-backfill`, and the chart
+renders a **Helm post-upgrade/post-install Job**
+(`embedder.backfillOnUpgrade`, default `true`, requires
+`apiServer.memoryEmbeddings.enabled`) that runs it after the new
+embedder is applied (`backoffLimit: 6` covers a still-rolling
+embedder). Manual run any time:
+
+```bash
+kubectl -n skquad-system exec deploy/skquad-control-plane -- embed-backfill
+```
 
 ## 6. Verifying a deployment
 

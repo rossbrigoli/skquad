@@ -169,6 +169,18 @@ type Server struct {
 	// are configured; nil otherwise — write paths then store rows
 	// without vectors and the search endpoint answers 503.
 	embeddings EmbeddingsClient
+	// embedderConfig (S-212, ADR-0013 §5) writes the admin's embedder
+	// runtime override into the ConfigMap the operator reconciles.
+	// Built at startup when K8s connection config is present; nil in
+	// dev — PUT embedder_runtime then answers 503 instead of silently
+	// storing a setting nothing acts on.
+	embedderConfig EmbedderConfigWriter
+}
+
+// EmbedderConfigWriter persists the admin's embedder runtime choice to
+// the operator-consumed override ConfigMap (ADR-0013 §5).
+type EmbedderConfigWriter interface {
+	SetEmbedderRuntime(ctx context.Context, runtime string) error
 }
 
 // EmbeddingsClient generates text embeddings via the gateway (S-212).
@@ -232,24 +244,24 @@ func New(cfg *config.Config, store Store) http.Handler {
 // NewWithCRWriter returns an HTTP handler that mirrors squad/agent mutations
 // to Kubernetes CRs.
 func NewWithCRWriter(cfg *config.Config, store Store, crWriter CRWriter) http.Handler {
-	return newServer(cfg, store, nil, crWriter, nil, nil, nil, nil, nil)
+	return newServer(cfg, store, nil, crWriter, nil, nil, nil, nil, nil, nil)
 }
 
 // NewWithDependencies returns an HTTP handler with explicit optional
 // integrations for tests and production startup.
 func NewWithDependencies(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, providerKeys ProviderKeyStore) http.Handler {
-	return newServer(cfg, store, oidcAuth, crWriter, nil, providerKeys, nil, nil, nil)
+	return newServer(cfg, store, oidcAuth, crWriter, nil, providerKeys, nil, nil, nil, nil)
 }
 
 // NewWithPodRestarter wires an explicit PodRestarter (S-162 tests).
 func NewWithPodRestarter(cfg *config.Config, store Store, restarter PodRestarter) http.Handler {
-	return newServer(cfg, store, nil, nil, nil, nil, restarter, nil, nil)
+	return newServer(cfg, store, nil, nil, nil, nil, restarter, nil, nil, nil)
 }
 
 // NewWithOIDCAuthenticator returns an HTTP handler using oidcAuth when
 // SKQUAD_AUTH_MODE=oidc.
 func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator) http.Handler {
-	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil, nil, nil)
+	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil, nil, nil, nil)
 }
 
 // NewWithSearchProviders returns an HTTP handler whose web_search proxy
@@ -257,7 +269,7 @@ func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuth
 // from config secrets (duckduckgo always; brave/perplexity only when
 // their API keys are set). Tests inject stub providers here.
 func NewWithSearchProviders(cfg *config.Config, store Store, providers map[string]search.Provider) http.Handler {
-	return newServer(cfg, store, nil, nil, providers, nil, nil, nil, nil)
+	return newServer(cfg, store, nil, nil, providers, nil, nil, nil, nil, nil)
 }
 
 // NewWithProviderKeyStore returns an HTTP handler whose pasted provider
@@ -265,7 +277,7 @@ func NewWithSearchProviders(cfg *config.Config, store Store, providers map[strin
 // this to inject a fake; production builds the store from config inside
 // newServer.
 func NewWithProviderKeyStore(cfg *config.Config, store Store, keys ProviderKeyStore) http.Handler {
-	return newServer(cfg, store, nil, nil, nil, keys, nil, nil, nil)
+	return newServer(cfg, store, nil, nil, nil, keys, nil, nil, nil, nil)
 }
 
 // NewWithGatewayReload returns an HTTP handler using the given gateway
@@ -273,10 +285,17 @@ func NewWithProviderKeyStore(cfg *config.Config, store Store, keys ProviderKeySt
 // is built from cfg.LiteLLMAdminURL/master key (point those at an
 // httptest fake gateway in tests); the reloader is injected here.
 func NewWithGatewayReload(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, reloader GatewayReloader) http.Handler {
-	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil, reloader, nil)
+	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil, reloader, nil, nil)
 }
 
-func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, searchProviders map[string]search.Provider, providerKeys ProviderKeyStore, restarter PodRestarter, gwReloader GatewayReloader, injectedEmbeddings EmbeddingsClient) http.Handler {
+// NewWithEmbedderRuntimeWriter wires an explicit EmbedderConfigWriter
+// (S-212, ADR-0013 §5 tests). Production builds the writer from
+// in-cluster K8s config inside newServer.
+func NewWithEmbedderRuntimeWriter(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, writer EmbedderConfigWriter) http.Handler {
+	return newServer(cfg, store, oidcAuth, crWriter, nil, nil, nil, nil, nil, writer)
+}
+
+func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, searchProviders map[string]search.Provider, providerKeys ProviderKeyStore, restarter PodRestarter, gwReloader GatewayReloader, injectedEmbeddings EmbeddingsClient, embedderConfig EmbedderConfigWriter) http.Handler {
 	if crWriter == nil {
 		crWriter = noopCRWriter{}
 	}
@@ -330,6 +349,21 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 	}
 	s.gwReloader = gwReloader
 	s.gwModels = gwModels
+	// S-212 (ADR-0013 §5): embedder runtime override writer. Built
+	// from the same in-cluster K8s config as the provider-key store;
+	// absent config (dev) leaves nil and the admin PUT answers 503
+	// rather than storing a setting nothing acts on.
+	if embedderConfig != nil {
+		s.embedderConfig = embedderConfig
+	}
+	if s.embedderConfig == nil && cfg != nil && cfg.K8sEnabled && cfg.K8sAPIBase != "" && cfg.K8sTokenFile != "" {
+		built, err := kube.NewEmbedderConfigStore(cfg)
+		if err != nil {
+			log.Printf("embedder runtime override writer unavailable (PUT embedder_runtime disabled): %v", err)
+		} else if built != nil {
+			s.embedderConfig = built
+		}
+	}
 	// S-212: embeddings client for memory RAG. Built only when the
 	// feature is enabled with a model and a reachable gateway config.
 	// Gateway base prefers the admin URL (same LiteLLM instance) and

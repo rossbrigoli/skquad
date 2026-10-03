@@ -29,6 +29,26 @@ rules:
     verbs:
       - delete
       - list
+  # S-212 (ADR-0013 §5): the Settings UI's embedder-runtime choice is
+  # written to ConfigMap skquad-embedder-config for the operator to
+  # reconcile. create cannot be name-scoped; read/update/patch are
+  # pinned to the single override name.
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - create
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      - skquad-embedder-config
+    verbs:
+      - get
+      - update
+      - patch
   # S-GWREG: rollout-restart the LiteLLM gateway Deployment after model
   # deployment changes (the litellm router only picks up DB-persisted
   # models on pod restart — see docs/llm-gateway.md). Strategic-merge
