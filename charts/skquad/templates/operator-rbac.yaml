@@ -50,6 +50,16 @@ rules:
       # ADR-0013: the embedder runtime layer watches Nodes to keep GPU
       # detection (cuda/vulkan/cpu) current without polling.
       - watch
+  # ADR-0013: embedder runtime override ConfigMap, read by fixed name
+  # (cache-bypassed in the manager; see operator/cmd/manager/main.go).
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+    resourceNames:
+      - skquad-embedder-config
   - apiGroups:
       - ""
     resources:
