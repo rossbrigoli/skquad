@@ -1,5 +1,22 @@
 # WORKLOG
 
+## 2026-10-03 17:15 ACST
+
+- objective: S-204 — Re-organize the Tools UI page. Built-in tools are "just tools the platform ships pre-installed", so the separate Built-in Tools admin screen is removed and merged into Settings > Resources > Tools; the vertical bubble list becomes a compact tile grid with search; tiles open a per-tool configuration page.
+- files changed:
+  - `web/src/lib/toolsPage.ts` (new) — pure merge/filter layer: `ToolItem` unified shape (id = builtin name or registry UUID), `builtinToolItems`/`registryToolItem`/`mergeToolItems` (built-ins first), `filterToolItems` (case-insensitive name OR description), `toolTileHref`, `BUILTIN_TOOL_DESCRIPTIONS` (admin API carries no description for built-ins).
+  - `web/src/components/ToolTiles.tsx` (new) — `ToolTilesGrid`/`ToolTile`: square-ish tiles with logo (Skquad logo for built-ins via next/image, plug-glyph placeholder for registry tools), name, "Built-in" badge, 3-line clamped short description, disabled marker.
+  - `web/src/components/ToolsPanel.tsx` (new) — unified Tools tab: merges GET /admin/tools (admins only; empty-path no-op for other roles) + GET /registry/tools, search input filters by name/description, tile grid + empty states.
+  - `web/src/components/BuiltinToolsPanel.tsx` → `BuiltinToolConfig.tsx` (renamed) — dropped the panel wrapper (old separate screen); added `BuiltinToolConfig` (loads one built-in from /admin/tools, renders ToolCard, explicit "cannot be deleted" notice); ToolCard/DeniedPatternsEditor unchanged.
+  - `web/src/components/DeleteResourceButton.tsx` (new) — S-103 delete-with-409-usage flow extracted from the settings page so the config page can reuse it.
+  - `web/src/app/settings/resources/tools/[toolId]/page.tsx` (new) — tool configuration route: built-in name → BuiltinToolConfig (admin-only, plain notice otherwise); registry UUID → inline edit form (name/description/endpoint/auth_ref/manifest, PATCH /registry/tools/{id}, dirty-tracking, admin-only delete via DeleteResourceButton, read-only for non-admins).
+  - `web/src/app/settings/page.tsx` — removed the Built-in Tools tab (button, Tab member, render, import) and the local DeleteResourceButton (now shared); ResourcesTab renders `ToolsPanel` when the active resource type is `tools` (other resource types keep the classic entity list).
+  - `web/src/app/globals.css` — `.tool-search`, `.tool-grid` (auto-fill 210px), `.tool-tile` (190px min, hover accent border), `.tool-tile-logo`, `.tool-tile-name`, `.tool-tile-desc` (line-clamp 3), `.tool-badge` (accent pill), `.tool-tile-state`.
+  - Tests: `toolsPage.test.ts` (14: merge order, filter name/desc/blank/no-match, href encoding, descriptions), `ToolTiles.test.tsx` (8: tile count, config-route links, Skquad logo + Built-in badge on built-ins, placeholder glyph on registry tiles, disabled marker, em-dash fallback), `settings/page.test.ts` (3: no builtin-tools tab, no BuiltinToolsPanel import, ToolsPanel wired for the tools tab).
+  - `docs/web-app-ux.md` §4.6 — documents the unified Tools sub-tab (S-204 paragraph).
+- command/test run: `npx tsc --noEmit` clean; `npx vitest run` 44 files / 539 tests passed; `npm run test:coverage` passes thresholds (toolsPage.ts 100% stmts/lines/functions); `NEXT_TELEMETRY_DISABLED=1 npm run build` succeeds with new route `ƒ /settings/resources/tools/[toolId]`; `npm run lint` — 5 errors all pre-existing (inbox, EmbedderRuntimePanel, IdleScaleToZeroPanel, Modal.test, NotificationBell), none in changed files; CI does not run lint.
+- result: Built-in tools now live on the Tools page with a Built-in badge and no delete affordance; separate screen gone. Search filters all tools by name/description client-side. Tiles navigate to /settings/resources/tools/{name|uuid}. Backend untouched (existing /admin/tools + /registry/tools/{id} GET/PATCH/DELETE already cover everything). Simplifications: non-admins don't see built-in tiles (GET /admin/tools is platform-admin-only; their Tools tab is unchanged registry read-only); built-in tile descriptions are static constants (no description field in the ADR-0012 config shape); "Back to Tools" uses history.back() since the settings tabs aren't URL-addressable.
+
 ## 2026-09-30 15:20 ACST
 
 - objective: S-181 — task screen "Result" field + email-style inbox notifications. Owners previously had no way to see the final outcome (completion summary / blocked reason) of an agent's work without reading the whole thread, and inbox notifications were bare one-liners without a task link.
