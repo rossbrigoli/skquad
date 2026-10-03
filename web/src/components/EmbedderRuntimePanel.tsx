@@ -106,7 +106,7 @@ export function EmbedderRuntimePanel() {
             ))}
           </select>
         </label>
-        <button type="button" className="btn btn-sm" disabled={loading || saving || runtime === current} onClick={() => void save()}>
+        <button type="button" className="btn btn-primary" disabled={loading || saving || runtime === current} onClick={() => void save()}>
           {saving ? "Saving…" : "Save"}
         </button>
       </div>
