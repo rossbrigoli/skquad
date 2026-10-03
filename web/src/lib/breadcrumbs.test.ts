@@ -91,6 +91,31 @@ describe("breadcrumbsForPath", () => {
     ]);
   });
 
+  // S-204 follow-up: the Settings > Resources > Tools breadcrumb chain
+  // must link every level that now has a real page.
+  it("links every level of the Settings > Resources > Tools chain", () => {
+    expect(breadcrumbsForPath("/settings/resources")).toEqual([
+      { label: "Settings", href: "/settings" },
+      { label: "Resources", href: null },
+    ]);
+    expect(breadcrumbsForPath("/settings/resources/tools")).toEqual([
+      { label: "Settings", href: "/settings" },
+      { label: "Resources", href: "/settings/resources" },
+      { label: "Tools", href: null },
+    ]);
+    expect(breadcrumbsForPath("/settings/resources/tools/exec")).toEqual([
+      { label: "Settings", href: "/settings" },
+      { label: "Resources", href: "/settings/resources" },
+      { label: "Tools", href: "/settings/resources/tools" },
+      { label: "Exec", href: null },
+    ]);
+    expect(breadcrumbsForPath("/settings/resources/knowledge-bases")).toEqual([
+      { label: "Settings", href: "/settings" },
+      { label: "Resources", href: "/settings/resources" },
+      { label: "Knowledge bases", href: null },
+    ]);
+  });
+
   it("humanises unknown static segments", () => {
     expect(breadcrumbsForPath("/settings/billing_settings")).toEqual([
       { label: "Settings", href: "/settings" },

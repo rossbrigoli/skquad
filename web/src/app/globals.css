@@ -3442,3 +3442,47 @@ button.squad-tab.active {
   border-radius: var(--radius-pill);
   padding: 1px var(--space-2);
 }
+
+/* S-204 follow-up: Resources index page (/settings/resources). */
+.page-subtitle {
+  margin: 0 0 var(--space-4);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+
+.resource-index {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-3);
+}
+
+.resource-index-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  text-decoration: none;
+  color: inherit;
+  transition:
+    border-color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
+}
+
+.resource-index-card:hover {
+  border-color: var(--accent);
+  background: var(--surface-sunken);
+}
+
+.resource-index-label {
+  font-weight: 600;
+  font-size: var(--text-md);
+}
+
+.resource-index-desc {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}

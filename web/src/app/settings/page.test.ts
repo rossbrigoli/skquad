@@ -1,6 +1,10 @@
 // S-204: the separate "Built-in Tools" settings screen must be gone —
 // built-ins are managed on the unified Resources > Tools panel.
 // Source-level lock (same style as the S-205 transport locks).
+//
+// S-204 follow-up: Resources moved off the in-page tab onto real routes
+// (/settings/resources + /settings/resources/<type>) so breadcrumb
+// levels resolve; the Settings "Resources" tab now navigates there.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -16,8 +20,9 @@ describe("Settings page tab surface (S-204)", () => {
     expect(source).not.toContain("BuiltinToolsPanel");
   });
 
-  it("renders the unified ToolsPanel for the tools resource tab", () => {
-    expect(source).toContain('<ToolsPanel isAdmin={isAdmin} />');
-    expect(source).toContain('active.key === "tools"');
+  it("navigates to the real Resources index instead of an in-page tab", () => {
+    expect(source).toContain('router.push("/settings/resources")');
+    expect(source).not.toContain("ResourcesTab");
+    expect(source).not.toContain("RESOURCE_TABS");
   });
 });

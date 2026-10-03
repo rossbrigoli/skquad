@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AuthGate } from "../../components/AuthGate";
 import { AppShell } from "../../components/AppShell";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
@@ -17,7 +18,6 @@ import {
   apiPut,
   ApiError,
   type LLMProvider,
-  type RegistryResource,
 } from "../../lib/api";
 import {
   buildAIModelPayload,
@@ -61,7 +61,6 @@ import { DeadLettersPanel } from "../../components/DeadLettersPanel";
 import { IdleScaleToZeroPanel } from "../../components/IdleScaleToZeroPanel";
 import { EmbedderRuntimePanel } from "../../components/EmbedderRuntimePanel";
 import { NotificationPreferencesPanel } from "../../components/NotificationPreferencesPanel";
-import { ToolsPanel } from "../../components/ToolsPanel";
 import { DeleteResourceButton } from "../../components/DeleteResourceButton";
 import { PromptTemplatesPanel } from "../../components/PromptTemplatesPanel";
 import type { PromptTemplate } from "../../lib/promptTemplates";
@@ -133,18 +132,15 @@ function duplicateModelMessage(err: unknown): string {
 // S-117: "appearance" and "session" tabs removed — theme switching lives
 // in the top-right ThemeToggle and session details/sign-out in the
 // bottom-left UserMenu popover, both available on every page.
-type Tab = "providers" | "resources" | "ai-models" | "access" | "prompt" | "templates" | "dead-letters" | "scaling" | "notifications";
+type Tab = "providers" | "ai-models" | "access" | "prompt" | "templates" | "dead-letters" | "scaling" | "notifications";
 
-const RESOURCE_TABS: { key: string; label: string }[] = [
-  { key: "skills", label: "Skills" },
-  { key: "tools", label: "Tools" },
-  { key: "apis", label: "APIs" },
-  { key: "knowledge-bases", label: "Knowledge bases" },
-  { key: "project-workspaces", label: "Project workspaces" },
-];
+// S-204 follow-up: Resources is no longer an in-page tab — it lives on
+// real routes (/settings/resources + /settings/resources/<type>) so
+// breadcrumb levels like "Resources" and "Tools" resolve instead of 404.
 
 export default function SettingsPage() {
   const { user } = useAuth();
+  const router = useRouter();
   const [tab, setTab] = useState<Tab>("providers");
   const isAdmin = isPlatformAdmin(user?.role);
   // WP6 (S-111): AI Models + Access are admin-only surfaces. The tab
@@ -166,7 +162,8 @@ export default function SettingsPage() {
           ) : (
             <TabButton active={activeTab === "providers"} label="LLM providers" onClick={() => setTab("providers")} />
           )}
-          <TabButton active={activeTab === "resources"} label="Resources" onClick={() => setTab("resources")} />
+          {/* S-204 follow-up: navigates to the real Resources index. */}
+          <TabButton active={false} label="Resources" onClick={() => router.push("/settings/resources")} />
           {isAdmin ? (
             <TabButton active={activeTab === "access"} label="Access" onClick={() => setTab("access")} />
           ) : null}
@@ -207,7 +204,6 @@ export default function SettingsPage() {
         ) : null}
 
         {!isAdmin && activeTab === "providers" ? <ProvidersTab isAdmin={false} /> : null}
-        {activeTab === "resources" ? <ResourcesTab isAdmin={isAdmin} /> : null}
         {isAdmin && activeTab === "ai-models" ? <ModelHierarchyTab /> : null}
         {isAdmin && activeTab === "access" ? <AccessTab /> : null}
         {isAdmin && activeTab === "prompt" ? <OrganizationPromptTab /> : null}
@@ -303,96 +299,6 @@ function ProvidersTab({ isAdmin }: { readonly isAdmin: boolean }) {
             setCreating(false);
             setEditing(null);
             providers.refresh();
-          }}
-        />
-      )}
-    </section>
-  );
-}
-
-function ResourcesTab({ isAdmin }: { readonly isAdmin: boolean }) {
-  const [typeIdx, setTypeIdx] = useState(0);
-  const active = RESOURCE_TABS[typeIdx];
-  const resources = useApi<RegistryResource[]>(`/registry/${active.key}`, 60000);
-  const [editing, setEditing] = useState<RegistryResource | null>(null);
-  const [creating, setCreating] = useState(false);
-  const items = resources.data || [];
-
-  return (
-    <section>
-      <div className="tabs">
-        {RESOURCE_TABS.map((t, i) => (
-          <button
-            key={t.key}
-            type="button"
-            className={typeIdx === i ? "active" : ""}
-            onClick={() => {
-              setTypeIdx(i);
-              setEditing(null);
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-      <div className="section-head">
-        <h2>{active.label}</h2>
-        {isAdmin ? (
-          <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
-            + Register {active.label.replace(/s$/, "").toLowerCase()}
-          </button>
-        ) : null}
-      </div>
-      {resources.error ? <div className="notice error">{resources.error}</div> : null}
-      {active.key === "tools" ? (
-        // S-204: Tools gets the unified tile-grid panel — built-in tools
-        // (pre-installed, undeletable) and registered tools side by side,
-        // with a name/description filter. Other resource types keep the
-        // classic entity list.
-        <ToolsPanel isAdmin={isAdmin} />
-      ) : items.length === 0 && !resources.loading ? (
-        <EmptyState title={`No ${active.label.toLowerCase()} registered`} hint="Register one so agents can be granted access." />
-      ) : (
-        <div className="entity-list">
-          {items.map((r) => (
-            <div key={r.id} className="entity-row">
-              <div className="entity-main">
-                <span className="entity-title">{r.name}</span>
-                <span className="entity-meta">{r.description || r.endpoint || "—"}</span>
-              </div>
-              <div className="entity-side">
-                <StatusChip status={statusChipFor(r.status)} />
-                {isAdmin ? (
-                  <button type="button" className="btn btn-sm" onClick={() => setEditing(r)}>
-                    Edit
-                  </button>
-                ) : null}
-                {isAdmin ? (
-                  <DeleteResourceButton
-                    path={`/registry/${active.key}/${r.id}`}
-                    name={r.name}
-                    onDeleted={() => {
-              resources.refresh();
-            }}
-                  />
-                ) : null}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      {(creating || editing) && (
-        <ResourceModal
-          resourceType={active.key}
-          resource={editing}
-          onClose={() => {
-            setCreating(false);
-            setEditing(null);
-          }}
-          onSaved={() => {
-            setCreating(false);
-            setEditing(null);
-            resources.refresh();
           }}
         />
       )}
@@ -1202,14 +1108,6 @@ function GrantEditor({ user }: { readonly user: AdminUser }) {
   );
 }
 
-function parseJsonField(value: string, label: string): string | undefined {
-  const trimmed = value.trim();
-  if (trimmed === "") return undefined;
-  JSON.parse(trimmed); // throws → caller surfaces message
-  if (typeof JSON.parse(trimmed) !== "object") throw new Error(`${label} must be a JSON object or array`);
-  return trimmed;
-}
-
 function ProviderModal({
   provider,
   onClose,
@@ -1364,84 +1262,6 @@ function ProviderModal({
               ? "Stored as a Kubernetes Secret by the platform. Leave blank to keep the current key."
               : "Stored as a Kubernetes Secret by the platform — no manual kubectl needed."}
           </small>
-        </label>
-      </ModalForm>
-    </Modal>
-  );
-}
-
-function ResourceModal({
-  resourceType,
-  resource,
-  onClose,
-  onSaved,
-}: {
-  readonly resourceType: string;
-  readonly resource: RegistryResource | null;
-  readonly onClose: () => void;
-  readonly onSaved: () => void;
-}) {
-  const { token } = useAuth();
-  const [name, setName] = useState(resource?.name ?? "");
-  const [description, setDescription] = useState(resource?.description ?? "");
-  const [endpoint, setEndpoint] = useState(resource?.endpoint ?? "");
-  const [authRef, setAuthRef] = useState(resource?.auth_ref ?? "");
-  const [manifest, setManifest] = useState(resource?.manifest ? JSON.stringify(resource.manifest, null, 2) : "");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  return (
-    <Modal title={resource ? `Edit “${resource.name}”` : `Register ${resourceType.replace(/-/g, " ")}`} onClose={onClose}>
-      <ModalForm
-        busy={busy}
-        error={error}
-        submitLabel={resource ? "Save changes" : "Register"}
-        submitDisabled={name.trim() === ""}
-        onCancel={onClose}
-        onSubmit={async () => {
-          setBusy(true);
-          setError("");
-          try {
-            const body = {
-              name: name.trim(),
-              description: description.trim(),
-              endpoint: endpoint.trim(),
-              auth_ref: authRef.trim(),
-              manifest: parseJsonField(manifest, "Manifest"),
-            };
-            if (resource) {
-              await apiPatch(`/registry/${resourceType}/${resource.id}`, token, body);
-            } else {
-              await apiPost(`/registry/${resourceType}`, token, body);
-            }
-            onSaved();
-          } catch (err) {
-            setError(err instanceof Error ? err.message : "save failed");
-            setBusy(false);
-          }
-        }}
-      >
-        <label className="field">
-          <span>Name</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-        </label>
-        <label className="field">
-          <span>Description</span>
-          <textarea value={description} onChange={(e) => setDescription(e.target.value)} />
-        </label>
-        <div className="field-row">
-          <label className="field">
-            <span>Endpoint</span>
-            <input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="https://… (if applicable)" />
-          </label>
-          <label className="field">
-            <span>Auth ref</span>
-            <input value={authRef} onChange={(e) => setAuthRef(e.target.value)} placeholder="secret / vault ref (never the secret itself)" />
-          </label>
-        </div>
-        <label className="field">
-          <span>Manifest (JSON, optional)</span>
-          <textarea value={manifest} onChange={(e) => setManifest(e.target.value)} placeholder='{"version": 1, ...}' />
         </label>
       </ModalForm>
     </Modal>
