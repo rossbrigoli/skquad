@@ -4,10 +4,10 @@ export function MetricTile({
   sub,
   attention = false,
 }: {
-  label: string;
-  value: string | number;
-  sub?: string;
-  attention?: boolean;
+  readonly label: string;
+  readonly value: string | number;
+  readonly sub?: string;
+  readonly attention?: boolean;
 }) {
   return (
     <article className={attention ? "card metric attention" : "card metric"}>

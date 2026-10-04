@@ -9,11 +9,11 @@ export function EntityRow({
   side,
   trailing,
 }: {
-  href: string;
-  title: string;
-  meta?: string;
-  side?: ReactNode;
-  trailing?: ReactNode;
+  readonly href: string;
+  readonly title: string;
+  readonly meta?: string;
+  readonly side?: ReactNode;
+  readonly trailing?: ReactNode;
 }) {
   return (
     <Link href={href} className="entity-row">

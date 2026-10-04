@@ -10,8 +10,8 @@ export function SubagentThreadPanel({
   info,
   onClose,
 }: {
-  info: SubagentInfo;
-  onClose: () => void;
+  readonly info: SubagentInfo;
+  readonly onClose: () => void;
 }) {
   // S-189: content-derived stable keys (thread is static history, never reordered).
   const threadKeys = uniqueContentKeys(info.thread, (e) => `${e.role}|${e.name ?? ""}|${e.content}`);
@@ -43,7 +43,7 @@ export function SubagentThreadPanel({
   );
 }
 
-function ThreadEntry({ entry }: { entry: SubagentThreadEntry }) {
+function ThreadEntry({ entry }: { readonly entry: SubagentThreadEntry }) {
   if (entry.role === "notice") {
     return <p className="subagent-notice">{entry.content}</p>;
   }

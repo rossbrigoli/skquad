@@ -13,12 +13,12 @@ export function ConfirmDialog({
   onConfirm,
   onClose,
 }: {
-  title: string;
-  body: string;
-  confirmText?: string;
-  confirmLabel?: string;
-  onConfirm: () => Promise<void> | void;
-  onClose: () => void;
+  readonly title: string;
+  readonly body: string;
+  readonly confirmText?: string;
+  readonly confirmLabel?: string;
+  readonly onConfirm: () => Promise<void> | void;
+  readonly onClose: () => void;
 }) {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);

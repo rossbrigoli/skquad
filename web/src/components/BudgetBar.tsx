@@ -14,9 +14,9 @@ export function BudgetBar({
   budget,
   currency = "USD",
 }: {
-  spend: number;
-  budget: number | null | undefined;
-  currency?: string;
+  readonly spend: number;
+  readonly budget: number | null | undefined;
+  readonly currency?: string;
 }) {
   const model = buildBudgetModel(spend, budget);
   if (!model.hasBudget) {

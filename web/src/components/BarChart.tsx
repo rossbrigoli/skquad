@@ -25,9 +25,9 @@ export function BarChart({
   formatValue,
   height = 240,
 }: {
-  model: ChartModel;
-  formatValue: (n: number) => string;
-  height?: number;
+  readonly model: ChartModel;
+  readonly formatValue: (n: number) => string;
+  readonly height?: number;
 }) {
   const plotH = height - PAD_TOP - PAD_BOTTOM;
   const count = Math.max(model.columns.length, 1);

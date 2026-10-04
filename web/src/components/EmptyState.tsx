@@ -6,9 +6,9 @@ export function EmptyState({
   hint,
   action,
 }: {
-  title: string;
-  hint?: string;
-  action?: ReactNode;
+  readonly title: string;
+  readonly hint?: string;
+  readonly action?: ReactNode;
 }) {
   return (
     <div className="empty-state">

@@ -8,7 +8,7 @@ import { useAuth } from "../lib/auth";
 // OIDC mode shows a chooser rather than auto-redirecting: the normal SSO path,
 // plus a break-glass admin form when the control-plane advertises it is enabled.
 // Token mode (dev) keeps the paste-a-token gate.
-export function AuthGate({ children }: { children: ReactNode }) {
+export function AuthGate({ children }: { readonly children: ReactNode }) {
   const { token, user, loading, error, mode, setToken } = useAuth();
   const [draft, setDraft] = useState("");
 

@@ -233,11 +233,11 @@ function TemplateEditorModal({
   onClose,
   onSaved,
 }: {
-  title: string;
-  templateId?: string;
-  initial: PromptTemplateFormValues;
-  onClose: () => void;
-  onSaved: () => void;
+  readonly title: string;
+  readonly templateId?: string;
+  readonly initial: PromptTemplateFormValues;
+  readonly onClose: () => void;
+  readonly onSaved: () => void;
 }) {
   const { token } = useAuth();
   const [values, setValues] = useState<PromptTemplateFormValues>(initial);
