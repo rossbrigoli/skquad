@@ -40,7 +40,7 @@ export default function ToolConfigPage() {
     <AuthGate>
       <AppShell>
         {isBuiltinToolName(toolId) ? (
-          <BuiltinToolRoute name={toolId as BuiltinToolName} isAdmin={isAdmin} />
+          <BuiltinToolRoute name={toolId} isAdmin={isAdmin} />
         ) : (
           <RegistryToolRoute id={toolId} isAdmin={isAdmin} />
         )}
