@@ -154,23 +154,37 @@ export function NotificationBell() {
                   <li
                     key={n.id}
                     className={`notif-item ${isUnread(n.read_at) ? "notif-unread" : "notif-read"} ${notificationSeverityClass(n.severity)}`}
-                    // S-209: clicking anywhere on the item marks it read
-                    // (links inside still navigate; bubbling covers both).
-                    onClick={() => {
-                      if (isUnread(n.read_at)) markRead(n.id).catch(() => undefined);
-                    }}
                   >
-                    <div className="notif-item-main">
-                      <span className={`chip ${meta.className}`}>{meta.label}</span>
-                      {href ? (
-                        <Link className="notif-message notif-message-link" href={href}>
-                          {n.message}
-                        </Link>
-                      ) : (
+                    {/* S-189: the old li-level click handler (S-209) moved onto
+                        native interactive elements — a Link when the
+                        notification has a destination, a plain button when it
+                        doesn't. Clicking the item body still marks it read. */}
+                    {href ? (
+                      <Link
+                        className="notif-item-main notif-item-main-link"
+                        href={href}
+                        onClick={() => {
+                          if (isUnread(n.read_at)) markRead(n.id).catch(() => undefined);
+                        }}
+                      >
+                        <span className={`chip ${meta.className}`}>{meta.label}</span>
+                        <span className="notif-message notif-message-link">{n.message}</span>
+                        <span className="notif-time">{formatRelativeTime(n.created_at)}</span>
+                      </Link>
+                    ) : (
+                      <button
+                        type="button"
+                        className="notif-item-main notif-item-main-btn"
+                        aria-label={`Mark read: ${n.message}`}
+                        onClick={() => {
+                          if (isUnread(n.read_at)) markRead(n.id).catch(() => undefined);
+                        }}
+                      >
+                        <span className={`chip ${meta.className}`}>{meta.label}</span>
                         <span className="notif-message">{n.message}</span>
-                      )}
-                      <span className="notif-time">{formatRelativeTime(n.created_at)}</span>
-                    </div>
+                        <span className="notif-time">{formatRelativeTime(n.created_at)}</span>
+                      </button>
+                    )}
                     {isUnread(n.read_at) ? (
                       <button
                         type="button"
