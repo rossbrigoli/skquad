@@ -282,6 +282,26 @@ func truncateDetail(s string, max int) string {
 	return s[:max] + "…"
 }
 
+// roundTripFailure maps the upstream HTTP status (and a read failure on
+// an otherwise-good status) to a failed round-trip test result. It
+// returns ok=true when a failure result applies.
+func roundTripFailure(resp *http.Response, readErr error, latency int64, modelName string) (testResult, bool) {
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return testResult{OK: false, Reason: testReasonAuthFailed, LatencyMS: latency,
+			Detail: "provider rejected the credential (HTTP 401/403) — check the provider's API key"}, true
+	case resp.StatusCode < 200 || resp.StatusCode >= 300:
+		// Deliberately NOT echoing the upstream body: it can contain
+		// request echoes. Status code alone is enough to diagnose.
+		return testResult{OK: false, Reason: testReasonProviderErr, LatencyMS: latency,
+			Detail: fmt.Sprintf("provider returned HTTP %d for model %q", resp.StatusCode, modelName)}, true
+	case readErr != nil:
+		return testResult{OK: false, Reason: testReasonProviderErr, LatencyMS: latency,
+			Detail: "could not read the provider completion response"}, true
+	}
+	return testResult{}, false
+}
+
 // testModelRoundTrip handles POST /ai-models/test — the pre-save model
 // check. The model is NOT persisted: the request carries provider_id +
 // model_name from the form; the provider's stored base URL and Secret
@@ -332,21 +352,8 @@ func (s *Server) testModelRoundTrip(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		writeTestResult(w, testResult{OK: false, Reason: testReasonAuthFailed, LatencyMS: latency,
-			Detail: "provider rejected the credential (HTTP 401/403) — check the provider's API key"})
-		return
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Deliberately NOT echoing the upstream body: it can contain
-		// request echoes. Status code alone is enough to diagnose.
-		writeTestResult(w, testResult{OK: false, Reason: testReasonProviderErr, LatencyMS: latency,
-			Detail: fmt.Sprintf("provider returned HTTP %d for model %q", resp.StatusCode, modelName)})
-		return
-	}
-	if readErr != nil {
-		writeTestResult(w, testResult{OK: false, Reason: testReasonProviderErr, LatencyMS: latency,
-			Detail: "could not read the provider completion response"})
+	if res, failed := roundTripFailure(resp, readErr, latency, modelName); failed {
+		writeTestResult(w, res)
 		return
 	}
 	extract := extractOpenAIChatText

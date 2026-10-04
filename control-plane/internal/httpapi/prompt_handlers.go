@@ -256,26 +256,12 @@ func (s *Server) composePromptForAgent(ctx context.Context, agent *domain.Agent)
 	if err != nil {
 		return promptcompo.Composition{}, err
 	}
-	roster := make([]string, 0, len(squadAgents))
-	for _, member := range squadAgents {
-		if strings.TrimSpace(member.Role) != "" {
-			roster = append(roster, member.Name+" ("+member.Role+")")
-		} else {
-			roster = append(roster, member.Name)
-		}
-	}
+	roster := buildSquadRoster(squadAgents)
 	granted, err := s.currentAgentResources(ctx, agent.ID)
 	if err != nil {
 		return promptcompo.Composition{}, err
 	}
-	resourceLines := make([]string, 0, len(granted))
-	for _, res := range granted {
-		line := res.Name + " [" + string(res.ResourceType) + "]"
-		if strings.TrimSpace(res.Description) != "" {
-			line += ": " + res.Description
-		}
-		resourceLines = append(resourceLines, line)
-	}
+	resourceLines := buildResourceLines(granted)
 	// Platform-prompt awareness: enabled tool inventory. A store failure on
 	// the tool list is a real error (same posture as the other reads); the
 	// model facts below are deliberately fail-soft.
@@ -300,18 +286,53 @@ func (s *Server) composePromptForAgent(ctx context.Context, agent *domain.Agent)
 	// The runtime fetches this composition per wake (ETag-cached), so a
 	// mission edit takes effect on the next wake without recreating
 	// agents or pods. Empty missions omit the sentence entirely.
-	squadTier := squad.Prompt
-	if mission := strings.TrimSpace(squad.Mission); mission != "" {
-		line := "You are part of the squad called " + squad.Name + " with the following mission: " + mission
-		if strings.TrimSpace(squadTier) == "" {
-			squadTier = line
-		} else {
-			squadTier = line + "\n\n" + squadTier
-		}
-	}
+	squadTier := composeSquadTier(squad)
 	// Platform override is a deploy-time operator concern (Helm-rendered
 	// file); WP2 serves the embedded platform prompt.
 	return promptcompo.Compose("", orgPrompt, squadTier, agent.SystemPrompt, facts)
+}
+
+// buildSquadRoster renders "Name (Role)" lines for every squad member,
+// omitting the role suffix when a member has none.
+func buildSquadRoster(squadAgents []*domain.Agent) []string {
+	roster := make([]string, 0, len(squadAgents))
+	for _, member := range squadAgents {
+		if strings.TrimSpace(member.Role) != "" {
+			roster = append(roster, member.Name+" ("+member.Role+")")
+		} else {
+			roster = append(roster, member.Name)
+		}
+	}
+	return roster
+}
+
+// buildResourceLines renders "Name [type]: description" lines for the
+// agent's granted resources, omitting the description when empty.
+func buildResourceLines(granted []agentRuntimeResource) []string {
+	lines := make([]string, 0, len(granted))
+	for _, res := range granted {
+		line := res.Name + " [" + string(res.ResourceType) + "]"
+		if strings.TrimSpace(res.Description) != "" {
+			line += ": " + res.Description
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// composeSquadTier returns the squad tier text with the squad mission
+// sentence prepended (S-179). Empty missions omit the sentence entirely.
+func composeSquadTier(squad *domain.Squad) string {
+	squadTier := squad.Prompt
+	mission := strings.TrimSpace(squad.Mission)
+	if mission == "" {
+		return squadTier
+	}
+	line := "You are part of the squad called " + squad.Name + " with the following mission: " + mission
+	if strings.TrimSpace(squadTier) == "" {
+		return line
+	}
+	return line + "\n\n" + squadTier
 }
 
 // enabledToolDescriptions are the one-line blurbs rendered into the
@@ -368,10 +389,7 @@ func (s *Server) applyModelFacts(ctx context.Context, agent *domain.Agent, f *pr
 	if err != nil || model == nil {
 		return
 	}
-	display := strings.TrimSpace(model.DisplayName)
-	if display == "" {
-		display = model.ModelName
-	}
+	display := modelDisplayName(model)
 	f.ModelDisplay = display
 	f.ModelName = model.ModelName
 	f.ModelProvider = "unknown"
@@ -388,18 +406,31 @@ func (s *Server) applyModelFacts(ctx context.Context, agent *domain.Agent, f *pr
 	} else {
 		f.ModelSupportsTools = "NOT supported"
 	}
-	f.ModelFallback = "none configured"
-	if fbID := strings.TrimSpace(agent.FallbackAIModelID); fbID != "" {
-		if fb, err := s.store.GetAIModel(ctx, fbID); err == nil && fb != nil {
-			fbDisplay := strings.TrimSpace(fb.DisplayName)
-			if fbDisplay == "" {
-				fbDisplay = fb.ModelName
-			}
-			f.ModelFallback = fbDisplay
-		} else {
-			f.ModelFallback = "unknown"
-		}
+	f.ModelFallback = s.resolveFallbackFact(ctx, agent)
+}
+
+// modelDisplayName returns a model's display name, falling back to the
+// raw model name when no display name is set.
+func modelDisplayName(m *domain.AIModel) string {
+	if d := strings.TrimSpace(m.DisplayName); d != "" {
+		return d
 	}
+	return m.ModelName
+}
+
+// resolveFallbackFact renders the model.fallback display string for an
+// agent: the fallback model's display name, "none configured", or
+// "unknown" when the fallback cannot be resolved (fail-soft).
+func (s *Server) resolveFallbackFact(ctx context.Context, agent *domain.Agent) string {
+	fbID := strings.TrimSpace(agent.FallbackAIModelID)
+	if fbID == "" {
+		return "none configured"
+	}
+	fb, err := s.store.GetAIModel(ctx, fbID)
+	if err != nil || fb == nil {
+		return "unknown"
+	}
+	return modelDisplayName(fb)
 }
 
 // resolvePlatformOwner renders the platform-owner display for the
@@ -510,43 +541,14 @@ func (s *Server) listPromptRevisions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "scope must be one of: organization, squad, agent")
 		return
 	}
-	limit := 50
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed <= 0 || parsed > 200 {
-			writeError(w, http.StatusBadRequest, "bad_request", "limit must be between 1 and 200")
-			return
-		}
-		limit = parsed
+	limit, ok := parseRevisionLimit(w, strings.TrimSpace(r.URL.Query().Get("limit")))
+	if !ok {
+		return
 	}
 
-	switch scope {
-	case domain.PromptScopeOrganization:
-		if !s.requirePlatformAdmin(w, r) {
-			return
-		}
-		scopeID = "" // the organization tier is keyed by the empty scope_id
-	case domain.PromptScopeSquad:
-		if scopeID == "" {
-			writeError(w, http.StatusBadRequest, "bad_request", "scope_id is required for squad revisions")
-			return
-		}
-		if _, ok := s.ensureOwnedOrAdminSquad(w, r, scopeID); !ok {
-			return
-		}
-	case domain.PromptScopeAgent:
-		if scopeID == "" {
-			writeError(w, http.StatusBadRequest, "bad_request", "scope_id is required for agent revisions")
-			return
-		}
-		agent, err := s.store.GetAgent(r.Context(), scopeID)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		if _, ok := s.ensureOwnedOrAdminSquad(w, r, agent.SquadID); !ok {
-			return
-		}
+	scopeID, ok = s.authorizePromptRevisionScope(w, r, scope, scopeID)
+	if !ok {
+		return
 	}
 
 	revisions, err := s.store.ListPromptRevisions(r.Context(), scope, scopeID, limit)
@@ -555,6 +557,59 @@ func (s *Server) listPromptRevisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"revisions": revisions})
+}
+
+// parseRevisionLimit parses the ?limit= query parameter (default 50,
+// range 1..200). On invalid input it writes the HTTP error and
+// returns ok=false.
+func parseRevisionLimit(w http.ResponseWriter, raw string) (int, bool) {
+	if raw == "" {
+		return 50, true
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed <= 0 || parsed > 200 {
+		writeError(w, http.StatusBadRequest, "bad_request", "limit must be between 1 and 200")
+		return 0, false
+	}
+	return parsed, true
+}
+
+// authorizePromptRevisionScope enforces who may list revisions for a
+// scope and normalises scopeID (the organization tier is keyed by the
+// empty scope_id). On rejection it writes the HTTP error and returns
+// ok=false.
+func (s *Server) authorizePromptRevisionScope(w http.ResponseWriter, r *http.Request, scope, scopeID string) (string, bool) {
+	switch scope {
+	case domain.PromptScopeOrganization:
+		if !s.requirePlatformAdmin(w, r) {
+			return "", false
+		}
+		return "", true
+	case domain.PromptScopeSquad:
+		if scopeID == "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "scope_id is required for squad revisions")
+			return "", false
+		}
+		if _, ok := s.ensureOwnedOrAdminSquad(w, r, scopeID); !ok {
+			return "", false
+		}
+		return scopeID, true
+	case domain.PromptScopeAgent:
+		if scopeID == "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "scope_id is required for agent revisions")
+			return "", false
+		}
+		agent, err := s.store.GetAgent(r.Context(), scopeID)
+		if err != nil {
+			writeStorageError(w, err)
+			return "", false
+		}
+		if _, ok := s.ensureOwnedOrAdminSquad(w, r, agent.SquadID); !ok {
+			return "", false
+		}
+		return scopeID, true
+	}
+	return scopeID, true
 }
 
 // POST /api/v1/prompt/validate — dry-run of the save-time battery for a

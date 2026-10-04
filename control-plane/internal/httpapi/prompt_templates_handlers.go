@@ -140,11 +140,26 @@ func (s *Server) updatePromptTemplate(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if !applyPromptTemplateFields(w, template, req) {
+		return
+	}
+	updated, err := s.store.UpdatePromptTemplate(r.Context(), template)
+	if err != nil {
+		writePromptTemplateStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// applyPromptTemplateFields validates and applies the optional PATCH
+// fields onto template. On invalid input it writes the HTTP error and
+// returns false.
+func applyPromptTemplateFields(w http.ResponseWriter, template *domain.PromptTemplate, req promptTemplateRequest) bool {
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name == "" {
 			writeError(w, http.StatusBadRequest, "bad_request", "name must not be empty")
-			return
+			return false
 		}
 		template.Name = name
 	}
@@ -155,7 +170,7 @@ func (s *Server) updatePromptTemplate(w http.ResponseWriter, r *http.Request) {
 		appliesTo := strings.TrimSpace(*req.AppliesTo)
 		if !domain.ValidPromptTemplateAppliesTo(appliesTo) {
 			writeError(w, http.StatusBadRequest, "bad_request", msgAppliesToInvalid)
-			return
+			return false
 		}
 		template.AppliesTo = appliesTo
 	}
@@ -163,24 +178,26 @@ func (s *Server) updatePromptTemplate(w http.ResponseWriter, r *http.Request) {
 		content := strings.TrimSpace(*req.Content)
 		if content == "" {
 			writeError(w, http.StatusBadRequest, "bad_request", "content must not be empty")
-			return
+			return false
 		}
 		if failure := validateTemplateContent(content, template.AppliesTo); failure != nil {
 			writePromptFailure(w, failure)
-			return
+			return false
 		}
 		template.Content = content
 	}
-	updated, err := s.store.UpdatePromptTemplate(r.Context(), template)
-	if err != nil {
-		if errors.Is(err, storage.ErrConflict) {
-			writeError(w, http.StatusConflict, "name_taken", "a prompt template with that name already exists")
-			return
-		}
-		writeStorageError(w, err)
+	return true
+}
+
+// writePromptTemplateStoreError maps prompt-template store errors to
+// HTTP responses (name conflict → 409, everything else via the
+// generic storage mapping).
+func writePromptTemplateStoreError(w http.ResponseWriter, err error) {
+	if errors.Is(err, storage.ErrConflict) {
+		writeError(w, http.StatusConflict, "name_taken", "a prompt template with that name already exists")
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	writeStorageError(w, err)
 }
 
 func (s *Server) deletePromptTemplate(w http.ResponseWriter, r *http.Request) {

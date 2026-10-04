@@ -104,12 +104,8 @@ func (s *Server) sendInboxFromAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskID := strings.TrimSpace(req.TaskID)
-	if taskID != "" {
-		task, err := s.store.GetTask(r.Context(), taskID)
-		if err != nil || task.SquadID != principal.Agent.SquadID {
-			writeError(w, http.StatusNotFound, "not_found", "task not found in your squad")
-			return
-		}
+	if !s.checkInboxTask(w, r, principal.Agent.SquadID, taskID) {
+		return
 	}
 
 	// Validate every attachment BEFORE creating the message so a bad
@@ -147,6 +143,20 @@ func (s *Server) sendInboxFromAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	s.attachAttachmentURLs(created)
 	writeJSON(w, http.StatusCreated, created)
+}
+
+// checkInboxTask verifies an optional task_id exists in the agent's
+// squad, writing a 404 and returning false when it does not.
+func (s *Server) checkInboxTask(w http.ResponseWriter, r *http.Request, squadID, taskID string) bool {
+	if taskID == "" {
+		return true
+	}
+	task, err := s.store.GetTask(r.Context(), taskID)
+	if err != nil || task.SquadID != squadID {
+		writeError(w, http.StatusNotFound, "not_found", "task not found in your squad")
+		return false
+	}
+	return true
 }
 
 // pendingInboxFile is an uploaded-but-unvalidated attachment (S-189:

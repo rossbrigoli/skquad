@@ -2066,42 +2066,40 @@ func (s *Server) deleteGrant(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
-	squad, ok := s.loadOwnedSquad(w, r)
-	if !ok {
-		return
-	}
-	var req struct {
-		Name           string          `json:"name"`
-		Role           string          `json:"role"`
-		SystemPrompt   string          `json:"system_prompt"`
-		Permissions    json.RawMessage `json:"permissions"`
-		IdleTimeoutSec int             `json:"idle_timeout_sec"`
-		// Storage (S-138): squad owners choose whether the agent gets a
-		// durable workspace PVC and how large. storageClass is NOT accepted
-		// here — platform-admin only (SKQUAD_STORAGE_CLASS).
-		StorageEnabled *bool  `json:"storage_enabled"`
-		StorageSize    string `json:"storage_size"`
-		// S-170: optional primary model at creation. When set, the agent
-		// is born bound AND with its runtime identity auto-provisioned —
-		// no separate "Provision Identity" step. Omit it and the agent is
-		// created unbound; identity can be provisioned later from the
-		// agent screen once a model is bound.
-		AIModelID string `json:"ai_model_id"`
-		// WP8 (0014): legacy "default_provider_id"/"default_model" are
-		// accepted-and-discarded (decodeJSON rejects unknown fields, so
-		// they are declared as blank fields). Model selection is via the
-		// ai_model_id binding (ADR-0010 D4).
-		LegacyDefaultProviderID json.RawMessage `json:"default_provider_id,omitempty"`
-		LegacyDefaultModel      json.RawMessage `json:"default_model,omitempty"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
+// createAgentRequest is the POST body for createAgent.
+type createAgentRequest struct {
+	Name           string          `json:"name"`
+	Role           string          `json:"role"`
+	SystemPrompt   string          `json:"system_prompt"`
+	Permissions    json.RawMessage `json:"permissions"`
+	IdleTimeoutSec int             `json:"idle_timeout_sec"`
+	// Storage (S-138): squad owners choose whether the agent gets a
+	// durable workspace PVC and how large. storageClass is NOT accepted
+	// here — platform-admin only (SKQUAD_STORAGE_CLASS).
+	StorageEnabled *bool  `json:"storage_enabled"`
+	StorageSize    string `json:"storage_size"`
+	// S-170: optional primary model at creation. When set, the agent
+	// is born bound AND with its runtime identity auto-provisioned —
+	// no separate "Provision Identity" step. Omit it and the agent is
+	// created unbound; identity can be provisioned later from the
+	// agent screen once a model is bound.
+	AIModelID string `json:"ai_model_id"`
+	// WP8 (0014): legacy "default_provider_id"/"default_model" are
+	// accepted-and-discarded (decodeJSON rejects unknown fields, so
+	// they are declared as blank fields). Model selection is via the
+	// ai_model_id binding (ADR-0010 D4).
+	LegacyDefaultProviderID json.RawMessage `json:"default_provider_id,omitempty"`
+	LegacyDefaultModel      json.RawMessage `json:"default_model,omitempty"`
+}
+
+// validateCreateAgentRequest validates and normalises the decoded
+// createAgent body. On invalid input it writes the HTTP error and
+// returns false.
+func validateCreateAgentRequest(w http.ResponseWriter, req *createAgentRequest) bool {
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "name is required")
-		return
+		return false
 	}
 	// S-PROMPT WP2: fail closed at the create door too — an agent must not
 	// be born with a forged or over-cap prompt.
@@ -2109,7 +2107,7 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	if req.SystemPrompt != "" {
 		if _, _, failure := checkPromptDraft(promptcompo.TierAgent, req.SystemPrompt); failure != nil {
 			writePromptFailure(w, failure)
-			return
+			return false
 		}
 	}
 	if len(req.Permissions) == 0 {
@@ -2117,6 +2115,21 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.IdleTimeoutSec < 0 {
 		writeError(w, http.StatusBadRequest, "bad_request", "idle_timeout_sec cannot be negative")
+		return false
+	}
+	return true
+}
+
+func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
+	squad, ok := s.loadOwnedSquad(w, r)
+	if !ok {
+		return
+	}
+	var req createAgentRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !validateCreateAgentRequest(w, &req) {
 		return
 	}
 	// S-183: 0/unset means "follow the platform idle scale-to-zero
@@ -2173,15 +2186,24 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	// was supplied. Creation is atomic from the caller's point of view:
 	// if provisioning fails the agent row is rolled back so no agent
 	// exists without the identity it can never use.
-	if requestedModel != "" {
-		if _, err := s.provisionAgentIdentity(s.pendingUserAuditCtx(r, "agent_identity.create", "agent_identity", "", squad.ID, nil), created, squad, currentUser(r.Context()).ID); err != nil {
-			rollbackCtx := s.pendingUserAuditCtx(r, "agent.create_rollback", "agent", created.ID, squad.ID, json.RawMessage(fmt.Sprintf(`{"reason":%q}`, err.Error())))
-			_ = s.store.DeleteAgent(rollbackCtx, created.ID)
-			writeIdentityProvisionError(w, err)
-			return
-		}
+	if requestedModel != "" && !s.provisionIdentityOrRollback(w, r, created, squad) {
+		return
 	}
 	writeJSON(w, http.StatusCreated, created)
+}
+
+// provisionIdentityOrRollback auto-provisions the runtime identity for
+// a freshly created agent. On failure the agent row is rolled back and
+// the HTTP error is written (returns false).
+func (s *Server) provisionIdentityOrRollback(w http.ResponseWriter, r *http.Request, created *domain.Agent, squad *domain.Squad) bool {
+	_, err := s.provisionAgentIdentity(s.pendingUserAuditCtx(r, "agent_identity.create", "agent_identity", "", squad.ID, nil), created, squad, currentUser(r.Context()).ID)
+	if err == nil {
+		return true
+	}
+	rollbackCtx := s.pendingUserAuditCtx(r, "agent.create_rollback", "agent", created.ID, squad.ID, json.RawMessage(fmt.Sprintf(`{"reason":%q}`, err.Error())))
+	_ = s.store.DeleteAgent(rollbackCtx, created.ID)
+	writeIdentityProvisionError(w, err)
+	return false
 }
 
 // ensureAgentNameFree enforces S-156 name uniqueness (per user, across

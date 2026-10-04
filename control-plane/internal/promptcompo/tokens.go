@@ -40,37 +40,11 @@ func CapsFromEnv() map[TierName]Caps {
 	caps := DefaultCaps()
 	for _, name := range append(append([]TierName{}, tierOrder...), TierComposed) {
 		upper := strings.ToUpper(string(name))
-		if v, ok := envInt("SKQUAD_PROMPT_MAX_TOKENS_" + upper); ok {
-			c := caps[name]
-			c.Hard = v
-			caps[name] = c
-		}
-		if v, ok := envInt("SKQUAD_PROMPT_SOFT_TOKENS_" + upper); ok {
-			c := caps[name]
-			c.Soft = v
-			caps[name] = c
-		}
+		applyTierOverride(caps, name, "SKQUAD_PROMPT_MAX_TOKENS_"+upper, func(c *Caps, v int) { c.Hard = v })
+		applyTierOverride(caps, name, "SKQUAD_PROMPT_SOFT_TOKENS_"+upper, func(c *Caps, v int) { c.Soft = v })
 	}
-	if v, ok := envInt("SKQUAD_PROMPT_MAX_TOKENS"); ok {
-		for name := range caps {
-			if name == TierComposed {
-				continue
-			}
-			c := caps[name]
-			c.Hard = v
-			caps[name] = c
-		}
-	}
-	if v, ok := envInt("SKQUAD_PROMPT_SOFT_TOKENS"); ok {
-		for name := range caps {
-			if name == TierComposed {
-				continue
-			}
-			c := caps[name]
-			c.Soft = v
-			caps[name] = c
-		}
-	}
+	applyGlobalOverride(caps, "SKQUAD_PROMPT_MAX_TOKENS", func(c *Caps, v int) { c.Hard = v })
+	applyGlobalOverride(caps, "SKQUAD_PROMPT_SOFT_TOKENS", func(c *Caps, v int) { c.Soft = v })
 	// Enforce soft <= hard after overrides.
 	for name, c := range caps {
 		if c.Soft > c.Hard {
@@ -79,6 +53,29 @@ func CapsFromEnv() map[TierName]Caps {
 		}
 	}
 	return caps
+}
+
+// applyTierOverride sets one cap field for a single tier from an env key.
+func applyTierOverride(caps map[TierName]Caps, name TierName, key string, set func(*Caps, int)) {
+	if v, ok := envInt(key); ok {
+		c := caps[name]
+		set(&c, v)
+		caps[name] = c
+	}
+}
+
+// applyGlobalOverride sets one cap field for all non-composed tiers from an env key.
+func applyGlobalOverride(caps map[TierName]Caps, key string, set func(*Caps, int)) {
+	if v, ok := envInt(key); ok {
+		for name := range caps {
+			if name == TierComposed {
+				continue
+			}
+			c := caps[name]
+			set(&c, v)
+			caps[name] = c
+		}
+	}
 }
 
 func envInt(key string) (int, bool) {
