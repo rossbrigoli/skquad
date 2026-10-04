@@ -79,13 +79,14 @@ def _go_module_name(src_root: Path) -> str:
     raise SystemExit(f"go.mod not found or has no module directive under {src_root}")
 
 
-def convert_gojson(args: argparse.Namespace) -> None:
-    src_root = Path(args.src_root or ".")
-    module = _go_module_name(src_root)
+def _go_event_status(action: str) -> str:
+    return {"pass": "ok", "fail": "failure", "skip": "skipped"}[action]
 
-    # package -> {test name -> (status, duration_ms)}
+
+def _collect_go_events(report_path: str) -> dict:
+    """Parse `go test -json` output into pkg -> {test -> (status, ms)}."""
     events: dict = {}
-    with open(args.report, "r", encoding="utf-8") as fh:
+    with open(report_path, "r", encoding="utf-8") as fh:
         for raw in fh:
             raw = raw.strip()
             if not raw:
@@ -102,19 +103,31 @@ def convert_gojson(args: argparse.Namespace) -> None:
             if name is None:
                 continue  # package-level result without a named test
             events.setdefault(pkg, {})[name] = (
-                {"pass": "ok", "fail": "failure", "skip": "skipped"}[action],
+                _go_event_status(action),
                 _ms(ev.get("Elapsed", 0)),
             )
+    return events
+
+
+def _go_name_to_file(pkg_dir: Path, fpath_prefix: str) -> dict:
+    """Map Go test function names to repo-relative test file paths."""
+    name_to_file: dict = {}
+    if pkg_dir.is_dir():
+        for tf in sorted(pkg_dir.glob("*_test.go")):
+            for m in GO_TEST_FUNC_RE.finditer(tf.read_text(encoding="utf-8")):
+                name_to_file[m.group(1)] = f"{fpath_prefix}/{tf.name}".lstrip("/")
+    return name_to_file
+
+
+def convert_gojson(args: argparse.Namespace) -> None:
+    src_root = Path(args.src_root or ".")
+    module = _go_module_name(src_root)
+    events = _collect_go_events(args.report)
 
     files: dict = {}
     for pkg, tests in events.items():
         rel = pkg[len(module):].lstrip("/") if pkg.startswith(module) else pkg
-        pkg_dir = src_root / rel
-        name_to_file: dict = {}
-        if pkg_dir.is_dir():
-            for tf in sorted(pkg_dir.glob("*_test.go")):
-                for m in GO_TEST_FUNC_RE.finditer(tf.read_text(encoding="utf-8")):
-                    name_to_file[m.group(1)] = f"{args.prefix}/{rel}/{tf.name}".lstrip("/")
+        name_to_file = _go_name_to_file(src_root / rel, f"{args.prefix}/{rel}")
         for tname, (status, dur) in tests.items():
             root_name = tname.split("/", 1)[0]
             fpath = name_to_file.get(root_name)
@@ -146,6 +159,16 @@ def _junit_file_path(raw: str) -> str:
     return "/".join(parts) + ".py"
 
 
+def _junit_status(tc: ET.Element) -> str:
+    if tc.find("failure") is not None:
+        return "failure"
+    if tc.find("error") is not None:
+        return "error"
+    if tc.find("skipped") is not None:
+        return "skipped"
+    return "ok"
+
+
 def convert_junit(args: argparse.Namespace) -> None:
     files: dict = {}
     for report in args.reports:
@@ -160,15 +183,8 @@ def convert_junit(args: argparse.Namespace) -> None:
                 if not raw_path:
                     continue
                 fpath = f"{args.prefix}/{_junit_file_path(raw_path)}".lstrip("/")
-                status = "ok"
-                if tc.find("failure") is not None:
-                    status = "failure"
-                elif tc.find("error") is not None:
-                    status = "error"
-                elif tc.find("skipped") is not None:
-                    status = "skipped"
                 files.setdefault(fpath, []).append(
-                    (tc.get("name", "?"), status, _ms(tc.get("time", 0)))
+                    (tc.get("name", "?"), _junit_status(tc), _ms(tc.get("time", 0)))
                 )
     _write_generic(files, Path(args.out))
 

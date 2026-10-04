@@ -24,6 +24,9 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 
 
+DEFAULT_AUTHOR_EMAIL = "agent@skquad.local"
+
+
 class GitError(RuntimeError):
     """Raised when a git operation fails."""
 
@@ -93,7 +96,7 @@ def clone_workspace(
     work_branch: str,
     dest: Path,
     author_name: str = "skquad-agent",
-    author_email: str = "agent@skquad.local",
+    author_email: str = DEFAULT_AUTHOR_EMAIL,
 ) -> Path:
     """Full clone of ``clone_url`` at ``base_branch`` into ``dest``, then
     check out ``work_branch``.
@@ -119,7 +122,7 @@ def sync_workspace(
     work_branch: str,
     dest: Path,
     author_name: str = "skquad-agent",
-    author_email: str = "agent@skquad.local",
+    author_email: str = DEFAULT_AUTHOR_EMAIL,
 ) -> Path:
     """Fetch into an existing clone at ``dest`` and check out ``work_branch``.
 
@@ -176,7 +179,7 @@ def prepare_workspace(
     work_branch: str,
     dest: Path,
     author_name: str = "skquad-agent",
-    author_email: str = "agent@skquad.local",
+    author_email: str = DEFAULT_AUTHOR_EMAIL,
 ) -> Path:
     """Prepare ``dest`` for a task: reuse-and-fetch when a clone already
     exists there (warm PVC, S-136), otherwise full clone.

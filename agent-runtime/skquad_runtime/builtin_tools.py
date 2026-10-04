@@ -38,6 +38,9 @@ DEFAULT_DENY_PATTERNS: list[str] = [
     r"\b(curl|wget)\b.*\|\s*(ba|z|k)?sh\b",  # curl|wget piped to a shell
 ]
 
+# Shared MIME type for control-plane proxy calls (S1192).
+JSON_CONTENT_TYPE = "application/json"
+
 
 @dataclass
 class BuiltinToolContext:
@@ -120,7 +123,7 @@ class ExecTool:
             }
         ]
 
-    def invoke(self, call: ToolCall, config) -> ToolResult:  # noqa: ANN001
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
         command = str(call.arguments.get("command", ""))
         if not command.strip():
             return ToolResult(content="exec: empty command", ok=False)
@@ -220,7 +223,7 @@ class WebFetchTool:
             }
         ]
 
-    def invoke(self, call: ToolCall, config) -> ToolResult:  # noqa: ANN001
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
         url = str(call.arguments.get("url", ""))
         if not url:
             return ToolResult(content="web_fetch: missing url", ok=False)
@@ -243,8 +246,8 @@ class WebFetchTool:
             headers={
                 "Authorization": f"Bearer {self.context.agent_credential}",
                 "X-Skquad-Agent-ID": self.context.agent_id,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
+                "Content-Type": JSON_CONTENT_TYPE,
+                "Accept": JSON_CONTENT_TYPE,
             },
         )
         try:
@@ -313,7 +316,7 @@ class WebSearchTool:
             }
         ]
 
-    def invoke(self, call: ToolCall, config) -> ToolResult:  # noqa: ANN001
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
         query = str(call.arguments.get("query", ""))
         if not query.strip():
             return ToolResult(content="web_search: empty query", ok=False)
@@ -336,8 +339,8 @@ class WebSearchTool:
             headers={
                 "Authorization": f"Bearer {self.context.agent_credential}",
                 "X-Skquad-Agent-ID": self.context.agent_id,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
+                "Content-Type": JSON_CONTENT_TYPE,
+                "Accept": JSON_CONTENT_TYPE,
             },
         )
         try:
@@ -449,10 +452,8 @@ class SendMessageTool:
             }
         ]
 
-    def invoke(self, call: ToolCall, config) -> ToolResult:  # noqa: ANN001
-        target = str(call.arguments.get("target_agent", "")).strip()
-        text = str(call.arguments.get("message", "")).strip()
-        mtype = str(call.arguments.get("type", "") or "consult").strip()
+    def _validate(self, target: str, text: str, mtype: str) -> ToolResult | None:
+        """Validate send_message arguments; None when all valid."""
         if not target:
             return ToolResult(content="send_message: target_agent is required", ok=False)
         if not text:
@@ -470,6 +471,26 @@ class SendMessageTool:
             return ToolResult(
                 content=f"send_message: message exceeds {max_chars} characters", ok=False
             )
+        return None
+
+    def _apply_consult_deadline(self, body: dict[str, object], call: ToolCall) -> None:
+        """S-173: per-send consult deadline override (consult sends only)."""
+        if str(body.get("type")) != "consult":
+            return
+        try:
+            timeout_seconds = int(call.arguments.get("consult_timeout_seconds", 0) or 0)
+        except (TypeError, ValueError):
+            timeout_seconds = 0
+        if timeout_seconds > 0:
+            body["consult_timeout_seconds"] = timeout_seconds
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        target = str(call.arguments.get("target_agent", "")).strip()
+        text = str(call.arguments.get("message", "")).strip()
+        mtype = str(call.arguments.get("type", "") or "consult").strip()
+        invalid = self._validate(target, text, mtype)
+        if invalid is not None:
+            return invalid
         correlation = str(call.arguments.get("correlation_id", "") or "").strip()
         if not correlation:
             correlation = A2A_CORRELATION.get()
@@ -495,14 +516,7 @@ class SendMessageTool:
         }
         if correlation:
             body["correlation_id"] = correlation
-        # S-173: per-send consult deadline override (consult sends only).
-        if mtype == "consult":
-            try:
-                timeout_seconds = int(call.arguments.get("consult_timeout_seconds", 0) or 0)
-            except (TypeError, ValueError):
-                timeout_seconds = 0
-            if timeout_seconds > 0:
-                body["consult_timeout_seconds"] = timeout_seconds
+        self._apply_consult_deadline(body, call)
         data, err = self._post_message(body)
         if err:
             return ToolResult(content=f"send_message: {err}", ok=False)
@@ -527,8 +541,8 @@ class SendMessageTool:
             headers={
                 "Authorization": f"Bearer {self.context.agent_credential}",
                 "X-Skquad-Agent-ID": self.context.agent_id,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
+                "Content-Type": JSON_CONTENT_TYPE,
+                "Accept": JSON_CONTENT_TYPE,
             },
         )
         timeout = int(self.policy.get("timeoutSeconds", 15))
@@ -668,7 +682,21 @@ class SendInboxTool:
             }
         ]
 
-    def invoke(self, call: ToolCall, config) -> ToolResult:  # noqa: ANN001
+    def _attachment_note(self, data: object) -> str:
+        """Render the attachment summary appended to the send_inbox result."""
+        if not isinstance(data, dict):
+            return ""
+        attachments = data.get("attachments")
+        if not isinstance(attachments, list) or not attachments:
+            return ""
+        names = ", ".join(
+            str(a.get("filename", "?")) for a in attachments if isinstance(a, dict)
+        )
+        if not names:
+            return ""
+        return f" with {len(attachments)} attachment(s): {names}"
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
         text = str(call.arguments.get("message", "")).strip()
         if not text:
             return ToolResult(content="send_inbox: message is required", ok=False)
@@ -699,15 +727,7 @@ class SendInboxTool:
         except Exception as exc:  # noqa: BLE001 - surface as tool error
             return ToolResult(content=f"send_inbox: {exc}", ok=False)
         message_id = str(data.get("id", "")) if isinstance(data, dict) else ""
-        att_note = ""
-        if isinstance(data, dict) and isinstance(data.get("attachments"), list) and data["attachments"]:
-            names = ", ".join(
-                str(a.get("filename", "?"))
-                for a in data["attachments"]
-                if isinstance(a, dict)
-            )
-            if names:
-                att_note = f" with {len(data['attachments'])} attachment(s): {names}"
+        att_note = self._attachment_note(data)
         return ToolResult(
             content=(
                 "sent message to the squad owner's inbox"
@@ -778,7 +798,7 @@ class SendInboxTool:
                 "Authorization": f"Bearer {self.context.agent_credential}",
                 "X-Skquad-Agent-ID": self.context.agent_id,
                 "Content-Type": f"multipart/form-data; boundary={boundary}",
-                "Accept": "application/json",
+                "Accept": JSON_CONTENT_TYPE,
             },
         )
         timeout = int(self.policy.get("timeoutSeconds", 30))
@@ -808,8 +828,8 @@ class SendInboxTool:
             headers={
                 "Authorization": f"Bearer {self.context.agent_credential}",
                 "X-Skquad-Agent-ID": self.context.agent_id,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
+                "Content-Type": JSON_CONTENT_TYPE,
+                "Accept": JSON_CONTENT_TYPE,
             },
         )
         timeout = int(self.policy.get("timeoutSeconds", 15))
@@ -869,7 +889,7 @@ class NotifyOwnerTool:
             }
         ]
 
-    def invoke(self, call: ToolCall, config) -> ToolResult:  # noqa: ANN001
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
         text = str(call.arguments.get("message", "")).strip()
         if not text:
             return ToolResult(content="notify_owner: message is required", ok=False)
@@ -913,8 +933,8 @@ class NotifyOwnerTool:
             headers={
                 "Authorization": f"Bearer {self.context.agent_credential}",
                 "X-Skquad-Agent-ID": self.context.agent_id,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
+                "Content-Type": JSON_CONTENT_TYPE,
+                "Accept": JSON_CONTENT_TYPE,
             },
         )
         timeout = int(self.policy.get("timeoutSeconds", 15))
@@ -975,7 +995,7 @@ class MemorySearchTool:
             }
         ]
 
-    def invoke(self, call: ToolCall, config) -> ToolResult:  # noqa: ANN001
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
         query = str(call.arguments.get("query", ""))
         if not query.strip():
             return ToolResult(content="memory_search: empty query", ok=False)
@@ -999,7 +1019,7 @@ class MemorySearchTool:
             headers={
                 "Authorization": f"Bearer {self.context.agent_credential}",
                 "X-Skquad-Agent-ID": self.context.agent_id,
-                "Accept": "application/json",
+                "Accept": JSON_CONTENT_TYPE,
             },
         )
         try:

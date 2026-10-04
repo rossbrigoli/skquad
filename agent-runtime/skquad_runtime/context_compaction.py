@@ -36,7 +36,7 @@ import json
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
 # --- Tunables (env-overridable) ------------------------------------------
 ENV_CONTEXT_LIMIT = "SKQUAD_MODEL_CONTEXT_TOKENS"
@@ -128,15 +128,15 @@ def _is_system(message: Mapping[str, object]) -> bool:
     return str(message.get("role") or "") == "system"
 
 
-def _has_role(messages: object, role: str) -> bool:
+def _has_role(messages: Any, role: str) -> bool:
     """True if any message (in a flat list or list of groups) has `role`."""
-    for item in messages:  # type: ignore[union-attr]
-        if isinstance(item, dict) and "role" in item:
-            if str(item.get("role") or "") == role:
-                return True
-        elif isinstance(item, (list, tuple)):
-            if _has_role(item, role):
-                return True
+    if not isinstance(messages, (list, tuple)):
+        return False
+    for item in messages:
+        if isinstance(item, dict) and "role" in item and str(item.get("role") or "") == role:
+            return True
+        if isinstance(item, (list, tuple)) and _has_role(item, role):
+            return True
     return False
 
 
