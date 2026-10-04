@@ -56,7 +56,7 @@ export function registryToolItem(resource: RegistryResource): ToolItem {
     id: resource.id,
     kind: "registry",
     name: resource.name,
-    description: resource.description || resource.endpoint || "",
+    description: resource.description ?? resource.endpoint ?? "",
     enabled: resource.status === "active",
   };
 }

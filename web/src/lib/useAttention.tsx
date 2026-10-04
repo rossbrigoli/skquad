@@ -81,7 +81,7 @@ export function AttentionProvider({ children }: { readonly children: ReactNode }
             agents: allAgents,
             inbox,
             now: Date.now(),
-            agentName: (id?: string) => (id ? agentNames.get(id) || id.slice(0, 8) : "unassigned"),
+            agentName: (id?: string) => (id ? agentNames.get(id) ?? id.slice(0, 8) : "unassigned"),
           }),
         );
         setError("");
