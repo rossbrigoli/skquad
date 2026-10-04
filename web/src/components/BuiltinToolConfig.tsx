@@ -329,8 +329,8 @@ export function DeniedPatternsEditor({
             disabled={disabled}
             aria-label={`Remove denied pattern ${i + 1}`}
             onClick={() => {
-              setRowIds((prev) => prev.filter((_, idx) => idx !== i));
-              onChange(rows.filter((_, idx) => idx !== i));
+              setRowIds((prev) => removeAt(prev, i));
+              onChange(removeAt(rows, i));
             }}
           >
             Remove

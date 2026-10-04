@@ -220,6 +220,20 @@ function RuntimeIdentitySection({
 // S-189/S4323: agent profile page tabs.
 type AgentTab = "chat" | "config" | "inbox";
 
+// S-189/S3776: pure helpers extracted from AgentProfilePage so its
+// cognitive complexity stays under the limit.
+function describeLlmBinding(models: AIModel[], id: string | undefined): string {
+  if (!id) {
+    return "no model bound";
+  }
+  const m = findModelById(models, id);
+  return m ? modelLabel(m) : `${id.slice(0, 12)}…`;
+}
+
+function errMsg(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
+}
+
 export default function AgentProfilePage() {
   const params = useParams<{ id: string; agentId: string }>();
   const squadId = String(params?.id ?? "");
@@ -290,12 +304,10 @@ export default function AgentProfilePage() {
   // S-178: human-readable name of the agent's bound LLM for the composer
   // chip; falls back to the bare id when the model is no longer visible
   // via /models/me (revoked/deprecated).
-  const llmLabel = useMemo(() => {
-    const id = agent?.ai_model_id;
-    if (!id) return "no model bound";
-    const m = findModelById(myModels.data ?? [], id);
-    return m ? modelLabel(m) : `${id.slice(0, 12)}…`;
-  }, [agent?.ai_model_id, myModels.data]);
+  const llmLabel = useMemo(
+    () => describeLlmBinding(myModels.data ?? [], agent?.ai_model_id),
+    [agent?.ai_model_id, myModels.data],
+  );
 
   async function resetChat() {
     setChatActionBusy(true);
@@ -305,7 +317,7 @@ export default function AgentProfilePage() {
       setChatNote(`Thread reset · ${res?.archived ?? 0} earlier message(s) archived to memory`);
       chat.refresh();
     } catch (err) {
-      setChatNote(err instanceof Error ? err.message : "reset failed");
+      setChatNote(errMsg(err, "reset failed"));
     } finally {
       setChatActionBusy(false);
     }
@@ -318,7 +330,7 @@ export default function AgentProfilePage() {
       const res = await apiPost<{ pods: number }>(`/agents/${agentId}/restart`, token, {});
       setRestartNote(`Restarting agent (${res?.pods ?? 0} pod(s) evicted)`);
     } catch (err) {
-      setRestartNote(err instanceof Error ? err.message : "restart failed");
+      setRestartNote(errMsg(err, "restart failed"));
     } finally {
       setRestartBusy(false);
     }
@@ -439,7 +451,7 @@ export default function AgentProfilePage() {
                 agents.refresh();
               } catch (err) {
                 const fallbackMsg = agent?.identity_id ? "rotate failed" : "provision failed";
-                setIdentityError(err instanceof Error ? err.message : fallbackMsg);
+                setIdentityError(errMsg(err, fallbackMsg));
               } finally {
                 setIdentityBusy(false);
               }
@@ -1533,8 +1545,57 @@ function StorageWorkspaceField({
   );
 }
 
-// S-189/S3776: tool-call rendering extracted from ChatThread; render
-// output identical to the inline JSX.
+// S-189/S3776: the two tool-call render branches extracted from
+// ChatToolCallList; render output identical to the inline JSX.
+function SubagentCallChip({
+  call,
+  subagent,
+  callKey,
+  onShowSubagent,
+}: {
+  readonly call: ChatToolCall;
+  readonly subagent: SubagentInfo;
+  readonly callKey: string;
+  readonly onShowSubagent: (c: SubagentInfo | null) => void;
+}) {
+  return (
+    <div key={callKey} className={`chat-tool subagent-chip${call.ok ? "" : " failed"}`}>
+      <div className="chat-tool-summary">
+        <span className="chat-tool-name">🤖 subagent</span>
+        <span className="chat-tool-args mono">{subagentSummary(subagent)}</span>
+        <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
+        <button
+          type="button"
+          className="btn ghost small"
+          onClick={() => onShowSubagent(subagent)}
+        >
+          Details
+        </button>
+      </div>
+      {call.result ? (
+        <div className="chat-subagent-final">{truncateText(call.result, 400)}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function PlainToolCall({ call, callKey }: { readonly call: ChatToolCall; readonly callKey: string }) {
+  const argsSummary = summarizeToolArgs(call.arguments);
+  return (
+    <details key={callKey} className={`chat-tool${call.ok ? "" : " failed"}`}>
+      <summary className="chat-tool-summary">
+        <span className="chat-tool-name">🔧 {call.name}</span>
+        {argsSummary ? <span className="chat-tool-args mono">{argsSummary}</span> : null}
+        <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
+      </summary>
+      <pre className="chat-tool-detail mono">{prettyToolArgs(call.arguments)}</pre>
+      {call.result ? (
+        <pre className="chat-tool-detail mono result">{truncateText(call.result, 4000)}</pre>
+      ) : null}
+    </details>
+  );
+}
+
 function ChatToolCallList({
   calls,
   callKeys,
@@ -1551,37 +1612,9 @@ function ChatToolCallList({
     <div className="chat-tools">
       {calls.map((call, idx) =>
         call.name === "spawn_subagent" && call.subagent ? (
-          <div key={`sub-${callKeys[idx]}`} className={`chat-tool subagent-chip${call.ok ? "" : " failed"}`}>
-            <div className="chat-tool-summary">
-              <span className="chat-tool-name">🤖 subagent</span>
-              <span className="chat-tool-args mono">{subagentSummary(call.subagent)}</span>
-              <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
-              <button
-                type="button"
-                className="btn ghost small"
-                onClick={() => onShowSubagent(call.subagent ?? null)}
-              >
-                Details
-              </button>
-            </div>
-            {call.result ? (
-              <div className="chat-subagent-final">{truncateText(call.result, 400)}</div>
-            ) : null}
-          </div>
+          <SubagentCallChip call={call} subagent={call.subagent} callKey={`sub-${callKeys[idx]}`} onShowSubagent={onShowSubagent} />
         ) : (
-          <details key={callKeys[idx]} className={`chat-tool${call.ok ? "" : " failed"}`}>
-            <summary className="chat-tool-summary">
-              <span className="chat-tool-name">🔧 {call.name}</span>
-              {summarizeToolArgs(call.arguments) ? (
-                <span className="chat-tool-args mono">{summarizeToolArgs(call.arguments)}</span>
-              ) : null}
-              <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
-            </summary>
-            <pre className="chat-tool-detail mono">{prettyToolArgs(call.arguments)}</pre>
-            {call.result ? (
-              <pre className="chat-tool-detail mono result">{truncateText(call.result, 4000)}</pre>
-            ) : null}
-          </details>
+          <PlainToolCall call={call} callKey={callKeys[idx]} />
         ),
       )}
     </div>

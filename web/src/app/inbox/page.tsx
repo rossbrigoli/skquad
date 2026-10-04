@@ -63,6 +63,12 @@ function errMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
+// S-189/S3776: defensive list coercion helper (shared by the fetch
+// callbacks) so the page component stays under the complexity limit.
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
 export default function InboxPage() {
   const { token, user, authed } = useAuth();
   const { agentName, markRead: markAttentionRead } = useAttention();
@@ -87,7 +93,7 @@ export default function InboxPage() {
     try {
       const query = buildScopedListQuery({ unread: unreadOnly, userId: effectiveUserId, limit: 200 });
       const next = await apiGet<InboxMessage[]>(`/inbox${query}`, token);
-      setMessages(Array.isArray(next) ? next : []);
+      setMessages(asArray<InboxMessage>(next));
       setError("");
     } catch (err) {
       setError(errMessage(err, "inbox fetch failed"));
@@ -104,7 +110,7 @@ export default function InboxPage() {
   useEffect(() => {
     if (!isAdmin || !authed) return;
     apiGet<ApiUser[]>("/users", token)
-      .then((list) => setUsers(Array.isArray(list) ? list : []))
+      .then((list) => setUsers(asArray<ApiUser>(list)))
       .catch(() => setUsers([]));
   }, [isAdmin, authed, token]);
 
@@ -218,6 +224,12 @@ export default function InboxPage() {
     }
   }, [selectedIds, token, selectedId]);
 
+  // S-189/S2004: hoisted row-toggle so the list JSX stays under the
+  // function-nesting limit.
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((prev) => toggleItem(prev, id));
+  }, []);
+
   function renderList() {
     if (loading && messages.length === 0) {
       return <EmptyState title="Loading your inbox…" hint="Agent and system messages addressed to you." />;
@@ -259,7 +271,7 @@ export default function InboxPage() {
                   agentName={agentName}
                   checked={selectedIds.has(m.id)}
                   onOpen={openMessage}
-                  onToggleSelect={(id) => setSelectedIds((prev) => toggleItem(prev, id))}
+                  onToggleSelect={toggleSelected}
                 />
               ))}
             </div>

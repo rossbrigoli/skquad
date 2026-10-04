@@ -94,6 +94,12 @@ export function PromptTemplatesPanel({
     );
   }
 
+  // S-189/S2004: hoisted row-toggle so the list JSX stays under the
+  // function-nesting limit.
+  function toggleTemplateSelected(id: string) {
+    setSelectedIds((prev) => toggleTemplateSelection(prev, id));
+  }
+
   function renderTemplateList() {
     if (loading && templates.length === 0) {
       return <p className="field-hint">Loading templates…</p>;
