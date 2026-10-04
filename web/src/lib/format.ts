@@ -25,6 +25,14 @@ export function formatMoney(amount: number, currency = "USD"): string {
   return `${currency} ${trimZeros(amount.toPrecision(2))}`;
 }
 
+// formatMoneyCents renders a currency amount rounded to the nearest cent
+// (S-218). Dashboard top stat tiles use this so wide values like
+// "USD 26.0276" stop wrapping their boxes; the four-decimal formatMoney
+// stays for screens where sub-cent precision matters.
+export function formatMoneyCents(amount: number, currency = "USD"): string {
+  return `${currency} ${amount.toFixed(2)}`;
+}
+
 function normalizedCurrency(currency?: string): string {
   const trimmed = currency?.trim() ?? "";
   return trimmed === "" ? "USD" : trimmed;

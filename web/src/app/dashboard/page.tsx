@@ -19,7 +19,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { MetricTile } from "../../components/MetricTile";
 import { StatusChip } from "../../components/StatusChip";
 import { useApi } from "../../lib/useApi";
-import { formatCompact, formatCost, formatMoney, formatTokens } from "../../lib/format";
+import { formatCompact, formatCost, formatMoney, formatMoneyCents, formatTokens } from "../../lib/format";
 import { agentStatus } from "../../lib/status";
 import {
   buildStackedChart,
@@ -76,16 +76,16 @@ export default function DashboardPage() {
                 attention={totals.agentsError > 0}
                 sub={totals.agentsError > 0 ? "check the squads below" : "all healthy"}
               />
-              <MetricTile label="Total cost" value={formatMoney(totals.totalCost, currency)} sub="across your squads" />
+              <MetricTile label="Total cost" value={formatMoneyCents(totals.totalCost, currency)} sub="across your squads" />
               <MetricTile
                 label="MTD cost"
-                value={formatMoney(usage?.squad_mtd_cost ?? 0, currency)}
+                value={formatMoneyCents(usage?.squad_mtd_cost ?? 0, currency)}
                 sub={isAdmin ? "this month, all squads" : "this month, your squads"}
               />
               {isAdmin && usage?.platform ? (
                 <>
-                  <MetricTile label="Platform total cost" value={formatMoney(usage.platform.total_cost, currency)} sub="all time, all squads" />
-                  <MetricTile label="Platform MTD cost" value={formatMoney(usage.platform.mtd_cost, currency)} sub="this month, all squads" />
+                  <MetricTile label="Platform total cost" value={formatMoneyCents(usage.platform.total_cost, currency)} sub="all time, all squads" />
+                  <MetricTile label="Platform MTD cost" value={formatMoneyCents(usage.platform.mtd_cost, currency)} sub="this month, all squads" />
                   <MetricTile label="Users" value={usage.platform.users} sub="in the platform" />
                   <MetricTile label="Agents" value={usage.platform.agents} sub="across all squads" />
                 </>
