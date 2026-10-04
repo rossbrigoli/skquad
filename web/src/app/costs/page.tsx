@@ -60,7 +60,7 @@ function GroupToggle({
   readonly onChange: (source: CostGroupSource) => void;
 }) {
   return (
-    <div className="chart-group-tabs" role="group" aria-label="Cost chart grouping">
+    <fieldset className="chart-group-tabs" style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }} aria-label="Cost chart grouping">
       {COST_GROUP_SOURCES.map((g) => (
         <button
           key={g.id}
@@ -71,7 +71,7 @@ function GroupToggle({
           {g.label}
         </button>
       ))}
-    </div>
+    </fieldset>
   );
 }
 
@@ -89,6 +89,16 @@ function CostTabContent({
   const model = buildStackedChart(summary.days ?? [], seriesForSource(summary, source), "cost");
   const budget = summary.budget ?? null;
 
+  function budgetTileSub(): string {
+    if (budget?.monthly_budget_usd == null) {
+      return "ask a platform admin to set one";
+    }
+    if (budget.over_budget) {
+      return "over budget";
+    }
+    return `${money(Math.max(0, budget.monthly_budget_usd - summary.mtd_cost))} left`;
+  }
+
   return (
     <>
       <div className="metric-grid">
@@ -103,13 +113,7 @@ function CostTabContent({
         <MetricTile
           label="My monthly budget"
           value={budget?.monthly_budget_usd != null ? money(budget.monthly_budget_usd) : "No limit"}
-          sub={
-            budget?.monthly_budget_usd != null
-              ? budget.over_budget
-                ? "over budget"
-                : `${money(Math.max(0, budget.monthly_budget_usd - summary.mtd_cost))} left`
-              : "ask a platform admin to set one"
-          }
+          sub={budgetTileSub()}
           attention={Boolean(budget?.over_budget)}
         />
       </div>
@@ -166,9 +170,9 @@ export default function CostsPage() {
     }
     let active = true;
     const tick = () => {
-      if (active) void load();
+      if (active) load().catch(() => undefined);
     };
-    void load();
+    load().catch(() => undefined);
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") tick();
     }, POLL_MS);
@@ -177,6 +181,18 @@ export default function CostsPage() {
       window.clearInterval(timer);
     };
   }, [token, authed, load]);
+
+  function renderTabContent() {
+    if (activeTab !== "cost") {
+      return isAdmin ? <AdminBudgetPanel token={token} /> : null;
+    }
+    if (loading && !summary) {
+      return <EmptyState title="Crunching numbers…" hint="Aggregating metering across your squads." />;
+    }
+    return summary ? (
+      <CostTabContent summary={summary} source={source} onSourceChange={setSource} />
+    ) : null;
+  }
 
   return (
     <AuthGate>
@@ -190,15 +206,7 @@ export default function CostsPage() {
           ) : null}
         </div>
 
-        {activeTab === "cost" ? (
-          loading && !summary ? (
-            <EmptyState title="Crunching numbers…" hint="Aggregating metering across your squads." />
-          ) : summary ? (
-            <CostTabContent summary={summary} source={source} onSourceChange={setSource} />
-          ) : null
-        ) : isAdmin ? (
-          <AdminBudgetPanel token={token} />
-        ) : null}
+        {renderTabContent()}
       </AppShell>
     </AuthGate>
   );

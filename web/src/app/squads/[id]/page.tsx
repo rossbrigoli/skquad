@@ -60,6 +60,10 @@ export default function SquadCockpitPage() {
 
   const taskHref = (taskId: string) => `/squads/${squadId}/tasks/${taskId}`;
 
+  // S-189/S4624: suffix templates hoisted out of the JSX to avoid nesting.
+  const agentErrSuffix = errorAgents.length > 0 ? ` · ${errorAgents.length} error` : "";
+  const stallSuffix = stalled.length > 0 ? ` · ${stalled.length} stalled` : "";
+
   return (
     <AuthGate>
       <AppShell>
@@ -80,13 +84,13 @@ export default function SquadCockpitPage() {
           <MetricTile
             label="Agents"
             value={agentItems.length}
-            sub={`${busyAgents.length} busy · ${agentItems.length - busyAgents.length - errorAgents.length} idle${errorAgents.length > 0 ? ` · ${errorAgents.length} error` : ""}`}
+            sub={`${busyAgents.length} busy · ${agentItems.length - busyAgents.length - errorAgents.length} idle${agentErrSuffix}`}
             attention={errorAgents.length > 0}
           />
           <MetricTile
             label="Work in flight"
             value={running.length}
-            sub={`${wip.open} open · ${wip.blocked} blocked${stalled.length > 0 ? ` · ${stalled.length} stalled` : ""}`}
+            sub={`${wip.open} open · ${wip.blocked} blocked${stallSuffix}`}
             attention={stalled.length > 0}
           />
           <MetricTile

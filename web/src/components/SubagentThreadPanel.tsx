@@ -16,7 +16,7 @@ export function SubagentThreadPanel({
   // S-189: content-derived stable keys (thread is static history, never reordered).
   const threadKeys = uniqueContentKeys(info.thread, (e) => `${e.role}|${e.name ?? ""}|${e.content}`);
   return (
-    <aside className="subagent-panel" role="complementary" aria-label="Subagent thread">
+    <aside className="subagent-panel" aria-label="Subagent thread">
       <header className="subagent-panel-head">
         <span className="subagent-panel-title">🤖 Subagent thread</span>
         <span className="subagent-panel-meta">

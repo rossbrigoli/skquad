@@ -44,6 +44,26 @@ export function ToolsPanel({ isAdmin }: { readonly isAdmin: boolean }) {
     [builtins.data, registry.data, query],
   );
 
+  function renderToolList() {
+    if (loading || items.length > 0) {
+      return <ToolTilesGrid items={items} />;
+    }
+    if (query.trim() !== "") {
+      return (
+        <EmptyState
+          title={`No tools match “${query.trim()}”`}
+          hint="Clear the filter to see all tools."
+        />
+      );
+    }
+    return (
+      <EmptyState
+        title="No tools registered"
+        hint="Register one so agents can be granted access."
+      />
+    );
+  }
+
   const loading = registry.loading || (isAdmin && builtins.loading);
 
   return (
@@ -63,21 +83,7 @@ export function ToolsPanel({ isAdmin }: { readonly isAdmin: boolean }) {
       {isAdmin && builtins.error ? (
         <div className="notice error">{builtins.error}</div>
       ) : null}
-      {!loading && items.length === 0 ? (
-        query.trim() !== "" ? (
-          <EmptyState
-            title={`No tools match “${query.trim()}”`}
-            hint="Clear the filter to see all tools."
-          />
-        ) : (
-          <EmptyState
-            title="No tools registered"
-            hint="Register one so agents can be granted access."
-          />
-        )
-      ) : (
-        <ToolTilesGrid items={items} />
-      )}
+      {renderToolList()}
     </>
   );
 }

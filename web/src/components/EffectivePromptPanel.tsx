@@ -35,9 +35,9 @@ export function EffectivePromptPanel({
         {" · "}sha256 <span className="mono" title={effective.data.sha256}>{effective.data.sha256.slice(0, 16)}…</span>
       </div>
       {effective.data.warnings?.map((w) => (
-        <div key={w} className="notice warn" role="status">
+        <output key={w} className="notice warn" style={{ display: "block" }}>
           {w}
-        </div>
+        </output>
       ))}
       {tiers.map((tier) => {
         const badge = tierBadge(tier.name);

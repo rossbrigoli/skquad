@@ -215,72 +215,15 @@ export default function TaskDetailPage() {
           </div>
         </section>
 
-        <section style={{ marginTop: "var(--space-5)" }}>
-          <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-            Thread <span className="chip chip-idle">{messages.length}</span>
-            {/* S-194: attach a defect screenshot straight to the thread. */}
-            {current.assignee_agent_id ? (
-              <>
-                <input
-                  ref={attachInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/gif,image/webp"
-                  style={{ display: "none" }}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    e.target.value = "";
-                    if (file) void attachImage(file);
-                  }}
-                />
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  disabled={attachBusy}
-                  onClick={() => attachInputRef.current?.click()}
-                  title={attachBusy ? "Uploading…" : "Attach an image (png/jpg/gif/webp, ≤5 MB)"}
-                >
-                  {attachBusy ? "Uploading…" : "📎 Attach image"}
-                </button>
-              </>
-            ) : null}
-          </h2>
-          {messages.length === 0 ? (
-            <EmptyState
-              title={current.assignee_agent_id ? "No task messages yet" : "Assign an agent to start a thread"}
-              hint="Messages here are scoped to this task and delivered to the assigned agent."
-            />
-          ) : (
-            <div className="entity-list">
-              {messages.map((message) => (
-                <div key={message.id} className="entity-row">
-                  <div className="entity-main">
-                    <span className="entity-title">{messageText(message)}</span>
-                    <span className="entity-meta">
-                      {message.from_type === "user" ? "you" : `agent ${message.from_id.slice(0, 8)}`} ·{" "}
-                      {formatRelativeTime(message.created_at)}
-                      {message.status !== "delivered" && message.status !== "acked" ? ` · ${message.status}` : ""}
-                    </span>
-                    {/* S-194: screenshots carried by this thread message. */}
-                    <AttachmentThumbs attachments={messageAttachments(message)} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          {current.assignee_agent_id ? (
-            // S-184: the inline composer is gone — conversation happens in
-            // the assigned agent's chat screen, which keeps one continuous
-            // thread per agent. This button jumps there.
-            <div style={{ marginTop: "var(--space-3)" }}>
-              <Link
-                href={`/squads/${squadId}/agents/${current.assignee_agent_id}`}
-                className="btn btn-primary"
-              >
-                Agent Chat{assignee ? ` — ${assignee.name}` : ""}
-              </Link>
-            </div>
-          ) : null}
-        </section>
+        <TaskThreadSection
+          current={current}
+          messages={messages}
+          assigneeName={assignee?.name}
+          squadId={squadId}
+          attachBusy={attachBusy}
+          attachInputRef={attachInputRef}
+          onAttach={(file) => void attachImage(file)}
+        />
 
         <section style={{ marginTop: "var(--space-5)" }}>
           <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>Status timeline</h2>
@@ -372,5 +315,104 @@ function TaskEditForm({
         <textarea value={description} onChange={(e) => setDescription(e.target.value)} />
       </label>
     </ModalForm>
+  );
+}
+
+// S-189/S3776: thread section extracted from TaskDetailPage so the page
+// component stays under the cognitive-complexity ceiling. Render output is
+// identical to the previous inline JSX.
+function TaskThreadSection({
+  current,
+  messages,
+  assigneeName,
+  squadId,
+  attachBusy,
+  attachInputRef,
+  onAttach,
+}: {
+  readonly current: Task;
+  readonly messages: Message[];
+  readonly assigneeName: string | undefined;
+  readonly squadId: string;
+  readonly attachBusy: boolean;
+  readonly attachInputRef: React.RefObject<HTMLInputElement | null>;
+  readonly onAttach: (file: File) => void;
+}) {
+  return (
+    <section style={{ marginTop: "var(--space-5)" }}>
+      <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+        Thread <span className="chip chip-idle">{messages.length}</span>
+        {/* S-194: attach a defect screenshot straight to the thread. */}
+        {current.assignee_agent_id ? (
+          <>
+            <input
+              ref={attachInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) onAttach(file);
+              }}
+            />
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={attachBusy}
+              onClick={() => attachInputRef.current?.click()}
+              title={attachBusy ? "Uploading…" : "Attach an image (png/jpg/gif/webp, ≤5 MB)"}
+            >
+              {attachBusy ? "Uploading…" : "📎 Attach image"}
+            </button>
+          </>
+        ) : null}
+      </h2>
+      {messages.length === 0 ? (
+        <EmptyState
+          title={current.assignee_agent_id ? "No task messages yet" : "Assign an agent to start a thread"}
+          hint="Messages here are scoped to this task and delivered to the assigned agent."
+        />
+      ) : (
+        <div className="entity-list">
+          {messages.map((message) => (
+            <TaskMessageRow key={message.id} message={message} />
+          ))}
+        </div>
+      )}
+      {current.assignee_agent_id ? (
+        // S-184: the inline composer is gone — conversation happens in
+        // the assigned agent's chat screen, which keeps one continuous
+        // thread per agent. This button jumps there.
+        <div style={{ marginTop: "var(--space-3)" }}>
+          <Link
+            href={`/squads/${squadId}/agents/${current.assignee_agent_id}`}
+            className="btn btn-primary"
+          >
+            Agent Chat{assigneeName ? ` — ${assigneeName}` : ""}
+          </Link>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+// TaskMessageRow renders one thread message with its attachments.
+function TaskMessageRow({ message }: { readonly message: Message }) {
+  const statusNote =
+    message.status !== "delivered" && message.status !== "acked" ? ` · ${message.status}` : "";
+  return (
+    <div className="entity-row">
+      <div className="entity-main">
+        <span className="entity-title">{messageText(message)}</span>
+        <span className="entity-meta">
+          {message.from_type === "user" ? "you" : `agent ${message.from_id.slice(0, 8)}`} ·{" "}
+          {formatRelativeTime(message.created_at)}
+          {statusNote}
+        </span>
+        {/* S-194: screenshots carried by this thread message. */}
+        <AttachmentThumbs attachments={messageAttachments(message)} />
+      </div>
+    </div>
   );
 }

@@ -79,7 +79,7 @@ export function AttachmentThumbs({ attachments }: { readonly attachments: Upload
 
   if (attachments.length === 0) return null;
   return (
-    <div className="chat-attachments" role="group" aria-label={`${attachments.length} attached image(s)`}>
+    <fieldset className="chat-attachments" style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }} aria-label={`${attachments.length} attached image(s)`}>
       {attachments.map((att) => {
         const src = srcs[att.id];
         const title = `${att.filename} (${formatBytes(att.size_bytes)})`;
@@ -111,6 +111,6 @@ export function AttachmentThumbs({ attachments }: { readonly attachments: Upload
           </a>
         );
       })}
-    </div>
+    </fieldset>
   );
 }

@@ -131,7 +131,13 @@ export function failureResult(err: unknown, fallback: string): TestResult {
       detail: `no reply within ${Math.round(TEST_TIMEOUT_MS / 1000)}s — the provider may be slow or unreachable`,
     };
   }
-  const message =
-    err instanceof ApiError && err.message ? err.message : err instanceof Error ? err.message : fallback;
+  let message: string;
+  if (err instanceof ApiError && err.message) {
+    message = err.message;
+  } else if (err instanceof Error) {
+    message = err.message;
+  } else {
+    message = fallback;
+  }
   return { ok: false, reason: "provider_error", latency_ms: 0, detail: truncate(message || fallback, 160) };
 }

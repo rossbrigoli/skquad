@@ -249,22 +249,34 @@ export function sessionValid(s: Session | null): boolean {
 //   3. Host header (unless it is the internal localhost bind)
 //   4. the OIDC redirect URL's own origin
 //   5. give up -> relative Location (browser resolves it against the current URL)
+function isPublicHost(host: string): boolean {
+  return !!host && !host.startsWith("localhost") && !host.startsWith("127.0.0.1");
+}
+
+function forwardedOrigin(req: Request): string {
+  const fwdHost = req.headers.get("x-forwarded-host");
+  if (!fwdHost) {
+    return "";
+  }
+  const host = fwdHost.split(",")[0].trim();
+  if (!isPublicHost(host)) {
+    return "";
+  }
+  const proto = (req.headers.get("x-forwarded-proto") ?? "https").split(",")[0].trim();
+  return `${proto}://${host}`;
+}
+
 export function publicOrigin(req?: Request): string {
   const env = (process.env.SKQUAD_PUBLIC_BASE_URL ?? "").replace(/\/$/, "");
   if (env) return env;
 
   if (req) {
-    const fwdHost = req.headers.get("x-forwarded-host");
-    const fwdProto = req.headers.get("x-forwarded-proto");
-    const proto = (fwdProto ? fwdProto : "https").split(",")[0].trim();
-    if (fwdHost) {
-      const host = fwdHost.split(",")[0].trim();
-      if (host && !host.startsWith("localhost") && !host.startsWith("127.0.0.1")) {
-        return `${proto}://${host}`;
-      }
+    const fwd = forwardedOrigin(req);
+    if (fwd) {
+      return fwd;
     }
     const host = req.headers.get("host");
-    if (host && !host.startsWith("localhost") && !host.startsWith("127.0.0.1")) {
+    if (isPublicHost(host ?? "")) {
       return `https://${host}`;
     }
   }

@@ -21,7 +21,13 @@ import {
 // userLabel picks the most human identifier available for a budget row.
 // Falls back through name -> email -> id so the row is never blank.
 function userLabel(user: { name?: string; email?: string; user_id: string }): string {
-  return user.name ? user.name : user.email ? user.email : user.user_id;
+  if (user.name) {
+    return user.name;
+  }
+  if (user.email) {
+    return user.email;
+  }
+  return user.user_id;
 }
 
 function errorMessage(err: unknown, fallback: string): string {
@@ -71,10 +77,9 @@ export function PlatformBudgetForm({
     try {
       const resp = await apiPut<PlatformBudgetPutResponse>("/admin/budgets/platform", token, body);
       const clamped = resp.clamped_user_budgets ?? 0;
+      const clampedNoun = clamped === 1 ? "budget was" : "budgets were";
       setNotice(
-        clamped > 0
-          ? `Saved. ${clamped} user ${clamped === 1 ? "budget was" : "budgets were"} clamped down to the new max.`
-          : "Saved.",
+        clamped > 0 ? `Saved. ${clamped} user ${clampedNoun} clamped down to the new max.` : "Saved.",
       );
       onSaved(resp);
     } catch (err) {
@@ -243,15 +248,15 @@ export function AdminBudgetPanel({ token }: { readonly token: string }) {
   useEffect(() => {
     // Async fetch: setState lands in callbacks, not the effect body.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void load();
+    load().catch(() => undefined);
   }, [token, load]);
 
   const refreshAfterPlatformSave = useCallback(() => {
-    void load();
+    load().catch(() => undefined);
   }, [load]);
 
   const refreshAfterUserSave = useCallback(() => {
-    void load();
+    load().catch(() => undefined);
   }, [load]);
 
   if (loading && !data) {

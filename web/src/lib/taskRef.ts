@@ -8,6 +8,6 @@ import type { Task } from "./api";
 // formatTaskRef returns the short "T-<n>" reference for a task, or "" when
 // the task is missing or predates numbering (task_number unset/zero).
 export function formatTaskRef(task: Pick<Task, "task_number"> | null | undefined): string {
-  if (!task || !task.task_number) return "";
+  if (!task?.task_number) return "";
   return `T-${task.task_number}`;
 }

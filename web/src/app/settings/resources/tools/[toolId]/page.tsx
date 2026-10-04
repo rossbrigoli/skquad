@@ -87,22 +87,41 @@ function BuiltinToolRoute({ name, isAdmin }: { readonly name: BuiltinToolName; r
 }
 
 // RegistryToolRoute edits one registered tool inline.
+function toolStatusChip(status: string): "idle" | "paused" | "error" {
+  if (status === "active") {
+    return "idle";
+  }
+  if (status === "deprecated") {
+    return "paused";
+  }
+  return "error";
+}
+
 function RegistryToolRoute({ id, isAdmin }: { readonly id: string; readonly isAdmin: boolean }) {
   const resource = useApi<RegistryResource>(`/registry/tools/${encodeURIComponent(id)}`, 0);
 
-  return (
-    <section>
-      <BackLink />
-      {resource.error ? (
+  function renderContent() {
+    if (resource.error) {
+      return (
         <EmptyState
           title="Tool not found"
           hint={resource.error || "This registered tool does not exist (or you cannot access it)."}
         />
-      ) : resource.loading && !resource.data ? (
-        <div className="notice">Loading tool…</div>
-      ) : resource.data ? (
-        <RegistryToolForm resource={resource.data} isAdmin={isAdmin} onSaved={() => resource.refresh()} />
-      ) : null}
+      );
+    }
+    if (resource.loading && !resource.data) {
+      return <div className="notice">Loading tool…</div>;
+    }
+    if (resource.data) {
+      return <RegistryToolForm resource={resource.data} isAdmin={isAdmin} onSaved={() => resource.refresh()} />;
+    }
+    return null;
+  }
+
+  return (
+    <section>
+      <BackLink />
+      {renderContent()}
     </section>
   );
 }
@@ -179,7 +198,7 @@ function RegistryToolForm({
       <div className="section-head" style={{ marginTop: "var(--space-3)" }}>
         <h1 className="page-title">{resource.name}</h1>
         <span className="entity-side">
-          <StatusChip status={resource.status === "active" ? "idle" : resource.status === "deprecated" ? "paused" : "error"} />
+          <StatusChip status={toolStatusChip(resource.status)} />
           {isAdmin ? (
             <DeleteResourceButton
               path={`/registry/tools/${resource.id}`}

@@ -162,22 +162,26 @@ export function buildToolPayload(name: BuiltinToolName, form: ToolFormValues): {
 // policy validation. Returns the first error message, or null when the
 // form is submittable. The server remains authoritative; this only
 // prevents obviously-bad round-trips.
+function checkDeniedPatterns(patterns: string[]): string | null {
+  for (const pattern of patterns) {
+    const trimmed = pattern.trim();
+    if (trimmed === "") continue;
+    try {
+      new RegExp(trimmed);
+    } catch {
+      return `deniedPatterns: invalid regex: ${trimmed}`;
+    }
+  }
+  return null;
+}
+
 export function validateToolForm(name: BuiltinToolName, form: ToolFormValues): string | null {
   const timeoutErr = checkPositiveInt(form.timeoutSeconds, "timeoutSeconds");
   if (timeoutErr) return timeoutErr;
   if (name === "exec") {
     const bytesErr = checkPositiveInt(form.maxOutputBytes, "maxOutputBytes");
     if (bytesErr) return bytesErr;
-    for (const pattern of form.deniedPatterns) {
-      const trimmed = pattern.trim();
-      if (trimmed === "") continue;
-      try {
-        new RegExp(trimmed);
-      } catch {
-        return `deniedPatterns: invalid regex: ${trimmed}`;
-      }
-    }
-    return null;
+    return checkDeniedPatterns(form.deniedPatterns);
   }
   if (name === "web_fetch") {
     return checkPositiveInt(form.maxBytes, "maxBytes");

@@ -88,9 +88,9 @@ export function PromptTierEditor({
         </div>
       ) : null}
       {result?.warnings?.map((w) => (
-        <div key={w} className="notice warn" role="status">
+        <output key={w} className="notice warn" style={{ display: "block" }}>
           {w}
-        </div>
+        </output>
       ))}
       {saveError ? (
         <div className="notice error" role="alert">
@@ -119,13 +119,15 @@ export function PromptTierEditor({
                 })
                 .catch((err: unknown) => {
                   const promptErr = extractPromptError(err instanceof ApiError ? err : undefined);
-                  setSaveError(
-                    promptErr
-                      ? promptUserMessage(promptErr)
-                      : err instanceof Error
-                        ? err.message
-                        : "save failed",
-                  );
+                  let detail: string;
+                  if (promptErr) {
+                    detail = promptUserMessage(promptErr);
+                  } else if (err instanceof Error) {
+                    detail = err.message;
+                  } else {
+                    detail = "save failed";
+                  }
+                  setSaveError(detail);
                 })
                 .finally(() => {
                   setBusy(false);

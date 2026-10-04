@@ -44,8 +44,8 @@ export function NotificationBell() {
   }, [authed, token]);
 
   useEffect(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), POLL_MS);
+    refresh().catch(() => undefined);
+    const timer = setInterval(() => refresh().catch(() => undefined), POLL_MS);
     return () => clearInterval(timer);
   }, [refresh]);
 
@@ -137,7 +137,7 @@ export function NotificationBell() {
           <div className="notif-popover-header">
             <span className="notif-popover-title">Notifications</span>
             {unread > 0 ? (
-              <button type="button" className="btn btn-small" onClick={() => void markAllRead()}>
+              <button type="button" className="btn btn-small" onClick={() => { markAllRead().catch(() => undefined); }}>
                 Mark all read
               </button>
             ) : null}
@@ -157,7 +157,7 @@ export function NotificationBell() {
                     // S-209: clicking anywhere on the item marks it read
                     // (links inside still navigate; bubbling covers both).
                     onClick={() => {
-                      if (isUnread(n.read_at)) void markRead(n.id);
+                      if (isUnread(n.read_at)) markRead(n.id).catch(() => undefined);
                     }}
                   >
                     <div className="notif-item-main">
@@ -177,7 +177,7 @@ export function NotificationBell() {
                         className="btn btn-small"
                         onClick={(e) => {
                           e.stopPropagation();
-                          void markRead(n.id);
+                          markRead(n.id).catch(() => undefined);
                         }}
                       >
                         Mark read

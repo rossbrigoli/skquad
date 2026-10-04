@@ -59,6 +59,10 @@ import {
 
 type UserFilter = { mode: "own" } | { mode: "user"; userId: string };
 
+function errMessage(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
+}
+
 export default function InboxPage() {
   const { token, user, authed } = useAuth();
   const { agentName, markRead: markAttentionRead } = useAttention();
@@ -86,14 +90,14 @@ export default function InboxPage() {
       setMessages(Array.isArray(next) ? next : []);
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "inbox fetch failed");
+      setError(errMessage(err, "inbox fetch failed"));
     } finally {
       setLoading(false);
     }
   }, [authed, token, unreadOnly, effectiveUserId]);
 
   useEffect(() => {
-    void load();
+    load().catch(() => undefined);
   }, [load]);
 
   // The admin filter needs the user directory once.
@@ -150,7 +154,7 @@ export default function InboxPage() {
   const openMessage = useCallback(
     (message: InboxMessage) => {
       setSelectedId(message.id);
-      void markRead(message);
+      markRead(message).catch(() => undefined);
     },
     [markRead],
   );
@@ -167,7 +171,7 @@ export default function InboxPage() {
       });
       if (selectedId === pendingDelete.id) setSelectedId(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "delete failed");
+      setError(errMessage(err, "delete failed"));
     } finally {
       setPendingDelete(null);
     }
@@ -207,107 +211,63 @@ export default function InboxPage() {
       if (selectedId !== null && selectedIds.has(selectedId)) setSelectedId(null);
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "bulk delete failed");
+      setError(errMessage(err, "bulk delete failed"));
     } finally {
       setSelectedIds(new Set());
       setPendingBulkDelete(false);
     }
   }, [selectedIds, token, selectedId]);
 
-  const renderRow = (message: InboxMessage) => {
-    const unreadRow = isUnread(message.read_at);
-    const kind = inboxKindMeta(message.kind);
-    const { subject, body } = inboxDisplay(message);
-    const checked = selectedIds.has(message.id);
-    return (
-      <div
-        key={message.id}
-        className={`inbox-row ${unreadRow ? "inbox-row-unread" : ""}`}
-        role="button"
-        tabIndex={0}
-        aria-label={`Open message: ${subject}`}
-        onClick={() => openMessage(message)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            openMessage(message);
-          }
-        }}
-      >
-        {/* S-207 req 4: multi-select checkbox (never opens the row). */}
-        <input
-          type="checkbox"
-          className="inbox-checkbox"
-          checked={checked}
-          aria-label={`Select message: ${subject}`}
-          onClick={(e) => e.stopPropagation()}
-          onChange={() => setSelectedIds((prev) => toggleItem(prev, message.id))}
+  function renderList() {
+    if (loading && messages.length === 0) {
+      return <EmptyState title="Loading your inbox…" hint="Agent and system messages addressed to you." />;
+    }
+    if (messages.length === 0) {
+      return (
+        <EmptyState
+          title="Your inbox is empty"
+          hint="Ask an agent to send something to your inbox and it will land here — unread until you open it."
         />
-        {/* S-207 req 3: envelope read/unread marker. */}
-        <span className="inbox-status" aria-hidden={unreadRow ? undefined : "true"}>
-          {unreadRow ? (
-            <IconEnvelopeUnread size={18} />
-          ) : (
-            <IconEnvelopeRead size={18} />
-          )}
-        </span>
-        <span className="inbox-sender">{inboxSender(message, agentName)}</span>
-        {/* S-207 req 6: "Title — body preview", ellipsis-truncated. */}
-        <span className="inbox-titleline">
-          <span className="inbox-subject">{subject}</span>
-          {inboxPreview(body) ? (
-            <span className="inbox-preview">{" — " + inboxPreview(body)}</span>
-          ) : null}
-        </span>
-        <span className={`chip ${kind.className}`}>{kind.label}</span>
-        <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
-      </div>
-    );
-  };
-
-  const renderDetail = (message: InboxMessage) => {
-    const kind = inboxKindMeta(message.kind);
-    const { subject, body } = inboxDisplay(message);
-    const taskHref = inboxTaskLink(message);
+      );
+    }
     return (
-      <div className="inbox-detail">
-        <div className="inbox-detail-topbar">
-          <button
-            type="button"
-            className="btn btn-small inbox-back"
-            aria-label="Back to inbox"
-            onClick={() => setSelectedId(null)}
-          >
-            ← Inbox
-          </button>
-          <button
-            type="button"
-            className="btn btn-small btn-danger inbox-delete"
-            aria-label="Delete message"
-            onClick={() => setPendingDelete(message)}
-          >
-            Delete
-          </button>
+      <div className="inbox-groups">
+        {/* S-207 req 7: column header above the list. */}
+        <div className="inbox-columns">
+          <input
+            type="checkbox"
+            className="inbox-checkbox"
+            checked={allVisibleSelected}
+            aria-label="Select all visible messages"
+            onChange={() => setSelectedIds((prev) => toggleSelectAll(prev, visibleIds))}
+          />
+          <span className="inbox-status" aria-hidden="true" />
+          <span className="inbox-col-sender">From</span>
+          <span className="inbox-col-title">Message</span>
+          <span className="inbox-col-kind">Type</span>
+          <span className="inbox-col-time">Received</span>
         </div>
-        <h2 className="inbox-detail-subject">{subject}</h2>
-        <div className="inbox-detail-meta">
-          <span className="inbox-detail-from">{inboxSender(message, agentName)}</span>
-          <span className={`chip ${kind.className}`}>{kind.label}</span>
-          <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
-        </div>
-        <div className="inbox-detail-body">
-          <p className="inbox-body-text">{body}</p>
-        </div>
-        {taskHref ? (
-          <div className="inbox-detail-footer">
-            <Link className="inbox-task-link" href={taskHref}>
-              Open task →
-            </Link>
-          </div>
-        ) : null}
+        {/* S-207 req 9: recency groups, empty ones hidden. */}
+        {sections.map((section) => (
+          <section key={section.group} className="inbox-group" aria-label={section.label}>
+            <h2 className="inbox-group-header">{section.label}</h2>
+            <div className="entity-list inbox-list">
+              {section.items.map((m) => (
+                <InboxRow
+                  key={m.id}
+                  message={m}
+                  agentName={agentName}
+                  checked={selectedIds.has(m.id)}
+                  onOpen={openMessage}
+                  onToggleSelect={(id) => setSelectedIds((prev) => toggleItem(prev, id))}
+                />
+              ))}
+            </div>
+          </section>
+        ))}
       </div>
     );
-  };
+  }
 
   return (
     <AuthGate>
@@ -318,13 +278,13 @@ export default function InboxPage() {
           {!selected ? (
             <div className="inbox-controls">
               {/* S-207 req 5: bulk actions, enabled only with a selection. */}
-              <div className="inbox-bulk" role="group" aria-label="Bulk actions">
+              <fieldset className="inbox-bulk" style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }} aria-label="Bulk actions">
                 <button
                   type="button"
                   className="btn btn-small inbox-bulk-read"
                   disabled={selectionSize === 0}
                   aria-label={`Mark ${selectionSize} selected as read`}
-                  onClick={() => void doBulkMarkRead()}
+                  onClick={() => { doBulkMarkRead().catch(() => undefined); }}
                 >
                   Mark as Read
                 </button>
@@ -340,7 +300,7 @@ export default function InboxPage() {
                 {selectionSize > 0 ? (
                   <span className="inbox-selection-count">{selectionSize} selected</span>
                 ) : null}
-              </div>
+              </fieldset>
               {/* S-207 req 1: restyled to the platform field standard. */}
               <label className="inbox-filter">
                 <span>Show</span>
@@ -380,39 +340,14 @@ export default function InboxPage() {
         </div>
         {error ? <div className="notice error">{error}</div> : null}
         {selected ? (
-          renderDetail(selected)
-        ) : loading && messages.length === 0 ? (
-          <EmptyState title="Loading your inbox…" hint="Agent and system messages addressed to you." />
-        ) : messages.length === 0 ? (
-          <EmptyState
-            title="Your inbox is empty"
-            hint="Ask an agent to send something to your inbox and it will land here — unread until you open it."
+          <InboxDetail
+            message={selected}
+            agentName={agentName}
+            onBack={() => setSelectedId(null)}
+            onDelete={(m) => setPendingDelete(m)}
           />
         ) : (
-          <div className="inbox-groups">
-            {/* S-207 req 7: column header above the list. */}
-            <div className="inbox-columns" role="row">
-              <input
-                type="checkbox"
-                className="inbox-checkbox"
-                checked={allVisibleSelected}
-                aria-label="Select all visible messages"
-                onChange={() => setSelectedIds((prev) => toggleSelectAll(prev, visibleIds))}
-              />
-              <span className="inbox-status" aria-hidden="true" />
-              <span className="inbox-col-sender">From</span>
-              <span className="inbox-col-title">Message</span>
-              <span className="inbox-col-kind">Type</span>
-              <span className="inbox-col-time">Received</span>
-            </div>
-            {/* S-207 req 9: recency groups, empty ones hidden. */}
-            {sections.map((section) => (
-              <section key={section.group} className="inbox-group" aria-label={section.label}>
-                <h2 className="inbox-group-header">{section.label}</h2>
-                <div className="entity-list inbox-list">{section.items.map(renderRow)}</div>
-              </section>
-            ))}
-          </div>
+          renderList()
         )}
         {pendingDelete ? (
           <ConfirmDialog
@@ -436,3 +371,118 @@ export default function InboxPage() {
     </AuthGate>
   );
 }
+
+function InboxRow({
+  message,
+  agentName,
+  checked,
+  onOpen,
+  onToggleSelect,
+}: {
+  readonly message: InboxMessage;
+  readonly agentName: (id?: string) => string | undefined;
+  readonly checked: boolean;
+  readonly onOpen: (m: InboxMessage) => void;
+  readonly onToggleSelect: (id: string) => void;
+}) {
+    const unreadRow = isUnread(message.read_at);
+    const kind = inboxKindMeta(message.kind);
+    const { subject, body } = inboxDisplay(message);
+      return (
+      <div
+        className={`inbox-row ${unreadRow ? "inbox-row-unread" : ""}`}
+        role="button"
+        tabIndex={0}
+        aria-label={`Open message: ${subject}`}
+        onClick={() => onOpen(message)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onOpen(message);
+          }
+        }}
+      >
+        {/* S-207 req 4: multi-select checkbox (never opens the row). */}
+        <input
+          type="checkbox"
+          className="inbox-checkbox"
+          checked={checked}
+          aria-label={`Select message: ${subject}`}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => onToggleSelect(message.id)}
+        />
+        {/* S-207 req 3: envelope read/unread marker. */}
+        <span className="inbox-status" aria-hidden={unreadRow ? undefined : "true"}>
+          {unreadRow ? (
+            <IconEnvelopeUnread size={18} />
+          ) : (
+            <IconEnvelopeRead size={18} />
+          )}
+        </span>
+        <span className="inbox-sender">{inboxSender(message, agentName)}</span>
+        {/* S-207 req 6: "Title — body preview", ellipsis-truncated. */}
+        <span className="inbox-titleline">
+          <span className="inbox-subject">{subject}</span>
+          {inboxPreview(body) ? (
+            <span className="inbox-preview">{" — " + inboxPreview(body)}</span>
+          ) : null}
+        </span>
+        <span className={`chip ${kind.className}`}>{kind.label}</span>
+        <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
+      </div>
+    );
+  }
+
+function InboxDetail({
+  message,
+  agentName,
+  onBack,
+  onDelete,
+}: {
+  readonly message: InboxMessage;
+  readonly agentName: (id?: string) => string | undefined;
+  readonly onBack: () => void;
+  readonly onDelete: (m: InboxMessage) => void;
+}) {
+    const kind = inboxKindMeta(message.kind);
+    const { subject, body } = inboxDisplay(message);
+    const taskHref = inboxTaskLink(message);
+    return (
+      <div className="inbox-detail">
+        <div className="inbox-detail-topbar">
+          <button
+            type="button"
+            className="btn btn-small inbox-back"
+            aria-label="Back to inbox"
+            onClick={onBack}
+          >
+            ← Inbox
+          </button>
+          <button
+            type="button"
+            className="btn btn-small btn-danger inbox-delete"
+            aria-label="Delete message"
+            onClick={() => onDelete(message)}
+          >
+            Delete
+          </button>
+        </div>
+        <h2 className="inbox-detail-subject">{subject}</h2>
+        <div className="inbox-detail-meta">
+          <span className="inbox-detail-from">{inboxSender(message, agentName)}</span>
+          <span className={`chip ${kind.className}`}>{kind.label}</span>
+          <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
+        </div>
+        <div className="inbox-detail-body">
+          <p className="inbox-body-text">{body}</p>
+        </div>
+        {taskHref ? (
+          <div className="inbox-detail-footer">
+            <Link className="inbox-task-link" href={taskHref}>
+              Open task →
+            </Link>
+          </div>
+        ) : null}
+      </div>
+    );
+  }

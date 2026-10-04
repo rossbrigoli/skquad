@@ -35,13 +35,15 @@ export function toggleDeadLetterSelection(
   return next;
 }
 
-// selectAllDeadLetters returns every message id when selectAll is true,
-// or an empty set when false.
-export function selectAllDeadLetters(
-  items: readonly { id: string }[],
-  selectAll: boolean,
-): Set<string> {
-  return selectAll ? new Set(items.map((m) => m.id)) : new Set();
+// S-189/S2301: two explicit methods instead of a boolean flag.
+// allDeadLetterIds returns every message id; emptyDeadLetterSelection
+// returns an empty selection.
+export function allDeadLetterIds(items: readonly { id: string }[]): Set<string> {
+  return new Set(items.map((m) => m.id));
+}
+
+export function emptyDeadLetterSelection(): Set<string> {
+  return new Set();
 }
 
 // pruneDeadLetterSelection drops selected ids that no longer exist in

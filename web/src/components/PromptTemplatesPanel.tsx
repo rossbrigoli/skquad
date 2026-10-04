@@ -24,7 +24,8 @@ import {
   emptyTemplateForm,
   formFromTemplate,
   pruneTemplateSelection,
-  selectAllTemplates,
+  allTemplateIds,
+  emptyTemplateSelection,
   toggleTemplateSelection,
   updatePromptTemplate,
   validateTemplateForm,
@@ -38,6 +39,10 @@ const APPLIES_LABELS: Record<TemplateAppliesTo, string> = {
   squad: "Squads",
   both: "Squads + Agents",
 };
+
+function errMessage(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
+}
 
 export function PromptTemplatesPanel({
   templates,
@@ -58,6 +63,75 @@ export function PromptTemplatesPanel({
   const [pendingSingle, setPendingSingle] = useState<PromptTemplate | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const headerCheckbox = useRef<HTMLInputElement>(null);
+
+  function renderToolbar() {
+    if (templates.length === 0) {
+      return null;
+    }
+    return (
+      <fieldset className="templates-toolbar" style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }} aria-label="Template bulk actions">
+        <label className="templates-selectall">
+          <input
+            ref={headerCheckbox}
+            type="checkbox"
+            checked={allSelected}
+            onChange={(e) => setSelectedIds(e.target.checked ? allTemplateIds(templates) : emptyTemplateSelection())}
+            aria-label="Select all templates"
+          />
+          <span>Select all</span>
+        </label>
+        {selectionSize > 0 ? <span className="bulk-count">{selectionSize} selected</span> : null}
+        <button
+          type="button"
+          className="btn btn-sm btn-danger"
+          disabled={selectionSize === 0 || bulkBusy}
+          aria-label={`Delete ${selectionSize} selected templates`}
+          onClick={() => setPendingBulk(true)}
+        >
+          {bulkBusy ? "Deleting…" : "Delete selected"}
+        </button>
+      </fieldset>
+    );
+  }
+
+  function renderTemplateList() {
+    if (loading && templates.length === 0) {
+      return <p className="field-hint">Loading templates…</p>;
+    }
+    if (templates.length === 0) {
+      return (
+        <EmptyState
+          title="No prompt templates yet"
+          hint="Create one to give new squads and agents a head start."
+        />
+      );
+    }
+    return (
+      <div className="entity-list">
+        {templates.map((t) => (
+          <div key={t.id} className="entity-row">
+            <input
+              type="checkbox"
+              className="entity-checkbox"
+              checked={selected.has(t.id)}
+              onChange={() => setSelectedIds((prev) => toggleTemplateSelection(prev, t.id))}
+              aria-label={`Select template ${t.name}`}
+            />
+            <div className="entity-main">
+              <span className="entity-title">{t.name}</span>
+              <span className="entity-meta">{t.description || "—"}</span>
+            </div>
+            <div className="entity-side">
+              <span className="entity-meta">{APPLIES_LABELS[t.applies_to] ?? t.applies_to}</span>
+              <button type="button" className="btn btn-sm" onClick={() => setEditing(t)}>
+                Edit
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   // Selection is pruned against the live list at render time so deleted
   // or vanished templates can never linger in the selection.
@@ -85,7 +159,7 @@ export function PromptTemplatesPanel({
       setSelectedIds(new Set());
       onChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "bulk delete failed");
+      setError(errMessage(err, "bulk delete failed"));
     } finally {
       setBulkBusy(false);
       setPendingBulk(false);
@@ -99,7 +173,7 @@ export function PromptTemplatesPanel({
       setNotice(`Deleted template “${template.name}”.`);
       onChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "delete failed");
+      setError(errMessage(err, "delete failed"));
     } finally {
       setPendingSingle(null);
     }
@@ -120,63 +194,9 @@ export function PromptTemplatesPanel({
       {error ? <div className="notice error">{error}</div> : null}
       {notice && !error ? <div className="notice">{notice}</div> : null}
 
-      {templates.length > 0 ? (
-        <div className="templates-toolbar" role="group" aria-label="Template bulk actions">
-          <label className="templates-selectall">
-            <input
-              ref={headerCheckbox}
-              type="checkbox"
-              checked={allSelected}
-              onChange={(e) => setSelectedIds(selectAllTemplates(templates, e.target.checked))}
-              aria-label="Select all templates"
-            />
-            <span>Select all</span>
-          </label>
-          {selectionSize > 0 ? <span className="bulk-count">{selectionSize} selected</span> : null}
-          <button
-            type="button"
-            className="btn btn-sm btn-danger"
-            disabled={selectionSize === 0 || bulkBusy}
-            aria-label={`Delete ${selectionSize} selected templates`}
-            onClick={() => setPendingBulk(true)}
-          >
-            {bulkBusy ? "Deleting…" : "Delete selected"}
-          </button>
-        </div>
-      ) : null}
+      {renderToolbar()}
 
-      {loading && templates.length === 0 ? (
-        <p className="field-hint">Loading templates…</p>
-      ) : templates.length === 0 ? (
-        <EmptyState
-          title="No prompt templates yet"
-          hint="Create one to give new squads and agents a head start."
-        />
-      ) : (
-        <div className="entity-list">
-          {templates.map((t) => (
-            <div key={t.id} className="entity-row">
-              <input
-                type="checkbox"
-                className="entity-checkbox"
-                checked={selected.has(t.id)}
-                onChange={() => setSelectedIds((prev) => toggleTemplateSelection(prev, t.id))}
-                aria-label={`Select template ${t.name}`}
-              />
-              <div className="entity-main">
-                <span className="entity-title">{t.name}</span>
-                <span className="entity-meta">{t.description || "—"}</span>
-              </div>
-              <div className="entity-side">
-                <span className="entity-meta">{APPLIES_LABELS[t.applies_to] ?? t.applies_to}</span>
-                <button type="button" className="btn btn-sm" onClick={() => setEditing(t)}>
-                  Edit
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      {renderTemplateList()}
 
       {pendingBulk ? (
         <ConfirmDialog

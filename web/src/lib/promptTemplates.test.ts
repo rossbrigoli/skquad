@@ -22,7 +22,8 @@ import {
   formFromTemplate,
   listPromptTemplates,
   pruneTemplateSelection,
-  selectAllTemplates,
+  allTemplateIds,
+  emptyTemplateSelection,
   templateMatchesAppliesTo,
   toggleTemplateSelection,
   updatePromptTemplate,
@@ -186,10 +187,10 @@ describe("selection helpers (S-214)", () => {
     expect(added.size).toBe(1);
   });
 
-  it("selectAllTemplates returns every id or none", () => {
+  it("allTemplateIds returns every id; emptyTemplateSelection returns none", () => {
     const tpls = [{ id: "a" }, { id: "b" }];
-    expect([...selectAllTemplates(tpls, true).values()].sort()).toEqual(["a", "b"]);
-    expect(selectAllTemplates(tpls, false).size).toBe(0);
+    expect([...allTemplateIds(tpls).values()].sort()).toEqual(["a", "b"]);
+    expect(emptyTemplateSelection().size).toBe(0);
   });
 
   it("pruneTemplateSelection drops ids missing from the live list", () => {

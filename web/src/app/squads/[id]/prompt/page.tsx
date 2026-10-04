@@ -62,8 +62,8 @@ export default function SquadPromptPage() {
         </div>
         <p className="field-hint" style={{ marginBottom: "var(--space-4)" }}>
           Layer 3 of the prompt hierarchy: injected into every agent in this squad, below the
-          platform and organization blocks. Saving here persists both the squad&rsquo;s
-          <strong> mission</strong> and its context in one action; the mission is injected on top
+          platform and organization blocks. Saving here persists both the squad&rsquo;s{" "}
+          <strong>mission</strong> and its context in one action; the mission is injected on top
           of the context at compose time.
         </p>
         {squads.error ? <div className="notice error">{squads.error}</div> : null}

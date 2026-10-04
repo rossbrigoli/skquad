@@ -8,7 +8,7 @@ export const STORAGE_PRESETS = ["1Gi", "2Gi", "5Gi", "10Gi"];
 export const DEFAULT_AGENT_STORAGE_SIZE = "2Gi";
 
 // Kubernetes-style quantity: positive decimal number + binary/decimal suffix.
-const STORAGE_QTY_RE = /^([0-9]+(?:\.[0-9]+)?)(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)$/;
+const STORAGE_QTY_RE = /^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)$/;
 
 export function isValidStorageSize(value: string): boolean {
   const v = value.trim();

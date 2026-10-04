@@ -145,7 +145,7 @@ export function PlatformSettingsTab() {
             aria-label="Scale to zero after minutes of inactivity"
             value={form.idleMinutes}
             onChange={(e) => {
-              setForm((f) => ({ ...f, idleMinutes: e.target.value.replace(/[^0-9]/g, "") }));
+              setForm((f) => ({ ...f, idleMinutes: e.target.value.replace(/\D/g, "") }));
               setNote("");
               setError("");
             }}

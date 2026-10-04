@@ -26,7 +26,10 @@ export default function SquadsPage() {
           const u = (allUsers.data ?? []).find((x) => x.id === ownerId);
           const name = u?.name;
           const emailPrefix = u?.email?.split("@")[0];
-          return name ? name : emailPrefix ? emailPrefix : undefined;
+          if (name) {
+            return name;
+          }
+          return emailPrefix || undefined;
         },
       }
     : undefined;

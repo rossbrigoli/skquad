@@ -106,13 +106,13 @@ export function toggleTemplateSelection(
   return next;
 }
 
-// selectAllTemplates returns every template id when selectAll is true,
-// or an empty set when false.
-export function selectAllTemplates(
-  templates: readonly { id: string }[],
-  selectAll: boolean,
-): Set<string> {
-  return selectAll ? new Set(templates.map((t) => t.id)) : new Set();
+// S-189/S2301: two explicit methods instead of a boolean flag.
+export function allTemplateIds(templates: readonly { id: string }[]): Set<string> {
+  return new Set(templates.map((t) => t.id));
+}
+
+export function emptyTemplateSelection(): Set<string> {
+  return new Set();
 }
 
 // pruneTemplateSelection drops selected ids that no longer exist in the

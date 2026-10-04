@@ -37,6 +37,38 @@ function isTaskStatus(v: unknown): v is TaskStatus {
   return typeof v === "string" && (CANONICAL_STATUSES as string[]).includes(v);
 }
 
+function columnFromItem(item: unknown, seen: Set<TaskStatus>): BoardColumnConfig | null {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+  const rec = item as Record<string, unknown>;
+  if (!isTaskStatus(rec.status) || seen.has(rec.status)) {
+    return null;
+  }
+  const label =
+    typeof rec.label === "string" && rec.label.trim() !== ""
+      ? rec.label
+      : DEFAULT_COLUMN_LABELS[rec.status];
+  return { status: rec.status, label, visible: rec.visible !== false };
+}
+
+// S-213: squads configured before Backlog existed must get it inserted
+// immediately left of "todo" (its canonical home). Handled after the
+// other missing columns so the relative order stays canonical even when
+// "todo" itself was absent from the persisted config.
+function insertBacklog(out: BoardColumnConfig[], seen: Set<TaskStatus>): void {
+  if (seen.has("backlog")) {
+    return;
+  }
+  const backlog: BoardColumnConfig = { status: "backlog", label: DEFAULT_COLUMN_LABELS.backlog, visible: true };
+  const todoIdx = out.findIndex((c) => c.status === "todo");
+  if (todoIdx >= 0) {
+    out.splice(todoIdx, 0, backlog);
+  } else {
+    out.unshift(backlog);
+  }
+}
+
 // Merge persisted column config with defaults. Unknown statuses are dropped,
 // missing columns are appended in canonical order, labels fall back to
 // defaults when blank. Never throws — malformed input yields defaults.
@@ -45,28 +77,16 @@ export function normalizeColumns(raw: unknown): BoardColumnConfig[] {
   const out: BoardColumnConfig[] = [];
   const seen = new Set<TaskStatus>();
   for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const rec = item as Record<string, unknown>;
-    if (!isTaskStatus(rec.status)) continue;
-    if (seen.has(rec.status)) continue;
-    seen.add(rec.status);
-    const label = typeof rec.label === "string" && rec.label.trim() !== "" ? rec.label : DEFAULT_COLUMN_LABELS[rec.status];
-    out.push({ status: rec.status, label, visible: rec.visible !== false });
+    const col = columnFromItem(item, seen);
+    if (!col) continue;
+    seen.add(col.status);
+    out.push(col);
   }
   for (const status of CANONICAL_STATUSES) {
     if (seen.has(status) || status === "backlog") continue;
     out.push({ status, label: DEFAULT_COLUMN_LABELS[status], visible: true });
   }
-  // S-213: squads configured before Backlog existed must get it inserted
-  // immediately left of "todo" (its canonical home). Handled after the
-  // other missing columns so the relative order stays canonical even when
-  // "todo" itself was absent from the persisted config.
-  if (!seen.has("backlog")) {
-    const backlog: BoardColumnConfig = { status: "backlog", label: DEFAULT_COLUMN_LABELS.backlog, visible: true };
-    const todoIdx = out.findIndex((c) => c.status === "todo");
-    if (todoIdx >= 0) out.splice(todoIdx, 0, backlog);
-    else out.unshift(backlog);
-  }
+  insertBacklog(out, seen);
   return out;
 }
 

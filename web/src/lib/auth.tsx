@@ -41,7 +41,7 @@ async function detectAuthMode(): Promise<AuthMode> {
 }
 
 export function TokenProvider({ children }: { readonly children: ReactNode }) {
-  const [token, setTokenState] = useState("");
+  const [token, setToken] = useState("");
   const [user, setUser] = useState<ApiUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -83,7 +83,7 @@ export function TokenProvider({ children }: { readonly children: ReactNode }) {
         return;
       }
       // Token (dev) mode — read localStorage post-hydration to avoid SSR mismatch.
-      setTokenState(window.localStorage.getItem(TOKEN_KEY) ?? "");
+      setToken(window.localStorage.getItem(TOKEN_KEY) ?? "");
     }
 
     bootstrap().catch(() => undefined);
@@ -125,9 +125,9 @@ export function TokenProvider({ children }: { readonly children: ReactNode }) {
     };
   }, [token, mode]);
 
-  const setToken = useCallback((next: string) => {
+  const persistToken = useCallback((next: string) => {
     window.localStorage.setItem(TOKEN_KEY, next);
-    setTokenState(next);
+    setToken(next);
   }, []);
 
   const logout = useCallback(() => {
@@ -138,7 +138,7 @@ export function TokenProvider({ children }: { readonly children: ReactNode }) {
       return;
     }
     window.localStorage.removeItem(TOKEN_KEY);
-    setTokenState("");
+    setToken("");
     setUser(null);
   }, [mode]);
 
@@ -147,8 +147,8 @@ export function TokenProvider({ children }: { readonly children: ReactNode }) {
   // Memoize the context value so consumers do not re-render on every
   // provider render (S-126 / S6481).
   const value = useMemo<AuthValue>(
-    () => ({ token, user, loading, error, mode, authed, setToken, logout }),
-    [token, user, loading, error, mode, authed, setToken, logout],
+    () => ({ token, user, loading, error, mode, authed, setToken: persistToken, logout }),
+    [token, user, loading, error, mode, authed, persistToken, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

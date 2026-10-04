@@ -315,6 +315,16 @@ function PrimaryRail({
 // squad section navigation is a horizontal SquadTabs bar rendered at
 // the top of the content area (every squad route except the agent
 // detail screen, which owns its own tabs).
+function findNameById(
+  list: { id: string; name?: string }[] | null | undefined,
+  id: string | null | undefined,
+): string | undefined {
+  if (!id) {
+    return undefined;
+  }
+  return (list ?? []).find((x) => x.id === id)?.name;
+}
+
 export function AppShell({ children }: { readonly children: ReactNode }) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
@@ -340,7 +350,10 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
           const u = (allUsers.data ?? []).find((x) => x.id === ownerId);
           const name = u?.name;
           const emailPrefix = u?.email?.split("@")[0];
-          return name ? name : emailPrefix ? emailPrefix : undefined;
+          if (name) {
+            return name;
+          }
+          return emailPrefix || undefined;
         },
       }
     : undefined;
@@ -365,12 +378,8 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
   // S-127 breadcrumb hints: resolve dynamic [id]/[agentId] segments to
   // human names from data AppShell already loads; task pages fall back to
   // a generic "Task" label (task data lives deeper in the page).
-  const squadHint = squadContextId
-    ? (squads.data ?? []).find((squad) => squad.id === squadContextId)?.name
-    : undefined;
-  const agentHint = agentId
-    ? (squadAgents.data ?? []).find((agent) => agent.id === agentId)?.name
-    : undefined;
+  const squadHint = findNameById(squads.data, squadContextId);
+  const agentHint = findNameById(squadAgents.data, agentId);
   // S-184: on task detail routes, load the task so the crumb can show the
   // short "T-<n>" ref instead of the old 404-ing "Tasks" segment.
   const crumbTaskId = taskIdFromPath(pathname);

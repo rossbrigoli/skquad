@@ -335,6 +335,18 @@ export async function apiUploadImage(path: string, token: string, file: File, qu
   return (await response.json()) as import("./uploads").UploadRef;
 }
 
+function extractErrorMessage(
+  parsed: { error?: { message?: unknown }; message?: unknown } | null,
+): string {
+  if (typeof parsed?.error?.message === "string") {
+    return parsed.error.message;
+  }
+  if (typeof parsed?.message === "string") {
+    return parsed.message;
+  }
+  return "";
+}
+
 async function apiRequest<T>(path: string, token: string, options: { method: string; body?: unknown; timeoutMs?: number }): Promise<T> {
   const headers: Record<string, string> = {
     Accept: "application/json",
@@ -366,12 +378,7 @@ async function apiRequest<T>(path: string, token: string, options: { method: str
     try {
       body = await response.json();
       const parsed = body as { error?: { message?: unknown }; message?: unknown } | null;
-      const parsedMessage =
-        typeof parsed?.error?.message === "string"
-          ? parsed.error.message
-          : typeof parsed?.message === "string"
-            ? parsed.message
-            : "";
+      const parsedMessage = extractErrorMessage(parsed);
       message = parsedMessage || message;
     } catch {
       // Keep the HTTP status text when the body is not JSON.

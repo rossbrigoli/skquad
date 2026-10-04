@@ -46,7 +46,6 @@ export function Modal({
       }}
     >
       <div
-        role="presentation"
         className="modal-backdrop-inner"
         onMouseDown={(event) => {
           if (event.target === event.currentTarget) onClose();

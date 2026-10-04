@@ -16,7 +16,8 @@ import { buildDeadLetterQuery, isConsultTimeout, type DeadLetterQuery, type Inbo
 import {
   pruneDeadLetterSelection,
   runBulkAction,
-  selectAllDeadLetters,
+  allDeadLetterIds,
+  emptyDeadLetterSelection,
   summarizeBulkResults,
   toggleDeadLetterSelection,
 } from "../lib/deadLetters";
@@ -30,6 +31,10 @@ function formatTime(value?: string): string {
   if (!value) return "—";
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+
+function errNote(err: unknown, verb: string): string {
+  return err instanceof Error ? `${verb} failed: ${err.message}` : `${verb} failed.`;
 }
 
 function shortId(id: string): string {
@@ -86,7 +91,7 @@ export function DeadLettersPanel() {
       setItems(payload.dead_letters ?? []);
       setNote(`${payload.dead_letters?.length ?? 0} dead letter(s) shown.`);
     } catch (err) {
-      setNote(err instanceof Error ? `Search failed: ${err.message}` : "Search failed.");
+      setNote(errNote(err, "Search"));
     } finally {
       setLoading(false);
     }
@@ -110,7 +115,7 @@ export function DeadLettersPanel() {
       setNote(`Replayed ${shortId(message.id)}.`);
       void search();
     } catch (err) {
-      setNote(err instanceof ApiError ? `Replay failed: ${err.message}` : "Replay failed.");
+      setNote(errNote(err, "Replay"));
     } finally {
       setBusyId("");
     }
@@ -127,7 +132,7 @@ export function DeadLettersPanel() {
       setNote(`Deleted ${shortId(message.id)}.`);
       void search();
     } catch (err) {
-      setNote(err instanceof ApiError ? `Delete failed: ${err.message}` : "Delete failed.");
+      setNote(errNote(err, "Delete"));
     } finally {
       setBusyId("");
     }
@@ -145,9 +150,10 @@ export function DeadLettersPanel() {
       const summary = summarizeBulkResults(
         await runBulkAction(ids, (id) => apiPost(`/admin/dead-letters/${id}/replay`, authedToken, {})),
       );
+      const plural = summary.succeeded === 1 ? "" : "s";
       setNote(
         summary.failed === 0
-          ? `Replayed ${summary.succeeded} message${summary.succeeded === 1 ? "" : "s"}.`
+          ? `Replayed ${summary.succeeded} message${plural}.`
           : `Replayed ${summary.succeeded}/${summary.total}; failed: ${summary.failedIds.map(shortId).join(", ")}.`,
       );
       setSelectedIds(new Set());
@@ -166,9 +172,10 @@ export function DeadLettersPanel() {
       const summary = summarizeBulkResults(
         await runBulkAction(ids, (id) => apiDelete(`/admin/dead-letters/${id}`, authedToken)),
       );
+      const plural = summary.succeeded === 1 ? "" : "s";
       setNote(
         summary.failed === 0
-          ? `Deleted ${summary.succeeded} message${summary.succeeded === 1 ? "" : "s"}.`
+          ? `Deleted ${summary.succeeded} message${plural}.`
           : `Deleted ${summary.succeeded}/${summary.total}; failed: ${summary.failedIds.map(shortId).join(", ")}.`,
       );
       setSelectedIds(new Set());
@@ -231,13 +238,13 @@ export function DeadLettersPanel() {
       {note ? <p className="field-hint">{note}</p> : null}
       {items === null ? null : items.length === 0 ? <p className="field-hint">No dead letters match.</p> : null}
       {(items?.length ?? 0) > 0 ? (
-        <div className="templates-toolbar" role="group" aria-label="Dead letter bulk actions">
+        <fieldset className="templates-toolbar" style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }} aria-label="Dead letter bulk actions">
           <label className="templates-selectall">
             <input
               ref={headerCheckbox}
               type="checkbox"
               checked={allSelected}
-              onChange={(e) => setSelectedIds(selectAllDeadLetters(items ?? [], e.target.checked))}
+              onChange={(e) => setSelectedIds(e.target.checked ? allDeadLetterIds(items ?? []) : emptyDeadLetterSelection())}
               disabled={bulkBusy}
               aria-label="Select all dead letters"
             />
@@ -262,7 +269,7 @@ export function DeadLettersPanel() {
           >
             Delete selected
           </button>
-        </div>
+        </fieldset>
       ) : null}
       {(items ?? []).map((m) => (
         <div key={m.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--border, #ddd)" }}>
