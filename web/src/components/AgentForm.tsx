@@ -65,7 +65,7 @@ export function AgentFormModal({
     initial?.idle_timeout_sec ? String(initial.idle_timeout_sec) : "",
   );
   const [storageEnabled, setStorageEnabled] = useState(initial?.storage_enabled ?? false);
-  const [storageSize, setStorageSize] = useState(initial?.storage_size || DEFAULT_AGENT_STORAGE_SIZE);
+  const [storageSize, setStorageSize] = useState(initial?.storage_size ? initial.storage_size : DEFAULT_AGENT_STORAGE_SIZE);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // S-PROMPT WP4: layer-4 validation battery runs debounced while typing;

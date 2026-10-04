@@ -55,7 +55,7 @@ export function ActivityFeed({
   return (
     <div className="entity-list">
       {entries.map((entry) => {
-        const actor = nameFor?.(entry) || (entry.actor_type === "user" ? entry.actor_id : entry.actor_type);
+        const actor = nameFor?.(entry) ?? (entry.actor_type === "user" ? entry.actor_id : entry.actor_type);
         const href = entityHref(squadId, entry);
         const body = (
           <div className="entity-main">

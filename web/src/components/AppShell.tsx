@@ -338,7 +338,9 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
         meId: user?.id,
         nameFor: (ownerId: string) => {
           const u = (allUsers.data ?? []).find((x) => x.id === ownerId);
-          return u?.name || u?.email?.split("@")[0] || undefined;
+          const name = u?.name;
+          const emailPrefix = u?.email?.split("@")[0];
+          return name ? name : emailPrefix ? emailPrefix : undefined;
         },
       }
     : undefined;

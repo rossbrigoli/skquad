@@ -56,7 +56,7 @@ export function EffectivePromptPanel({
               }
             >
               <TokenMeter tokens={tier.tokens} softWarn={tier.soft_warn} hardCap={tier.hard_cap} />
-              <pre className="prompt-tier-content">{tier.content || "(empty)"}</pre>
+              <pre className="prompt-tier-content">{tier.content ? tier.content : "(empty)"}</pre>
             </Collapsible>
           </div>
         );

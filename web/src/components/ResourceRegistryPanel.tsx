@@ -72,7 +72,7 @@ export function ResourceRegistryPanel({
             <div key={r.id} className="entity-row">
               <div className="entity-main">
                 <span className="entity-title">{r.name}</span>
-                <span className="entity-meta">{r.description || r.endpoint || "—"}</span>
+                <span className="entity-meta">{r.description ?? r.endpoint ?? "—"}</span>
               </div>
               <div className="entity-side">
                 <StatusChip status={statusChipFor(r.status)} />
