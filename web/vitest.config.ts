@@ -63,6 +63,9 @@ export default defineConfig({
         "src/components/AdminBudgetPanel.tsx",
         "src/components/ResourceRegistryPanel.tsx",
         "src/lib/useAttention.tsx",
+        // S-189 batch 3: settings page (tab dispatch, AI model hierarchy,
+        // provider/model modals, access/grants editing) via jsdom suite.
+        "src/app/settings/page.tsx",
       ],
       exclude: [
         "src/**/*.test.ts",
