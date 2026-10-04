@@ -170,9 +170,9 @@ export default function CostsPage() {
     }
     let active = true;
     const tick = () => {
-      if (active) void load();
+      if (active) load().catch(() => undefined);
     };
-    void load();
+    load().catch(() => undefined);
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") tick();
     }, POLL_MS);

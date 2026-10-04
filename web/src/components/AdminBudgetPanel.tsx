@@ -248,15 +248,15 @@ export function AdminBudgetPanel({ token }: { readonly token: string }) {
   useEffect(() => {
     // Async fetch: setState lands in callbacks, not the effect body.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void load();
+    load().catch(() => undefined);
   }, [token, load]);
 
   const refreshAfterPlatformSave = useCallback(() => {
-    void load();
+    load().catch(() => undefined);
   }, [load]);
 
   const refreshAfterUserSave = useCallback(() => {
-    void load();
+    load().catch(() => undefined);
   }, [load]);
 
   if (loading && !data) {

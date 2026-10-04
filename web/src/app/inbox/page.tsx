@@ -97,7 +97,7 @@ export default function InboxPage() {
   }, [authed, token, unreadOnly, effectiveUserId]);
 
   useEffect(() => {
-    void load();
+    load().catch(() => undefined);
   }, [load]);
 
   // The admin filter needs the user directory once.
@@ -154,7 +154,7 @@ export default function InboxPage() {
   const openMessage = useCallback(
     (message: InboxMessage) => {
       setSelectedId(message.id);
-      void markRead(message);
+      markRead(message).catch(() => undefined);
     },
     [markRead],
   );
@@ -284,7 +284,7 @@ export default function InboxPage() {
                   className="btn btn-small inbox-bulk-read"
                   disabled={selectionSize === 0}
                   aria-label={`Mark ${selectionSize} selected as read`}
-                  onClick={() => void doBulkMarkRead()}
+                  onClick={() => { doBulkMarkRead().catch(() => undefined); }}
                 >
                   Mark as Read
                 </button>
