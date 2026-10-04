@@ -31,9 +31,9 @@ export function PlatformBudgetForm({
   token,
   onSaved,
 }: {
-  payload: AdminBudgetsPayload;
-  token: string;
-  onSaved: (resp: PlatformBudgetPutResponse) => void;
+  readonly payload: AdminBudgetsPayload;
+  readonly token: string;
+  readonly onSaved: (resp: PlatformBudgetPutResponse) => void;
 }) {
   const [defaultMonthly, setDefaultMonthly] = useState(knobToInput(payload.platform.default_monthly_usd));
   const [max, setMax] = useState(knobToInput(payload.platform.max_usd));
@@ -140,10 +140,10 @@ function UserBudgetRow({
   token,
   onSaved,
 }: {
-  user: CostBudgetStatus;
-  maxUsd: number | null;
-  token: string;
-  onSaved: (userId: string, budget: number) => void;
+  readonly user: CostBudgetStatus;
+  readonly maxUsd: number | null;
+  readonly token: string;
+  readonly onSaved: (userId: string, budget: number) => void;
 }) {
   const [value, setValue] = useState(knobToInput(user.monthly_budget_usd));
   const [error, setError] = useState("");
@@ -218,7 +218,7 @@ function UserBudgetRow({
 // Panel
 // ---------------------------------------------------------------------------
 
-export function AdminBudgetPanel({ token }: { token: string }) {
+export function AdminBudgetPanel({ token }: { readonly token: string }) {
   const [data, setData] = useState<AdminBudgetsPayload | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);

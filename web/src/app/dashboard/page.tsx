@@ -239,11 +239,11 @@ export function SlideSwitch({
   onChange,
   ariaLabel,
 }: {
-  leftLabel: string;
-  rightLabel: string;
-  isRight: boolean;
-  onChange: (right: boolean) => void;
-  ariaLabel: string;
+  readonly leftLabel: string;
+  readonly rightLabel: string;
+  readonly isRight: boolean;
+  readonly onChange: (right: boolean) => void;
+  readonly ariaLabel: string;
 }) {
   const toggle = () => onChange(!isRight);
   return (
@@ -272,7 +272,7 @@ export function SlideSwitch({
 
 // ModeToggle flips the chart between the token and dollar series with the
 // iOS-style sliding switch (S-195: replaces the old two-button control).
-export function ModeToggle({ mode, onChange }: { mode: ChartMode; onChange: (mode: ChartMode) => void }) {
+export function ModeToggle({ mode, onChange }: { readonly mode: ChartMode; readonly onChange: (mode: ChartMode) => void }) {
   return (
     <SlideSwitch
       leftLabel="Tokens"
@@ -291,8 +291,8 @@ export function SourceToggle({
   source,
   onChange,
 }: {
-  source: ChartSource;
-  onChange: (source: ChartSource) => void;
+  readonly source: ChartSource;
+  readonly onChange: (source: ChartSource) => void;
 }) {
   return (
     <SlideSwitch

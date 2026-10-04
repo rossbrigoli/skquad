@@ -10,8 +10,7 @@
 // this dynamic segment, so it never renders here. Unknown types render
 // a not-found state instead of hitting an arbitrary registry endpoint.
 
-import { notFound } from "next/navigation";
-import { useParams } from "next/navigation";
+import { notFound, useParams } from "next/navigation";
 import { AppShell } from "../../../../components/AppShell";
 import { AuthGate } from "../../../../components/AuthGate";
 import { ResourceRegistryPanel } from "../../../../components/ResourceRegistryPanel";

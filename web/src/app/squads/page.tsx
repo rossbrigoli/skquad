@@ -86,9 +86,9 @@ function SquadCreateModal({
   onCreated,
   token,
 }: {
-  onClose: () => void;
-  onCreated: () => void;
-  token: string;
+  readonly onClose: () => void;
+  readonly onCreated: () => void;
+  readonly token: string;
 }) {
   const [name, setName] = useState("");
   const [mission, setMission] = useState("");

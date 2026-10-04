@@ -4,15 +4,17 @@
 "use client";
 
 import type { SubagentInfo, SubagentThreadEntry } from "../lib/chat";
-import { truncateText } from "../lib/chat";
+import { truncateText, uniqueContentKeys } from "../lib/chat";
 
 export function SubagentThreadPanel({
   info,
   onClose,
 }: {
-  info: SubagentInfo;
-  onClose: () => void;
+  readonly info: SubagentInfo;
+  readonly onClose: () => void;
 }) {
+  // S-189: content-derived stable keys (thread is static history, never reordered).
+  const threadKeys = uniqueContentKeys(info.thread, (e) => `${e.role}|${e.name ?? ""}|${e.content}`);
   return (
     <aside className="subagent-panel" role="complementary" aria-label="Subagent thread">
       <header className="subagent-panel-head">
@@ -34,14 +36,14 @@ export function SubagentThreadPanel({
         {info.thread.length === 0 ? (
           <p className="subagent-empty">No thread captured for this subagent run.</p>
         ) : (
-          info.thread.map((entry, idx) => <ThreadEntry key={idx} entry={entry} />)
+          info.thread.map((entry, idx) => <ThreadEntry key={threadKeys[idx]} entry={entry} />)
         )}
       </div>
     </aside>
   );
 }
 
-function ThreadEntry({ entry }: { entry: SubagentThreadEntry }) {
+function ThreadEntry({ entry }: { readonly entry: SubagentThreadEntry }) {
   if (entry.role === "notice") {
     return <p className="subagent-notice">{entry.content}</p>;
   }

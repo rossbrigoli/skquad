@@ -12,7 +12,7 @@ import { IconBoard, IconContext, IconCosts, IconOverview } from "./icons";
 // S-211: the Agents tab is removed — the agent tiles and the
 // "+ New agent" affordance now live on the Overview tab. The
 // /squads/<id>/agents route still exists (deep links, agent detail).
-export function SquadTabs({ squadId }: { squadId: string }) {
+export function SquadTabs({ squadId }: { readonly squadId: string }) {
   const pathname = usePathname();
   const tabs = [
     { href: `/squads/${squadId}`, label: "Overview", exact: true, Icon: IconOverview },

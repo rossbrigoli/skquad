@@ -40,7 +40,7 @@ async function detectAuthMode(): Promise<AuthMode> {
   return "token";
 }
 
-export function TokenProvider({ children }: { children: ReactNode }) {
+export function TokenProvider({ children }: { readonly children: ReactNode }) {
   const [token, setTokenState] = useState("");
   const [user, setUser] = useState<ApiUser | null>(null);
   const [loading, setLoading] = useState(true);

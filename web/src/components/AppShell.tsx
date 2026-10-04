@@ -3,8 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
-import type { ReactNode } from "react";
+import { useState, type ComponentType, type ReactNode } from "react";
 import { useAuth } from "../lib/auth";
 import { useAttention } from "../lib/useAttention";
 import { useApi } from "../lib/useApi";
@@ -14,7 +13,6 @@ import { ThemeToggle } from "./ThemeToggle";
 import { NotificationBell } from "./NotificationBell";
 import { UserMenu } from "./UserMenu";
 import { IconAbout, IconAgents, IconCosts, IconDashboard, IconInbox, IconSettings, IconSquads } from "./icons";
-import type { ComponentType } from "react";
 import { agentIdFromPath, breadcrumbsForPath, taskIdFromPath } from "../lib/breadcrumbs";
 import { formatTaskRef } from "../lib/taskRef";
 import { buildInfo, versionLabel } from "../lib/buildInfo";

@@ -13,18 +13,18 @@ export function Modal({
   wide = false,
   wider = false,
 }: {
-  title: string;
-  onClose: () => void;
-  children: ReactNode;
-  footer?: ReactNode;
-  danger?: boolean;
+  readonly title: string;
+  readonly onClose: () => void;
+  readonly children: ReactNode;
+  readonly footer?: ReactNode;
+  readonly danger?: boolean;
   // S-186: wide dialogs (e.g. the effective-prompt preview) get ~70vw so
   // long prompt text is readable without cramped line lengths.
-  wide?: boolean;
+  readonly wide?: boolean;
   // S-215: the New Squad / New Agent create dialogs get 50% more width
   // (520px → 780px) so the prompt textarea and template controls breathe,
   // while staying responsive on small viewports.
-  wider?: boolean;
+  readonly wider?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
 
@@ -78,17 +78,17 @@ export function ModalForm({
   onCancel,
   testArea,
 }: {
-  onSubmit: () => void | Promise<void>;
-  children: ReactNode;
-  submitLabel?: string;
-  submitDisabled?: boolean;
-  busy?: boolean;
-  error?: string;
-  onCancel: () => void;
+  readonly onSubmit: () => void | Promise<void>;
+  readonly children: ReactNode;
+  readonly submitLabel?: string;
+  readonly submitDisabled?: boolean;
+  readonly busy?: boolean;
+  readonly error?: string;
+  readonly onCancel: () => void;
   // S-180 follow-up: optional left-aligned slot in the footer for the
   // pre-save "Test" button + status, so it sits in the same button row
   // as Cancel/Save instead of floating between form fields.
-  testArea?: ReactNode;
+  readonly testArea?: ReactNode;
 }) {
   return (
     <form

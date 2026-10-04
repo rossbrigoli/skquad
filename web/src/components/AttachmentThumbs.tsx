@@ -34,7 +34,7 @@ function cacheBlobUrl(id: string, url: string): void {
   }
 }
 
-export function AttachmentThumbs({ attachments }: { attachments: UploadRef[] }) {
+export function AttachmentThumbs({ attachments }: { readonly attachments: UploadRef[] }) {
   const { token } = useAuth();
   const [srcs, setSrcs] = useState<Record<string, string>>({});
   const [failedIds, setFailedIds] = useState<Record<string, boolean>>({});

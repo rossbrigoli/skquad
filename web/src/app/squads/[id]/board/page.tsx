@@ -196,13 +196,13 @@ function TaskCreateModal({
   onClose,
   onCreated,
 }: {
-  columnLabel: string;
-  agents: Agent[];
-  squadId: string;
-  token: string;
-  targetStatus: TaskStatus;
-  onClose: () => void;
-  onCreated: () => void;
+  readonly columnLabel: string;
+  readonly agents: Agent[];
+  readonly squadId: string;
+  readonly token: string;
+  readonly targetStatus: TaskStatus;
+  readonly onClose: () => void;
+  readonly onCreated: () => void;
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -269,10 +269,10 @@ function ColumnConfigModal({
   onClose,
   onSaved,
 }: {
-  squad: Squad;
-  token: string;
-  onClose: () => void;
-  onSaved: () => void;
+  readonly squad: Squad;
+  readonly token: string;
+  readonly onClose: () => void;
+  readonly onSaved: () => void;
 }) {
   const [cols, setCols] = useState<BoardColumnConfig[]>(() => boardColumnsFromOperatingModel(squad.operating_model));
   const [busy, setBusy] = useState(false);

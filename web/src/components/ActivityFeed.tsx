@@ -38,11 +38,11 @@ export function ActivityFeed({
   emptyHint,
   nameFor,
 }: {
-  squadId: string;
-  entries: AuditEntry[];
-  emptyTitle: string;
-  emptyHint: string;
-  nameFor?: (entry: AuditEntry) => string | undefined;
+  readonly squadId: string;
+  readonly entries: AuditEntry[];
+  readonly emptyTitle: string;
+  readonly emptyHint: string;
+  readonly nameFor?: (entry: AuditEntry) => string | undefined;
 }) {
   if (entries.length === 0) {
     return (

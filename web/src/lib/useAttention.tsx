@@ -26,7 +26,7 @@ const POLL_MS = 30_000;
 
 // Single provider so every page's nav badge shares one attention computation
 // instead of each AppShell instance re-fetching the world.
-export function AttentionProvider({ children }: { children: ReactNode }) {
+export function AttentionProvider({ children }: { readonly children: ReactNode }) {
   const { token, authed } = useAuth();
   const [items, setItems] = useState<AttentionItem[]>([]);
   const [inboxUnread, setInboxUnread] = useState(0);

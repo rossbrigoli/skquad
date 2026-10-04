@@ -334,10 +334,10 @@ function TaskEditForm({
   onCancel,
   onSaved,
 }: {
-  task: Task;
-  token: string;
-  onCancel: () => void;
-  onSaved: () => void;
+  readonly task: Task;
+  readonly token: string;
+  readonly onCancel: () => void;
+  readonly onSaved: () => void;
 }) {
   const [title, setTitle] = useState(task.title ?? "");
   const [description, setDescription] = useState(task.description ?? "");

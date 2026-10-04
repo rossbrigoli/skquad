@@ -45,13 +45,13 @@ export function AgentFormModal({
   onSubmit,
   onClose,
 }: {
-  initial?: Partial<Agent>;
-  title: string;
-  submitLabel: string;
-  models?: AIModel[];
-  modelsLoading?: boolean;
-  onSubmit: (values: AgentFormValues) => Promise<void>;
-  onClose: () => void;
+  readonly initial?: Partial<Agent>;
+  readonly title: string;
+  readonly submitLabel: string;
+  readonly models?: AIModel[];
+  readonly modelsLoading?: boolean;
+  readonly onSubmit: (values: AgentFormValues) => Promise<void>;
+  readonly onClose: () => void;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [aiModelId, setAiModelId] = useState(initial?.ai_model_id ?? "");

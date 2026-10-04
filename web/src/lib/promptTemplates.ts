@@ -2,8 +2,7 @@
 // squad and agent system prompts. Selecting a template COPIES its content
 // into the draft prompt; templates are never live references.
 
-import { apiDelete, apiDeleteWithBody, apiPatch, apiPost } from "./api";
-import { apiGet } from "./api";
+import { apiDelete, apiDeleteWithBody, apiGet, apiPatch, apiPost } from "./api";
 
 export type TemplateAppliesTo = "squad" | "agent" | "both";
 
