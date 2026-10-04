@@ -69,6 +69,15 @@ function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? value : [];
 }
 
+// S-189/S3776: pure helpers extracted from InboxPage.
+function effectiveUserIdFor(filter: UserFilter): string | undefined {
+  return filter.mode === "user" ? filter.userId : undefined;
+}
+
+function allVisibleInSelection(visibleIds: readonly string[], selectedIds: ReadonlySet<string>): boolean {
+  return visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+}
+
 export default function InboxPage() {
   const { token, user, authed } = useAuth();
   const { agentName, markRead: markAttentionRead } = useAttention();
@@ -86,7 +95,7 @@ export default function InboxPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const effectiveUserId = filter.mode === "user" ? filter.userId : undefined;
+  const effectiveUserId = effectiveUserIdFor(filter);
 
   const load = useCallback(async () => {
     if (!authed) return;
@@ -124,8 +133,7 @@ export default function InboxPage() {
   const sections = useMemo(() => groupInboxByRecency(messages, new Date()), [messages]);
   const visibleIds = useMemo(() => messages.map((m) => m.id), [messages]);
   const selectionSize = selectedIds.size;
-  const allVisibleSelected =
-    visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+  const allVisibleSelected = allVisibleInSelection(visibleIds, selectedIds);
 
   // S-207: any filter change resets the selection so bulk actions can
   // never touch rows the user can no longer see.

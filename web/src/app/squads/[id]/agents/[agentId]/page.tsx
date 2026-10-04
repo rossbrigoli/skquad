@@ -234,6 +234,76 @@ function errMsg(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
+// S-189/S3776: title row + meta line extracted from AgentProfilePage;
+// render output identical to the inline JSX.
+function AgentTitleRow({
+  agent,
+  agentId,
+  restartBusy,
+  restartNote,
+  onConfirmRestart,
+  live,
+  stalled,
+  tasks,
+  resourceGrants,
+  metering,
+  meteringMtd,
+  contextTokens,
+}: {
+  readonly agent: Agent | undefined;
+  readonly agentId: string;
+  readonly restartBusy: boolean;
+  readonly restartNote: string;
+  readonly onConfirmRestart: () => void;
+  readonly live: Task[];
+  readonly stalled: Task[];
+  readonly tasks: Task[];
+  readonly resourceGrants: AgentPermission[];
+  readonly metering: MeteringState;
+  readonly meteringMtd: MeteringState;
+  readonly contextTokens: number | null;
+}) {
+  return (
+    <>
+      <div className="section-head agent-title-row">
+        <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-3)", flexWrap: "wrap" }}>
+          <h1 className="page-title" style={{ margin: 0 }}>
+            {agent?.name ?? "Agent"}
+          </h1>
+          {agent ? <StatusChip status={agentStatus(agent)} /> : null}
+          {/* S-169 item 9b: restart lives beside the page title now. */}
+          <button
+            type="button"
+            className="btn btn-sm btn-danger"
+            disabled={!agent || restartBusy}
+            onClick={onConfirmRestart}
+          >
+            {restartBusy ? "Restarting…" : "Restart agent"}
+          </button>
+          {restartNote ? <span className="field-hint">{restartNote}</span> : null}
+        </div>
+        {/* S-178: the metric chips moved up into the title row, where
+            the Delete button used to sit. Delete itself moved to the
+            Configuration tab's Danger zone — beside the chat it read
+            like a message-delete. */}
+        <AgentMetricChips
+          live={live}
+          stalled={stalled}
+          tasks={tasks}
+          resourceGrants={resourceGrants}
+          metering={metering}
+          meteringMtd={meteringMtd}
+          agent={agent}
+          contextTokens={contextTokens}
+        />
+      </div>
+      <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)" }}>
+        {agent?.role ? agent.role : "no role set"} · <span className="mono">{agentId.slice(0, 12)}</span>
+      </p>
+    </>
+  );
+}
+
 export default function AgentProfilePage() {
   const params = useParams<{ id: string; agentId: string }>();
   const squadId = String(params?.id ?? "");
@@ -349,41 +419,20 @@ export default function AgentProfilePage() {
   return (
     <AuthGate>
       <AppShell>
-        <div className="section-head agent-title-row">
-          <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-3)", flexWrap: "wrap" }}>
-            <h1 className="page-title" style={{ margin: 0 }}>
-              {agent?.name ?? "Agent"}
-            </h1>
-            {agent ? <StatusChip status={agentStatus(agent)} /> : null}
-            {/* S-169 item 9b: restart lives beside the page title now. */}
-            <button
-              type="button"
-              className="btn btn-sm btn-danger"
-              disabled={!agent || restartBusy}
-              onClick={() => setConfirmRestart(true)}
-            >
-              {restartBusy ? "Restarting…" : "Restart agent"}
-            </button>
-            {restartNote ? <span className="field-hint">{restartNote}</span> : null}
-          </div>
-          {/* S-178: the metric chips moved up into the title row, where
-              the Delete button used to sit. Delete itself moved to the
-              Configuration tab's Danger zone — beside the chat it read
-              like a message-delete. */}
-          <AgentMetricChips
-            live={live}
-            stalled={stalled}
-            tasks={tasks}
-            resourceGrants={resourceGrants}
-            metering={metering}
-            meteringMtd={meteringMtd}
-            agent={agent}
-            contextTokens={contextTokens}
-          />
-        </div>
-        <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)" }}>
-          {agent?.role ? agent.role : "no role set"} · <span className="mono">{agentId.slice(0, 12)}</span>
-        </p>
+        <AgentTitleRow
+          agent={agent}
+          agentId={agentId}
+          restartBusy={restartBusy}
+          restartNote={restartNote}
+          onConfirmRestart={() => setConfirmRestart(true)}
+          live={live}
+          stalled={stalled}
+          tasks={tasks}
+          resourceGrants={resourceGrants}
+          metering={metering}
+          meteringMtd={meteringMtd}
+          contextTokens={contextTokens}
+        />
 
         <AgentSectionTabs tab={tab} onSelect={setTab} />
 
@@ -1550,16 +1599,14 @@ function StorageWorkspaceField({
 function SubagentCallChip({
   call,
   subagent,
-  callKey,
   onShowSubagent,
 }: {
   readonly call: ChatToolCall;
   readonly subagent: SubagentInfo;
-  readonly callKey: string;
   readonly onShowSubagent: (c: SubagentInfo | null) => void;
 }) {
   return (
-    <div key={callKey} className={`chat-tool subagent-chip${call.ok ? "" : " failed"}`}>
+    <div className={`chat-tool subagent-chip${call.ok ? "" : " failed"}`}>
       <div className="chat-tool-summary">
         <span className="chat-tool-name">🤖 subagent</span>
         <span className="chat-tool-args mono">{subagentSummary(subagent)}</span>
@@ -1579,10 +1626,10 @@ function SubagentCallChip({
   );
 }
 
-function PlainToolCall({ call, callKey }: { readonly call: ChatToolCall; readonly callKey: string }) {
+function PlainToolCall({ call }: { readonly call: ChatToolCall }) {
   const argsSummary = summarizeToolArgs(call.arguments);
   return (
-    <details key={callKey} className={`chat-tool${call.ok ? "" : " failed"}`}>
+    <details className={`chat-tool${call.ok ? "" : " failed"}`}>
       <summary className="chat-tool-summary">
         <span className="chat-tool-name">🔧 {call.name}</span>
         {argsSummary ? <span className="chat-tool-args mono">{argsSummary}</span> : null}
@@ -1612,9 +1659,9 @@ function ChatToolCallList({
     <div className="chat-tools">
       {calls.map((call, idx) =>
         call.name === "spawn_subagent" && call.subagent ? (
-          <SubagentCallChip call={call} subagent={call.subagent} callKey={`sub-${callKeys[idx]}`} onShowSubagent={onShowSubagent} />
+          <SubagentCallChip key={`sub-${callKeys[idx]}`} call={call} subagent={call.subagent} onShowSubagent={onShowSubagent} />
         ) : (
-          <PlainToolCall call={call} callKey={callKeys[idx]} />
+          <PlainToolCall key={callKeys[idx]} call={call} />
         ),
       )}
     </div>
