@@ -8,6 +8,9 @@ export const NOTIFICATION_TYPE_META: Record<NotificationType, { label: string; c
   task_stuck: { label: "task stuck", className: "chip chip-stalled" },
   agent_died: { label: "agent died", className: "chip chip-error" },
   task_blocked: { label: "needs you", className: "chip chip-blocked" },
+  // S-203 WP4: budget events surface in the bell and deep-link to Cost Management.
+  budget_warning: { label: "budget", className: "chip chip-info" },
+  budget_stopped: { label: "budget", className: "chip chip-blocked" },
 };
 
 export const SEVERITY_CLASS: Record<NotificationSeverity, string> = {
@@ -26,7 +29,12 @@ export function notificationSeverityClass(severity: NotificationSeverity | undef
 
 // notificationLink resolves the internal navigation target for a
 // notification: blocked/failed work is about a task, so link there.
+// Budget events (S-203 WP4) are user-level and always point at the
+// Cost Management screen.
 export function notificationLink(notification: AppNotification): string | null {
+  if (notification.type === "budget_warning" || notification.type === "budget_stopped") {
+    return "/costs";
+  }
   if (notification.task_id && notification.squad_id) {
     return `/squads/${notification.squad_id}/tasks/${notification.task_id}`;
   }

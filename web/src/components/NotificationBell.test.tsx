@@ -56,3 +56,10 @@ describe("NotificationBell unread/read distinction (S-209 req 4)", () => {
     expect(source).toMatch(/isUnread\(n\.read_at\) \? "notif-unread" : "notif-read"/);
   });
 });
+
+describe("NotificationBell budget deep-link (S-203 WP4)", () => {
+  it("resolves item hrefs through notificationLink so budget events route to /costs", () => {
+    expect(source).toContain("const href = notificationLink(n);");
+    expect(source).toMatch(/href \? \(\s*<Link[^>]*href=\{href\}/);
+  });
+});

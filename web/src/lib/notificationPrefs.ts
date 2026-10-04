@@ -41,6 +41,16 @@ export const NOTIFICATION_PREF_OPTIONS: readonly {
     label: "Task blocked / needs you",
     description: "A task is waiting for your input or a decision.",
   },
+  {
+    type: "budget_warning",
+    label: "Budget warning",
+    description: "Your monthly budget (or the platform limit) hit 80% or 90%.",
+  },
+  {
+    type: "budget_stopped",
+    label: "Budget stopped",
+    description: "Your budget is exhausted; your agents stop at the end of their turn.",
+  },
 ];
 
 export const ALL_NOTIFICATION_TYPES: readonly NotificationType[] = NOTIFICATION_PREF_OPTIONS.map((o) => o.type);

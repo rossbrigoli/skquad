@@ -130,7 +130,14 @@ export type InboxMessage = {
 };
 
 // S-193: recipient-scoped "something went wrong" alerts for the bell.
-export type NotificationType = "task_failed" | "task_stuck" | "agent_died" | "task_blocked";
+// S-203 WP4 adds the budget types (user-level: squad_id is "").
+export type NotificationType =
+  | "task_failed"
+  | "task_stuck"
+  | "agent_died"
+  | "task_blocked"
+  | "budget_warning"
+  | "budget_stopped";
 export type NotificationSeverity = "info" | "warning" | "error";
 
 export type AppNotification = {

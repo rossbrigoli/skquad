@@ -29,6 +29,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
@@ -211,7 +213,11 @@ func (s *Server) applyBudgetVerdict(ctx context.Context, source, userID string, 
 // notifyBudgetThreshold sends the inbox notification for one threshold
 // if (and only if) this call wins the atomic marker claim for the
 // period. Losing the claim is the normal case for repeat evaluations
-// and is not an error.
+// and is not an error. S-203 WP4: the same claim also drives the bell
+// notification (budget_warning / budget_stopped NotificationType), so
+// the inbox row and the bell alert share one exactly-once-per-threshold
+// -per-month guarantee. The bell emit is best-effort: a failure is
+// logged by the caller and never rolls back the inbox write.
 func (s *Server) notifyBudgetThreshold(ctx context.Context, source, userID, period string, threshold int, spend, budget float64, stopped bool) error {
 	marker := domain.BudgetNotifyMarker(source, threshold)
 	claimed, err := s.store.ClaimBudgetNotification(ctx, userID, period, marker)
@@ -223,14 +229,44 @@ func (s *Server) notifyBudgetThreshold(ctx context.Context, source, userID, peri
 		kind = domain.InboxBudgetStopped
 	}
 	subject, body := budgetNotificationText(source, threshold, spend, budget, stopped)
-	_, err = s.store.CreateInboxMessage(ctx, &domain.InboxMessage{
+	if _, err := s.store.CreateInboxMessage(ctx, &domain.InboxMessage{
 		UserID:  userID,
 		Kind:    kind,
 		Message: subject,
 		Subject: subject,
 		Body:    body,
+	}); err != nil {
+		return err
+	}
+	return s.emitBudgetNotification(ctx, userID, kind, subject)
+}
+
+// emitBudgetNotification files the user-level bell alert (S-203 WP4).
+// User-scoped: no squad/task context, so the web layer links it to
+// /costs. Honors the S-199 mute preferences exactly like the other
+// notification channels.
+func (s *Server) emitBudgetNotification(ctx context.Context, userID string, kind domain.InboxKind, message string) error {
+	notifType := domain.NotificationBudgetWarning
+	severity := domain.NotificationWarning
+	if kind == domain.InboxBudgetStopped {
+		notifType = domain.NotificationBudgetStopped
+		severity = domain.NotificationError
+	}
+	if notificationMuted(ctx, s.store, userID, notifType) {
+		slog.Info("budget notification skipped: type muted by user preference",
+			"type", string(notifType), "user", userID)
+		return nil
+	}
+	_, err := s.store.CreateNotification(ctx, &domain.Notification{
+		UserID:   userID,
+		Type:     notifType,
+		Severity: severity,
+		Message:  trimRunes(strings.TrimSpace(message), maxInboxMessageChars),
 	})
-	return err
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		slog.Warn("emit budget notification", "error", err, "type", string(notifType), "user", userID)
+	}
+	return nil
 }
 
 // budgetNotificationText renders the subject/body for a budget
