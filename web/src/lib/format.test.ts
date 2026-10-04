@@ -2,6 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   formatCost,
   formatMoney,
+  formatMoneyCents,
   formatRelativeTime,
   formatTokens,
   leaseState,
@@ -109,6 +110,28 @@ describe("formatMoney", () => {
 
   it("does not leave a dangling decimal point after trimming", () => {
     expect(formatMoney(0.1)).toBe("USD 0.1000");
+  });
+});
+
+describe("formatMoneyCents", () => {
+  it("rounds to the nearest cent (S-218)", () => {
+    expect(formatMoneyCents(26.0276)).toBe("USD 26.03");
+    expect(formatMoneyCents(26.0274)).toBe("USD 26.03");
+    expect(formatMoneyCents(26.0234)).toBe("USD 26.02");
+  });
+
+  it("always shows exactly two decimals", () => {
+    expect(formatMoneyCents(0)).toBe("USD 0.00");
+    expect(formatMoneyCents(7)).toBe("USD 7.00");
+    expect(formatMoneyCents(0.5)).toBe("USD 0.50");
+  });
+
+  it("honours an explicit currency", () => {
+    expect(formatMoneyCents(1.239, "EUR")).toBe("EUR 1.24");
+  });
+
+  it("collapses tiny amounts to zero cents rather than significant digits", () => {
+    expect(formatMoneyCents(0.00000903)).toBe("USD 0.00");
   });
 });
 

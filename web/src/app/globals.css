@@ -491,7 +491,9 @@ button.nav-group-parent {
 }
 
 .metric-value {
-  font-size: var(--text-2xl);
+  /* S-218: dropped 2xl (26px) to xl (20px) so wide values like
+     "USD 26.03" fit the tile without wrapping. */
+  font-size: var(--text-xl);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
