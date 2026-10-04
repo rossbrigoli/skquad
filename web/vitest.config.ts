@@ -53,6 +53,16 @@ export default defineConfig({
         "src/components/AgentInboxPanel.tsx",
         "src/components/AgentForm.tsx",
         "src/components/AppShell.tsx",
+        // S-189 batch 2: page-level jsdom coverage (behaviour tests, not
+        // smoke renders). Added as they gain real interaction coverage.
+        "src/app/squads/page.tsx",
+        "src/app/squads/[id]/page.tsx",
+        "src/app/squads/[id]/prompt/page.tsx",
+        "src/app/dashboard/page.tsx",
+        "src/components/BuiltinToolConfig.tsx",
+        "src/components/AdminBudgetPanel.tsx",
+        "src/components/ResourceRegistryPanel.tsx",
+        "src/lib/useAttention.tsx",
       ],
       exclude: [
         "src/**/*.test.ts",
