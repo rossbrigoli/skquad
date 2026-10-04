@@ -565,7 +565,7 @@ function AgentConfigPane({
   const [savedNote, setSavedNote] = useState("");
 
   const storageInvalid = storageEnabled && !isValidStorageSize(storageSize);
-  const storageBaseline = agent.storage_size || DEFAULT_AGENT_STORAGE_SIZE;
+  const storageBaseline = agent.storage_size ? agent.storage_size : DEFAULT_AGENT_STORAGE_SIZE;
   const storageSizeDirty = storageEnabled && storageSize.trim() !== storageBaseline;
   const dirty =
     role !== (agent.role ?? "") ||

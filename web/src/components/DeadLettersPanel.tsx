@@ -10,7 +10,7 @@
 // the batch; per-item errors are surfaced in the note line.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { apiDelete, apiGet, apiPost, ApiError } from "../lib/api";
+import { apiDelete, apiGet, apiPost } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { buildDeadLetterQuery, isConsultTimeout, type DeadLetterQuery, type InboxMessageRow } from "../lib/inbox";
 import {
