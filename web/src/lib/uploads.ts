@@ -56,6 +56,19 @@ export function messageAttachments(msg: Message | { payload?: Record<string, unk
   return out;
 }
 
+/** S-226: turn a control-plane attachment URL (the `/api/v1/uploads/<id>`
+ *  embedded in message payloads by the control plane) into a path that is
+ *  fetched through `apiBaseUrl()` so it carries auth. In token mode the
+ *  base is `/api/v1`, so the request is unchanged; in OIDC mode the base
+ *  is `/proxy`, so the server-side forwarder attaches the bearer. A plain
+ *  `<img src="/api/v1/...">` navigation can never send an Authorization
+ *  header, which is exactly why direct loads 401. URLs that are not
+ *  control-plane upload paths are returned unchanged. */
+export function uploadFetchPath(url: string): string {
+  const match = /^\/api\/v1\/(.+)$/.exec(url);
+  return match ? `/${match[1]}` : url;
+}
+
 /** Human-readable byte size for attachment chips (e.g. "412 KB"). */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";

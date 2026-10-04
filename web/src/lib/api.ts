@@ -270,6 +270,34 @@ export async function apiDeleteWithBody<T>(path: string, token: string, body: un
   return apiRequest<T>(path, token, { method: "DELETE", body });
 }
 
+// S-226: GET binary content (image attachments) with the same auth
+// semantics as apiRequest. The browser cannot attach an Authorization
+// header to <img src> / link navigations, so attachment viewers fetch
+// the bytes here and render them via URL.createObjectURL instead.
+export async function apiGetBlob(path: string, token: string): Promise<Blob> {
+  const headers: Record<string, string> = { Accept: "image/*" };
+  if (token.trim() !== "") {
+    headers.Authorization = `Bearer ${token.trim()}`;
+  }
+  const response = await fetch(`${apiBaseUrl()}${path}`, {
+    method: "GET",
+    headers,
+    credentials: "same-origin",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    let message = response.statusText;
+    try {
+      const parsed = (await response.json()) as { error?: { message?: unknown } } | null;
+      if (typeof parsed?.error?.message === "string" && parsed.error.message !== "") message = parsed.error.message;
+    } catch {
+      // Keep the HTTP status text when the body is not JSON.
+    }
+    throw new ApiError(response.status, message);
+  }
+  return await response.blob();
+}
+
 // S-194: multipart image upload for the chat composer and task threads.
 // Kept separate from apiRequest because the body is FormData (the JSON
 // Content-Type header must NOT be set — the browser adds the boundary).

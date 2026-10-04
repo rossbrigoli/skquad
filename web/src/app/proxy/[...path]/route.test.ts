@@ -3,8 +3,16 @@
 // multipart/form-data image uploads (control-plane then rejects with
 // "file field is required" / "only png, jpeg, gif and webp"). These
 // tests pin the binary-safe passthrough behaviour.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+//
+// S-226: the same class of bug on the RESPONSE side — `upstream.text()`
+// corrupted binary responses, so attachment images fetched through the
+// OIDC proxy (the only authed path for <img> bytes) rendered as broken.
+// The GET tests below pin byte-exact response passthrough, JSON
+// passthrough, query forwarding, and the 401/501 auth gates.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+
+const state = vi.hoisted(() => ({ oidcEnabled: true }));
 
 vi.mock("../../../lib/oidcServer", () => ({
   SESSION_COOKIE: "skquad_session",
@@ -14,7 +22,7 @@ vi.mock("../../../lib/oidcServer", () => ({
       ? { access_token: "a", expiry: 9_999_999_999, name: "t", email: "e@x.io" }
       : null,
   encodeSession: () => "encoded",
-  oidcEnabled: () => true,
+  oidcEnabled: () => state.oidcEnabled,
   refreshTokens: async () => {
     throw new Error("not in this test");
   },
@@ -23,13 +31,14 @@ vi.mock("../../../lib/oidcServer", () => ({
   sessionValid: () => true,
 }));
 
-import { POST } from "./route";
+import { GET, POST } from "./route";
 
 type Captured = { url?: string; body?: unknown; contentType?: string };
 let captured: Captured;
 
 beforeEach(() => {
   captured = {};
+  state.oidcEnabled = true;
   vi.stubGlobal(
     "fetch",
     async (_url: string | URL | Request, init?: RequestInit) => {
@@ -43,6 +52,10 @@ beforeEach(() => {
       });
     },
   );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 function indexOfBytes(haystack: Uint8Array, needle: Uint8Array): number {
@@ -93,5 +106,104 @@ describe("proxy multipart passthrough", () => {
     expect(res.status).toBe(201);
     const sent = new TextDecoder().decode(captured.body as ArrayBuffer);
     expect(sent).toBe(JSON.stringify({ message: "hi ✨" }));
+  });
+});
+
+// S-226: response-side binary passthrough.
+function getWithCookie(path: string[], query = "") {
+  const req = new NextRequest(`http://localhost/proxy/${path.join("/")}${query}`, {
+    method: "GET",
+  });
+  req.cookies.set("skquad_session", "valid");
+  return GET(req, { params: Promise.resolve({ path }) });
+}
+
+// Records the upstream request like the beforeEach stub, but returns a
+// caller-supplied response (for testing response passthrough).
+function stubFetchWith(response: () => Response) {
+  vi.stubGlobal(
+    "fetch",
+    async (url: string | URL | Request, init?: RequestInit) => {
+      captured.url = String(url);
+      captured.body = init?.body;
+      captured.contentType =
+        (init?.headers as Record<string, string>)?.["Content-Type"] ?? undefined;
+      return response();
+    },
+  );
+}
+
+describe("proxy GET response passthrough (S-226)", () => {
+  it("preserves non-UTF8 image bytes end-to-end", async () => {
+    const png = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x80, 0xc3, 0x28,
+    ]);
+    stubFetchWith(
+      () => new Response(png, { status: 200, headers: { "Content-Type": "image/png" } }),
+    );
+
+    const res = await getWithCookie(["uploads", "abc"]);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("image/png");
+    const out = new Uint8Array(await res.arrayBuffer());
+    expect(out).toEqual(png);
+    expect(captured.url).toContain("/uploads/abc");
+  });
+
+  it("attaches the bearer token upstream", async () => {
+    let authHeader: string | undefined;
+    vi.stubGlobal(
+      "fetch",
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        authHeader = (init?.headers as Record<string, string>)?.["Authorization"];
+        return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain" } });
+      },
+    );
+
+    const res = await getWithCookie(["uploads", "abc"]);
+    expect(res.status).toBe(200);
+    expect(authHeader).toBe("Bearer bearer-token");
+  });
+
+  it("still passes JSON through unchanged", async () => {
+    const body = { ok: true, items: [1, 2, 3] };
+    stubFetchWith(
+      () =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+
+    const res = await getWithCookie(["squads"]);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(body);
+  });
+
+  it("forwards the query string upstream", async () => {
+    stubFetchWith(
+      () => new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    await getWithCookie(["uploads"], "?squad_id=7");
+    expect(captured.url).toContain("/uploads?squad_id=7");
+  });
+
+  it("returns 401 without a valid session and never calls upstream", async () => {
+    const req = new NextRequest("http://localhost/proxy/uploads/abc", { method: "GET" });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const res = await GET(req, { params: Promise.resolve({ path: ["uploads", "abc"] }) });
+
+    expect(res.status).toBe(401);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns 501 when OIDC is disabled (proxy not applicable)", async () => {
+    state.oidcEnabled = false;
+    const res = await getWithCookie(["uploads", "abc"]);
+    expect(res.status).toBe(501);
   });
 });

@@ -78,8 +78,13 @@ async function forward(request: NextRequest, method: string, path: string[]): Pr
 
   try {
     const upstream = await fetch(target, { method, headers, body, cache: "no-store" });
-    const text = await upstream.text();
-    const res = new NextResponse(text === "" ? null : text, {
+    // S-226: byte-exact passthrough. `upstream.text()` UTF-8-decodes the
+    // response, which corrupts binary payloads — image bytes from
+    // GET /uploads/{id} came back as replacement-character mush and the
+    // <img> never rendered. arrayBuffer preserves exactly what the API
+    // sent, JSON and binary alike.
+    const buf = await upstream.arrayBuffer();
+    const res = new NextResponse(buf.byteLength === 0 ? null : buf, {
       status: upstream.status,
       headers: { "Content-Type": upstream.headers.get("Content-Type") || "application/json" },
     });
