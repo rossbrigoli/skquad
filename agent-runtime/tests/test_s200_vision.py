@@ -285,7 +285,7 @@ class ControlPlaneClientBytesTest(unittest.TestCase):
                 return False
 
         client = self._client(lambda req: Resp())
-        self.assertEqual(client.get_my_model()["supports_vision"], True)
+        self.assertTrue(client.get_my_model()["supports_vision"])
 
 
 def _cfg():

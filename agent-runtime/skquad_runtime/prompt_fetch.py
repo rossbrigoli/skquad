@@ -165,35 +165,45 @@ class PromptFetcher:
                 )
             LOGGER.info("prompt cache hit (304); reusing composed prompt sha=%s", cached_sha)
             return PromptSource("ok", cached_prompt, cached_sha, etag or resp_etag)
-        if status == 404:
-            raise PromptFetchError(
-                f"prompt fetch failed: control-plane has no composed-prompt endpoint at "
-                f"{self.base_url + PROMPT_ENDPOINT} (WP6: the legacy env fallback is removed; "
-                "upgrade the control plane — ADR-0011 D4)"
-            )
-        if 500 <= status <= 599:
-            raise PromptFetchError(
-                f"prompt fetch failed: control-plane returned HTTP {status} "
-                f"at {self.base_url + PROMPT_ENDPOINT} (ADR-0011 D4: no silent fallback)"
-            )
-        if status != 200:
-            raise PromptFetchError(
-                f"prompt fetch failed: unexpected HTTP {status} at "
-                f"{self.base_url + PROMPT_ENDPOINT}"
-            )
-        try:
-            payload = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise PromptFetchError("prompt fetch failed: response body is not valid JSON") from exc
-        prompt = payload.get("prompt") if isinstance(payload, dict) else None
-        sha = payload.get("sha256") if isinstance(payload, dict) else None
-        if not prompt or not sha:
-            raise PromptFetchError(
-                "prompt fetch failed: response is missing 'prompt' or 'sha256'"
-            )
+        _raise_for_bad_status(status, self.base_url + PROMPT_ENDPOINT)
+        prompt, sha = _parse_prompt_payload(body)
         self.cache.store(resp_etag or f'"{sha}"', prompt, sha)
         LOGGER.info("prompt fetched: prompt_source=composed sha=%s", sha[:12])
         return PromptSource("ok", prompt, sha, resp_etag)
+
+
+def _parse_prompt_payload(body: bytes) -> tuple[str, str]:
+    """Parse the composed-prompt JSON body into (prompt, sha)."""
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PromptFetchError("prompt fetch failed: response body is not valid JSON") from exc
+    prompt = payload.get("prompt") if isinstance(payload, dict) else None
+    sha = payload.get("sha256") if isinstance(payload, dict) else None
+    if not prompt or not sha:
+        raise PromptFetchError(
+            "prompt fetch failed: response is missing 'prompt' or 'sha256'"
+        )
+    return str(prompt), str(sha)
+
+
+def _raise_for_bad_status(status: int, url: str) -> None:
+    """Raise the specific PromptFetchError for non-OK/non-304 statuses."""
+    if status == 404:
+        raise PromptFetchError(
+            f"prompt fetch failed: control-plane has no composed-prompt endpoint at "
+            f"{url} (WP6: the legacy env fallback is removed; "
+            "upgrade the control plane — ADR-0011 D4)"
+        )
+    if 500 <= status <= 599:
+        raise PromptFetchError(
+            f"prompt fetch failed: control-plane returned HTTP {status} "
+            f"at {url} (ADR-0011 D4: no silent fallback)"
+        )
+    if status != 200:
+        raise PromptFetchError(
+            f"prompt fetch failed: unexpected HTTP {status} at {url}"
+        )
 
 
 def _header(response: object, name: str) -> str:

@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic, sleep as default_sleep
-from typing import Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 from urllib import error, request
 
 # S-164: correlation of the inbox message an agent turn is currently
@@ -294,6 +294,10 @@ def enforce_leading_system(messages: list[dict[str, object]]) -> list[dict[str, 
 TURN_CONTINUE_TOOLS = "continue_tools"
 TURN_CONTINUE_NUDGE = "continue_nudge"
 TURN_FINAL = "final"
+TURN_CANCELLED_SUMMARY = "turn cancelled by user"
+
+# Sentinel: the no-tool-call branch handled a nudge; the tool loop continues.
+_NO_TOOL_CALL_CONTINUE = object()
 
 
 def decide_turn_action(
@@ -417,6 +421,30 @@ def format_attachment_note(raw: object) -> str:
     return "\n".join(notes)
 
 
+def _skip_attachment(stats: dict[str, object], upload_id: str, reason: str) -> None:
+    stats["skipped"] = int(stats["skipped"]) + 1
+    stats["reasons"].append(f"{upload_id}:{reason}")
+
+
+def _embed_attempt(
+    mime: str, fetch_bytes: Callable[[str], bytes], upload_id: str
+) -> tuple[str, int, str]:
+    """Try to base64-embed one attachment of an allowed MIME type.
+
+    Returns ``(data_url, b64_len, reason)``; ``reason`` is "" on success
+    and the data_url is "" when the image cannot be embedded.
+    """
+    try:
+        raw = fetch_bytes(upload_id)
+    except Exception as exc:  # noqa: BLE001 - a bad fetch never kills the turn
+        LOGGER.warning("vision: upload fetch failed id=%s: %s", upload_id, exc)
+        return "", 0, "fetch_failed"
+    if not raw:
+        return "", 0, "empty"
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{encoded}", len(encoded), ""
+
+
 def build_image_content_parts(
     text: str,
     attachments: object,
@@ -458,37 +486,23 @@ def build_image_content_parts(
         if not isinstance(item, dict):
             continue
         upload_id = str(item.get("id") or "").strip()
-        mime = str(item.get("content_type") or "").strip().lower()
         if not upload_id:
             continue
+        mime = str(item.get("content_type") or "").strip().lower()
         if mime not in VISION_ALLOWED_MIME:
-            stats["skipped"] = int(stats["skipped"]) + 1  # type: ignore[arg-type]
-            stats["reasons"].append(f"{upload_id}:mime_not_allowed")  # type: ignore[union-attr]
+            _skip_attachment(stats, upload_id, "mime_not_allowed")
             continue
         if embedded >= max_images:
-            stats["skipped"] = int(stats["skipped"]) + 1  # type: ignore[arg-type]
-            stats["reasons"].append(f"{upload_id}:max_images")  # type: ignore[union-attr]
+            _skip_attachment(stats, upload_id, "max_images")
             continue
-        try:
-            raw = fetch_bytes(upload_id)
-        except Exception as exc:  # noqa: BLE001 - a bad fetch never kills the turn
-            stats["skipped"] = int(stats["skipped"]) + 1  # type: ignore[arg-type]
-            stats["reasons"].append(f"{upload_id}:fetch_failed")  # type: ignore[union-attr]
-            LOGGER.warning("vision: upload fetch failed id=%s: %s", upload_id, exc)
+        data_url, b64_len, reason = _embed_attempt(mime, fetch_bytes, upload_id)
+        if reason:
+            _skip_attachment(stats, upload_id, reason)
             continue
-        if not raw:
-            stats["skipped"] = int(stats["skipped"]) + 1  # type: ignore[arg-type]
-            stats["reasons"].append(f"{upload_id}:empty")  # type: ignore[union-attr]
-            continue
-        encoded = base64.b64encode(raw).decode("ascii")
-        b64_len = len(encoded)
         if total_b64 + b64_len > max_total_b64_bytes:
-            stats["skipped"] = int(stats["skipped"]) + 1  # type: ignore[arg-type]
-            stats["reasons"].append(f"{upload_id}:budget")  # type: ignore[union-attr]
+            _skip_attachment(stats, upload_id, "budget")
             continue
-        parts.append(
-            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}
-        )
+        parts.append({"type": "image_url", "image_url": {"url": data_url}})
         total_b64 += b64_len
         embedded += 1
 
@@ -1452,7 +1466,7 @@ class LLMMessageHandler:
             LOGGER.info(
                 "chat turn cancelled by user before reply", extra={"message_id": message.id}
             )
-            return MessageResult(ok=True, summary="turn cancelled by user")
+            return MessageResult(ok=True, summary=TURN_CANCELLED_SUMMARY)
 
         return self._post_chat_reply(
             message, config, response, tool_calls_log, model_used, interim_delivered
@@ -1590,6 +1604,115 @@ class LLMMessageHandler:
             completion_kwargs["reasoning_effort"] = effort
         return completion_kwargs
 
+    def _no_tool_call_outcome(
+        self,
+        message: RuntimeMessage,
+        config: BootstrapConfig,
+        assistant: object,
+        step: int,
+        max_steps: int,
+        interim_budget: int,
+        interim_delivered: int,
+        response: object,
+        tool_calls_log: list[dict[str, object]],
+        chat_messages: list[dict[str, object]],
+    ) -> object:
+        """Handle a response without tool calls (S-195 interim replies).
+
+        Returns ``_NO_TOOL_CALL_CONTINUE`` when the nudge path appended
+        continuation messages and the loop should keep going, otherwise
+        the 4-tuple to return to the caller.
+        """
+        interim_text = _sanitize_surrogates(
+            str(message_value(assistant, "content") or "")
+        ).strip()
+        decision = decide_turn_action(
+            has_tool_calls=False,
+            interim_text=interim_text,
+            interim_budget_left=interim_delivered < interim_budget,
+            steps_left=step < max_steps - 1,
+            is_user_turn=message.from_type == "user",
+        )
+        if decision != TURN_CONTINUE_NUDGE:
+            return None, response, tool_calls_log, interim_delivered
+        # S-195: the model paused on a progress note ("Let me
+        # analyse this...") without a tool call but clearly
+        # intends to continue. Deliver the note visibly now and
+        # keep the turn alive with a bounded continuation so
+        # the follow-up answer reaches the same chat thread.
+        # Scoped to user turns: agent-to-agent chains are
+        # already bounded by the control-plane correlation
+        # budget, and injecting continuations there would
+        # inflate A2A traffic.
+        if self._turn_cancelled(message, config):
+            return (
+                MessageResult(ok=True, summary=TURN_CANCELLED_SUMMARY),
+                response,
+                tool_calls_log,
+                interim_delivered,
+            )
+        try:
+            self._deliver_interim_reply(
+                message, config, interim_text, tool_calls_log
+            )
+        except Exception as exc:
+            return (
+                MessageResult(
+                    ok=False,
+                    summary=f"failed to post interim chat reply: {exc}",
+                ),
+                response,
+                tool_calls_log,
+                interim_delivered,
+            )
+        # The interim reply carried the tool-call log forward;
+        # the final reply starts its log fresh.
+        tool_calls_log.clear()
+        interim_delivered += 1
+        chat_messages.append({"role": "assistant", "content": interim_text})
+        chat_messages.append({"role": "user", "content": CHAT_CONTINUE_PROMPT})
+        return _NO_TOOL_CALL_CONTINUE, interim_delivered
+
+    def _forced_final_completion(
+        self,
+        message: RuntimeMessage,
+        config: BootstrapConfig,
+        chat_messages: list[dict[str, object]],
+        virtual_key: str,
+        model: str,
+        completion: Callable[..., object],
+        response: object,
+        tool_calls_log: list[dict[str, object]],
+        interim_delivered: int,
+    ) -> tuple[MessageResult | None, object, list[dict[str, object]], int]:
+        """Budget exhausted: never fail the turn into silence. Force
+        a tools-less final completion so the user always gets a
+        text reply built from what was gathered, instead of the
+        message dying unreplied (incident 2026-09-30: tool-heavy
+        chat questions burned the budget and Ross saw nothing).
+        """
+        chat_messages.append(
+            _platform_note(
+                "Tool-call budget exhausted. Reply to the user "
+                "now with text only, using what you have "
+                "gathered. Do not request any more tools."
+            )
+        )
+        forced_kwargs = self._completion_kwargs(
+            message, config, chat_messages, virtual_key, model
+        )
+        try:
+            response = completion(**forced_kwargs)
+        except Exception as exc:
+            self._close_failed_turn(message, config, exc, interim_delivered)
+            return (
+                MessageResult(ok=False, summary=f"LLM call failed: {exc}"),
+                response,
+                tool_calls_log,
+                interim_delivered,
+            )
+        return None, response, tool_calls_log, interim_delivered
+
     def _complete_with_tools(
         self,
         message: RuntimeMessage,
@@ -1662,7 +1785,7 @@ class LLMMessageHandler:
             # multi-step tool loop stops burning tokens promptly.
             if self._turn_cancelled(message, config):
                 return (
-                    MessageResult(ok=True, summary="turn cancelled by user"),
+                    MessageResult(ok=True, summary=TURN_CANCELLED_SUMMARY),
                     response,
                     tool_calls_log,
                     interim_delivered,
@@ -1698,84 +1821,20 @@ class LLMMessageHandler:
             assistant = first_message(response)
             calls = parse_tool_calls(assistant)
             if not calls:
-                interim_text = _sanitize_surrogates(
-                    str(message_value(assistant, "content") or "")
-                ).strip()
-                decision = decide_turn_action(
-                    has_tool_calls=False,
-                    interim_text=interim_text,
-                    interim_budget_left=interim_delivered < interim_budget,
-                    steps_left=step < max_steps - 1,
-                    is_user_turn=message.from_type == "user",
+                outcome = self._no_tool_call_outcome(
+                    message, config, assistant, step, max_steps,
+                    interim_budget, interim_delivered, response,
+                    tool_calls_log, chat_messages,
                 )
-                if decision == TURN_CONTINUE_NUDGE:
-                    # S-195: the model paused on a progress note ("Let me
-                    # analyse this...") without a tool call but clearly
-                    # intends to continue. Deliver the note visibly now and
-                    # keep the turn alive with a bounded continuation so
-                    # the follow-up answer reaches the same chat thread.
-                    # Scoped to user turns: agent-to-agent chains are
-                    # already bounded by the control-plane correlation
-                    # budget, and injecting continuations there would
-                    # inflate A2A traffic.
-                    if self._turn_cancelled(message, config):
-                        return (
-                            MessageResult(ok=True, summary="turn cancelled by user"),
-                            response,
-                            tool_calls_log,
-                            interim_delivered,
-                        )
-                    try:
-                        self._deliver_interim_reply(
-                            message, config, interim_text, tool_calls_log
-                        )
-                    except Exception as exc:
-                        return (
-                            MessageResult(
-                                ok=False,
-                                summary=f"failed to post interim chat reply: {exc}",
-                            ),
-                            response,
-                            tool_calls_log,
-                            interim_delivered,
-                        )
-                    # The interim reply carried the tool-call log forward;
-                    # the final reply starts its log fresh.
-                    tool_calls_log.clear()
-                    interim_delivered += 1
-                    chat_messages.append({"role": "assistant", "content": interim_text})
-                    chat_messages.append(
-                        {"role": "user", "content": CHAT_CONTINUE_PROMPT}
-                    )
+                if isinstance(outcome, tuple) and outcome[0] is _NO_TOOL_CALL_CONTINUE:
+                    interim_delivered = outcome[1]
                     continue
-                return None, response, tool_calls_log, interim_delivered
+                return outcome  # type: ignore[return-value]
             if step == max_steps - 1:
-                # Budget exhausted: never fail the turn into silence. Force
-                # a tools-less final completion so the user always gets a
-                # text reply built from what was gathered, instead of the
-                # message dying unreplied (incident 2026-09-30: tool-heavy
-                # chat questions burned the budget and Ross saw nothing).
-                chat_messages.append(
-                    _platform_note(
-                        "Tool-call budget exhausted. Reply to the user "
-                        "now with text only, using what you have "
-                        "gathered. Do not request any more tools."
-                    )
+                return self._forced_final_completion(
+                    message, config, chat_messages, virtual_key, model,
+                    completion, response, tool_calls_log, interim_delivered,
                 )
-                forced_kwargs = self._completion_kwargs(
-                    message, config, chat_messages, virtual_key, model
-                )
-                try:
-                    response = completion(**forced_kwargs)
-                except Exception as exc:
-                    self._close_failed_turn(message, config, exc, interim_delivered)
-                    return (
-                        MessageResult(ok=False, summary=f"LLM call failed: {exc}"),
-                        response,
-                        tool_calls_log,
-                        interim_delivered,
-                    )
-                return None, response, tool_calls_log, interim_delivered
             self._append_tool_results(
                 chat_messages, assistant, calls, config, tool_calls_log, plugins
             )
@@ -1883,6 +1942,35 @@ class LLMMessageHandler:
                 }
             )
 
+    def _reply_extra(
+        self, response: object, tool_calls_log: list[dict[str, object]]
+    ) -> dict[str, object] | None:
+        extra: dict[str, object] = {}
+        if tool_calls_log:
+            extra["tool_calls"] = tool_calls_log
+        context_tokens = usage_prompt_tokens(response)
+        if context_tokens is not None:
+            extra["context_tokens"] = context_tokens
+        return extra or None
+
+    def _a2a_reply_result(
+        self, message: RuntimeMessage, model_used: str
+    ) -> MessageResult | None:
+        """Summary result for agent-origin replies; None for other origins."""
+        if message.from_type != "agent":
+            return None
+        if message.message_type == "consult":
+            return MessageResult(
+                ok=True,
+                summary=f"answered consult from agent {message.from_id}",
+                model_used=model_used,
+            )
+        return MessageResult(
+            ok=True,
+            summary=f"processed {message.message_type} from agent {message.from_id}",
+            model_used=model_used,
+        )
+
     def _post_chat_reply(
         self,
         message: RuntimeMessage,
@@ -1923,33 +2011,18 @@ class LLMMessageHandler:
             correlation_id = message.correlation_id or message.id
 
         try:
-            extra: dict[str, object] = {}
-            if tool_calls_log:
-                extra["tool_calls"] = tool_calls_log
-            context_tokens = usage_prompt_tokens(response)
-            if context_tokens is not None:
-                extra["context_tokens"] = context_tokens
             self._control_plane(config).send_chat_reply(
                 reply_text,
                 correlation_id=correlation_id,
                 to_agent_id=to_agent_id,
-                extra=extra or None,
+                extra=self._reply_extra(response, tool_calls_log),
             )
         except Exception as exc:
             return MessageResult(ok=False, summary=f"failed to post chat reply: {exc}")
 
-        if a2a_consult:
-            return MessageResult(
-                ok=True,
-                summary=f"answered consult from agent {message.from_id}",
-                model_used=model_used,
-            )
-        if message.from_type == "agent":
-            return MessageResult(
-                ok=True,
-                summary=f"processed {message.message_type} from agent {message.from_id}",
-                model_used=model_used,
-            )
+        a2a_result = self._a2a_reply_result(message, model_used)
+        if a2a_result is not None:
+            return a2a_result
         if message.from_type == "user":
             summary = "replied to user chat message"
             if interim_delivered:
@@ -1961,6 +2034,44 @@ class LLMMessageHandler:
         for plugin in (self.plugins if plugins is None else plugins):
             schemas.extend(plugin.tools())
         return schemas
+
+    def _roster_suffix(self, config: BootstrapConfig) -> str:
+        """S-164: squad roster appended to the system prompt."""
+        roster = self._squad_roster(config)
+        if not roster:
+            return ""
+        names = ", ".join(
+            str(p.get("name", "?"))
+            + (f" ({p.get('role')})" if p.get("role") else "")
+            for p in roster
+        )
+        return "\n\nSquad mates you can message with send_message: " + names
+
+    def _current_user_content(self, message: RuntimeMessage, config: BootstrapConfig, model: str) -> object:
+        """S-200: current turn content, with base64 image parts when the
+        bound model is vision-capable. The text reference (S-194 note) is
+        already inside the message text, so a non-vision model or a
+        skipped image still tells the model an image exists — graceful
+        degradation, never a dead turn.
+        """
+        current_text = str(message.payload.get("message", ""))
+        attachments = message.payload.get("attachments")
+        if not attachments or not self._model_supports_vision(config, model):
+            return current_text
+        current_content, stats = build_image_content_parts(
+            current_text,
+            attachments,
+            lambda uid: self._control_plane(config).fetch_upload_bytes(uid),
+        )
+        if stats["embedded"]:
+            LOGGER.info(
+                "S-200 vision passthrough: embedded=%s skipped=%s b64_bytes=%s model=%s",
+                stats["embedded"],
+                stats["skipped"],
+                stats["total_b64_bytes"],
+                model,
+            )
+        return current_content
 
     def _build_chat_messages(
         self,
@@ -1986,48 +2097,16 @@ class LLMMessageHandler:
         # prompt. The current message arrives already trust-labeled by
         # the wake entry point.
         runtime = prompted or PromptedRuntime(config)
-        system_content = runtime.chat_system_prompt()
-        # S-164: tell the model who its squad-mates are so send_message
-        # targets are grounded in the real roster, not invented names.
-        roster = self._squad_roster(config)
-        if roster:
-            names = ", ".join(
-                str(p.get("name", "?"))
-                + (f" ({p.get('role')})" if p.get("role") else "")
-                for p in roster
-            )
-            system_content += (
-                "\n\nSquad mates you can message with send_message: " + names
-            )
+        system_content = runtime.chat_system_prompt() + self._roster_suffix(config)
         chat: list[dict[str, object]] = [
             {"role": "system", "content": system_content}
         ]
         for item in prior:
             role = "user" if item.from_type == "user" else "assistant"
             chat.append({"role": role, "content": str(item.payload.get("message", ""))})
-        # S-200: the current user turn carries attached images as base64
-        # content parts ONLY when the bound model is vision-capable. The
-        # text reference (S-194 note) is already inside the message text,
-        # so a non-vision model or a skipped image still tells the model
-        # an image exists — graceful degradation, never a dead turn.
-        current_text = str(message.payload.get("message", ""))
-        attachments = message.payload.get("attachments")
-        current_content: object = current_text
-        if attachments and self._model_supports_vision(config, model):
-            current_content, stats = build_image_content_parts(
-                current_text,
-                attachments,
-                lambda uid: self._control_plane(config).fetch_upload_bytes(uid),
-            )
-            if stats["embedded"]:
-                LOGGER.info(
-                    "S-200 vision passthrough: embedded=%s skipped=%s b64_bytes=%s model=%s",
-                    stats["embedded"],
-                    stats["skipped"],
-                    stats["total_b64_bytes"],
-                    model,
-                )
-        chat.append({"role": "user", "content": current_content})
+        chat.append(
+            {"role": "user", "content": self._current_user_content(message, config, model)}
+        )
         return chat
 
     def _model_supports_vision(self, config: BootstrapConfig, model: str) -> bool:
@@ -2107,7 +2186,7 @@ class LiteLLMTaskHandler:
         """
         self.thread_sink = sink
 
-    def handle_task(self, task: RuntimeTask, config: BootstrapConfig) -> TaskResult:
+    def _task_prerequisites(self, config: BootstrapConfig) -> tuple[str, str]:
         virtual_key = read_secret_value(config.virtual_key_path)
         if virtual_key is None:
             raise RuntimeError("LLM gateway virtual key is not loaded")
@@ -2116,6 +2195,38 @@ class LiteLLMTaskHandler:
         model = self.model or config.default_model
         if not model:
             raise RuntimeError("SKQUAD_DEFAULT_MODEL is required")
+        return virtual_key, model
+
+    @staticmethod
+    def _log_step_fallback(model: str, served: str, config: BootstrapConfig, task: RuntimeTask) -> None:
+        if served == model:
+            return
+        # ADR-0010 Risk 3: make fallback usage visible in the logs.
+        LOGGER.info(
+            "task step served by fallback model: requested=%s served=%s agent=%s task=%s",
+            model,
+            served,
+            config.agent_id,
+            task.id,
+        )
+
+    @staticmethod
+    def _log_task_compaction(compaction: object, config: BootstrapConfig, task: RuntimeTask) -> None:
+        if not getattr(compaction, "changed", False):
+            return
+        LOGGER.info(
+            "S-161 task compaction: tier=%d tokens %d->%d evicted=%d clipped=%d agent=%s task=%s",
+            compaction.tier,  # type: ignore[attr-defined]
+            compaction.tokens_before,  # type: ignore[attr-defined]
+            compaction.tokens_after,  # type: ignore[attr-defined]
+            compaction.evicted_turns,  # type: ignore[attr-defined]
+            compaction.clipped_messages,  # type: ignore[attr-defined]
+            config.agent_id,
+            task.id,
+        )
+
+    def handle_task(self, task: RuntimeTask, config: BootstrapConfig) -> TaskResult:
+        virtual_key, model = self._task_prerequisites(config)
 
         context = self.available_task_context(task, config)
         resources = context.resources if context is not None else self.available_resources(config)
@@ -2174,30 +2285,12 @@ class LiteLLMTaskHandler:
         compactor = compactor_for_model(self._model_context_window(config, model))
         for _ in range(max_steps):
             messages, compaction = compactor.maybe_compact(messages)
-            if compaction.changed:
-                LOGGER.info(
-                    "S-161 task compaction: tier=%d tokens %d->%d evicted=%d clipped=%d agent=%s task=%s",
-                    compaction.tier,
-                    compaction.tokens_before,
-                    compaction.tokens_after,
-                    compaction.evicted_turns,
-                    compaction.clipped_messages,
-                    config.agent_id,
-                    task.id,
-                )
+            self._log_task_compaction(compaction, config, task)
             response = completion(
                 **self._completion_kwargs(model, messages, config, virtual_key, task.id, tools)
             )
             last_model_used = served_model(response, model)
-            if last_model_used != model:
-                # ADR-0010 Risk 3: make fallback usage visible in the logs.
-                LOGGER.info(
-                    "task step served by fallback model: requested=%s served=%s agent=%s task=%s",
-                    model,
-                    last_model_used,
-                    config.agent_id,
-                    task.id,
-                )
+            self._log_step_fallback(model, last_model_used, config, task)
             message = first_message(response)
             content = str(message_value(message, "content") or "")
             # S-182: keep the last NON-EMPTY assistant text. A final round
@@ -2489,9 +2582,10 @@ def plugin_candidate(module: object, attr: str) -> object:
 
 
 def instantiate_plugin(candidate: object) -> RuntimePlugin:
-    if inspect.isclass(candidate) or (callable(candidate) and not looks_like_plugin(candidate)):
-        candidate = candidate()
-    return candidate  # type: ignore[return-value]
+    factory: Any = candidate
+    if inspect.isclass(factory) or (callable(factory) and not looks_like_plugin(factory)):
+        factory = factory()
+    return factory
 
 
 def looks_like_plugin(candidate: object) -> bool:
@@ -2809,6 +2903,54 @@ def _block_disk_full(
     return final_task
 
 
+def _fail_wake(
+    control_plane: ControlPlaneClient,
+    task: RuntimeTask,
+    state: RuntimeState | None,
+    summary: str,
+    *,
+    timed_out: bool = False,
+) -> RuntimeTask:
+    """Block the task, idle the heartbeat, record the failure."""
+    final_task = control_plane.block_task(task, summary=summary)
+    control_plane.heartbeat("idle")
+    if state is not None:
+        state.task_failed(task.id, summary, timed_out=timed_out)
+    return final_task
+
+
+def _prepare_task_dirs(config: BootstrapConfig, task: RuntimeTask, prompt_sha: str) -> bool:
+    """Create the durable per-task dir and journal; return resumed flag.
+
+    S-136/S-137: scripts the handler writes under SKQUAD_TASK_DIR
+    survive crashes/restarts; prior artifacts in the dir mean this is a
+    crash-resume. Best-effort: an OSError is logged and the run
+    continues without the durable dir.
+    """
+    resumed = False
+    try:
+        base, task_dir = ensure_task_dirs(config.workspace_base, task.id)
+        if task_dir is not None:
+            resumed = task_dir_has_prior_state(task_dir)
+            init_journal(task_dir, task.id, resumed=resumed)
+            # S-PROMPT WP3 / ADR-0011 D5: the wake's prompt sha was
+            # already resolved (and reported to the control plane)
+            # right after the claim; mirror it into the local journal
+            # for crash-resume forensics.
+            record_prompt_provenance(task_dir, prompt_sha)
+            os.environ["SKQUAD_TASK_DIR"] = str(task_dir)
+            os.environ["SKQUAD_TASK_RESUMED"] = "1" if resumed else "0"
+            # TTL GC of old task dirs: best-effort, logged, never
+            # blocks or fails the current task.
+            gc_task_dirs(base, keep_task_id=task.id)
+    except OSError as exc:  # noqa: BLE001 - task dirs are best-effort
+        LOGGER.warning(
+            "task dir creation failed",
+            extra={"task_id": task.id, "error": str(exc)},
+        )
+    return resumed
+
+
 def run_task_once(
     config: BootstrapConfig,
     handler: TaskHandler,
@@ -2841,11 +2983,7 @@ def run_task_once(
             "prompt fetch failed; blocking task (ADR-0011 D4)",
             extra={"task_id": task.id, "error": str(exc)},
         )
-        final_task = control_plane.block_task(task, summary=f"prompt fetch failed: {exc}")
-        control_plane.heartbeat("idle")
-        if state is not None:
-            state.task_failed(task.id, str(exc))
-        return final_task
+        return _fail_wake(control_plane, task, state, f"prompt fetch failed: {exc}")
     control_plane.start_task(task.id, prompt_sha)
     # S-183: stream the handler's working turns into the task thread
     # (best-effort; the sink swallows its own errors).
@@ -2862,31 +3000,8 @@ def run_task_once(
         ok, free = check_free_space(pre_base, config.min_free_bytes)
         if not ok:
             return _block_disk_full(control_plane, task, state, pre_base, free, config.min_free_bytes)
-        # Durable per-task dir on the PVC (S-136): scripts the handler
-        # writes under SKQUAD_TASK_DIR survive crashes/restarts.
-        # S-137: prior artifacts in the dir mean this is a crash-resume;
-        # the journal + resume note are prepared before the handler runs.
         base = pre_base
-        try:
-            base, task_dir = ensure_task_dirs(config.workspace_base, task.id)
-            if task_dir is not None:
-                resumed = task_dir_has_prior_state(task_dir)
-                init_journal(task_dir, task.id, resumed=resumed)
-                # S-PROMPT WP3 / ADR-0011 D5: the wake's prompt sha was
-                # already resolved (and reported to the control plane)
-                # right after the claim; mirror it into the local journal
-                # for crash-resume forensics.
-                record_prompt_provenance(task_dir, prompt_sha)
-                os.environ["SKQUAD_TASK_DIR"] = str(task_dir)
-                os.environ["SKQUAD_TASK_RESUMED"] = "1" if resumed else "0"
-                # TTL GC of old task dirs: best-effort, logged, never
-                # blocks or fails the current task.
-                gc_task_dirs(base, keep_task_id=task.id)
-        except OSError as exc:  # noqa: BLE001 - task dirs are best-effort
-            LOGGER.warning(
-                "task dir creation failed",
-                extra={"task_id": task.id, "error": str(exc)},
-            )
+        resumed = _prepare_task_dirs(config, task, prompt_sha)
         # S-139: re-check after task dir creation — the floor could have
         # been crossed between the pre-check and now (another writer
         # filled the volume mid-setup).
@@ -2912,28 +3027,16 @@ def run_task_once(
             "agent task timed out",
             extra={"task_id": task.id, "timeout_seconds": config.task_timeout_seconds},
         )
-        final_task = control_plane.block_task(task, summary=str(exc))
-        control_plane.heartbeat("idle")
-        if state is not None:
-            state.task_failed(task.id, str(exc), timed_out=True)
-        return final_task
+        return _fail_wake(control_plane, task, state, str(exc), timed_out=True)
     except Exception as exc:
         LOGGER.exception("agent task handling failed", extra={"task_id": task.id})
-        final_task = control_plane.block_task(task, summary=str(exc))
-        control_plane.heartbeat("idle")
-        if state is not None:
-            state.task_failed(task.id, str(exc))
-        return final_task
+        return _fail_wake(control_plane, task, state, str(exc))
     if result.status not in ("in-review", "done", "blocked"):
         LOGGER.warning(
             "agent task handler returned invalid status",
             extra={"task_id": task.id, "status": result.status},
         )
-        final_task = control_plane.block_task(task, summary=f"invalid task status {result.status!r}")
-        control_plane.heartbeat("idle")
-        if state is not None:
-            state.task_failed(task.id, f"invalid task status {result.status!r}")
-        return final_task
+        return _fail_wake(control_plane, task, state, f"invalid task status {result.status!r}")
     final_task = _finalize_task_result(control_plane, task, result, config, workspace)
     control_plane.heartbeat("idle")
     duration = monotonic() - started

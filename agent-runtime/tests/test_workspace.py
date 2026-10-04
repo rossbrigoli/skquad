@@ -173,7 +173,7 @@ class EnsureTaskDirsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "pvc"
             resolved, task_dir = ws.ensure_task_dirs(base)
-            self.assertEqual(task_dir, None)
+            self.assertIsNone(task_dir)
             self.assertTrue((base / "scratch").is_dir())
 
 

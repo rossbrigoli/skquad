@@ -117,7 +117,8 @@ def init_journal(task_dir: str | Path, task_id: str, resumed: bool) -> dict[str,
     data = _ensure_lists(data)
     if resumed:
         data["resumed_at"].append(_now_iso())
-    return data if save_journal(task_dir, data) else data
+    save_journal(task_dir, data)
+    return data
 
 
 def journal_start_step(task_dir: str | Path, step: str) -> dict[str, Any]:
@@ -214,6 +215,29 @@ def git_resume_info(repo_dir: str | Path) -> dict[str, Any] | None:
     }
 
 
+def _git_info_lines(git_info: dict[str, Any]) -> list[str]:
+    """Render the git-workspace section of the resume note."""
+    lines = [f"Git workspace branch: {git_info.get('branch', '?')}"]
+    local = git_info.get("local_commits", 0)
+    if local:
+        lines.append(
+            f"Local commits NOT yet on the remote: {local} "
+            "(these are preserved — never assume they are lost)"
+        )
+        for commit in git_info.get("local_commits_oneline") or []:
+            lines.append(f"  {commit}")
+    dirty = git_info.get("dirty_files") or []
+    if dirty:
+        lines.append(
+            f"Uncommitted changes present before sync ({len(dirty)} entries; "
+            "the workspace sync may have discarded them — re-check before "
+            "relying on them):"
+        )
+        for entry in dirty:
+            lines.append(f"  {entry}")
+    return lines
+
+
 def build_resume_note(
     task_dir: str | Path,
     journal: dict[str, Any] | None = None,
@@ -247,24 +271,7 @@ def build_resume_note(
             "Treat it as unfinished."
         )
     if git_info:
-        lines.append(f"Git workspace branch: {git_info.get('branch', '?')}")
-        local = git_info.get("local_commits", 0)
-        if local:
-            lines.append(
-                f"Local commits NOT yet on the remote: {local} "
-                "(these are preserved — never assume they are lost)"
-            )
-            for commit in git_info.get("local_commits_oneline") or []:
-                lines.append(f"  {commit}")
-        dirty = git_info.get("dirty_files") or []
-        if dirty:
-            lines.append(
-                f"Uncommitted changes present before sync ({len(dirty)} entries; "
-                "the workspace sync may have discarded them — re-check before "
-                "relying on them):"
-            )
-            for entry in dirty:
-                lines.append(f"  {entry}")
+        lines.extend(_git_info_lines(git_info))
     lines.append(
         "Note: LLM inference cannot be replayed mid-step; durable files + "
         "git state + this journal are the resume basis, not an exact replay."
@@ -323,6 +330,32 @@ def resolve_task_dir(workspace_base: str = "", task_id: str = "") -> Path | None
     return task_dir_for(base, task_id)
 
 
+def _resolve_ttl_days(ttl_days: float | None) -> float:
+    """Resolve the task-dir TTL from the argument or env (default 7 days)."""
+    if ttl_days is not None:
+        return ttl_days
+    raw = os.environ.get("SKQUAD_TASK_DIR_TTL_DAYS", "")
+    try:
+        return float(raw) if raw.strip() else 7.0
+    except ValueError:
+        LOGGER.warning(
+            "invalid SKQUAD_TASK_DIR_TTL_DAYS; using default",
+            extra={"value": raw, "default": 7.0},
+        )
+        return 7.0
+
+
+def _dir_is_expired(child: Path, cutoff: float) -> bool:
+    """True when the dir's newest mtime (dir or top-level entries) is old."""
+    try:
+        newest = child.stat().st_mtime
+        for entry in child.iterdir():
+            newest = max(newest, entry.stat().st_mtime)
+    except OSError:
+        return False
+    return newest < cutoff
+
+
 def gc_task_dirs(
     base: str | Path,
     keep_task_id: str = "",
@@ -337,16 +370,7 @@ def gc_task_dirs(
     else 7. Never raises; removal failures are logged and skipped.
     Returns the names of removed dirs.
     """
-    if ttl_days is None:
-        raw = os.environ.get("SKQUAD_TASK_DIR_TTL_DAYS", "")
-        try:
-            ttl_days = float(raw) if raw.strip() else 7.0
-        except ValueError:
-            LOGGER.warning(
-                "invalid SKQUAD_TASK_DIR_TTL_DAYS; using default",
-                extra={"value": raw, "default": 7.0},
-            )
-            ttl_days = 7.0
+    ttl_days = _resolve_ttl_days(ttl_days)
     if ttl_days <= 0:
         return []
     cutoff = (now or datetime.now(timezone.utc)).timestamp() - ttl_days * 86400.0
@@ -362,13 +386,7 @@ def gc_task_dirs(
     for child in children:
         if not child.is_dir() or child.name == keep_task_id:
             continue
-        try:
-            newest = child.stat().st_mtime
-            for entry in child.iterdir():
-                newest = max(newest, entry.stat().st_mtime)
-        except OSError:
-            continue
-        if newest >= cutoff:
+        if not _dir_is_expired(child, cutoff):
             continue
         try:
             shutil.rmtree(child)
