@@ -2350,7 +2350,11 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-const maxInboxMessageChars = 2000
+// maxInboxMessageChars caps one inbox message body (S-229: raised from
+// 2000 to 10000 so agents can deliver substantial reports to the owner).
+// The runtime tool defaults (send_inbox, notify_owner, send_message) and
+// the seeded builtin-tool policies mirror this value — change them together.
+const maxInboxMessageChars = 10000
 
 const (
 	maxInboxSubjectChars = 300

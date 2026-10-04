@@ -138,7 +138,7 @@ func ValidateBuiltinPolicy(name string, policy json.RawMessage) []string {
 	case BuiltinToolNotifyOwner:
 		// notify_owner: timeoutSeconds bounds the POST round trip;
 		// maxMessageChars mirrors the server-side maxInboxMessageChars cap
-		// (2000) so the tool fails fast instead of being silently trimmed.
+		// (10000, S-229) so the tool fails fast instead of being silently trimmed.
 		allowed = map[string]func(string, json.RawMessage) []string{
 			"timeoutSeconds":  requirePositiveInt,
 			"maxMessageChars": requirePositiveInt,

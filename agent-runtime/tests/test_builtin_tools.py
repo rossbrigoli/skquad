@@ -1057,6 +1057,38 @@ class SendMessageToolTests(BuiltinToolsTestBase):
         assert "10" in result.content
         urlopen.assert_not_called()
 
+    def test_default_cap_is_10000(self):
+        # S-229: the platform message cap is 10,000 chars across
+        # send_inbox / notify_owner / send_message. The tool default must
+        # match so over-long messages fail fast, before any HTTP.
+        captured = {}
+        tool = bt.SendMessageTool({}, self.ctx())
+        with self.patch_http(self.fake_urlopen(captured)):
+            at_cap = tool.invoke(
+                ToolCall(
+                    id="c1",
+                    name="send_message",
+                    arguments={"target_agent": "Mary", "message": "x" * 10000},
+                ),
+                None,
+            )
+        assert at_cap.ok is True
+
+        def no_http(req, timeout=None):  # pragma: no cover
+            raise AssertionError("must not call HTTP")
+
+        with self.patch_http(no_http):
+            over_cap = tool.invoke(
+                ToolCall(
+                    id="c2",
+                    name="send_message",
+                    arguments={"target_agent": "Mary", "message": "x" * 10001},
+                ),
+                None,
+            )
+        assert over_cap.ok is False
+        assert "exceeds 10000 characters" in over_cap.content
+
     def test_missing_fields_rejected(self):
         tool = bt.SendMessageTool({}, self.ctx())
         with mock.patch("skquad_runtime.builtin_tools.request.urlopen") as urlopen:
@@ -1330,6 +1362,31 @@ class SendInboxToolTests(BuiltinToolsTestBase):
         assert result.ok is False
         assert "exceeds 10 characters" in result.content
 
+    def test_default_cap_matches_control_plane_10000(self):
+        # Server-side maxInboxMessageChars is 10000 (S-229); the tool
+        # default must match so over-long messages fail fast, not get
+        # silently trimmed.
+        def ok_fake(req, timeout=None):
+            return FakeHTTPResponse(201, b'{"id": "inb-10"}', "application/json")
+
+        def no_http(req, timeout=None):  # pragma: no cover
+            raise AssertionError("must not call HTTP")
+
+        tool = bt.SendInboxTool({}, self.ctx())
+        with self.patch_http(ok_fake):
+            at_cap = tool.invoke(
+                ToolCall(id="c1", name="send_inbox", arguments={"message": "x" * 10000}),
+                None,
+            )
+        assert at_cap.ok is True
+        with self.patch_http(no_http):
+            over_cap = tool.invoke(
+                ToolCall(id="c2", name="send_inbox", arguments={"message": "x" * 10001}),
+                None,
+            )
+        assert over_cap.ok is False
+        assert "exceeds 10000 characters" in over_cap.content
+
     def test_http_error_surfaces_as_tool_failure(self):
         tool = bt.SendInboxTool({}, self.ctx())
 
@@ -1430,9 +1487,10 @@ class NotifyOwnerToolTests(BuiltinToolsTestBase):
         assert result.ok is False
         assert "exceeds 10 characters" in result.content
 
-    def test_default_cap_matches_control_plane_2000(self):
-        # Server-side maxInboxMessageChars is 2000; the tool default must
-        # match so over-long messages fail fast, not get silently trimmed.
+    def test_default_cap_matches_control_plane_10000(self):
+        # Server-side maxInboxMessageChars is 10000 (S-229); the tool
+        # default must match so over-long messages fail fast, not get
+        # silently trimmed.
         def ok_fake(req, timeout=None):
             return FakeHTTPResponse(201, b'{"id": "inb-9"}', "application/json")
 
@@ -1442,17 +1500,17 @@ class NotifyOwnerToolTests(BuiltinToolsTestBase):
         tool = bt.NotifyOwnerTool({}, self.ctx())
         with self.patch_http(ok_fake):
             at_cap = tool.invoke(
-                ToolCall(id="c1", name="notify_owner", arguments={"message": "x" * 2000}),
+                ToolCall(id="c1", name="notify_owner", arguments={"message": "x" * 10000}),
                 None,
             )
         assert at_cap.ok is True
         with self.patch_http(no_http):
             over_cap = tool.invoke(
-                ToolCall(id="c1", name="notify_owner", arguments={"message": "x" * 2001}),
+                ToolCall(id="c1", name="notify_owner", arguments={"message": "x" * 10001}),
                 None,
             )
         assert over_cap.ok is False
-        assert "exceeds 2000 characters" in over_cap.content
+        assert "exceeds 10000 characters" in over_cap.content
 
     def test_http_error_surfaces_as_tool_failure(self):
         tool = bt.NotifyOwnerTool({}, self.ctx())
