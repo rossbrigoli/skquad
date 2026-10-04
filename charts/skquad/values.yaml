@@ -58,10 +58,16 @@ postgres:
   storage:
     size: 10Gi
   # S6864/S6870: containers need explicit memory + storage limits.
+  # S6892/S6897: explicit CPU request+limit and ephemeral-storage request so
+  # the scheduler has a complete resource profile (postgres is the DB — give
+  # it the largest CPU envelope of the non-GPU containers).
   resources:
     requests:
+      cpu: 250m
       memory: 256Mi
+      ephemeral-storage: 1Gi
     limits:
+      cpu: 1000m
       memory: 512Mi
       ephemeral-storage: 2Gi
 
@@ -101,12 +107,17 @@ operator:
   # StorageSizeExceedsPlatformMax. Keep in sync with
   # apiServer.maxAgentStorageSize unless deliberately stricter.
   maxAgentStorage: 10Gi
-  # S6864: explicit memory limit.
+  # S6864: explicit memory limit. S6892/S6897: explicit CPU request+limit
+  # and ephemeral-storage request+limit for a complete scheduler profile.
   resources:
     requests:
+      cpu: 100m
       memory: 128Mi
+      ephemeral-storage: 256Mi
     limits:
+      cpu: 500m
       memory: 256Mi
+      ephemeral-storage: 1Gi
   podSecurityContext:
     runAsNonRoot: true
     seccompProfile:
@@ -161,12 +172,17 @@ apiServer:
     # IdP groups bound to platform_admin (rendered as SKQUAD_OIDC_ADMIN_GROUPS).
     # With Dex + GitHub these are org/team slugs, e.g. ross-private-cloud:platform.
     adminGroups: []
-  # S6864: explicit memory limit.
+  # S6864: explicit memory limit. S6892/S6897: explicit CPU request+limit
+  # and ephemeral-storage request+limit for a complete scheduler profile.
   resources:
     requests:
+      cpu: 150m
       memory: 128Mi
+      ephemeral-storage: 256Mi
     limits:
+      cpu: 750m
       memory: 512Mi
+      ephemeral-storage: 1Gi
   podSecurityContext:
     runAsNonRoot: true
     seccompProfile:
@@ -251,11 +267,18 @@ llmGateway:
       callbacks: skquad_litellm_callbacks.proxy_handler_instance
       success_callback: []
   # S6864: explicit memory limit (litellm is Python; give it headroom).
+  # S6892/S6897: explicit CPU request+limit (litellm is CPU-bound on
+  # request translation) and ephemeral-storage request+limit (it writes
+  # migration/log scratch under /tmp).
   resources:
     requests:
+      cpu: 250m
       memory: 256Mi
+      ephemeral-storage: 512Mi
     limits:
+      cpu: 1000m
       memory: 1Gi
+      ephemeral-storage: 2Gi
 
 web:
   # The skquad UI. Formerly `web-v2`; the v1 UI was retired 2026-09-26 and the
@@ -388,12 +411,16 @@ embedder:
     devicePaths: []
     # - /dev/dri
     # - /dev/kfd
+  # S6870/S6897: explicit ephemeral-storage request+limit (the container
+  # mounts a writable /tmp emptyDir and mmap-weights the GGUF model).
   resources:
     requests:
       cpu: "1"
       memory: 1536Mi
+      ephemeral-storage: 512Mi
     limits:
       memory: 2Gi
+      ephemeral-storage: 2Gi
   nodeSelector: {}
   tolerations: []
   securityContext:

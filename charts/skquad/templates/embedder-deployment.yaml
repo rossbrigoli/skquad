@@ -30,6 +30,9 @@ spec:
         {{- include "skquad.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: embedder
     spec:
+      # S6865: the embedder (llama.cpp) never calls the Kubernetes API —
+      # do not automount a service account token.
+      automountServiceAccountToken: false
       {{- if eq .Values.embedder.gpu.mode "cpu" }}
       # cpu mode: keep the reconciler from ever adding GPU back.
       {{- end }}

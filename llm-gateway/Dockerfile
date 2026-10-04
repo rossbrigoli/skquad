@@ -10,10 +10,12 @@ COPY pyproject.toml ./
 COPY config.yaml /etc/skquad/config.yaml
 COPY skquad_litellm_callbacks.py /app/skquad_litellm_callbacks.py
 COPY vision_gate.py /app/vision_gate.py
+# S7031: single RUN layer — apt deps and the pip/prisma build are merged so
+# the image has one transient layer instead of two.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libatomic1 \
-    && rm -rf /var/lib/apt/lists/*
-RUN python -m pip install --upgrade pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --upgrade pip \
     && python -m pip install . \
     && useradd --create-home --uid 65532 --shell /usr/sbin/nologin skquad \
     && prisma generate --schema /usr/local/lib/python3.11/site-packages/litellm/proxy/schema.prisma \
