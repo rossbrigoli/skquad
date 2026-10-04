@@ -880,20 +880,20 @@ function ChatThread({
   onThinkingLevelChange,
   footer,
 }: {
-  messages: Message[];
-  agentName: string;
-  onSent: () => void;
-  agentId: string;
-  squadId: string;
-  token: string;
+  readonly messages: Message[];
+  readonly agentName: string;
+  readonly onSent: () => void;
+  readonly agentId: string;
+  readonly squadId: string;
+  readonly token: string;
   // S-178: model info + thinking level surfaced at the composer.
-  llmLabel: string;
-  thinkingLevel: ThinkingLevel;
-  thinkingBusy: boolean;
-  onThinkingLevelChange: (level: ThinkingLevel) => Promise<void>;
+  readonly llmLabel: string;
+  readonly thinkingLevel: ThinkingLevel;
+  readonly thinkingBusy: boolean;
+  readonly onThinkingLevelChange: (level: ThinkingLevel) => Promise<void>;
   // S-185: extra content (task lists) rendered inside the chat scroll
   // area so the page itself never scrolls past the chat viewport.
-  footer?: ReactNode;
+  readonly footer?: ReactNode;
 }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1396,11 +1396,11 @@ function GrantModal({
   onClose,
   onGranted,
 }: {
-  existing: AgentPermission[];
-  agentId: string;
-  token: string;
-  onClose: () => void;
-  onGranted: () => void;
+  readonly existing: AgentPermission[];
+  readonly agentId: string;
+  readonly token: string;
+  readonly onClose: () => void;
+  readonly onGranted: () => void;
 }) {
   const [typeIdx, setTypeIdx] = useState(0);
   const [resourceId, setResourceId] = useState("");
