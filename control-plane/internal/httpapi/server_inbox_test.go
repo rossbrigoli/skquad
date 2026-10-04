@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -109,4 +110,28 @@ func TestInboxAgentNotifyOwner(t *testing.T) {
 	var inbox []domain.InboxMessage
 	doJSON(t, handler, http.MethodGet, pathInbox, nil, http.StatusOK, &inbox)
 	require.Len(t, inbox, 1)
+}
+
+// S-229: the inbox message cap is 10,000 chars (raised from 2,000).
+// Over-long messages are trimmed server-side to exactly the cap; a
+// message at the cap survives intact.
+func TestInboxMessageCharCap10000(t *testing.T) {
+	handler, _, _, agent, credential := agentRuntimeSetup(t, "inbox-cap")
+
+	atCap := strings.Repeat("a", maxInboxMessageChars)
+	overCap := strings.Repeat("b", maxInboxMessageChars+1)
+
+	var first domain.InboxMessage
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/notify-owner",
+		map[string]any{"message": atCap}, http.StatusCreated, &first)
+	require.Len(t, []rune(first.Message), maxInboxMessageChars)
+	require.Equal(t, atCap, first.Message)
+
+	var second domain.InboxMessage
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/notify-owner",
+		map[string]any{"message": overCap}, http.StatusCreated, &second)
+	require.Len(t, []rune(second.Message), maxInboxMessageChars)
+	require.Equal(t, overCap[:maxInboxMessageChars], second.Message)
+
+	require.Equal(t, 10000, maxInboxMessageChars)
 }

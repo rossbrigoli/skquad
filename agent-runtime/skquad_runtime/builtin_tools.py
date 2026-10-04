@@ -465,7 +465,7 @@ class SendMessageTool:
                 ),
                 ok=False,
             )
-        max_chars = int(self.policy.get("maxMessageChars", 8000))
+        max_chars = int(self.policy.get("maxMessageChars", 10000))
         if len(text) > max_chars:
             return ToolResult(
                 content=f"send_message: message exceeds {max_chars} characters", ok=False
@@ -672,7 +672,7 @@ class SendInboxTool:
         text = str(call.arguments.get("message", "")).strip()
         if not text:
             return ToolResult(content="send_inbox: message is required", ok=False)
-        max_chars = int(self.policy.get("maxMessageChars", 2000))
+        max_chars = int(self.policy.get("maxMessageChars", 10000))
         if len(text) > max_chars:
             return ToolResult(
                 content=f"send_inbox: message exceeds {max_chars} characters", ok=False
@@ -827,9 +827,9 @@ class NotifyOwnerTool:
     files an ``action_required`` InboxMessage against the agent's squad
     owner (audited; 404 when the squad has no owner). No squad-mate
     resolution happens runtime-side — the control plane owns routing. The
-    message cap mirrors the server-side ``maxInboxMessageChars`` (2000)
-    so an over-long message fails fast with a clear error instead of
-    being silently trimmed.
+    message cap mirrors the server-side ``maxInboxMessageChars`` (10000,
+    raised from 2000 in S-229) so an over-long message fails fast with a
+    clear error instead of being silently trimmed.
     """
 
     name = "notify_owner"
@@ -873,7 +873,7 @@ class NotifyOwnerTool:
         text = str(call.arguments.get("message", "")).strip()
         if not text:
             return ToolResult(content="notify_owner: message is required", ok=False)
-        max_chars = int(self.policy.get("maxMessageChars", 2000))
+        max_chars = int(self.policy.get("maxMessageChars", 10000))
         if len(text) > max_chars:
             return ToolResult(
                 content=f"notify_owner: message exceeds {max_chars} characters", ok=False
