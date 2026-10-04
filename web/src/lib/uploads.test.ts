@@ -9,6 +9,7 @@ import {
   formatBytes,
   extractPastedImages,
   messageAttachments,
+  uploadFetchPath,
   validateImageFile,
 } from "./uploads";
 
@@ -141,5 +142,29 @@ describe("extractPastedImages", () => {
       mkItem("file", "image/webp", b),
     ]);
     expect(out).toEqual([a, b]);
+  });
+});
+
+// S-226: attachment URLs must be rebased onto the active API base so the
+// fetch carries auth (bearer in token mode, /proxy in OIDC mode).
+describe("uploadFetchPath", () => {
+  it("strips the /api/v1 prefix so apiBaseUrl() can re-add the authed base", () => {
+    expect(uploadFetchPath("/api/v1/uploads/6f9d2a4e-0000-4000-8000-abcdefabcdef")).toBe(
+      "/uploads/6f9d2a4e-0000-4000-8000-abcdefabcdef",
+    );
+  });
+
+  it("keeps query strings intact", () => {
+    expect(uploadFetchPath("/api/v1/uploads/abc?download=1")).toBe("/uploads/abc?download=1");
+  });
+
+  it("returns non-control-plane URLs unchanged", () => {
+    expect(uploadFetchPath("/uploads/abc")).toBe("/uploads/abc");
+    expect(uploadFetchPath("https://cdn.example.test/img.png")).toBe("https://cdn.example.test/img.png");
+    expect(uploadFetchPath("")).toBe("");
+  });
+
+  it("does not mangle paths that merely start with /api/v1x", () => {
+    expect(uploadFetchPath("/api/v1x/uploads/abc")).toBe("/api/v1x/uploads/abc");
   });
 });

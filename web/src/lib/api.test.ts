@@ -4,6 +4,7 @@ import {
   apiBaseUrl,
   apiDelete,
   apiGet,
+  apiGetBlob,
   apiPatch,
   apiPost,
   apiPut,
@@ -111,5 +112,65 @@ describe("api request helpers", () => {
     await expect(apiGet("/bad", "")).rejects.toThrow("bad request");
     await expect(apiGet("/gateway", "")).rejects.toThrow("Bad Gateway");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+// S-226: binary GET for image attachments — same auth semantics as
+// apiRequest, but returns a Blob instead of parsed JSON.
+describe("apiGetBlob", () => {
+  it("sends GET with a trimmed bearer token and returns the blob", async () => {
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(pngBytes, { headers: { "Content-Type": "image/png" } }));
+
+    const blob = await apiGetBlob("/uploads/abc", " tok ");
+
+    expect(blob.type).toBe("image/png");
+    expect(new Uint8Array(await blob.arrayBuffer())).toEqual(pngBytes);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/uploads/abc",
+      expect.objectContaining({
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { Accept: "image/*", Authorization: "Bearer tok" },
+      }),
+    );
+  });
+
+  it("omits the Authorization header when no token (OIDC cookie mode)", async () => {
+    setApiBaseOverride("/proxy");
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { headers: { "Content-Type": "image/jpeg" } }));
+
+    const blob = await apiGetBlob("/uploads/xyz", "");
+
+    expect(blob.type).toBe("image/jpeg");
+    const call = fetchMock.mock.calls[0];
+    expect(call[0]).toBe("/proxy/uploads/xyz");
+    const headers = (call[1] as { headers: Record<string, string> }).headers;
+    expect(headers.Authorization).toBeUndefined();
+    expect(headers.Accept).toBe("image/*");
+  });
+
+  it("surfaces the parsed control-plane error message on 401", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(
+        { error: { code: "unauthorized", message: "missing or invalid bearer token" } },
+        { status: 401, statusText: "Unauthorized" },
+      ),
+    );
+
+    await expect(apiGetBlob("/uploads/abc", "")).rejects.toMatchObject({
+      status: 401,
+      message: "missing or invalid bearer token",
+    } satisfies Partial<ApiError>);
+  });
+
+  it("falls back to status text when the error body is not JSON", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("boom", { status: 500, statusText: "Server Error" }));
+    await expect(apiGetBlob("/uploads/abc", "tok")).rejects.toThrow("Server Error");
   });
 });

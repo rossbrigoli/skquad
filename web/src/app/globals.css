@@ -3024,6 +3024,25 @@ button.squad-tab.active {
   text-overflow: ellipsis;
 }
 
+/* S-226: placeholder shown while an attachment's bytes are fetched
+   through the authenticated client, and the terminal error state. */
+.chat-attachment-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 140px;
+  min-height: 80px;
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+
+.chat-attachment-error {
+  padding: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--danger, #c0392b);
+  cursor: default;
+}
+
 /* Paperclip button beside the chat textarea. */
 .chat-attach-btn {
   width: 40px;
