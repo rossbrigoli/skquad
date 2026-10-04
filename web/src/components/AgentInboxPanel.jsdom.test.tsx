@@ -28,9 +28,13 @@ vi.mock("../lib/useApi", () => ({
 
 vi.mock("../lib/api", () => {
   class ApiError extends Error {
-    constructor(msg: string) {
-      super(msg);
+    status: number;
+    body: unknown;
+    constructor(status: number, message: string, body?: unknown) {
+      super(message);
       this.name = "ApiError";
+      this.status = status;
+      this.body = body;
     }
   }
   return { apiPost: vi.fn(), ApiError };
@@ -180,11 +184,11 @@ describe("AgentInboxPanel replay", () => {
       dead: [msg({ id: "dead2", status: "dead" })],
     });
     const { ApiError } = await import("../lib/api");
-    mockedPost.mockRejectedValue(new ApiError("403 forbidden"));
+    mockedPost.mockRejectedValue(new ApiError(403, "forbidden"));
     const user = userEvent.setup();
     render(<AgentInboxPanel agentId="ag-1" />);
     await user.click(screen.getByRole("button", { name: "Replay" }));
-    expect(await screen.findByText("Replay failed: 403 forbidden")).toBeInTheDocument();
+    expect(await screen.findByText("Replay failed: forbidden")).toBeInTheDocument();
     expect(state.refresh).not.toHaveBeenCalled();
   });
 

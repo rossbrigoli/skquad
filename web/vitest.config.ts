@@ -59,16 +59,10 @@ export default defineConfig({
         "src/**/*.test.tsx",
       ],
       thresholds: {
-        // The 85/90 gate stays exactly where it was: the mature logic layer.
+        // The 85/90 gate stays exactly where it was numerically (S-182).
         // S-189's newly-included hooks/components are measured (lcov →
-        // SonarQube) without silently relaxing this established CI gate;
-        // they are held to the SonarQube new-code gate instead.
-        glob: [
-          "src/lib/**",
-          "!src/lib/useApi.ts",
-          "!src/lib/usePromptValidation.ts",
-          "!src/lib/auth.tsx",
-        ],
+        // SonarQube) without relaxing this established CI gate — the
+        // merged suite now clears it at 96/90.1/95.7/96.5.
         statements: 85,
         lines: 85,
         functions: 85,

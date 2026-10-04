@@ -95,11 +95,12 @@ describe("usePromptValidation", () => {
   });
 
   it("drops stale responses so slow old results never clobber new ones", async () => {
-    let resolveFirst: (v: unknown) => void = () => undefined;
+    let resolveFirst!: (v: unknown) => void;
+    const firstPromise = new Promise((r) => {
+      resolveFirst = r;
+    });
     mockedPost
-      .mockImplementationOnce(
-        () => new Promise((r) => (resolveFirst = r)) as Promise<never>,
-      )
+      .mockImplementationOnce(() => firstPromise as Promise<never>)
       .mockResolvedValue({ ...ok, tokens: 99 });
 
     const { rerender, result } = renderHook(
