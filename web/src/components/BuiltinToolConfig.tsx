@@ -11,7 +11,7 @@
 // tool configuration route (/settings/resources/tools/{name}). This
 // component is the form itself; loading/saving lives in the route.
 
-import { useMemo, useRef, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { apiPatch, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { useApi } from "../lib/useApi";
@@ -284,6 +284,7 @@ export function ToolCard({
 }
 
 // DeniedPatternsEditor: add/remove rows of regex strings.
+let patternSeq = 0;
 export function DeniedPatternsEditor({
   rows,
   disabled,
@@ -294,15 +295,11 @@ export function DeniedPatternsEditor({
   readonly onChange: (rows: string[]) => void;
 }) {
   // S-189: stable per-row ids so editing a row never remounts it (content
-  // keys would lose focus on every keystroke). Ids ride along with the
-  // index-based add/remove operations performed in this component; an
-  // external rows reset (load/save) simply mints fresh ids.
-  const seqRef = useRef(0);
-  const idsRef = useRef<number[]>([]);
-  if (idsRef.current.length !== rows.length) {
-    idsRef.current = rows.map(() => ++seqRef.current);
-  }
-  const rowIds = idsRef.current;
+  // keys would lose focus on every keystroke). Ids are owned by this
+  // component and updated alongside every add/remove it performs; the
+  // parent's rows only change through these handlers.
+  const uid = useId();
+  const [rowIds, setRowIds] = useState<string[]>(() => rows.map(() => `${uid}-p${++patternSeq}`));
   return (
     <div className="field">
       <span>Denied patterns (regex, matched against the full command)</span>
@@ -326,7 +323,7 @@ export function DeniedPatternsEditor({
             disabled={disabled}
             aria-label={`Remove denied pattern ${i + 1}`}
             onClick={() => {
-              idsRef.current = idsRef.current.filter((_, idx) => idx !== i);
+              setRowIds((prev) => prev.filter((_, idx) => idx !== i));
               onChange(rows.filter((_, idx) => idx !== i));
             }}
           >
@@ -340,7 +337,7 @@ export function DeniedPatternsEditor({
           className="btn btn-sm"
           disabled={disabled}
           onClick={() => {
-            idsRef.current = [...idsRef.current, ++seqRef.current];
+            setRowIds((prev) => [...prev, `${uid}-p${++patternSeq}`]);
             onChange([...rows, ""]);
           }}
         >
