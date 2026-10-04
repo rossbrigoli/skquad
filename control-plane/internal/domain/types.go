@@ -238,8 +238,22 @@ func (s TaskStatus) Valid() bool {
 // (S-213). Backlog is intentionally absent: agents must never pick up
 // backlog tasks unless a human moves them out (the move IS the instruction).
 // Agent-facing queries must use this as an allowlist, never a denylist.
+// Only TO DO column tasks are ready to start (S-228); in-progress is the
+// sole exception so a crashed run can resume its own claimed task.
 func AgentPickupStatuses() []TaskStatus {
 	return []TaskStatus{TaskTodo, TaskInProgress}
+}
+
+// IsAgentPickupStatus reports whether an agent may claim/start work from s
+// (S-228). Everything outside AgentPickupStatuses — backlog included — is
+// not claimable and must be rejected server-side, not merely hidden.
+func (s TaskStatus) IsAgentPickupStatus() bool {
+	for _, allowed := range AgentPickupStatuses() {
+		if s == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 // Task is the unit of work on a squad's Kanban board.

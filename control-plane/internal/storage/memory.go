@@ -1507,7 +1507,9 @@ func (m *MemoryStore) ListAgentTasks(_ context.Context, agentID string) ([]*doma
 	}
 	out := []*domain.Task{}
 	for _, t := range m.tasks {
-		// S-213: backlog tasks are not agent-facing until a human moves them out.
+		// S-213: visibility only — backlog is hidden until a human moves
+		// it out. The pickup allowlist (S-228) is enforced in the claim/
+		// start paths, not here: agents may still see their own done/review work.
 		if t.AssigneeAgentID == agentID && t.Status != domain.TaskBacklog {
 			out = append(out, cloneTask(t))
 		}

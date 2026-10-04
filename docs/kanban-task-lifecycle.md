@@ -21,11 +21,17 @@
 
 | Column | Meaning |
 |--------|---------|
-| `todo` | Backlog / ready to be assigned. |
+| `backlog` | Not ready to start / not yet prioritized. **Never claimable by agents** (S-213, S-228): invisible to every agent pickup/listing path until a human moves it out. |
+| `todo` | TO DO — **ready to start, prioritized by the squad owner**. The only column agents pick up from. |
 | `in-progress` | An agent is actively working on it. |
 | `in-review` | Work done, awaiting review (by an agent or user). |
 | `done` | Complete. |
 | `blocked` | Cannot proceed (dependency, missing access, error). |
+
+**Pickup rule (S-228):** agents may only claim/start tasks in `todo`
+(or resume their own `in-progress` task after a crash). Claiming or
+starting anything else — `backlog` included — is rejected server-side
+with a machine-readable 409 (`task_in_backlog` / `task_not_claimable`).
 
 - The board is **owned by the squad** and isolated in the squad namespace.
 - Users with access (owner + granted users) can view and manage the board.
@@ -61,7 +67,9 @@ task(
 
 ```mermaid
 stateDiagram-v2
-    [*] --> todo: created
+    [*] --> backlog: created unprioritized
+    [*] --> todo: created ready
+    backlog --> todo: human prioritizes (the instruction to start)
     todo --> in-progress: assigned + agent picks up (context reset)
     in-progress --> in-review: agent marks ready
     in-progress --> blocked: agent/user flags blocker

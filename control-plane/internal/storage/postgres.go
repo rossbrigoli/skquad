@@ -2072,6 +2072,10 @@ func (p *PostgresStore) ListTasks(ctx context.Context, boardID string, status do
 }
 
 func (p *PostgresStore) ListAgentTasks(ctx context.Context, agentID string) ([]*domain.Task, error) {
+	// Visibility rule (S-213): only backlog tasks are hidden from the
+	// agent-facing listing; an agent may still see its own done/review
+	// work. This is NOT the pickup rule — claim/start enforce the
+	// AgentPickupStatuses allowlist server-side (S-228).
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, board_id::text, squad_id::text, title, description, status,
 		       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,

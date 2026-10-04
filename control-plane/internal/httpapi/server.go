@@ -4273,12 +4273,19 @@ func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_prompt_sha", "prompt_sha must be a 64-char hex sha256 or the literal env_legacy")
 		return
 	}
-	// S-213: an agent may never start a Backlog task by id — pickup must go
-	// through the claim path, which only serves todo. A human moving the card
-	// out of Backlog is the instruction to start it. Missing/foreign tasks
-	// are still reported by updateCurrentAgentTaskStatus below.
-	if existing, err := s.store.GetTask(r.Context(), chi.URLParam(r, "taskID")); err == nil && existing.Status == domain.TaskBacklog {
-		writeError(w, http.StatusConflict, "task_in_backlog", "task is in the backlog and must be moved out by a human before it can be started")
+	// S-213/S-228: an agent may only start work from a pickup column —
+	// TO DO, or resuming its own in-progress task. Backlog and every other
+	// column are rejected here with a machine-readable reason before the
+	// status update runs; pickup must go through the claim path, which
+	// only serves todo. A human moving the card out of Backlog is the
+	// instruction to start it. Missing/foreign tasks are still reported by
+	// updateCurrentAgentTaskStatus below.
+	if existing, err := s.store.GetTask(r.Context(), chi.URLParam(r, "taskID")); err == nil && !existing.Status.IsAgentPickupStatus() {
+		if existing.Status == domain.TaskBacklog {
+			writeError(w, http.StatusConflict, "task_in_backlog", "task is in the backlog and must be moved out by a human before it can be started")
+			return
+		}
+		writeError(w, http.StatusConflict, "task_not_claimable", fmt.Sprintf("task is in %q and is not ready to start; only TO DO column tasks are claimable", existing.Status))
 		return
 	}
 	updated, ok := s.updateCurrentAgentTaskStatus(w, r, domain.TaskInProgress, domain.AgentBusy, "task.start")

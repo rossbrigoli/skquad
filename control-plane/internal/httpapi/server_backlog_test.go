@@ -64,6 +64,43 @@ func TestBacklogTaskIsInvisibleToAgentPickupPaths(t *testing.T) {
 	require.Equal(t, domain.TaskInProgress, claimed.Status)
 }
 
+// S-228: the start-by-id path enforces the pickup allowlist, not just a
+// backlog denylist — every non-pickup column is rejected with a
+// machine-readable 409, while a todo task starts cleanly.
+func TestStartByIdOnlyAllowedFromPickupColumns(t *testing.T) {
+	t.Parallel()
+
+	handler, _, squad, agent, credential := agentRuntimeSetup(t, "Pickup Allowlist Squad")
+
+	for _, status := range []string{"backlog", "in-review", "done", "blocked"} {
+		var task domain.Task
+		doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
+			"title":             "Column " + status,
+			"assignee_agent_id": agent.ID,
+			"status":            status,
+		}, http.StatusCreated, &task)
+
+		var body map[string]map[string]string
+		doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+task.ID+"/start", nil, http.StatusConflict, &body)
+		want := "task_not_claimable"
+		if status == "backlog" {
+			want = "task_in_backlog" // dedicated code preserved from S-213
+		}
+		require.Equal(t, want, body["error"]["code"], "status %q must not be startable by the agent", status)
+	}
+
+	// A todo task is claimable AND directly startable by its assignee.
+	var todo domain.Task
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathBoardTasks, map[string]any{
+		"title":             "Ready now",
+		"assignee_agent_id": agent.ID,
+		"status":            "todo",
+	}, http.StatusCreated, &todo)
+	var started domain.Task
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, pathMyTasksPrefix+todo.ID+"/start", nil, http.StatusOK, &started)
+	require.Equal(t, domain.TaskInProgress, started.Status)
+}
+
 func TestCreateTaskStatusValidation(t *testing.T) {
 	t.Parallel()
 
