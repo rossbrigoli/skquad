@@ -34,7 +34,7 @@ export default function ToolsPage() {
         </div>
         {!isAdmin ? (
           <div className="notice" style={{ marginBottom: "var(--space-4)" }}>
-            You are signed in as <strong>{user?.role || "user"}</strong>. Registering or changing tools requires the{" "}
+            You are signed in as <strong>{user?.role ?? "user"}</strong>. Registering or changing tools requires the{" "}
             <strong>platform_admin</strong> role.
           </div>
         ) : null}

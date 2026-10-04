@@ -335,7 +335,7 @@ export default function AgentProfilePage() {
         <div className="section-head agent-title-row">
           <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-3)", flexWrap: "wrap" }}>
             <h1 className="page-title" style={{ margin: 0 }}>
-              {agent?.name || "Agent"}
+              {agent?.name ?? "Agent"}
             </h1>
             {agent ? <StatusChip status={agentStatus(agent)} /> : null}
             {/* S-169 item 9b: restart lives beside the page title now. */}
@@ -389,7 +389,7 @@ export default function AgentProfilePage() {
           </div>
         </div>
         <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)" }}>
-          {agent?.role || "no role set"} · <span className="mono">{agentId.slice(0, 12)}</span>
+          {agent?.role ? agent.role : "no role set"} · <span className="mono">{agentId.slice(0, 12)}</span>
         </p>
 
         <nav className="squad-tabs agent-tabs" aria-label="Agent sections" style={{ marginTop: "var(--space-4)" }}>
@@ -424,7 +424,7 @@ export default function AgentProfilePage() {
         {tab === "chat" ? (
           <section className="agent-chat-section" style={{ marginTop: "var(--space-4)" }}>
             <div className="section-head">
-              <h2>Talk to {agent?.name || "this agent"}</h2>
+              <h2>Talk to {agent?.name ?? "this agent"}</h2>
               {/* S-169 item 9a: Reset chat sits in the chat header now. */}
               <button
                 type="button"
@@ -438,7 +438,7 @@ export default function AgentProfilePage() {
             {chatNote ? <p className="field-hint">{chatNote}</p> : null}
             <ChatThread
               messages={chat.data || []}
-              agentName={agent?.name || "agent"}
+              agentName={agent?.name ?? "agent"}
               onSent={() => chat.refresh()}
               agentId={agentId}
               squadId={squadId}
@@ -603,7 +603,7 @@ function AgentConfigPane({
     agent.idle_timeout_sec ? String(agent.idle_timeout_sec) : "",
   );
   const [storageEnabled, setStorageEnabled] = useState(agent.storage_enabled ?? false);
-  const [storageSize, setStorageSize] = useState(agent.storage_size || DEFAULT_AGENT_STORAGE_SIZE);
+  const [storageSize, setStorageSize] = useState(agent.storage_size ? agent.storage_size : DEFAULT_AGENT_STORAGE_SIZE);
   const [prompt, setPrompt] = useState(agent.system_prompt ?? "");
   const [primary, setPrimary] = useState(agent.ai_model_id ?? "");
   const [fallback, setFallback] = useState(agent.fallback_ai_model_id ?? "");
@@ -618,7 +618,7 @@ function AgentConfigPane({
     prompt !== (agent.system_prompt ?? "") ||
     Number(idleTimeout || 0) !== (agent.idle_timeout_sec ?? 0) ||
     storageEnabled !== (agent.storage_enabled ?? false) ||
-    (storageEnabled ? storageSize.trim() !== (agent.storage_size || DEFAULT_AGENT_STORAGE_SIZE) : false) ||
+    (storageEnabled ? storageSize.trim() !== (agent.storage_size ? agent.storage_size : DEFAULT_AGENT_STORAGE_SIZE) : false) ||
     primary !== (agent.ai_model_id ?? "") ||
     fallback !== (agent.fallback_ai_model_id ?? "");
 

@@ -24,7 +24,9 @@ export default function SquadsPage() {
         meId: user?.id,
         nameFor: (ownerId: string) => {
           const u = (allUsers.data ?? []).find((x) => x.id === ownerId);
-          return u?.name || u?.email?.split("@")[0] || undefined;
+          const name = u?.name;
+          const emailPrefix = u?.email?.split("@")[0];
+          return name ? name : emailPrefix ? emailPrefix : undefined;
         },
       }
     : undefined;
@@ -60,7 +62,7 @@ export default function SquadsPage() {
                 key={squad.id}
                 href={`/squads/${squad.id}`}
                 title={squadDisplayLabel(squad, ownerLabels)}
-                meta={squad.mission || "no mission set"}
+                meta={squad.mission ? squad.mission : "no mission set"}
                 side={squad.namespace ? <span className="mono">{squad.namespace}</span> : undefined}
               />
             ))}
