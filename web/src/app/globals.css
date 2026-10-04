@@ -2300,6 +2300,13 @@ button.squad-tab.active {
 .provider-models {
   margin-left: var(--space-5);
   border-left: 2px solid var(--line);
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--text-sm);
 }
 
 .provider-empty {
@@ -2707,17 +2714,22 @@ button.squad-tab.active {
   border-radius: var(--radius-md);
   background: var(--surface);
   overflow: hidden;
+  margin-top: var(--space-3);
 }
 
 .inbox-row {
-  display: flex;
-  align-items: flex-start;
+  /* S-189: merged later duplicate rules (S-201 flex layout + Req 2 separator).
+     Grid layout itself comes from the shared .inbox-columns/.inbox-row rule below. */
+  display: grid;
+  grid-template-columns: 18px 22px 140px minmax(0, 1fr) auto 110px;
+  gap: var(--space-2);
+  align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  padding: 10px var(--space-4);
-  border-bottom: 1px solid var(--line);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--line-strong);
   border-left: 3px solid transparent;
   text-align: left;
+  cursor: pointer;
 }
 
 .inbox-row:last-child {
@@ -2757,6 +2769,11 @@ button.squad-tab.active {
   align-items: baseline;
   gap: var(--space-2);
   flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .inbox-type {
@@ -2784,6 +2801,8 @@ button.squad-tab.active {
 .inbox-status {
   color: var(--ink-muted);
   font-size: 0.78rem;
+  display: inline-flex;
+  align-items: center;
 }
 
 .inbox-side {
@@ -2796,7 +2815,8 @@ button.squad-tab.active {
 
 .inbox-time {
   color: var(--ink-muted);
-  font-size: 0.78rem;
+  font-size: var(--text-xs, 12px);
+  white-space: nowrap;
 }
 
 /* ============================================================
@@ -2965,16 +2985,6 @@ button.squad-tab.active {
   height: 10px;
   border-radius: 2px;
   display: inline-block;
-}
-
-.provider-models {
-  margin-top: var(--space-2);
-  border-top: 1px solid var(--line);
-  padding-top: var(--space-2);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: var(--text-sm);
 }
 
 .provider-model {
@@ -3301,30 +3311,6 @@ button.squad-tab.active {
   min-width: 140px;
 }
 
-.inbox-list {
-  margin-top: var(--space-3);
-}
-
-.inbox-row {
-  /* S-201: self-contained row layout (the old inner .inbox-row-head flex
-     wrapper is gone — the row itself lays out dot/sender/subject/chip/time). */
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  border-bottom: 1px solid var(--border);
-  padding: var(--space-2) var(--space-3);
-  /* S-201: the whole row is the click target into the reading view. */
-  cursor: pointer;
-}
-
-.inbox-row:last-child {
-  border-bottom: none;
-}
-
-.inbox-row:hover {
-  background: var(--surface-sunken);
-}
-
 /* S-201: Gmail-style sender column in the inbox list. */
 .inbox-sender {
   width: 140px;
@@ -3353,22 +3339,8 @@ button.squad-tab.active {
   background: var(--accent, #1971c2);
 }
 
-.inbox-subject {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .inbox-row-unread .inbox-subject {
   font-weight: 700;
-}
-
-.inbox-time {
-  color: var(--ink-muted);
-  font-size: var(--text-xs, 12px);
-  white-space: nowrap;
 }
 
 .inbox-delete {
@@ -3815,19 +3787,8 @@ button.squad-tab.active {
   letter-spacing: 0.06em;
 }
 
-/* Req 2: more prominent separator + slightly more vertical spacing. */
-.inbox-row {
-  border-bottom: 1px solid var(--line-strong);
-  padding: var(--space-3);
-}
-
-/* Req 3: envelope read/unread marker column. */
-.inbox-status {
-  display: inline-flex;
-  align-items: center;
-  color: var(--ink-muted);
-}
-
+/* Req 2 separator merged into .inbox-row above (S-189).
+   Req 3: envelope read/unread marker column styles merged into .inbox-status above. */
 .inbox-row-unread .inbox-status {
   color: var(--accent, #1971c2);
 }
