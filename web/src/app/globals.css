@@ -3189,6 +3189,8 @@ button.squad-tab.active {
 
 .notif-popover {
   position: absolute;
+  /* S-189/S6819: <dialog> UA margin:auto would shift the popover. */
+  margin: 0;
   top: calc(100% + 8px);
   right: 0;
   z-index: 60;

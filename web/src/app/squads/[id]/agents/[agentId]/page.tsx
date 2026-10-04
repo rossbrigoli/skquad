@@ -1369,6 +1369,9 @@ function GrantModal({
   );
 }
 
+// S-189/S4323: shared shape for the two metering fetch states.
+type MeteringState = { loading: boolean; error: string | null; data: MeteringSummary | null };
+
 // S-189/S3776: title-row metric chips and the section tab bar extracted
 // from AgentProfilePage; render output identical to the inline JSX.
 function AgentMetricChips({
@@ -1385,8 +1388,8 @@ function AgentMetricChips({
   readonly stalled: Task[];
   readonly tasks: Task[];
   readonly resourceGrants: AgentPermission[];
-  readonly metering: { loading: boolean; error: string | null; data: MeteringSummary | null };
-  readonly meteringMtd: { loading: boolean; error: string | null; data: MeteringSummary | null };
+  readonly metering: MeteringState;
+  readonly meteringMtd: MeteringState;
   readonly agent: Agent | undefined;
   readonly contextTokens: number | null;
 }) {

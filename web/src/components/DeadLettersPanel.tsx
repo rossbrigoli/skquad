@@ -186,6 +186,10 @@ export function DeadLettersPanel() {
     }
   }
 
+  // S-189/S3358: extracted nested ternary — same render semantics.
+  const noMatchNote =
+    items !== null && items.length === 0 ? <p className="field-hint">No dead letters match.</p> : null;
+
   return (
     <section style={{ marginTop: "var(--space-4, 16px)" }}>
       <div className="section-head">
@@ -236,7 +240,7 @@ export function DeadLettersPanel() {
         {loading ? "Searching…" : "Search"}
       </button>
       {note ? <p className="field-hint">{note}</p> : null}
-      {items === null ? null : items.length === 0 ? <p className="field-hint">No dead letters match.</p> : null}
+      {noMatchNote}
       {(items?.length ?? 0) > 0 ? (
         <fieldset className="templates-toolbar" style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }} aria-label="Dead letter bulk actions">
           <label className="templates-selectall">
