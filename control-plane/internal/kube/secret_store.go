@@ -23,6 +23,12 @@ import (
 // the managed Secret.
 const ProviderSecretKey = "api-key"
 
+// Core REST path fragments for the Secret API (S-189, sonar S1192).
+const (
+	apiPathNamespaces = "/api/v1/namespaces/"
+	apiPathSecrets    = "/secrets/"
+)
+
 // SecretStore reads/writes provider API-key Secrets through the
 // Kubernetes API (same raw-HTTP + projected-token pattern as CRWriter —
 // the control-plane deliberately avoids client-go).
@@ -107,14 +113,14 @@ func (s *SecretStore) EnsureProviderKey(ctx context.Context, name, key string) e
 		"stringData": map[string]string{ProviderSecretKey: key},
 	}
 	if code == http.StatusNotFound {
-		return s.send(ctx, http.MethodPost, "/api/v1/namespaces/"+s.namespace+"/secrets", secret, "create secret")
+		return s.send(ctx, http.MethodPost, apiPathNamespaces+s.namespace+"/secrets", secret, "create secret")
 	}
 	if meta, ok := existing["metadata"].(map[string]any); ok {
 		if rv, ok := meta["resourceVersion"].(string); ok && rv != "" {
 			secret["metadata"].(map[string]any)["resourceVersion"] = rv
 		}
 	}
-	return s.send(ctx, http.MethodPut, "/api/v1/namespaces/"+s.namespace+"/secrets/"+name, secret, "update secret")
+	return s.send(ctx, http.MethodPut, apiPathNamespaces+s.namespace+apiPathSecrets+name, secret, "update secret")
 }
 
 // GetProviderKey returns the stored key for a managed Secret.
@@ -137,7 +143,7 @@ func (s *SecretStore) GetProviderKey(ctx context.Context, name string) (string, 
 
 // DeleteProviderKey removes the Secret; a missing Secret is not an error.
 func (s *SecretStore) DeleteProviderKey(ctx context.Context, name string) error {
-	req, err := s.request(ctx, http.MethodDelete, "/api/v1/namespaces/"+s.namespace+"/secrets/"+name, nil)
+	req, err := s.request(ctx, http.MethodDelete, apiPathNamespaces+s.namespace+apiPathSecrets+name, nil)
 	if err != nil {
 		return err
 	}
@@ -156,7 +162,7 @@ func (s *SecretStore) DeleteProviderKey(ctx context.Context, name string) error 
 }
 
 func (s *SecretStore) getRaw(ctx context.Context, name string) (map[string]any, int, error) {
-	req, err := s.request(ctx, http.MethodGet, "/api/v1/namespaces/"+s.namespace+"/secrets/"+name, nil)
+	req, err := s.request(ctx, http.MethodGet, apiPathNamespaces+s.namespace+apiPathSecrets+name, nil)
 	if err != nil {
 		return nil, 0, err
 	}
