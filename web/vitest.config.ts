@@ -59,6 +59,7 @@ export default defineConfig({
         "src/app/squads/[id]/page.tsx",
         "src/app/squads/[id]/prompt/page.tsx",
         "src/app/dashboard/page.tsx",
+        "src/components/BuiltinToolConfig.tsx",
       ],
       exclude: [
         "src/**/*.test.ts",
