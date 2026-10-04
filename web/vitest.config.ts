@@ -61,6 +61,7 @@ export default defineConfig({
         "src/app/dashboard/page.tsx",
         "src/components/BuiltinToolConfig.tsx",
         "src/components/AdminBudgetPanel.tsx",
+        "src/components/ResourceRegistryPanel.tsx",
       ],
       exclude: [
         "src/**/*.test.ts",
