@@ -4,7 +4,12 @@ version = "0.1.0"
 description = "skquad agent harness: thin custom runtime + LiteLLM + plugin interface"
 requires-python = ">=3.11"
 dependencies = [
-    "litellm>=1.40",
+    # S-233: unpinned litellm let a bad upstream release (rust_bridge/catalog <->
+    # diagnostics circular import of LoggerContext) get baked into the runtime
+    # image, bouncing blocked tasks back on wake. Pin to the last known-good
+    # version — same pin as llm-gateway (pyproject.toml), verified importable on
+    # py3.11 and running in production images 0.1.198-0.1.214. Bump deliberately.
+    "litellm==1.103.2",
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "psycopg[binary]>=3.1",
