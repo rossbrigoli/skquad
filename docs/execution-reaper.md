@@ -8,6 +8,10 @@
 > promises: *"Crash recovery is lease-based — if an agent pod dies mid-task,
 > another runtime can pick the task up once the execution lease expires."*
 >
+> For how the execution lease relates to the pod-level scale-to-zero idle
+> timeout, see
+> [`kanban-task-lifecycle.md` §9 — Execution Lease vs Scale-to-Zero Idle Timeout](kanban-task-lifecycle.md#9-execution-lease-vs-scale-to-zero-idle-timeout).
+>
 > Today that promise is only half-true: the claim path can lazily reclaim an
 > in-progress task whose lease lapsed, but **only the same agent, and only
 > when it claims again**. If the agent itself is dead, the task sits

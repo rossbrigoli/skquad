@@ -54,3 +54,12 @@ is a single, auditable source of truth for scaling.
   external queues) or the operator approach proves fragile.
 - **Always-on pods** — simplest, but violates the scale-to-zero requirement and
   wastes resources across many squads. **Rejected.**
+
+## Related
+
+- The idle timeout in this ADR is the **pod cost timer**. It is distinct
+  from the per-task **execution lease** (worker liveness + fencing, 2 min
+  renewed every 40 s). See
+  [`kanban-task-lifecycle.md` §9](../kanban-task-lifecycle.md#9-execution-lease-vs-scale-to-zero-idle-timeout)
+  for how the two interact, including the `idleTimeout=0` budget-block
+  teardown path (S-203 WP3).
