@@ -1520,7 +1520,9 @@ class LLMMessageHandler:
                 text, "inbox", **{"from": message.from_id or message.from_type or "unknown"}
             )
         labeled["_skquad_trusted"] = True
-        return replace(message, payload=labeled)
+        # S-189/S5886: dataclasses.replace() is typed as returning a
+        # generic DataclassInstance; assert the concrete type back.
+        return cast(RuntimeMessage, replace(message, payload=labeled))
 
     def _non_user_result(
         self, message: RuntimeMessage, config: BootstrapConfig
@@ -1717,7 +1719,11 @@ class LLMMessageHandler:
             message, config, chat_messages, virtual_key, model
         )
         try:
-            response = completion(**forced_kwargs)
+            # S-189/S1226: bind the forced completion to a new name so
+            # the ``response`` parameter keeps its passed-in value for
+            # the failure path below (which returns the pre-budget
+            # response) instead of being reassigned unread.
+            final_response = completion(**forced_kwargs)
         except Exception as exc:
             self._close_failed_turn(message, config, exc, interim_delivered)
             return (
@@ -1726,7 +1732,7 @@ class LLMMessageHandler:
                 tool_calls_log,
                 interim_delivered,
             )
-        return None, response, tool_calls_log, interim_delivered
+        return None, final_response, tool_calls_log, interim_delivered
 
     def _compose_chat_plugins(
         self,
@@ -2668,9 +2674,13 @@ def instantiate_plugin(candidate: object) -> RuntimePlugin:
     call target is never a bare ``object`` under static type analysis.
     """
     factory: Any = candidate
-    if inspect.isclass(factory):
-        factory = cast(Callable[[], Any], factory)()
-    elif callable(factory) and not looks_like_plugin(factory):
+    # S-189/S1871: both former branches instantiated the factory; merged
+    # into one condition — same semantics (class → instantiate; callable
+    # that isn't already a plugin instance → call it; plugin instance →
+    # return as-is).
+    if inspect.isclass(factory) or (
+        callable(factory) and not looks_like_plugin(factory)
+    ):
         factory = cast(Callable[[], Any], factory)()
     return factory
 
