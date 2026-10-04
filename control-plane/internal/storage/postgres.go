@@ -2072,22 +2072,19 @@ func (p *PostgresStore) ListTasks(ctx context.Context, boardID string, status do
 }
 
 func (p *PostgresStore) ListAgentTasks(ctx context.Context, agentID string) ([]*domain.Task, error) {
-	// S-228: allowlist via domain.AgentPickupStatuses — never a denylist,
-	// so a future column is invisible to agents until explicitly allowed
-	// (S-213: backlog tasks are not agent-facing until a human moves them out).
-	statuses := make([]string, 0, len(domain.AgentPickupStatuses()))
-	for _, st := range domain.AgentPickupStatuses() {
-		statuses = append(statuses, string(st))
-	}
+	// Visibility rule (S-213): only backlog tasks are hidden from the
+	// agent-facing listing; an agent may still see its own done/review
+	// work. This is NOT the pickup rule — claim/start enforce the
+	// AgentPickupStatuses allowlist server-side (S-228).
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, board_id::text, squad_id::text, title, description, status,
 		       coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
 		       position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
 		FROM tasks
 		WHERE assignee_agent_id = $1
-		  AND status = ANY($2)
+		  AND status <> $2 -- S-213: backlog tasks are not agent-facing until a human moves them out
 		ORDER BY status, position
-	`, agentID, statuses)
+	`, agentID, domain.TaskBacklog)
 	if err != nil {
 		return nil, mapPgErr(err)
 	}
