@@ -89,6 +89,10 @@ export default function SquadBoardPage() {
                 <div
                   key={col.status}
                   className={`board-column${dragOver === col.status ? " drag-over" : ""}`}
+                  // S-189: presentational drop zone. The div itself carries no
+                  // semantics; keyboard users move tasks with the ←/→ buttons
+                  // rendered on every card below.
+                  role="none"
                   onDragOver={(e) => {
                     e.preventDefault();
                     setDragOver(col.status);
@@ -113,10 +117,17 @@ export default function SquadBoardPage() {
                   <div className="board-col-body">
                     {colTasks.map((task) => {
                       const lease = leaseState(task);
+                      // S-189: hoisted so the move-button handlers stay within
+                      // the function-nesting limit (S2004).
+                      const colIdx = columns.findIndex((c) => c.status === task.status);
                       return (
                         <div
                           key={task.id}
                           className="task-card"
+                          // S-189: the card div is a mouse-drag surface only
+                          // (role=none); keyboard access is the explicit
+                          // move-button pair in the card footer.
+                          role="none"
                           draggable
                           onDragStart={(e) => {
                             e.dataTransfer.setData("text/skquad-task", task.id);
@@ -140,6 +151,32 @@ export default function SquadBoardPage() {
                             {task.status === "blocked" ? <StatusChip status="blocked" /> : null}
                             {task.status === "in-review" ? <StatusChip status={taskStatus(task)} /> : null}
                             <span>{formatRelativeTime(task.updated_at)}</span>
+                          </div>
+                          {/* S-189: keyboard alternative to drag-and-drop —
+                              move this task one column left/right. */}
+                          <div className="task-card-move">
+                            <button
+                              type="button"
+                              className="btn btn-sm"
+                              disabled={colIdx <= 0}
+                              aria-label={`Move ${task.title} to the previous column`}
+                              onClick={() => {
+                                if (colIdx > 0) void moveTask(task.id, columns[colIdx - 1].status);
+                              }}
+                            >
+                              ←
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-sm"
+                              disabled={colIdx >= columns.length - 1}
+                              aria-label={`Move ${task.title} to the next column`}
+                              onClick={() => {
+                                if (colIdx >= 0 && colIdx < columns.length - 1) void moveTask(task.id, columns[colIdx + 1].status);
+                              }}
+                            >
+                              →
+                            </button>
                           </div>
                         </div>
                       );

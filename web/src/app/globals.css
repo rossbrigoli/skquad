@@ -3267,6 +3267,20 @@ button.squad-tab.active {
   align-self: flex-start;
 }
 
+/* S-189: the notification body is a native <button> when it has no link
+   destination — reset UA button chrome so it renders like the old div. */
+.notif-item-main-btn {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
 .notif-message {
   font-size: var(--text-sm, 13px);
   overflow-wrap: anywhere;
@@ -3793,6 +3807,27 @@ button.squad-tab.active {
    Req 3: envelope read/unread marker column styles merged into .inbox-status above. */
 .inbox-row-unread .inbox-status {
   color: var(--accent, #1971c2);
+}
+
+/* S-189: native row-open button spanning all row columns except the
+   checkbox (replaces div role="button", S6819). Inner grid mirrors the
+   row template minus the first column so alignment with .inbox-columns
+   is preserved. */
+.inbox-row-open {
+  grid-column: 2 / -1;
+  display: grid;
+  grid-template-columns: 22px 140px minmax(0, 1fr) auto 110px;
+  gap: var(--space-2);
+  align-items: center;
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 /* Req 4: multi-select checkbox. */

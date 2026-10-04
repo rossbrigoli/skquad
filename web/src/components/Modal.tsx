@@ -45,8 +45,12 @@ export function Modal({
         onClose();
       }}
     >
+      {/* S-189: presentational backdrop wrapper — the click-to-close handler
+          lives here but the div carries no semantics; keyboard users get the
+          native <dialog> Escape handling (onCancel above). */}
       <div
         className="modal-backdrop-inner"
+        role="none"
         onMouseDown={(event) => {
           if (event.target === event.currentTarget) onClose();
         }}
