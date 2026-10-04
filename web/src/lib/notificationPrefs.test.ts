@@ -30,14 +30,16 @@ const allEnabled: Record<NotificationType, boolean> = {
   task_stuck: true,
   agent_died: true,
   task_blocked: true,
+  budget_warning: true,
+  budget_stopped: true,
 };
 
 describe("options", () => {
-  it("covers exactly the four notification types", () => {
+  it("covers exactly the six notification types", () => {
     expect(NOTIFICATION_PREF_OPTIONS.map((o) => o.type).sort()).toEqual(
-      ["agent_died", "task_blocked", "task_failed", "task_stuck"],
+      ["agent_died", "budget_stopped", "budget_warning", "task_blocked", "task_failed", "task_stuck"],
     );
-    expect(ALL_NOTIFICATION_TYPES).toHaveLength(4);
+    expect(ALL_NOTIFICATION_TYPES).toHaveLength(6);
   });
 });
 
@@ -77,8 +79,25 @@ describe("buildMutedList", () => {
   });
 
   it("all muted when everything is unchecked", () => {
-    const none = { task_failed: false, task_stuck: false, agent_died: false, task_blocked: false };
+    const none: Record<NotificationType, boolean> = {
+      task_failed: false,
+      task_stuck: false,
+      agent_died: false,
+      task_blocked: false,
+      budget_warning: false,
+      budget_stopped: false,
+    };
     expect(buildMutedList(none).sort()).toEqual([...ALL_NOTIFICATION_TYPES].sort());
+  });
+
+  // S-203 WP4: budget toggles round-trip through the mute payload.
+  it("mutes only the budget types when just those are unchecked", () => {
+    expect(buildMutedList({ ...allEnabled, budget_warning: false, budget_stopped: false })).toEqual([
+      "budget_warning",
+      "budget_stopped",
+    ]);
+    expect(isTypeEnabled({ muted_types: ["budget_stopped"] }, "budget_stopped")).toBe(false);
+    expect(isTypeEnabled({ muted_types: ["budget_stopped"] }, "budget_warning")).toBe(true);
   });
 });
 

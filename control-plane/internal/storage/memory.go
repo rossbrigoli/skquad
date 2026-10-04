@@ -2884,14 +2884,18 @@ func (m *MemoryStore) ListInboxAttachmentMeta(_ context.Context, messageIDs []st
 }
 
 // CreateNotification (S-193) files a recipient-scoped alert for the bell.
+// SquadID may be empty for user-level alerts (S-203 WP4 budget events);
+// when set, the squad must exist.
 func (m *MemoryStore) CreateNotification(_ context.Context, n *domain.Notification) (*domain.Notification, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.users[n.UserID]; !ok {
 		return nil, ErrNotFound
 	}
-	if _, ok := m.squads[n.SquadID]; !ok {
-		return nil, ErrNotFound
+	if n.SquadID != "" {
+		if _, ok := m.squads[n.SquadID]; !ok {
+			return nil, ErrNotFound
+		}
 	}
 	created := *n
 	created.ID = uuid.NewString()

@@ -485,6 +485,13 @@ const (
 	// NotificationTaskBlocked marks a task blocked awaiting user input
 	// ("requires attention": a decision or answer).
 	NotificationTaskBlocked NotificationType = "task_blocked"
+	// NotificationBudgetWarning marks a monthly budget (or the
+	// platform-wide limit) crossing a warning threshold (S-203 WP4).
+	// User-scoped: no squad/task context.
+	NotificationBudgetWarning NotificationType = "budget_warning"
+	// NotificationBudgetStopped marks a budget/limit exhausted and the
+	// user's agents stopped at end of turn (S-203 WP4).
+	NotificationBudgetStopped NotificationType = "budget_stopped"
 )
 
 // AllNotificationTypes enumerates the mailable notification types (S-199).
@@ -494,9 +501,11 @@ var AllNotificationTypes = []NotificationType{
 	NotificationTaskStuck,
 	NotificationAgentDied,
 	NotificationTaskBlocked,
+	NotificationBudgetWarning,
+	NotificationBudgetStopped,
 }
 
-// IsKnownNotificationType reports whether t is one of the four known
+// IsKnownNotificationType reports whether t is one of the known
 // notification types (S-199 preference validation).
 func IsKnownNotificationType(t NotificationType) bool {
 	for _, known := range AllNotificationTypes {

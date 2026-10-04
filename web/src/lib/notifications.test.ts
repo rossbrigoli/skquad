@@ -66,6 +66,20 @@ describe("notification presentation", () => {
     expect(notificationLink(baseNotification)).toBeNull();
     expect(notificationLink({ ...baseNotification, task_id: "t9", squad_id: "" })).toBeNull();
   });
+
+  // S-203 WP4: budget events are user-level and always deep-link to Cost Management.
+  it("links budget events to /costs regardless of squad/task refs", () => {
+    const budgetWarning = { ...baseNotification, type: "budget_warning" as const, squad_id: "", task_id: undefined };
+    const budgetStopped = { ...baseNotification, type: "budget_stopped" as const, squad_id: "", task_id: undefined };
+    expect(notificationLink(budgetWarning)).toBe("/costs");
+    expect(notificationLink(budgetStopped)).toBe("/costs");
+  });
+
+  it("maps budget types to labelled chips", () => {
+    expect(notificationMeta({ ...baseNotification, type: "budget_warning" }).label).toBe("budget");
+    expect(notificationMeta({ ...baseNotification, type: "budget_warning" }).className).toContain("chip-info");
+    expect(notificationMeta({ ...baseNotification, type: "budget_stopped" }).className).toContain("chip-blocked");
+  });
 });
 
 describe("buildScopedListQuery", () => {

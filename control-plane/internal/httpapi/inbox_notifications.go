@@ -211,7 +211,7 @@ func (s *Server) putNotificationPreferences(w http.ResponseWriter, r *http.Reque
 		t := domain.NotificationType(strings.TrimSpace(req.MutedTypes[raw]))
 		if !domain.IsKnownNotificationType(t) {
 			writeError(w, http.StatusBadRequest, "bad_request",
-				fmt.Sprintf("unknown notification type %q (known: task_failed, task_stuck, agent_died, task_blocked)", string(t)))
+				fmt.Sprintf("unknown notification type %q (known: task_failed, task_stuck, agent_died, task_blocked, budget_warning, budget_stopped)", string(t)))
 			return
 		}
 		if !seen[t] {

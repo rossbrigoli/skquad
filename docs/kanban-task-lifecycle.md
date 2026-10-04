@@ -244,7 +244,58 @@ See [execution-reaper.md](execution-reaper.md) for the reaper design and
 
 ---
 
-## 10. Open Points
+## 10. Budget Enforcement (S-203)
+
+Cost Management enforces a per-user monthly budget (own budget row → else
+platform default → else unlimited) and an optional platform-wide monthly
+limit. Enforcement is **stop-at-end-of-turn**, never mid-turn kill — it
+rides the scale-to-zero machinery of §9 rather than fighting it.
+
+### Evaluation points
+
+- **After every metered LLM call** (`ingestGatewayMetering`): the squad
+  owner's month-to-date (MTD) spend is compared against their effective
+  budget, and the platform-wide MTD against the platform limit.
+- **After any budget mutation** (admin PUTs): affected users are
+  re-evaluated so raising/resetting a budget resumes scheduling with no
+  manual step. `sweepBudgets` is the general reconciliation hook.
+
+### Thresholds & notifications (exactly-once)
+
+Warnings fire at **80%** and **90%**; **100%** additionally blocks.
+Each threshold claims an atomic `budget_notify_markers` row keyed by
+(user, calendar-month, source+threshold): the winner writes **both**
+the inbox message (`budget_warning`/`budget_stopped`) **and** the bell
+notification (`NotificationBudgetWarning`/`NotificationBudgetStopped`,
+S-203 WP4) — so exactly-once per threshold per month holds across all
+channels, even under concurrent turns. Bell delivery honors the S-199
+mute preferences (fail-open); the bell deep-links to `/costs`.
+
+### Block & resume semantics
+
+| Transition | What happens |
+|---|---|
+| **Block** (spend > 0 and ≥ budget) | `budget_blocks` row per user/month; every **start** path refuses with `budget_blocked` (wake endpoint, message/task-driven busy transitions, heartbeat idle→busy upgrade); CRs are re-mirrored with `idleTimeout=0` (§9 coupling pt. 4) so idle-warm pods scale to zero immediately and busy pods die at end of turn. |
+| **Resume** (budget raised/reset, platform limit cleared) | Block row clears for the period; agents are re-mirrored with the normal idle timeout; scheduling resumes automatically. |
+
+A zero budget blocks on the first recorded cost; zero spend never
+blocks. Platform-limit blocks are tagged by source so clearing the
+limit resumes exactly the users it blocked (`ClearBudgetBlocksBySource`).
+
+**Mid-turn safety:** a block never kills a running pod. The in-flight
+turn finishes, the agent goes idle, the mirror writes
+`desiredActive=false` with the zeroed idle timeout, and the operator
+tears the pod down immediately (§9 rule: the idle timeout is cost
+policy — budget enforcement makes that policy absolute).
+
+Code: `control-plane/internal/httpapi/budget_guard.go` (evaluation,
+verdicts, notifications), `budget_blocks`/`budget_notify_markers`
+(migrations 0037/0036), outbox CR mirror blocked-idle-timeout override,
+wake guard `agentBudgetBlocked`.
+
+---
+
+## 11. Open Points
 
 - **Subtasks** — whether tasks can have subtasks (start flat; add later).
 - **Task templates** — reusable task definitions (later).

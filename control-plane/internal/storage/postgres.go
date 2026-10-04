@@ -3194,8 +3194,8 @@ func (p *PostgresStore) CreateNotification(ctx context.Context, n *domain.Notifi
 	}
 	row := p.pool.QueryRow(ctx, `
 		INSERT INTO notifications (user_id, squad_id, task_id, agent_id, type, severity, message)
-		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7)
-		RETURNING id::text, user_id::text, squad_id::text, coalesce(task_id::text, ''),
+		VALUES ($1, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7)
+		RETURNING id::text, user_id::text, coalesce(squad_id::text, ''), coalesce(task_id::text, ''),
 		          coalesce(agent_id::text, ''), type, severity, message, read_at, created_at
 	`, n.UserID, n.SquadID, n.TaskID, n.AgentID, n.Type, severity, n.Message)
 	return scanNotification(row)
@@ -3206,7 +3206,7 @@ func (p *PostgresStore) ListNotifications(ctx context.Context, userID string, un
 		limit = 100
 	}
 	rows, err := p.pool.Query(ctx, `
-		SELECT id::text, user_id::text, squad_id::text, coalesce(task_id::text, ''),
+		SELECT id::text, user_id::text, coalesce(squad_id::text, ''), coalesce(task_id::text, ''),
 		       coalesce(agent_id::text, ''), type, severity, message, read_at, created_at
 		FROM notifications
 		WHERE user_id = $1 AND (NOT $2::boolean OR read_at IS NULL)
@@ -3294,7 +3294,7 @@ func (p *PostgresStore) MarkNotificationRead(ctx context.Context, userID string,
 		UPDATE notifications
 		SET read_at = COALESCE(read_at, now())
 		WHERE id = $1 AND user_id = $2
-		RETURNING id::text, user_id::text, squad_id::text, coalesce(task_id::text, ''),
+		RETURNING id::text, user_id::text, coalesce(squad_id::text, ''), coalesce(task_id::text, ''),
 		          coalesce(agent_id::text, ''), type, severity, message, read_at, created_at
 	`, id, userID)
 	return scanNotification(row)

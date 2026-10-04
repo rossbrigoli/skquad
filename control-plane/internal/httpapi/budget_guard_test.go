@@ -67,6 +67,20 @@ func inboxByKind(t *testing.T, store *storage.MemoryStore, userID string, kind d
 	return out
 }
 
+// notificationsByType collects bell notifications (S-203 WP4) of one type.
+func notificationsByType(t *testing.T, store *storage.MemoryStore, userID string, typ domain.NotificationType) []*domain.Notification {
+	t.Helper()
+	notifs, err := store.ListNotifications(context.Background(), userID, false, 500)
+	require.NoError(t, err)
+	out := []*domain.Notification{}
+	for _, n := range notifs {
+		if n.Type == typ {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 func evalUser(t *testing.T, s *Server, userID string, platform domain.PlatformBudgets) {
 	t.Helper()
 	require.NoError(t, s.evaluateUserBudget(context.Background(), userID, time.Now().UTC(), platform))
@@ -98,6 +112,7 @@ func TestBudgetThresholdNotifications(t *testing.T) {
 	spend(t, store, squadID, agentID, 1) // 80%
 	evalUser(t, s, userID, domain.PlatformBudgets{})
 	require.Len(t, inboxByKind(t, store, userID, domain.InboxBudgetWarning), 1, "80% warns once")
+	require.Len(t, notificationsByType(t, store, userID, domain.NotificationBudgetWarning), 1, "80% bell warns once")
 	require.False(t, blockedNow(t, store, userID))
 
 	spend(t, store, squadID, agentID, 9) // 89%
@@ -107,6 +122,7 @@ func TestBudgetThresholdNotifications(t *testing.T) {
 	spend(t, store, squadID, agentID, 1) // 90%
 	evalUser(t, s, userID, domain.PlatformBudgets{})
 	require.Len(t, inboxByKind(t, store, userID, domain.InboxBudgetWarning), 2, "90% warns once more")
+	require.Len(t, notificationsByType(t, store, userID, domain.NotificationBudgetWarning), 2, "90% bell warns once more")
 	require.False(t, blockedNow(t, store, userID))
 
 	spend(t, store, squadID, agentID, 9) // 99%
@@ -118,18 +134,48 @@ func TestBudgetThresholdNotifications(t *testing.T) {
 	evalUser(t, s, userID, domain.PlatformBudgets{})
 	require.True(t, blockedNow(t, store, userID), "100% blocks")
 	require.Len(t, inboxByKind(t, store, userID, domain.InboxBudgetStopped), 1)
+	stoppedNotifs := notificationsByType(t, store, userID, domain.NotificationBudgetStopped)
+	require.Len(t, stoppedNotifs, 1, "100% bell stop fires once")
+	require.Equal(t, domain.NotificationError, stoppedNotifs[0].Severity, "stop is error-severity")
+	require.Empty(t, stoppedNotifs[0].SquadID, "budget bell alerts are user-level (no squad)")
 
 	// Re-evaluation at the same spend: no duplicate notifications.
 	evalUser(t, s, userID, domain.PlatformBudgets{})
 	evalUser(t, s, userID, domain.PlatformBudgets{})
 	require.Len(t, inboxByKind(t, store, userID, domain.InboxBudgetWarning), 2)
 	require.Len(t, inboxByKind(t, store, userID, domain.InboxBudgetStopped), 1)
+	require.Len(t, notificationsByType(t, store, userID, domain.NotificationBudgetWarning), 2, "bell respects the once-per-month markers")
+	require.Len(t, notificationsByType(t, store, userID, domain.NotificationBudgetStopped), 1)
 
 	// The stop message mentions the stop + resume semantics.
 	stopped := inboxByKind(t, store, userID, domain.InboxBudgetStopped)[0]
 	require.Contains(t, stopped.Body, "stopped")
 	require.Contains(t, stopped.Body, "Raising")
 	require.Empty(t, stopped.SquadID, "budget notifications are user-level (no squad)")
+}
+
+// S-203 WP4: muting the budget types suppresses the bell but not the
+// inbox (preferences govern notifications, mirroring S-199 semantics).
+func TestBudgetBellRespectsMutePreferences(t *testing.T) {
+	s, store := guardServer(t)
+	userID := mustUser(t, store, "mute-budget@example.com")
+	squadID, agentID := seedSquadAgent(t, store, userID, "mutebudget")
+	require.NoError(t, store.SetUserBudget(context.Background(), userID, 100, "admin"))
+	_, err := store.SetNotificationPreferences(context.Background(), userID, []domain.NotificationType{
+		domain.NotificationBudgetWarning, domain.NotificationBudgetStopped,
+	})
+	require.NoError(t, err)
+
+	spend(t, store, squadID, agentID, 85)
+	evalUser(t, s, userID, domain.PlatformBudgets{})
+	require.Len(t, inboxByKind(t, store, userID, domain.InboxBudgetWarning), 1, "inbox still ships when bell muted")
+	require.Empty(t, notificationsByType(t, store, userID, domain.NotificationBudgetWarning), "muted bell type suppressed")
+
+	spend(t, store, squadID, agentID, 15) // 100%
+	evalUser(t, s, userID, domain.PlatformBudgets{})
+	require.True(t, blockedNow(t, store, userID))
+	require.Len(t, inboxByKind(t, store, userID, domain.InboxBudgetStopped), 1)
+	require.Empty(t, notificationsByType(t, store, userID, domain.NotificationBudgetStopped), "muted bell type suppressed")
 }
 
 // No budget row and no platform default ⇒ unlimited: never blocked, no
