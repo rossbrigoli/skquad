@@ -409,19 +409,7 @@ function InboxRow({
     const kind = inboxKindMeta(message.kind);
     const { subject, body } = inboxDisplay(message);
       return (
-      <div
-        className={`inbox-row ${unreadRow ? "inbox-row-unread" : ""}`}
-        role="button"
-        tabIndex={0}
-        aria-label={`Open message: ${subject}`}
-        onClick={() => onOpen(message)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onOpen(message);
-          }
-        }}
-      >
+      <div className={`inbox-row ${unreadRow ? "inbox-row-unread" : ""}`}>
         {/* S-207 req 4: multi-select checkbox (never opens the row). */}
         <input
           type="checkbox"
@@ -431,6 +419,14 @@ function InboxRow({
           onClick={(e) => e.stopPropagation()}
           onChange={() => onToggleSelect(message.id)}
         />
+        {/* S-189: the row-open affordance is a native <button> spanning every
+            column except the checkbox (was div role="button", S6819). */}
+        <button
+          type="button"
+          className="inbox-row-open"
+          aria-label={`Open message: ${subject}`}
+          onClick={() => onOpen(message)}
+        >
         {/* S-207 req 3: envelope read/unread marker. */}
         <span className="inbox-status" aria-hidden={unreadRow ? undefined : "true"}>
           {unreadRow ? (
@@ -449,6 +445,7 @@ function InboxRow({
         </span>
         <span className={`chip ${kind.className}`}>{kind.label}</span>
         <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
+        </button>
       </div>
     );
   }
