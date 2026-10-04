@@ -62,8 +62,7 @@ import {
 } from "../../lib/providerTest";
 import { OrganizationPromptTab } from "../../components/PromptSettingsTab";
 import { DeadLettersPanel } from "../../components/DeadLettersPanel";
-import { IdleScaleToZeroPanel } from "../../components/IdleScaleToZeroPanel";
-import { EmbedderRuntimePanel } from "../../components/EmbedderRuntimePanel";
+import { PlatformSettingsTab } from "../../components/PlatformSettingsTab";
 import { NotificationPreferencesPanel } from "../../components/NotificationPreferencesPanel";
 import { DeleteResourceButton } from "../../components/DeleteResourceButton";
 import { PromptTemplatesPanel } from "../../components/PromptTemplatesPanel";
@@ -100,7 +99,7 @@ function resolveSettingsTab(tab: Tab, isAdmin: boolean): Tab {
   // (mirrors requirePlatformAdmin on PUT /settings/prompt).
   // S-204: the standalone built-in-tools tab is gone — built-in tools
   // are managed on the unified Resources > Tools panel.
-  return tab === "ai-models" || tab === "access" || tab === "prompt" || tab === "templates" || tab === "dead-letters" || tab === "scaling" ? "providers" : tab;
+  return tab === "ai-models" || tab === "access" || tab === "prompt" || tab === "templates" || tab === "dead-letters" || tab === "platform" ? "providers" : tab;
 }
 
 // TabButton: one settings tab button (S-126 / S3358: keeps the ternary
@@ -136,7 +135,7 @@ function duplicateModelMessage(err: unknown): string {
 // S-117: "appearance" and "session" tabs removed — theme switching lives
 // in the top-right ThemeToggle and session details/sign-out in the
 // bottom-left UserMenu popover, both available on every page.
-type Tab = "providers" | "ai-models" | "access" | "prompt" | "templates" | "dead-letters" | "scaling" | "notifications";
+type Tab = "providers" | "ai-models" | "access" | "prompt" | "templates" | "dead-letters" | "platform" | "notifications";
 
 // S-204 follow-up: Resources is no longer an in-page tab — it lives on
 // real routes (/settings/resources + /settings/resources/<type>) so
@@ -189,7 +188,7 @@ export default function SettingsPage() {
             />
           ) : null}
           {isAdmin ? (
-            <TabButton active={activeTab === "scaling"} label="Scaling" onClick={() => setTab("scaling")} />
+            <TabButton active={activeTab === "platform"} label="Platform" onClick={() => setTab("platform")} />
           ) : null}
           {/* S-199: notification mute preferences are per-user, so every
               signed-in human sees this tab (not admin-only). */}
@@ -213,8 +212,7 @@ export default function SettingsPage() {
         {isAdmin && activeTab === "prompt" ? <OrganizationPromptTab /> : null}
         {isAdmin && activeTab === "templates" ? <PromptTemplatesTab /> : null}
         {isAdmin && activeTab === "dead-letters" ? <DeadLettersPanel /> : null}
-        {isAdmin && activeTab === "scaling" ? <IdleScaleToZeroPanel /> : null}
-        {isAdmin && activeTab === "scaling" ? <EmbedderRuntimePanel /> : null}
+        {isAdmin && activeTab === "platform" ? <PlatformSettingsTab /> : null}
         {activeTab === "notifications" ? <NotificationPreferencesPanel /> : null}
       </AppShell>
     </AuthGate>

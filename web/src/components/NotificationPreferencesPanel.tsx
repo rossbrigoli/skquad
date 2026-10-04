@@ -36,7 +36,7 @@ export function NotificationPreferencesPanel() {
 
   useEffect(() => {
     let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount loading flag; same pattern as IdleScaleToZeroPanel
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount loading flag; same pattern as PlatformSettingsTab
     setLoading(true);
     void (async () => {
       try {

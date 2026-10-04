@@ -16,6 +16,15 @@ export const EMBEDDER_RUNTIMES: EmbedderRuntime[] = ["auto", "cuda", "vulkan", "
 
 export const DEFAULT_EMBEDDER_RUNTIME: EmbedderRuntime = "auto";
 
+// RUNTIME_LABELS is the display label per runtime (S-219: moved here
+// from the retired EmbedderRuntimePanel so the Platform tab can reuse it).
+export const RUNTIME_LABELS: Record<EmbedderRuntime, string> = {
+  auto: "Auto (detect GPU vendor)",
+  cuda: "CUDA (NVIDIA)",
+  vulkan: "Vulkan (AMD / Intel)",
+  cpu: "CPU only",
+};
+
 export type EmbedderRuntimeSettings = {
   embedder_runtime?: string;
 };
