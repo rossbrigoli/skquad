@@ -49,7 +49,7 @@ export default function SquadCockpitPage() {
   });
 
   const agentName = (id?: string) =>
-    agentItems.find((agent) => agent.id === id)?.name || (id ? id.slice(0, 8) : "unassigned");
+    agentItems.find((agent) => agent.id === id)?.name ?? (id ? id.slice(0, 8) : "unassigned");
 
   const auditName = (entry: AuditEntry) => {
     if (entry.actor_type === "agent") {
@@ -65,7 +65,7 @@ export default function SquadCockpitPage() {
       <AppShell>
         <div className="section-head">
           <h1 className="page-title" style={{ margin: 0 }}>
-            {squad?.name || "Squad"}
+            {squad?.name ?? "Squad"}
           </h1>
           <div style={{ display: "flex", gap: "var(--space-2)" }}>
             {/* S-179: the Edit dialog is gone — the mission now lives in

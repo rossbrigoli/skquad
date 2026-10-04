@@ -45,9 +45,9 @@ function messageExcerpt(message: InboxMessageRow): string {
 
 /** The most meaningful timestamp for the row's right-hand column. */
 function rowTime(message: InboxMessageRow): string {
-  if (message.status === "delivered") return formatTime(message.delivered_at || message.created_at);
-  if (message.status === "dead") return formatTime(message.delivered_at || message.created_at);
-  if (message.status === "pending" && message.attempts > 0) return formatTime(message.next_retry_at || message.created_at);
+  if (message.status === "delivered") return formatTime(message.delivered_at ?? message.created_at);
+  if (message.status === "dead") return formatTime(message.delivered_at ?? message.created_at);
+  if (message.status === "pending" && message.attempts > 0) return formatTime(message.next_retry_at ?? message.created_at);
   return formatTime(message.created_at);
 }
 
@@ -84,7 +84,7 @@ function MessageRow({
           ) : null}
           {message.status === "pending" && message.attempts === 0 ? <>waiting</> : null}
           {message.status === "delivered" ? <>delivered</> : null}
-          {message.status === "dead" ? <>died · reason: {message.terminal_reason || "unknown"}</> : null}
+          {message.status === "dead" ? <>died · reason: {message.terminal_reason ?? "unknown"}</> : null}
         </div>
       </div>
       <div className="inbox-side">

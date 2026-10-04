@@ -96,7 +96,7 @@ function LoginChooser() {
         });
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         if (!res.ok) {
-          setBgError(body.error || "break-glass login failed");
+          setBgError(body.error ?? "break-glass login failed");
           setBusy(false);
           return;
         }

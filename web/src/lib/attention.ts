@@ -117,7 +117,7 @@ function agentAttentionItems(agent: Agent): AttentionItem[] {
       reason: "agent_error",
       title: agent.name,
       href: `/squads/${agent.squad_id}/agents/${agent.id}`,
-      meta: `agent reported ${agent.status?.toLowerCase() || "error"}`,
+      meta: `agent reported ${agent.status ? agent.status.toLowerCase() : "error"}`,
       createdAt: agent.updated_at,
     },
   ];
@@ -135,8 +135,10 @@ function inboxAttentionItems(message: InboxMessage): AttentionItem[] {
   }
   // S-181: prefer the richer subject/body; fall back to the legacy
   // one-line message for notifications created before the change.
-  const title = message.subject?.trim() || message.message;
-  const body = message.body?.trim() || undefined;
+  const subject = message.subject?.trim();
+  const trimmedBody = message.body?.trim();
+  const title = subject ? subject : message.message;
+  const body = trimmedBody ? trimmedBody : undefined;
   if (message.kind === "action_required") {
     return [
       {

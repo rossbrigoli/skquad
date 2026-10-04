@@ -76,8 +76,8 @@ export async function POST(request: Request) {
     const message =
       typeof body.error === "string"
         ? body.error
-        : body.error?.message || "break-glass login failed";
-    return NextResponse.json({ error: message }, { status: upstream.status || 401 });
+        : body.error?.message ?? "break-glass login failed";
+    return NextResponse.json({ error: message }, { status: upstream.status ?? 401 });
   }
 
   const expiresAt = body.expires_at ? Date.parse(body.expires_at) : Date.now() + 60 * 60 * 1000;
@@ -87,7 +87,7 @@ export async function POST(request: Request) {
     // existing proxy path works unchanged.
     id_token: body.token,
     expiry: Math.floor(expiresAt / 1000),
-    name: body.user?.name || "break-glass",
+    name: body.user?.name ?? "break-glass",
     email: body.user?.email ?? "",
   };
 

@@ -201,7 +201,7 @@ export default function SettingsPage() {
 
         {!isAdmin ? (
           <div className="notice" style={{ marginBottom: "var(--space-4)" }}>
-            You are signed in as <strong>{user?.role || "user"}</strong>. Registering or changing providers and
+            You are signed in as <strong>{user?.role ?? "user"}</strong>. Registering or changing providers and
             resources requires the <strong>platform_admin</strong> role.
           </div>
         ) : null}
@@ -1183,7 +1183,7 @@ function ProviderModal({
 }) {
   const { token } = useAuth();
   const [name, setName] = useState(provider?.name ?? "");
-  const [kind, setKind] = useState(provider?.kind || "openai");
+  const [kind, setKind] = useState(provider?.kind ?? "openai");
   const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? "");
   // S-155: paste the key directly; the control-plane stores it as a
   // Kubernetes Secret. On edit, the current key shows masked and an

@@ -18,6 +18,12 @@ import {
   type PlatformBudgetPutResponse,
 } from "../lib/costs";
 
+// userLabel picks the most human identifier available for a budget row.
+// Falls back through name -> email -> id so the row is never blank.
+function userLabel(user: { name?: string; email?: string; user_id: string }): string {
+  return user.name ? user.name : user.email ? user.email : user.user_id;
+}
+
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
@@ -178,7 +184,7 @@ function UserBudgetRow({
   return (
     <div className="entity-row budget-user-row">
       <div className="budget-user-id">
-        <span className="entity-title">{user.name || user.email || user.user_id}</span>
+        <span className="entity-title">{userLabel(user)}</span>
         {user.name && user.email ? <span className="entity-meta">{user.email}</span> : null}
       </div>
       <div className="budget-user-spend">
@@ -201,7 +207,7 @@ function UserBudgetRow({
           className="form-control"
           type="text"
           inputMode="decimal"
-          aria-label={`Monthly budget for ${user.name || user.email || user.user_id}`}
+          aria-label={`Monthly budget for ${userLabel(user)}`}
           value={value}
           onChange={(e) => setValue(e.target.value)}
         />

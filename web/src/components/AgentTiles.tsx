@@ -36,7 +36,7 @@ export function AgentTile({
       </span>
       <span className="agent-tile-body">
         <span className="agent-tile-name">{agent.name}</span>
-        <span className="agent-tile-role">{agent.role || "no role set"}</span>
+        <span className="agent-tile-role">{agent.role ? agent.role : "no role set"}</span>
       </span>
       <span className="agent-tile-status">
         <StatusChip status={status} />

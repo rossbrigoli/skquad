@@ -84,7 +84,7 @@ function CostTabContent({
   readonly source: CostGroupSource;
   readonly onSourceChange: (source: CostGroupSource) => void;
 }) {
-  const currency = summary.currency || "USD";
+  const currency = summary.currency ?? "USD";
   const money = (n: number) => formatMoney(n, currency);
   const model = buildStackedChart(summary.days ?? [], seriesForSource(summary, source), "cost");
   const budget = summary.budget ?? null;

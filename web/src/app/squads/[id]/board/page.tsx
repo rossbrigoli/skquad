@@ -37,7 +37,7 @@ export default function SquadBoardPage() {
   const agentItems = agents.data || [];
   const columns = visibleColumns(boardColumnsFromOperatingModel(squad?.operating_model));
   const agentName = (id?: string) =>
-    agentItems.find((a) => a.id === id)?.name || (id ? id.slice(0, 8) : "unassigned");
+    agentItems.find((a) => a.id === id)?.name ?? (id ? id.slice(0, 8) : "unassigned");
 
   async function moveTask(taskId: string, status: TaskStatus) {
     await apiPost(`/tasks/${taskId}/move`, token, { status });
@@ -158,7 +158,7 @@ export default function SquadBoardPage() {
 
         {addingTo ? (
           <TaskCreateModal
-            columnLabel={columns.find((c) => c.status === addingTo)?.label || addingTo}
+            columnLabel={columns.find((c) => c.status === addingTo)?.label ?? addingTo}
             agents={agentItems}
             squadId={squadId}
             token={token}

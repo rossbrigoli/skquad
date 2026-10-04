@@ -129,7 +129,7 @@ export async function exchangeCode(code: string, verifier: string): Promise<Toke
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(`token exchange failed (${res.status}): ${(json as { error_description?: string }).error_description || "unknown"}`);
+    throw new Error(`token exchange failed (${res.status}): ${(json as { error_description?: string }).error_description ?? "unknown"}`);
   }
   return json as TokenSet;
 }
@@ -176,7 +176,8 @@ export type Session = {
 
 // apiBearer is the credential the control-plane will actually verify.
 export function apiBearer(s: Session): string {
-  return s.id_token || s.access_token;
+  // An empty id_token must not shadow the access token — keep falsy fallback.
+  return s.id_token ? s.id_token : s.access_token;
 }
 
 export const SESSION_COOKIE = "skquad_v2_session";
@@ -254,7 +255,8 @@ export function publicOrigin(req?: Request): string {
 
   if (req) {
     const fwdHost = req.headers.get("x-forwarded-host");
-    const proto = (req.headers.get("x-forwarded-proto") || "https").split(",")[0].trim();
+    const fwdProto = req.headers.get("x-forwarded-proto");
+    const proto = (fwdProto ? fwdProto : "https").split(",")[0].trim();
     if (fwdHost) {
       const host = fwdHost.split(",")[0].trim();
       if (host && !host.startsWith("localhost") && !host.startsWith("127.0.0.1")) {

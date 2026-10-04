@@ -110,7 +110,7 @@ export default function SquadPromptPage() {
                 <div key={agent.id} className="entity-row">
                   <div className="entity-main">
                     <span className="entity-title">{agent.name}</span>
-                    <span className="entity-meta">{agent.role || "no role set"}</span>
+                    <span className="entity-meta">{agent.role ? agent.role : "no role set"}</span>
                   </div>
                   <div className="entity-side">
                     <button type="button" className="btn btn-sm" onClick={() => setPreviewAgent(agent)}>

@@ -88,7 +88,7 @@ export function breadcrumbsForPath(pathname: string, hints: BreadcrumbHints = {}
     const squadPath = `/squads/${segments[1]}`;
     return [
       { label: "Squads", href: "/squads" },
-      { label: hints.squadName || "Squad", href: squadPath },
+      { label: hints.squadName ?? "Squad", href: squadPath },
       { label: "Board", href: `${squadPath}/board` },
       { label: hints.taskName ? `Task: ${hints.taskName}` : "Task", href: null },
     ];
@@ -109,7 +109,7 @@ export function breadcrumbsForPath(pathname: string, hints: BreadcrumbHints = {}
     } else {
       const hintKey = HINT_BY_PARENT[parent];
       const hinted = hintKey ? hints[hintKey] : undefined;
-      label = hinted || GENERIC_BY_PARENT[parent] || humanize(segment);
+      label = hinted ?? GENERIC_BY_PARENT[parent] ?? humanize(segment);
     }
 
     crumbs.push({ label, href: isLast ? null : path });
