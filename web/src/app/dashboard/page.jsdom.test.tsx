@@ -29,8 +29,12 @@ vi.mock("../../components/AppShell", () => ({
 }));
 
 vi.mock("../../components/BarChart", () => ({
-  BarChart: ({ model }: { model: unknown }) => (
-    <div data-testid="barchart" data-empty={JSON.stringify((model as { series?: unknown[] })?.series?.length ?? 0)} />
+  BarChart: ({ model, formatValue }: { model: unknown; formatValue: (n: number) => string }) => (
+    <div
+      data-testid="barchart"
+      data-formatted={formatValue(1234)}
+      data-series={(model as { series?: unknown[] })?.series?.length ?? 0}
+    />
   ),
 }));
 
@@ -153,6 +157,11 @@ describe("DashboardPage chart toggles", () => {
     const modeSwitch = screen.getByRole("switch", { name: "Chart metric: tokens" });
     await user.click(modeSwitch);
     expect(screen.getByRole("switch", { name: "Chart metric: cost" })).toHaveAttribute("aria-checked", "true");
+    // The cost formatter is now the active value formatter.
+    expect(screen.getByTestId("barchart").getAttribute("data-formatted")).toContain("USD 1234");
+    // Keyboard activation (Enter) flips it back.
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("switch", { name: "Chart metric: tokens" })).toHaveAttribute("aria-checked", "false");
   });
 });
 
@@ -189,5 +198,37 @@ describe("DashboardPage sections", () => {
     expect(screen.getByText("No squads yet")).toBeInTheDocument();
     expect(screen.getByText("No providers registered")).toBeInTheDocument();
     expect(screen.getByText("No resources registered")).toBeInTheDocument();
+  });
+
+  it("usage feed missing falls back to USD and zero MTD", () => {
+    env.usage = null;
+    render(<DashboardPage />);
+    expect(screen.getByText("MTD cost").closest(".metric")).toHaveTextContent("USD");
+  });
+
+  it("space key activates the sliding switch", async () => {
+    const user = userEvent.setup();
+    render(<DashboardPage />);
+    const modeSwitch = screen.getByRole("switch", { name: "Chart metric: tokens" });
+    modeSwitch.focus();
+    await user.keyboard(" ");
+    expect(screen.getByRole("switch", { name: "Chart metric: cost" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("squad rows without owner/agents/cost degrade gracefully", () => {
+    env.dashboard = {
+      scope: "member",
+      squads: [{ id: "sq9", name: "Sparse" }],
+      providers: [{ id: "p9", name: "Bare", kind: "other" }],
+      resources: [],
+    };
+    render(<DashboardPage />);
+    const row = screen.getByRole("link", { name: "Sparse" }).closest(".entity-row") as HTMLElement;
+    expect(row).toHaveTextContent("no agents in this squad");
+    expect(row).toHaveTextContent("0 todo");
+    const prow = screen.getByText("Bare").closest(".entity-row") as HTMLElement;
+    expect(prow).toHaveTextContent("no usage this month");
+    // No error agents → healthy sub-label.
+    expect(screen.getByText("all healthy")).toBeInTheDocument();
   });
 });

@@ -12,11 +12,13 @@ const env = vi.hoisted(() => ({
   tasks: [] as unknown[],
   metering: null as unknown,
   meteringError: "",
+  meteringLoading: false,
   audit: [] as unknown[],
   apiPost: vi.fn(),
   apiDelete: vi.fn(),
   push: vi.fn(),
   refresh: vi.fn(),
+  modelsNull: false,
 }));
 
 vi.mock("next/link", () => ({
@@ -76,10 +78,10 @@ vi.mock("../../../lib/useApi", () => ({
     if (path.startsWith("/squads/sq1/metering")) {
       data = env.metering;
       error = env.meteringError;
-      loading = false;
+      loading = env.meteringLoading;
     }
     if (path.startsWith("/squads/sq1/audit")) data = env.audit;
-    if (path === "/models/me") data = [];
+    if (path === "/models/me") data = env.modelsNull ? null : [];
     return { data, loading, error, refresh: env.refresh };
   },
 }));
@@ -154,6 +156,56 @@ describe("SquadCockpitPage metrics", () => {
     render(<SquadCockpitPage />);
     expect(tile("Squad spend")).toHaveTextContent("owner and platform admins only");
   });
+
+  it("metering still loading shows the placeholder value", () => {
+    env.meteringLoading = true;
+    render(<SquadCockpitPage />);
+    expect(tile("Squad spend")).toHaveTextContent("…");
+  });
+
+  it("activity feed resolves agent actors via the squad roster", async () => {
+    env.audit = [
+      { id: "a1", actor_type: "agent", actor_id: "ag1", action: "completed", resource_type: "task", resource_id: "t1" },
+      { id: "a2", actor_type: "user", actor_id: "ross", action: "created", resource_type: "agent", resource_id: "ag2" },
+    ];
+    // The feed lives in a collapsed-by-default section — expand it first.
+    render(<SquadCockpitPage />);
+    await userEvent.click(screen.getByRole("button", { name: /Recent activity/ }));
+    // actor_type=agent → resolved roster name inside the feed title.
+    const coderActor = screen.getAllByText("coder").find((el) => el.closest(".entity-title"));
+    expect(coderActor).toBeTruthy();
+    expect(coderActor?.parentElement).toHaveTextContent("completed");
+    // actor_type=user with no roster match → raw actor id.
+    const userActor = screen.getByText("ross");
+    expect(userActor.parentElement).toHaveTextContent("created");
+  });
+  it("stalled task with no assignee reads 'unassigned'", () => {
+    env.tasks = [
+      { id: "t5", title: "orphan", status: "in_progress", execution_id: "e5", lease_expires_at: past },
+    ];
+    render(<SquadCockpitPage />);
+    expect(screen.getByRole("link", { name: /orphan/ })).toHaveTextContent("last held by unassigned");
+  });
+
+  it("healthy roster with a stalled task omits the error suffix", () => {
+    env.agents = [{ id: "ag1", name: "coder", status: "idle" }];
+    render(<SquadCockpitPage />);
+    const wip = screen
+      .getAllByText("Work in flight")
+      .map((el) => el.closest(".metric") as HTMLElement)[0];
+    expect(wip).toHaveTextContent("1 stalled");
+    const agentsTile = screen
+      .getAllByText("Agents")
+      .map((el) => el.closest(".metric") as HTMLElement)[0];
+    expect(agentsTile.textContent).not.toContain("error");
+  });
+
+  it("null audit and model payloads still render", () => {
+    env.audit = null as unknown as unknown[];
+    env.modelsNull = true;
+    render(<SquadCockpitPage />);
+    expect(screen.getByRole("button", { name: "+ New agent" })).toBeInTheDocument();
+  });
 });
 
 describe("SquadCockpitPage delete flow", () => {
@@ -172,6 +224,16 @@ describe("SquadCockpitPage delete flow", () => {
     env.squad = null;
     render(<SquadCockpitPage />);
     expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
+  });
+
+  it("cancelling the confirm dialog skips the delete", async () => {
+    const user = userEvent.setup();
+    render(<SquadCockpitPage />);
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = screen.getByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(env.apiDelete).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
 

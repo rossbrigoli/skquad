@@ -11,10 +11,11 @@ const env = vi.hoisted(() => ({
   agents: [] as unknown[],
   apiPatch: vi.fn(),
   refresh: vi.fn(),
+  params: { id: "sq1" } as { id: string } | undefined,
 }));
 
 vi.mock("next/navigation", () => ({
-  useParams: () => ({ id: "sq1" }),
+  useParams: () => env.params,
 }));
 
 vi.mock("../../../../components/AuthGate", () => ({
@@ -84,6 +85,7 @@ beforeEach(() => {
   ];
   env.apiPatch = vi.fn().mockResolvedValue({});
   env.refresh = vi.fn();
+  env.params = { id: "sq1" };
 });
 
 describe("SquadPromptPage prefill + save", () => {
@@ -108,6 +110,15 @@ describe("SquadPromptPage prefill + save", () => {
       }),
     );
     expect(env.refresh).toHaveBeenCalled();
+  });
+
+  it("renders safely while the squad is still missing", async () => {
+    env.squad = null;
+    env.params = undefined;
+    render(<SquadPromptPage />);
+    // Effect guard branch: nothing prefilled, no crash.
+    await waitFor(() => expect(screen.getByLabelText(/Mission/)).toHaveValue(""));
+    expect(screen.getByLabelText("tier-editor")).toHaveValue("");
   });
 
   it("restore from revisions replaces the editor content", async () => {
