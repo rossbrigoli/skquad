@@ -1803,6 +1803,19 @@ class LLMMessageHandler:
             completion_kwargs["tools"] = tools
         return chat_messages, completion_kwargs
 
+    def _resolve_completion(self) -> object:
+        """S-189: injected completion, else the default litellm-backed one."""
+        return self._completion or self._default_completion()
+
+    def _chat_interim_budget(self) -> int:
+        """S-195/S-189: bound on interim progress replies for this turn."""
+        limit = (
+            DEFAULT_CHAT_INTERIM_REPLIES
+            if self.max_interim_replies is None
+            else self.max_interim_replies
+        )
+        return max(0, limit)
+
     def _complete_with_tools(
         self,
         message: RuntimeMessage,
@@ -1819,7 +1832,7 @@ class LLMMessageHandler:
         them and must tolerate an empty final response when it is non-zero.
         """
         chat_messages = self._build_chat_messages(message, config, prompted, model)
-        completion = self._completion or self._default_completion()
+        completion = self._resolve_completion()
         plugins, tools, early = self._compose_chat_plugins(
             message, config, prompted, completion, virtual_key, model
         )
@@ -1828,12 +1841,7 @@ class LLMMessageHandler:
         tool_calls_log: list[dict[str, object]] = []
         max_steps = max(1, self.max_tool_steps or DEFAULT_CHAT_TOOL_STEPS)
         # S-195: bound on interim progress replies for this turn.
-        interim_budget = max(
-            0,
-            DEFAULT_CHAT_INTERIM_REPLIES
-            if self.max_interim_replies is None
-            else self.max_interim_replies,
-        )
+        interim_budget = self._chat_interim_budget()
         interim_delivered = 0
         response: object = None
         # S-161: tiered context compaction before each LLM call.
