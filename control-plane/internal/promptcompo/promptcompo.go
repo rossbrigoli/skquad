@@ -159,24 +159,9 @@ func Compose(platformOverride, orgPrompt, squadPrompt, agentPrompt string, f Fac
 			continue
 		}
 
-		// User-editable tiers must not forge reserved delimiters.
-		if name != TierPlatform {
-			if err := Sanitize(content); err != nil {
-				return Composition{}, &ReservedTokensError{Tier: name}
-			}
-		}
-
-		rendered, err := renderTemplates(content, f)
+		rendered, err := renderTierContent(name, content, f)
 		if err != nil {
-			return Composition{}, fmt.Errorf("%s tier: %w", name, err)
-		}
-
-		// Defensive re-check: substituted fact values must not smuggle
-		// reserved delimiters either.
-		if name != TierPlatform {
-			if err := Sanitize(rendered); err != nil {
-				return Composition{}, &ReservedTokensError{Tier: name}
-			}
+			return Composition{}, err
 		}
 
 		toks := EstimateTokens(rendered)
@@ -208,6 +193,31 @@ func Compose(platformOverride, orgPrompt, squadPrompt, agentPrompt string, f Fac
 	composition.SHA256 = hex.EncodeToString(sum[:])
 
 	return composition, nil
+}
+
+// renderTierContent renders a single tier's template, enforcing that
+// user-editable tiers neither contain nor substitute reserved delimiters.
+func renderTierContent(name TierName, content string, f Facts) (string, error) {
+	// User-editable tiers must not forge reserved delimiters.
+	if name != TierPlatform {
+		if err := Sanitize(content); err != nil {
+			return "", &ReservedTokensError{Tier: name}
+		}
+	}
+
+	rendered, err := renderTemplates(content, f)
+	if err != nil {
+		return "", fmt.Errorf("%s tier: %w", name, err)
+	}
+
+	// Defensive re-check: substituted fact values must not smuggle
+	// reserved delimiters either.
+	if name != TierPlatform {
+		if err := Sanitize(rendered); err != nil {
+			return "", &ReservedTokensError{Tier: name}
+		}
+	}
+	return rendered, nil
 }
 
 // RenderBlock wraps content in a trust-labelled XML-style block.

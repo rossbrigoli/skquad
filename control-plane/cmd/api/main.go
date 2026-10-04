@@ -26,55 +26,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	var store httpapi.Store
-	var closeStore func()
-	if cfg.DatabaseURL == "" {
-		store = storage.NewMemoryStore()
-		closeStore = func() {
-			// Intentionally empty: the in-memory store holds no external
-			// resources, so there is nothing to release on shutdown.
-		}
-		slog.Info("using in-memory control-plane store")
-	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		pgStore, err := storage.NewPostgresStore(ctx, cfg.DatabaseURL)
-		if err != nil {
-			slog.Error("connect postgres store", "error", err)
-			os.Exit(1)
-		}
-		store = pgStore
-		closeStore = pgStore.Close
-		slog.Info("using postgres control-plane store")
-	}
+	store, closeStore := openStore(cfg)
 	defer closeStore()
 
-	var oidcAuth httpapi.OIDCAuthenticator
-	if cfg.AuthMode == config.AuthOIDC {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		authenticator, err := auth.NewOIDCAuthenticator(ctx, cfg.IssuerURL, cfg.Audience)
-		if err != nil {
-			slog.Error("configure oidc auth", "error", err)
-			os.Exit(1)
-		}
-		oidcAuth = authenticator
-	}
-
-	var crWriter httpapi.CRWriter
-	if cfg.K8sEnabled {
-		writer, err := kube.NewCRWriter(cfg)
-		if err != nil {
-			slog.Error("configure kubernetes CR writer", "error", err)
-			os.Exit(1)
-		}
-		crWriter = writer
-		if outboxStore, ok := store.(storage.KubernetesOutboxStore); ok {
-			go kube.RunOutboxWorker(context.Background(), outboxStore, writer)
-			slog.Info("started kubernetes outbox worker")
-		}
-		slog.Info("using kubernetes CR writer", "namespace", cfg.K8sNamespace, "group_version", cfg.K8sGroupVersion)
-	}
+	oidcAuth := setupOIDC(cfg)
+	crWriter := setupCRWriter(cfg, store)
 
 	// The execution reaper runs on every store (dev parity) and on every
 	// replica: its store update is conditional and idempotent.
@@ -102,22 +58,7 @@ func main() {
 	go httpapi.RunNotificationRetention(context.Background(), store, cfg.NotificationSweepInterval, cfg.NotificationRetention)
 	slog.Info("started notification retention sweep", "interval", cfg.NotificationSweepInterval, "retention", cfg.NotificationRetention)
 
-	var providerKeys httpapi.ProviderKeyStore
-	if cfg.K8sEnabled {
-		keys, err := kube.NewSecretStore(cfg)
-		if err != nil {
-			slog.Error("configure provider key secret store", "error", err)
-			os.Exit(1)
-		}
-		providerKeys = keys
-		// S-155: wrap any pre-existing literal provider keys into managed
-		// Secrets before serving.
-		if wrapped, err := httpapi.MigrateLegacyProviderKeys(context.Background(), store, keys); err != nil {
-			slog.Error("provider key migration", "error", err)
-		} else if wrapped > 0 {
-			slog.Info("wrapped legacy literal provider keys into managed Secrets", "count", wrapped)
-		}
-	}
+	providerKeys := setupProviderKeys(cfg, store)
 
 	handler := httpapi.NewWithDependencies(cfg, store, oidcAuth, crWriter, providerKeys)
 	// S-212: ensure the embedder model is registered in the LiteLLM
@@ -135,4 +76,81 @@ func main() {
 		slog.Error("serve api", "error", err)
 		os.Exit(1)
 	}
+}
+
+// openStore returns the configured message store (in-memory for dev, or
+// Postgres when SKQUAD_DATABASE_URL is set) plus its release function.
+func openStore(cfg *config.Config) (httpapi.Store, func()) {
+	if cfg.DatabaseURL == "" {
+		slog.Info("using in-memory control-plane store")
+		return storage.NewMemoryStore(), func() {
+			// Intentionally empty: the in-memory store holds no external
+			// resources, so there is nothing to release on shutdown.
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pgStore, err := storage.NewPostgresStore(ctx, cfg.DatabaseURL)
+	if err != nil {
+		slog.Error("connect postgres store", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("using postgres control-plane store")
+	return pgStore, pgStore.Close
+}
+
+// setupOIDC builds the OIDC authenticator when auth mode is OIDC,
+// otherwise returns nil (dev/no-auth mode).
+func setupOIDC(cfg *config.Config) httpapi.OIDCAuthenticator {
+	if cfg.AuthMode != config.AuthOIDC {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	authenticator, err := auth.NewOIDCAuthenticator(ctx, cfg.IssuerURL, cfg.Audience)
+	if err != nil {
+		slog.Error("configure oidc auth", "error", err)
+		os.Exit(1)
+	}
+	return authenticator
+}
+
+// setupCRWriter builds the Kubernetes CR writer when K8s is enabled and
+// starts the outbox worker when the store supports it.
+func setupCRWriter(cfg *config.Config, store httpapi.Store) httpapi.CRWriter {
+	if !cfg.K8sEnabled {
+		return nil
+	}
+	writer, err := kube.NewCRWriter(cfg)
+	if err != nil {
+		slog.Error("configure kubernetes CR writer", "error", err)
+		os.Exit(1)
+	}
+	if outboxStore, ok := store.(storage.KubernetesOutboxStore); ok {
+		go kube.RunOutboxWorker(context.Background(), outboxStore, writer)
+		slog.Info("started kubernetes outbox worker")
+	}
+	slog.Info("using kubernetes CR writer", "namespace", cfg.K8sNamespace, "group_version", cfg.K8sGroupVersion)
+	return writer
+}
+
+// setupProviderKeys builds the managed provider-key secret store when K8s
+// is enabled and wraps any pre-existing literal keys (S-155).
+func setupProviderKeys(cfg *config.Config, store httpapi.Store) httpapi.ProviderKeyStore {
+	if !cfg.K8sEnabled {
+		return nil
+	}
+	keys, err := kube.NewSecretStore(cfg)
+	if err != nil {
+		slog.Error("configure provider key secret store", "error", err)
+		os.Exit(1)
+	}
+	// S-155: wrap any pre-existing literal provider keys into managed
+	// Secrets before serving.
+	if wrapped, err := httpapi.MigrateLegacyProviderKeys(context.Background(), store, keys); err != nil {
+		slog.Error("provider key migration", "error", err)
+	} else if wrapped > 0 {
+		slog.Info("wrapped legacy literal provider keys into managed Secrets", "count", wrapped)
+	}
+	return keys
 }

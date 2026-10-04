@@ -132,6 +132,41 @@ func (s *Server) isDuplicateAIModelName(ctx context.Context, providerID, modelNa
 	return false, nil
 }
 
+// validateAIModelBasics runs the shared create/update request
+// validations (pricing, long-context threshold, context window). On
+// invalid input it writes the HTTP error and returns false.
+func validateAIModelBasics(w http.ResponseWriter, pricing json.RawMessage, threshold *int, contextWindow int) bool {
+	if msg, ok := validateAIModelPricing(pricing); !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", msg)
+		return false
+	}
+	if msg, ok := validateLongContextThreshold(threshold); !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", msg)
+		return false
+	}
+	if msg, ok := validateContextWindow(contextWindow); !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", msg)
+		return false
+	}
+	return true
+}
+
+// checkAIModelDuplicate writes 409 when another model already uses
+// (providerID, modelName), excluding excludeID (for PATCH). Returns
+// false when the request must stop (error written or duplicate found).
+func (s *Server) checkAIModelDuplicate(w http.ResponseWriter, ctx context.Context, providerID, modelName, excludeID string) bool {
+	dup, err := s.isDuplicateAIModelName(ctx, providerID, modelName, excludeID)
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	if dup {
+		writeError(w, http.StatusConflict, "duplicate_model", "an AI model with this model_name already exists for the provider")
+		return false
+	}
+	return true
+}
+
 func (s *Server) createAIModel(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
@@ -152,16 +187,7 @@ func (s *Server) createAIModel(w http.ResponseWriter, r *http.Request) {
 	if !validateRequired(w, "provider_id", req.ProviderID) || !validateRequired(w, "model_name", req.ModelName) {
 		return
 	}
-	if msg, ok := validateAIModelPricing(req.Pricing); !ok {
-		writeError(w, http.StatusBadRequest, "bad_request", msg)
-		return
-	}
-	if msg, ok := validateLongContextThreshold(req.LongContextThresholdTokens); !ok {
-		writeError(w, http.StatusBadRequest, "bad_request", msg)
-		return
-	}
-	if msg, ok := validateContextWindow(req.ContextWindow); !ok {
-		writeError(w, http.StatusBadRequest, "bad_request", msg)
+	if !validateAIModelBasics(w, req.Pricing, req.LongContextThresholdTokens, req.ContextWindow) {
 		return
 	}
 	providerID := strings.TrimSpace(req.ProviderID)
@@ -170,11 +196,7 @@ func (s *Server) createAIModel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if dup, err := s.isDuplicateAIModelName(r.Context(), providerID, modelName, ""); err != nil {
-		writeStorageError(w, err)
-		return
-	} else if dup {
-		writeError(w, http.StatusConflict, "duplicate_model", "an AI model with this model_name already exists for the provider")
+	if !s.checkAIModelDuplicate(w, r.Context(), providerID, modelName, "") {
 		return
 	}
 	displayName := strings.TrimSpace(req.DisplayName)
@@ -283,19 +305,11 @@ func (s *Server) applyAIModelScalarFields(w http.ResponseWriter, r *http.Request
 		}
 		model.ProviderID = providerID
 	}
-	if req.ModelName != nil {
-		modelName := strings.TrimSpace(*req.ModelName)
-		if !validateRequired(w, "model_name", modelName) {
-			return false
-		}
-		model.ModelName = modelName
+	if !applyOptionalTrimmedString(w, "model_name", req.ModelName, &model.ModelName) {
+		return false
 	}
-	if req.DisplayName != nil {
-		displayName := strings.TrimSpace(*req.DisplayName)
-		if !validateRequired(w, "display_name", displayName) {
-			return false
-		}
-		model.DisplayName = displayName
+	if !applyOptionalTrimmedString(w, "display_name", req.DisplayName, &model.DisplayName) {
+		return false
 	}
 	if req.ContextWindow != nil {
 		if msg, ok := validateContextWindow(*req.ContextWindow); !ok {
@@ -310,6 +324,21 @@ func (s *Server) applyAIModelScalarFields(w http.ResponseWriter, r *http.Request
 	if req.SupportsVision != nil {
 		model.SupportsVision = *req.SupportsVision
 	}
+	return true
+}
+
+// applyOptionalTrimmedString applies *src (trimmed) to dst when src is
+// set, requiring it to be non-empty. On invalid input it writes the
+// HTTP error and returns false.
+func applyOptionalTrimmedString(w http.ResponseWriter, field string, src *string, dst *string) bool {
+	if src == nil {
+		return true
+	}
+	v := strings.TrimSpace(*src)
+	if !validateRequired(w, field, v) {
+		return false
+	}
+	*dst = v
 	return true
 }
 
@@ -335,6 +364,30 @@ func applyAIModelPricingFields(w http.ResponseWriter, model *domain.AIModel, req
 	return true
 }
 
+// convergeGatewayForAIModelUpdate converges the gateway deployment when
+// the model's routing identity changed. It returns touched=true only
+// when the gateway was updated, and ok=false when the request must stop
+// (the HTTP error has already been written).
+func (s *Server) convergeGatewayForAIModelUpdate(w http.ResponseWriter, r *http.Request, model *domain.AIModel, oldProviderID, oldModelName string) (touched, ok bool) {
+	identityChanged := model.ProviderID != oldProviderID || model.ModelName != oldModelName
+	if !identityChanged {
+		return false, true
+	}
+	if !s.gatewayModelsEnabled() {
+		log.Printf("aimodel: LLM gateway not configured — skipping gateway update for %q (dev mode; gateway deployment NOT converged)", model.ModelName)
+		return false, true
+	}
+	provider, ok := s.ensureAIModelProviderExists(w, r, model.ProviderID)
+	if !ok {
+		return false, false
+	}
+	if err := s.updateGatewayModelDeployment(r.Context(), oldModelName, provider, model.ModelName, model.SupportsVision); err != nil {
+		writeGatewayProvisionFailure(w, "updated", err)
+		return false, false
+	}
+	return true, true
+}
+
 func (s *Server) updateAIModel(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
@@ -356,30 +409,16 @@ func (s *Server) updateAIModel(w http.ResponseWriter, r *http.Request) {
 	if !applyAIModelPricingFields(w, model, req) {
 		return
 	}
-	if dup, err := s.isDuplicateAIModelName(r.Context(), model.ProviderID, model.ModelName, model.ID); err != nil {
-		writeStorageError(w, err)
-		return
-	} else if dup {
-		writeError(w, http.StatusConflict, "duplicate_model", "an AI model with this model_name already exists for the provider")
+	if !s.checkAIModelDuplicate(w, r.Context(), model.ProviderID, model.ModelName, model.ID) {
 		return
 	}
 	// S-GWREG fail-loud: when the routing identity changed (provider or
 	// model_name), converge the gateway deployment BEFORE persisting.
 	// A gateway failure → 502 and the registry keeps the old, working
 	// configuration.
-	gatewayTouched := false
-	if (model.ProviderID != oldProviderID || model.ModelName != oldModelName) && s.gatewayModelsEnabled() {
-		provider, ok := s.ensureAIModelProviderExists(w, r, model.ProviderID)
-		if !ok {
-			return
-		}
-		if err := s.updateGatewayModelDeployment(r.Context(), oldModelName, provider, model.ModelName, model.SupportsVision); err != nil {
-			writeGatewayProvisionFailure(w, "updated", err)
-			return
-		}
-		gatewayTouched = true
-	} else if model.ProviderID != oldProviderID || model.ModelName != oldModelName {
-		log.Printf("aimodel: LLM gateway not configured — skipping gateway update for %q (dev mode; gateway deployment NOT converged)", model.ModelName)
+	gatewayTouched, ok := s.convergeGatewayForAIModelUpdate(w, r, model, oldProviderID, oldModelName)
+	if !ok {
+		return
 	}
 	updated, err := s.store.UpdateAIModel(s.pendingUserAuditCtx(r, "aimodel.update", "ai_model", model.ID, "", nil), model)
 	if err != nil {

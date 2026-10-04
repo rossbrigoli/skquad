@@ -346,15 +346,15 @@ type PlatformUsage struct {
 }
 
 type DashboardUsagePayload struct {
-	Scope   string   `json:"scope"`
-	Days    []string `json:"days"`
-	MTDStart string  `json:"mtd_start"`
-	Currency string  `json:"currency,omitempty"`
+	Scope    string   `json:"scope"`
+	Days     []string `json:"days"`
+	MTDStart string   `json:"mtd_start"`
+	Currency string   `json:"currency,omitempty"`
 	// SquadMTDCost is the month-to-date cost across the caller's visible
 	// squads (platform-wide for admins — same scoping rule as the series).
-	SquadMTDCost float64        `json:"squad_mtd_cost"`
-	BySquad      []UsageSeries  `json:"by_squad"`
-	ByAgent      []UsageSeries  `json:"by_agent"`
+	SquadMTDCost float64         `json:"squad_mtd_cost"`
+	BySquad      []UsageSeries   `json:"by_squad"`
+	ByAgent      []UsageSeries   `json:"by_agent"`
 	Providers    []ProviderUsage `json:"providers"`
 	// Platform is present only for platform admins.
 	Platform *PlatformUsage `json:"platform,omitempty"`
@@ -410,12 +410,12 @@ func (s *Server) getDashboardUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload := DashboardUsagePayload{
-		Scope:    "personal",
-		Days:     axis,
-		MTDStart: mtdDay,
-		Currency: "USD",
-		BySquad:  []UsageSeries{},
-		ByAgent:  []UsageSeries{},
+		Scope:     "personal",
+		Days:      axis,
+		MTDStart:  mtdDay,
+		Currency:  "USD",
+		BySquad:   []UsageSeries{},
+		ByAgent:   []UsageSeries{},
 		Providers: []ProviderUsage{},
 	}
 	if isAdmin {
@@ -449,6 +449,46 @@ func (s *Server) getDashboardUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, payload)
 }
 
+// getOrCreateSeriesAcc returns the accumulator for id, creating it with
+// the given metadata on first sight.
+func getOrCreateSeriesAcc(acc map[string]*usageSeriesAcc, id string, meta UsageSeries) *usageSeriesAcc {
+	a, ok := acc[id]
+	if !ok {
+		a = &usageSeriesAcc{meta: meta, byDay: map[string]*UsagePoint{}}
+		acc[id] = a
+	}
+	return a
+}
+
+// accumulateProviderModel folds one daily row into the month-to-date
+// provider and provider/model rollups.
+func accumulateProviderModel(provAcc map[string]*ProviderUsage, modelAcc map[string]map[string]*ProviderModelUsage, row domain.MeteringDailyRow) {
+	prov := provAcc[row.ProviderID]
+	if prov == nil {
+		name := row.ProviderName
+		if name == "" {
+			name = "unknown provider"
+		}
+		prov = &ProviderUsage{ProviderID: row.ProviderID, ProviderName: name, Models: []ProviderModelUsage{}}
+		provAcc[row.ProviderID] = prov
+		modelAcc[row.ProviderID] = map[string]*ProviderModelUsage{}
+	}
+	model := row.Model
+	if model == "" {
+		model = "unknown model"
+	}
+	mm := modelAcc[row.ProviderID]
+	mu, ok := mm[model]
+	if !ok {
+		mu = &ProviderModelUsage{Model: model}
+		mm[model] = mu
+	}
+	mu.Tokens += row.InputTokens + row.OutputTokens
+	mu.Cost += row.Cost
+	prov.Tokens += row.InputTokens + row.OutputTokens
+	prov.Cost += row.Cost
+}
+
 // usageSeriesAcc accumulates one series' per-day points inside
 // buildUsageSeries.
 type usageSeriesAcc struct {
@@ -473,51 +513,19 @@ func buildUsageSeries(payload *DashboardUsagePayload, rows []domain.MeteringDail
 			payload.SquadMTDCost += row.Cost
 		}
 
-		acc := squadAcc[row.SquadID]
-		if acc == nil {
-			acc = &usageSeriesAcc{meta: UsageSeries{ID: row.SquadID, Name: row.SquadName}, byDay: map[string]*UsagePoint{}}
-			squadAcc[row.SquadID] = acc
-		}
-		accumulateUsagePoint(acc, row)
+		squad := getOrCreateSeriesAcc(squadAcc, row.SquadID, UsageSeries{ID: row.SquadID, Name: row.SquadName})
+		accumulateUsagePoint(squad, row)
 
-		agent := agentAcc[row.AgentID]
-		if agent == nil {
-			agent = &usageSeriesAcc{
-				meta:  UsageSeries{ID: row.AgentID, Name: row.AgentName, SquadID: row.SquadID, SquadName: row.SquadName},
-				byDay: map[string]*UsagePoint{},
-			}
-			agentAcc[row.AgentID] = agent
-		}
+		agent := getOrCreateSeriesAcc(agentAcc, row.AgentID, UsageSeries{
+			ID: row.AgentID, Name: row.AgentName, SquadID: row.SquadID, SquadName: row.SquadName,
+		})
 		accumulateUsagePoint(agent, row)
 
 		// Provider/model rollup is month-to-date only.
 		if row.Day < payload.MTDStart {
 			continue
 		}
-		prov := provAcc[row.ProviderID]
-		if prov == nil {
-			name := row.ProviderName
-			if name == "" {
-				name = "unknown provider"
-			}
-			prov = &ProviderUsage{ProviderID: row.ProviderID, ProviderName: name, Models: []ProviderModelUsage{}}
-			provAcc[row.ProviderID] = prov
-			modelAcc[row.ProviderID] = map[string]*ProviderModelUsage{}
-		}
-		model := row.Model
-		if model == "" {
-			model = "unknown model"
-		}
-		mm := modelAcc[row.ProviderID]
-		mu, ok := mm[model]
-		if !ok {
-			mu = &ProviderModelUsage{Model: model}
-			mm[model] = mu
-		}
-		mu.Tokens += row.InputTokens + row.OutputTokens
-		mu.Cost += row.Cost
-		prov.Tokens += row.InputTokens + row.OutputTokens
-		prov.Cost += row.Cost
+		accumulateProviderModel(provAcc, modelAcc, row)
 	}
 
 	payload.BySquad = finalizeUsageSeries(payload.Days, squadAcc)

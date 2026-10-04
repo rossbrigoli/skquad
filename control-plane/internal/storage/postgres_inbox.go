@@ -181,6 +181,40 @@ func (p *PostgresStore) SweepConsultTimeouts(ctx context.Context, now time.Time)
 	}
 	defer tx.Rollback(ctx)
 
+	due, err := queryDueConsults(ctx, tx, now)
+	if err != nil {
+		return 0, err
+	}
+
+	posted := 0
+	for _, c := range due {
+		deliverable, err := postConsultTimeout(ctx, tx, c)
+		if err != nil {
+			return 0, err
+		}
+		if deliverable {
+			posted++
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, mapPgErr(err)
+	}
+	return posted, nil
+}
+
+// dueConsult is a timed-out agent consult awaiting a synthetic reply.
+type dueConsult struct {
+	id        string
+	threadID  string
+	askerID   string
+	targetID  string
+	createdAt time.Time
+}
+
+// queryDueConsults selects and materialises the consults whose deadline
+// passed with no correlated reply, locking rows SKIP LOCKED so each
+// replica notifies exactly once.
+func queryDueConsults(ctx context.Context, tx pgx.Tx, now time.Time) ([]dueConsult, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT m.id::text, coalesce(m.correlation_id::text, m.id::text), m.from_id::text, m.to_agent_id::text, m.created_at
 		FROM messages m
@@ -201,61 +235,53 @@ func (p *PostgresStore) SweepConsultTimeouts(ctx context.Context, now time.Time)
 		FOR UPDATE OF m SKIP LOCKED
 	`, now)
 	if err != nil {
-		return 0, mapPgErr(err)
-	}
-	type dueConsult struct {
-		id        string
-		threadID  string
-		askerID   string
-		targetID  string
-		createdAt time.Time
+		return nil, mapPgErr(err)
 	}
 	var due []dueConsult
 	for rows.Next() {
 		var c dueConsult
 		if err := rows.Scan(&c.id, &c.threadID, &c.askerID, &c.targetID, &c.createdAt); err != nil {
-			return 0, mapPgErr(err)
+			return nil, mapPgErr(err)
 		}
 		due = append(due, c)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return 0, mapPgErr(err)
+		return nil, mapPgErr(err)
 	}
+	return due, nil
+}
 
-	posted := 0
-	for _, c := range due {
-		if _, err := tx.Exec(ctx, `UPDATE messages SET timeout_notified_at = now() WHERE id = $1`, c.id); err != nil {
-			return 0, mapPgErr(err)
-		}
-		var askerSquadID string
-		err := tx.QueryRow(ctx, `SELECT squad_id::text FROM agents WHERE id = $1`, c.askerID).Scan(&askerSquadID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			continue // asker deleted: marked notified, nothing to deliver
-		}
-		if err != nil {
-			return 0, mapPgErr(err)
-		}
-		payload, err := json.Marshal(consultTimeoutPayloadMap(c.id, c.createdAt))
-		if err != nil {
-			return 0, mapPgErr(err)
-		}
-		_, err = tx.Exec(ctx, `
-			INSERT INTO messages (from_type, from_id, to_agent_id, squad_id, type, payload, status,
-			                    correlation_id, max_attempts, next_retry_at, expires_at, terminal_reason)
-			VALUES ('agent', $1, $2, $3, 'reply', $4, 'pending', $5::uuid, $6, now(),
-			        now() + $7::interval, $8)
-		`, c.targetID, c.askerID, askerSquadID, payload, c.threadID,
-			defaultMessageMaxAttempts,
-			fmt.Sprintf("%d seconds", int(defaultMessageTTL.Seconds())),
-			consultTimeoutReason)
-		if err != nil {
-			return 0, mapPgErr(err)
-		}
-		posted++
+// postConsultTimeout stamps the consult notified and posts the synthetic
+// timeout reply. It returns false (nothing posted) when the asker was
+// deleted; the consult is still stamped so it is never retried.
+func postConsultTimeout(ctx context.Context, tx pgx.Tx, c dueConsult) (bool, error) {
+	if _, err := tx.Exec(ctx, `UPDATE messages SET timeout_notified_at = now() WHERE id = $1`, c.id); err != nil {
+		return false, mapPgErr(err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, mapPgErr(err)
+	var askerSquadID string
+	err := tx.QueryRow(ctx, `SELECT squad_id::text FROM agents WHERE id = $1`, c.askerID).Scan(&askerSquadID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil // asker deleted: marked notified, nothing to deliver
 	}
-	return posted, nil
+	if err != nil {
+		return false, mapPgErr(err)
+	}
+	payload, err := json.Marshal(consultTimeoutPayloadMap(c.id, c.createdAt))
+	if err != nil {
+		return false, mapPgErr(err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO messages (from_type, from_id, to_agent_id, squad_id, type, payload, status,
+		                    correlation_id, max_attempts, next_retry_at, expires_at, terminal_reason)
+		VALUES ('agent', $1, $2, $3, 'reply', $4, 'pending', $5::uuid, $6, now(),
+		        now() + $7::interval, $8)
+	`, c.targetID, c.askerID, askerSquadID, payload, c.threadID,
+		defaultMessageMaxAttempts,
+		fmt.Sprintf("%d seconds", int(defaultMessageTTL.Seconds())),
+		consultTimeoutReason)
+	if err != nil {
+		return false, mapPgErr(err)
+	}
+	return true, nil
 }

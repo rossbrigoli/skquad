@@ -26,6 +26,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -94,49 +95,70 @@ func (g *OrphanPVCGC) SweepOrphanWorkspacePVCs(ctx context.Context) (OrphanSweep
 			return report, err
 		}
 		for i := range pvcs.Items {
-			pvc := &pvcs.Items[i]
-			report.Scanned++
-			if pvc.Status.Phase == corev1.ClaimPending {
+			isPending, err := g.sweepOnePVC(ctx, log, &pvcs.Items[i], liveAgentIDs, referenced, &report)
+			if err != nil {
+				return report, err
+			}
+			if isPending {
 				pending++
 			}
-			agentID := pvc.Labels[LabelAgentID]
-			if agentID == "" {
-				// Labeled workspace PVC without an agent-id: unknown
-				// provenance, leave it alone.
-				log.Info("workspace pvc has no agent-id label; skipping", "pvc", pvc.Namespace+"/"+pvc.Name)
-				continue
-			}
-			if liveAgentIDs[agentID] {
-				continue
-			}
-			if referenced[pvc.Name] {
-				report.SkippedInUse++
-				log.Info("orphan workspace pvc still referenced by a deployment; skipping",
-					"pvc", pvc.Namespace+"/"+pvc.Name, "agentId", agentID)
-				continue
-			}
-			// Guard 5: retain annotation is reported, never deleted.
-			if pvc.GetAnnotations()[RetainPVCKeepAnnotation] == "true" {
-				report.Retained++
-				log.Info("orphan workspace pvc has retain annotation; NOT deleting",
-					"pvc", pvc.Namespace+"/"+pvc.Name, "agentId", agentID)
-				g.eventf(pvc, corev1.EventTypeNormal, "WorkspacePVCRetained",
-					"orphaned workspace pvc %s is retained (annotation %s=true)", pvc.Name, RetainPVCKeepAnnotation)
-				continue
-			}
-			if err := g.Delete(ctx, pvc); err != nil {
-				return report, fmt.Errorf("delete orphan pvc %s/%s: %w", pvc.Namespace, pvc.Name, err)
-			}
-			report.Cleaned++
-			workspaceOrphansCleanedTotal.Inc()
-			log.Info("deleted orphaned workspace pvc",
-				"pvc", pvc.Namespace+"/"+pvc.Name, "agentId", agentID)
-			g.eventf(pvc, corev1.EventTypeNormal, "WorkspacePVCOrphanCleaned",
-				"deleted orphaned workspace pvc %s (no Agent CR for agent-id %s)", pvc.Name, agentID)
 		}
 	}
 	workspacePVCPending.Set(float64(pending))
 	return report, nil
+}
+
+// sweepOnePVC evaluates one labeled workspace PVC: live agents,
+// deployment references and retain annotations all spare it; otherwise
+// it is deleted. It reports whether the PVC was pending (for the gauge)
+// and any delete error.
+func (g *OrphanPVCGC) sweepOnePVC(
+	ctx context.Context,
+	log logr.Logger,
+	pvc *corev1.PersistentVolumeClaim,
+	liveAgentIDs map[string]bool,
+	referenced map[string]bool,
+	report *OrphanSweepReport,
+) (isPending bool, err error) {
+	report.Scanned++
+	if pvc.Status.Phase == corev1.ClaimPending {
+		isPending = true
+	}
+	agentID := pvc.Labels[LabelAgentID]
+	if agentID == "" {
+		// Labeled workspace PVC without an agent-id: unknown
+		// provenance, leave it alone.
+		log.Info("workspace pvc has no agent-id label; skipping", "pvc", pvc.Namespace+"/"+pvc.Name)
+		return isPending, nil
+	}
+	if liveAgentIDs[agentID] {
+		return isPending, nil
+	}
+	if referenced[pvc.Name] {
+		report.SkippedInUse++
+		log.Info("orphan workspace pvc still referenced by a deployment; skipping",
+			"pvc", pvc.Namespace+"/"+pvc.Name, "agentId", agentID)
+		return isPending, nil
+	}
+	// Guard 5: retain annotation is reported, never deleted.
+	if pvc.GetAnnotations()[RetainPVCKeepAnnotation] == "true" {
+		report.Retained++
+		log.Info("orphan workspace pvc has retain annotation; NOT deleting",
+			"pvc", pvc.Namespace+"/"+pvc.Name, "agentId", agentID)
+		g.eventf(pvc, corev1.EventTypeNormal, "WorkspacePVCRetained",
+			"orphaned workspace pvc %s is retained (annotation %s=true)", pvc.Name, RetainPVCKeepAnnotation)
+		return isPending, nil
+	}
+	if err := g.Delete(ctx, pvc); err != nil {
+		return isPending, fmt.Errorf("delete orphan pvc %s/%s: %w", pvc.Namespace, pvc.Name, err)
+	}
+	report.Cleaned++
+	workspaceOrphansCleanedTotal.Inc()
+	log.Info("deleted orphaned workspace pvc",
+		"pvc", pvc.Namespace+"/"+pvc.Name, "agentId", agentID)
+	g.eventf(pvc, corev1.EventTypeNormal, "WorkspacePVCOrphanCleaned",
+		"deleted orphaned workspace pvc %s (no Agent CR for agent-id %s)", pvc.Name, agentID)
+	return isPending, nil
 }
 
 // liveAgentIDs collects spec.agentId of every Agent CR the operator sees.

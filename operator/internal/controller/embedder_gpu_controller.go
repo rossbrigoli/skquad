@@ -125,6 +125,22 @@ func (s gpuSelection) active() bool { return s.Resource != "" && len(s.Nodes) > 
 
 // selectGPU scans nodes for the configured resource list and returns
 // the winning selection (zero value = no GPU available).
+// nodeMatchesGPU reports whether the node allocates at least one unit of
+// the resource and, when a label key is configured, carries it set to
+// "true".
+func (r *EmbedderGPUReconciler) nodeMatchesGPU(node corev1.Node, name corev1.ResourceName) bool {
+	qty, ok := node.Status.Allocatable[name]
+	if !ok || qty.Cmp(resource.MustParse("1")) < 0 {
+		return false
+	}
+	if r.Cfg.GPUNodeLabelKey != "" {
+		if v, labeled := node.Labels[r.Cfg.GPUNodeLabelKey]; !labeled || v != "true" {
+			return false
+		}
+	}
+	return true
+}
+
 func (r *EmbedderGPUReconciler) selectGPU(ctx context.Context) (gpuSelection, error) {
 	nodeList := &corev1.NodeList{}
 	if err := r.Client.List(ctx, nodeList); err != nil {
@@ -134,16 +150,9 @@ func (r *EmbedderGPUReconciler) selectGPU(ctx context.Context) (gpuSelection, er
 		name := corev1.ResourceName(res)
 		matches := make([]string, 0)
 		for _, node := range nodeList.Items {
-			qty, ok := node.Status.Allocatable[name]
-			if !ok || qty.Cmp(resource.MustParse("1")) < 0 {
-				continue
+			if r.nodeMatchesGPU(node, name) {
+				matches = append(matches, node.Name)
 			}
-			if r.Cfg.GPUNodeLabelKey != "" {
-				if v, labeled := node.Labels[r.Cfg.GPUNodeLabelKey]; !labeled || v != "true" {
-					continue
-				}
-			}
-			matches = append(matches, node.Name)
 		}
 		if len(matches) > 0 {
 			return gpuSelection{Resource: name, Nodes: matches}, nil
@@ -405,11 +414,21 @@ func applyGPUSpec(dep *appsv1.Deployment, want gpuSelection, labelKey string, ma
 // the changed-detection ignores unrelated fields.
 func gpuProjection(pod *corev1.PodSpec, managedResources []string) map[string]any {
 	proj := map[string]any{"affinity": pod.Affinity}
-	requests := map[string]string{}
-	limits := map[string]string{}
 	if len(managedResources) == 0 {
 		managedResources = ParseGPUResourceNames("")
 	}
+	requests, limits := collectGPUContainerResources(pod, managedResources)
+	proj["gpuRequests"] = requests
+	proj["gpuLimits"] = limits
+	proj["gpuTolerations"] = collectGPUTolerations(pod, managedResources)
+	return proj
+}
+
+// collectGPUContainerResources gathers per-container requests/limits of
+// the managed GPU resources into "container:resource" keyed maps.
+func collectGPUContainerResources(pod *corev1.PodSpec, managedResources []string) (map[string]string, map[string]string) {
+	requests := map[string]string{}
+	limits := map[string]string{}
 	for _, c := range pod.Containers {
 		for _, res := range managedResources {
 			name := corev1.ResourceName(res)
@@ -421,8 +440,12 @@ func gpuProjection(pod *corev1.PodSpec, managedResources []string) map[string]an
 			}
 		}
 	}
-	proj["gpuRequests"] = requests
-	proj["gpuLimits"] = limits
+	return requests, limits
+}
+
+// collectGPUTolerations lists "key/Operator" for the pod's tolerations
+// whose key is a managed GPU resource.
+func collectGPUTolerations(pod *corev1.PodSpec, managedResources []string) []string {
 	tolerations := []string{}
 	for _, t := range pod.Tolerations {
 		for _, res := range managedResources {
@@ -431,8 +454,7 @@ func gpuProjection(pod *corev1.PodSpec, managedResources []string) map[string]an
 			}
 		}
 	}
-	proj["gpuTolerations"] = tolerations
-	return proj
+	return tolerations
 }
 
 // ensureGPUToleration makes the pod tolerate GPU-node taints for the
@@ -622,14 +644,54 @@ func termReferencesGPU(t corev1.NodeSelectorTerm, labelKey string) bool {
 // Start implements manager.Runnable: reconcile immediately, then on the
 // configured interval. Missing embedder Deployment is not fatal (the
 // chart may not have created it yet); it is retried next tick.
-func (r *EmbedderGPUReconciler) Start(ctx context.Context) error {
+// parseReconcileIntervalSeconds reads the reconcile interval env
+// override, falling back to 60 seconds for missing/invalid values.
+func parseReconcileIntervalSeconds() int {
 	intervalSeconds := 60
-	if v := envOrDefault("SKQUAD_EMBEDDER_GPU_RECONCILE_INTERVAL_SECONDS", "60"); true {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
-			intervalSeconds = parsed
-		}
+	if parsed, err := strconv.Atoi(envOrDefault("SKQUAD_EMBEDDER_GPU_RECONCILE_INTERVAL_SECONDS", "60")); err == nil && parsed > 0 {
+		intervalSeconds = parsed
 	}
-	interval := time.Duration(intervalSeconds) * time.Second
+	return intervalSeconds
+}
+
+// tickRuntime performs one runtime-aware reconcile tick and logs the
+// outcome.
+func (r *EmbedderGPUReconciler) tickRuntime(ctx context.Context) {
+	rt, changed, err := r.ReconcileRuntime(ctx)
+	switch {
+	case err != nil && !apierrors.IsNotFound(err):
+		ctrl.Log.Error(err, "embedder runtime reconcile failed", "runtime", rt)
+	case err != nil:
+		ctrl.Log.Info("embedder Deployment not found yet; will retry", "deployment", r.Cfg.DeploymentName)
+	case changed:
+		ctrl.Log.Info("embedder runtime reconciled",
+			"runtime", rt, "deployment", r.Cfg.Namespace+"/"+r.Cfg.DeploymentName)
+	}
+}
+
+// tickLegacy performs one mode-based GPU/CPU reconcile tick and logs
+// the outcome.
+func (r *EmbedderGPUReconciler) tickLegacy(ctx context.Context) {
+	changed, sel, err := r.ReconcileOnce(ctx)
+	switch {
+	case err != nil && !apierrors.IsNotFound(err):
+		ctrl.Log.Error(err, "embedder GPU reconcile failed", "mode", r.Cfg.Mode)
+	case err != nil:
+		ctrl.Log.Info("embedder Deployment not found yet; will retry", "deployment", r.Cfg.DeploymentName)
+	case changed:
+		ctrl.Log.Info("embedder GPU spec reconciled",
+			"resource", sel.Resource, "nodes", sel.Nodes, "mode", r.Cfg.Mode,
+			"deployment", r.Cfg.Namespace+"/"+r.Cfg.DeploymentName)
+	case r.Cfg.Mode == EmbedderModeAuto && !sel.active() && !r.loggedCPUFallback:
+		ctrl.Log.Info("embedder GPU auto-detect found no GPU resources; using CPU fallback",
+			"resources", r.Cfg.GPUResourceNames,
+			"deployment", r.Cfg.Namespace+"/"+r.Cfg.DeploymentName)
+		r.loggedCPUFallback = true
+	}
+}
+
+func (r *EmbedderGPUReconciler) Start(ctx context.Context) error {
+	interval := time.Duration(parseReconcileIntervalSeconds()) * time.Second
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	// ADR-0013: when the runtime layer is configured (override ConfigMap
@@ -639,38 +701,9 @@ func (r *EmbedderGPUReconciler) Start(ctx context.Context) error {
 	runtimeMode := r.Cfg.RuntimeConfigMapName != "" || len(r.Cfg.ImageByRuntime) > 0
 	for {
 		if runtimeMode {
-			rt, changed, err := r.ReconcileRuntime(ctx)
-			switch {
-			case err != nil && !apierrors.IsNotFound(err):
-				ctrl.Log.Error(err, "embedder runtime reconcile failed", "runtime", rt)
-			case err != nil:
-				ctrl.Log.Info("embedder Deployment not found yet; will retry", "deployment", r.Cfg.DeploymentName)
-			case changed:
-				ctrl.Log.Info("embedder runtime reconciled",
-					"runtime", rt, "deployment", r.Cfg.Namespace+"/"+r.Cfg.DeploymentName)
-			}
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-ticker.C:
-			}
-			continue
-		}
-		changed, sel, err := r.ReconcileOnce(ctx)
-		switch {
-		case err != nil && !apierrors.IsNotFound(err):
-			ctrl.Log.Error(err, "embedder GPU reconcile failed", "mode", r.Cfg.Mode)
-		case err != nil:
-			ctrl.Log.Info("embedder Deployment not found yet; will retry", "deployment", r.Cfg.DeploymentName)
-		case changed:
-			ctrl.Log.Info("embedder GPU spec reconciled",
-				"resource", sel.Resource, "nodes", sel.Nodes, "mode", r.Cfg.Mode,
-				"deployment", r.Cfg.Namespace+"/"+r.Cfg.DeploymentName)
-		case r.Cfg.Mode == EmbedderModeAuto && !sel.active() && !r.loggedCPUFallback:
-			ctrl.Log.Info("embedder GPU auto-detect found no GPU resources; using CPU fallback",
-				"resources", r.Cfg.GPUResourceNames,
-				"deployment", r.Cfg.Namespace+"/"+r.Cfg.DeploymentName)
-			r.loggedCPUFallback = true
+			r.tickRuntime(ctx)
+		} else {
+			r.tickLegacy(ctx)
 		}
 		select {
 		case <-ctx.Done():

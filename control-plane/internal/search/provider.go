@@ -99,18 +99,27 @@ func ParseDuckDuckGoHTML(body string, maxResults int) []Result {
 		for si < len(snips) && snips[si][0] < t[0] {
 			si++
 		}
-		if si < len(snips) {
-			nextTitleStart := len(body)
-			if ti+1 < len(titles) {
-				nextTitleStart = titles[ti+1][0]
-			}
-			if snips[si][0] < nextTitleStart {
-				r.Snippet = cleanText(body[snips[si][2]:snips[si][3]])
-			}
-		}
+		r.Snippet = snippetForTitle(body, titles, snips, ti, si)
 		results = append(results, r)
 	}
 	return results
+}
+
+// snippetForTitle returns the snippet that belongs to titles[ti]: the
+// snippet at index si, but only when it starts before the next title
+// (so snippets are never attributed across result boundaries).
+func snippetForTitle(body string, titles, snips [][]int, ti, si int) string {
+	if si >= len(snips) {
+		return ""
+	}
+	nextTitleStart := len(body)
+	if ti+1 < len(titles) {
+		nextTitleStart = titles[ti+1][0]
+	}
+	if snips[si][0] < nextTitleStart {
+		return cleanText(body[snips[si][2]:snips[si][3]])
+	}
+	return ""
 }
 
 // unwrapDDGHref resolves the //duckduckgo.com/l/?uddg=<encoded>
