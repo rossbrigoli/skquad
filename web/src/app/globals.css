@@ -35,6 +35,7 @@
   --status-idle-bg: #efefec;
   --status-error: #c92a2a;
   --status-error-bg: #fbe9e9;
+  --status-warning: #e8930c;
   --status-over-budget: #862e9c;
   --status-over-budget-bg: #f6ebfa;
   --status-paused: #b08114;
@@ -112,6 +113,7 @@
     --status-idle-bg: #26262a;
     --status-error: #ff7b7b;
     --status-error-bg: #351a1a;
+    --status-warning: #f5b041;
     --status-over-budget: #c98ade;
     --status-over-budget-bg: #2b1b33;
     --status-paused: #e0b64f;
@@ -149,6 +151,7 @@
     --status-idle-bg: #26262a;
     --status-error: #ff7b7b;
     --status-error-bg: #351a1a;
+    --status-warning: #f5b041;
     --status-over-budget: #c98ade;
     --status-over-budget-bg: #2b1b33;
     --status-paused: #e0b64f;
@@ -3238,7 +3241,7 @@ button.squad-tab.active {
 }
 
 .notif-sev-error { border-left-color: var(--status-error, #c92a2a); }
-.notif-sev-warning { border-left-color: #e8930c; }
+.notif-sev-warning { border-left-color: var(--status-warning, #e8930c); }
 .notif-sev-info { border-left-color: var(--accent, #1971c2); }
 
 .notif-item-main {
