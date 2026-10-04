@@ -62,6 +62,7 @@ export default defineConfig({
         "src/components/BuiltinToolConfig.tsx",
         "src/components/AdminBudgetPanel.tsx",
         "src/components/ResourceRegistryPanel.tsx",
+        "src/lib/useAttention.tsx",
       ],
       exclude: [
         "src/**/*.test.ts",
