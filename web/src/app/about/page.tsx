@@ -30,6 +30,27 @@ const VERSION_ROWS: readonly { readonly key: keyof Versions; readonly label: str
 export default function AboutPage() {
   const versions = useApi<Versions>("/versions");
 
+  function renderVersions() {
+    if (versions.loading) {
+      return <p className="about-muted">loading versions…</p>;
+    }
+    if (versions.error) {
+      return <p className="about-muted">versions unavailable: {versions.error}</p>;
+    }
+    return (
+      <table className="about-versions">
+        <tbody>
+          {VERSION_ROWS.map((row) => (
+            <tr key={row.key}>
+              <th scope="row">{row.label}</th>
+              <td className="about-version-value">{versionText(versions.data?.[row.key])}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+
   return (
     <AuthGate>
       <AppShell>
@@ -74,22 +95,7 @@ export default function AboutPage() {
           </p>
 
           <h2 className="about-versions-heading">Component versions</h2>
-          {versions.loading ? (
-            <p className="about-muted">loading versions…</p>
-          ) : versions.error ? (
-            <p className="about-muted">versions unavailable: {versions.error}</p>
-          ) : (
-            <table className="about-versions">
-              <tbody>
-                {VERSION_ROWS.map((row) => (
-                  <tr key={row.key}>
-                    <th scope="row">{row.label}</th>
-                    <td className="about-version-value">{versionText(versions.data?.[row.key])}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          {renderVersions()}
         </section>
       </AppShell>
     </AuthGate>

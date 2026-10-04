@@ -145,9 +145,10 @@ export function DeadLettersPanel() {
       const summary = summarizeBulkResults(
         await runBulkAction(ids, (id) => apiPost(`/admin/dead-letters/${id}/replay`, authedToken, {})),
       );
+      const plural = summary.succeeded === 1 ? "" : "s";
       setNote(
         summary.failed === 0
-          ? `Replayed ${summary.succeeded} message${summary.succeeded === 1 ? "" : "s"}.`
+          ? `Replayed ${summary.succeeded} message${plural}.`
           : `Replayed ${summary.succeeded}/${summary.total}; failed: ${summary.failedIds.map(shortId).join(", ")}.`,
       );
       setSelectedIds(new Set());
@@ -166,9 +167,10 @@ export function DeadLettersPanel() {
       const summary = summarizeBulkResults(
         await runBulkAction(ids, (id) => apiDelete(`/admin/dead-letters/${id}`, authedToken)),
       );
+      const plural = summary.succeeded === 1 ? "" : "s";
       setNote(
         summary.failed === 0
-          ? `Deleted ${summary.succeeded} message${summary.succeeded === 1 ? "" : "s"}.`
+          ? `Deleted ${summary.succeeded} message${plural}.`
           : `Deleted ${summary.succeeded}/${summary.total}; failed: ${summary.failedIds.map(shortId).join(", ")}.`,
       );
       setSelectedIds(new Set());

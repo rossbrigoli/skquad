@@ -119,13 +119,15 @@ export function PromptTierEditor({
                 })
                 .catch((err: unknown) => {
                   const promptErr = extractPromptError(err instanceof ApiError ? err : undefined);
-                  setSaveError(
-                    promptErr
-                      ? promptUserMessage(promptErr)
-                      : err instanceof Error
-                        ? err.message
-                        : "save failed",
-                  );
+                  let detail: string;
+                  if (promptErr) {
+                    detail = promptUserMessage(promptErr);
+                  } else if (err instanceof Error) {
+                    detail = err.message;
+                  } else {
+                    detail = "save failed";
+                  }
+                  setSaveError(detail);
                 })
                 .finally(() => {
                   setBusy(false);

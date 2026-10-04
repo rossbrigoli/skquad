@@ -89,6 +89,19 @@ export function leaseState(task: Task): LeaseState {
   return expiry > Date.now() ? "running" : "stalled";
 }
 
+function relativeTimeAmount(absSec: number, deltaSec: number): [number, Intl.RelativeTimeFormatUnit] {
+  if (absSec < 60) {
+    return [deltaSec, "second"];
+  }
+  if (absSec < 3600) {
+    return [Math.round(deltaSec / 60), "minute"];
+  }
+  if (absSec < 86400) {
+    return [Math.round(deltaSec / 3600), "hour"];
+  }
+  return [Math.round(deltaSec / 86400), "day"];
+}
+
 export function formatRelativeTime(value?: string): string {
   if (!value) {
     return "";
@@ -99,11 +112,7 @@ export function formatRelativeTime(value?: string): string {
   }
   const deltaSec = Math.round((timestamp - Date.now()) / 1000);
   const absSec = Math.abs(deltaSec);
-  const [amount, unit]: [number, Intl.RelativeTimeFormatUnit] =
-    absSec < 60 ? [deltaSec, "second"]
-    : absSec < 3600 ? [Math.round(deltaSec / 60), "minute"]
-    : absSec < 86400 ? [Math.round(deltaSec / 3600), "hour"]
-    : [Math.round(deltaSec / 86400), "day"];
+  const [amount, unit]: [number, Intl.RelativeTimeFormatUnit] = relativeTimeAmount(absSec, deltaSec);
   return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(amount, unit);
 }
 

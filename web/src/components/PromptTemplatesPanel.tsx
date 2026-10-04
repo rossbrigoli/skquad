@@ -59,6 +59,45 @@ export function PromptTemplatesPanel({
   const [bulkBusy, setBulkBusy] = useState(false);
   const headerCheckbox = useRef<HTMLInputElement>(null);
 
+  function renderTemplateList() {
+    if (loading && templates.length === 0) {
+      return <p className="field-hint">Loading templates…</p>;
+    }
+    if (templates.length === 0) {
+      return (
+        <EmptyState
+          title="No prompt templates yet"
+          hint="Create one to give new squads and agents a head start."
+        />
+      );
+    }
+    return (
+      <div className="entity-list">
+        {templates.map((t) => (
+          <div key={t.id} className="entity-row">
+            <input
+              type="checkbox"
+              className="entity-checkbox"
+              checked={selected.has(t.id)}
+              onChange={() => setSelectedIds((prev) => toggleTemplateSelection(prev, t.id))}
+              aria-label={`Select template ${t.name}`}
+            />
+            <div className="entity-main">
+              <span className="entity-title">{t.name}</span>
+              <span className="entity-meta">{t.description || "—"}</span>
+            </div>
+            <div className="entity-side">
+              <span className="entity-meta">{APPLIES_LABELS[t.applies_to] ?? t.applies_to}</span>
+              <button type="button" className="btn btn-sm" onClick={() => setEditing(t)}>
+                Edit
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   // Selection is pruned against the live list at render time so deleted
   // or vanished templates can never linger in the selection.
   const selected = useMemo(() => pruneTemplateSelection(selectedIds, templates), [selectedIds, templates]);
@@ -145,38 +184,7 @@ export function PromptTemplatesPanel({
         </div>
       ) : null}
 
-      {loading && templates.length === 0 ? (
-        <p className="field-hint">Loading templates…</p>
-      ) : templates.length === 0 ? (
-        <EmptyState
-          title="No prompt templates yet"
-          hint="Create one to give new squads and agents a head start."
-        />
-      ) : (
-        <div className="entity-list">
-          {templates.map((t) => (
-            <div key={t.id} className="entity-row">
-              <input
-                type="checkbox"
-                className="entity-checkbox"
-                checked={selected.has(t.id)}
-                onChange={() => setSelectedIds((prev) => toggleTemplateSelection(prev, t.id))}
-                aria-label={`Select template ${t.name}`}
-              />
-              <div className="entity-main">
-                <span className="entity-title">{t.name}</span>
-                <span className="entity-meta">{t.description || "—"}</span>
-              </div>
-              <div className="entity-side">
-                <span className="entity-meta">{APPLIES_LABELS[t.applies_to] ?? t.applies_to}</span>
-                <button type="button" className="btn btn-sm" onClick={() => setEditing(t)}>
-                  Edit
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      {renderTemplateList()}
 
       {pendingBulk ? (
         <ConfirmDialog

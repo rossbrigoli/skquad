@@ -613,12 +613,14 @@ function AgentConfigPane({
   const [savedNote, setSavedNote] = useState("");
 
   const storageInvalid = storageEnabled && !isValidStorageSize(storageSize);
+  const storageBaseline = agent.storage_size || DEFAULT_AGENT_STORAGE_SIZE;
+  const storageSizeDirty = storageEnabled && storageSize.trim() !== storageBaseline;
   const dirty =
     role !== (agent.role ?? "") ||
     prompt !== (agent.system_prompt ?? "") ||
     Number(idleTimeout || 0) !== (agent.idle_timeout_sec ?? 0) ||
     storageEnabled !== (agent.storage_enabled ?? false) ||
-    (storageEnabled ? storageSize.trim() !== (agent.storage_size ? agent.storage_size : DEFAULT_AGENT_STORAGE_SIZE) : false) ||
+    storageSizeDirty ||
     primary !== (agent.ai_model_id ?? "") ||
     fallback !== (agent.fallback_ai_model_id ?? "");
 
@@ -975,6 +977,15 @@ function ChatThread({
             // S-189: content-derived stable keys for tool calls (no natural ids;
             // list is static message history).
             const callKeys = uniqueContentKeys(toolCalls, (c) => `${msg.id}|${c.name}|${JSON.stringify(c.arguments)}`);
+            const renderChatBody = () => {
+              if (msg.payload?.message) {
+                return <MarkdownMessage text={msg.payload.message} />;
+              }
+              if (attachments.length > 0) {
+                return null;
+              }
+              return <div className="chat-text">(no text)</div>;
+            };
             return (
               <div key={msg.id} className={`chat-row ${fromUser ? "mine" : "theirs"}`}>
                 <div className={`chat-avatar ${fromUser ? "me" : "agent"}`} aria-hidden="true">
@@ -990,11 +1001,7 @@ function ChatThread({
                       <span className="chat-status mono cancelled">cancelled</span>
                     ) : null}
                   </div>
-                  {msg.payload?.message ? (
-                    <MarkdownMessage text={msg.payload.message} />
-                  ) : attachments.length > 0 ? null : (
-                    <div className="chat-text">(no text)</div>
-                  )}
+                  {renderChatBody()}
                   <AttachmentThumbs attachments={attachments} />
                   {toolCalls.length > 0 ? (
                     <div className="chat-tools">

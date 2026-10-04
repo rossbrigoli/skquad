@@ -1026,11 +1026,14 @@ function RoleControl({
   }
 
   const label = isAdminUser ? "Demote" : "Make admin";
-  const confirmBody = isSelf
-    ? "You are changing your OWN role. You will lose access to this admin surface immediately."
-    : isAdminUser
-      ? `Remove platform admin from ${user.name || user.email}? They keep their squads, agents and model grants.`
-      : `Give ${user.name || user.email} full platform admin (user management, model grants, registry writes)?`;
+  let confirmBody: string;
+  if (isSelf) {
+    confirmBody = "You are changing your OWN role. You will lose access to this admin surface immediately.";
+  } else if (isAdminUser) {
+    confirmBody = `Remove platform admin from ${user.name || user.email}? They keep their squads, agents and model grants.`;
+  } else {
+    confirmBody = `Give ${user.name || user.email} full platform admin (user management, model grants, registry writes)?`;
+  }
 
   return (
     <>

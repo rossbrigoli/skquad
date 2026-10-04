@@ -309,6 +309,46 @@ export default function InboxPage() {
     );
   };
 
+  function renderList() {
+    if (loading && messages.length === 0) {
+      return <EmptyState title="Loading your inbox…" hint="Agent and system messages addressed to you." />;
+    }
+    if (messages.length === 0) {
+      return (
+        <EmptyState
+          title="Your inbox is empty"
+          hint="Ask an agent to send something to your inbox and it will land here — unread until you open it."
+        />
+      );
+    }
+    return (
+      <div className="inbox-groups">
+        {/* S-207 req 7: column header above the list. */}
+        <div className="inbox-columns" role="row">
+          <input
+            type="checkbox"
+            className="inbox-checkbox"
+            checked={allVisibleSelected}
+            aria-label="Select all visible messages"
+            onChange={() => setSelectedIds((prev) => toggleSelectAll(prev, visibleIds))}
+          />
+          <span className="inbox-status" aria-hidden="true" />
+          <span className="inbox-col-sender">From</span>
+          <span className="inbox-col-title">Message</span>
+          <span className="inbox-col-kind">Type</span>
+          <span className="inbox-col-time">Received</span>
+        </div>
+        {/* S-207 req 9: recency groups, empty ones hidden. */}
+        {sections.map((section) => (
+          <section key={section.group} className="inbox-group" aria-label={section.label}>
+            <h2 className="inbox-group-header">{section.label}</h2>
+            <div className="entity-list inbox-list">{section.items.map(renderRow)}</div>
+          </section>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <AuthGate>
       <AppShell>
@@ -379,41 +419,7 @@ export default function InboxPage() {
           ) : null}
         </div>
         {error ? <div className="notice error">{error}</div> : null}
-        {selected ? (
-          renderDetail(selected)
-        ) : loading && messages.length === 0 ? (
-          <EmptyState title="Loading your inbox…" hint="Agent and system messages addressed to you." />
-        ) : messages.length === 0 ? (
-          <EmptyState
-            title="Your inbox is empty"
-            hint="Ask an agent to send something to your inbox and it will land here — unread until you open it."
-          />
-        ) : (
-          <div className="inbox-groups">
-            {/* S-207 req 7: column header above the list. */}
-            <div className="inbox-columns" role="row">
-              <input
-                type="checkbox"
-                className="inbox-checkbox"
-                checked={allVisibleSelected}
-                aria-label="Select all visible messages"
-                onChange={() => setSelectedIds((prev) => toggleSelectAll(prev, visibleIds))}
-              />
-              <span className="inbox-status" aria-hidden="true" />
-              <span className="inbox-col-sender">From</span>
-              <span className="inbox-col-title">Message</span>
-              <span className="inbox-col-kind">Type</span>
-              <span className="inbox-col-time">Received</span>
-            </div>
-            {/* S-207 req 9: recency groups, empty ones hidden. */}
-            {sections.map((section) => (
-              <section key={section.group} className="inbox-group" aria-label={section.label}>
-                <h2 className="inbox-group-header">{section.label}</h2>
-                <div className="entity-list inbox-list">{section.items.map(renderRow)}</div>
-              </section>
-            ))}
-          </div>
-        )}
+        {selected ? renderDetail(selected) : renderList()}
         {pendingDelete ? (
           <ConfirmDialog
             title="Delete inbox message"
