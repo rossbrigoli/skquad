@@ -82,30 +82,48 @@ func (g *OrphanPVCGC) SweepOrphanWorkspacePVCs(ctx context.Context) (OrphanSweep
 
 	pending := 0
 	for ns := range managedNamespaces {
-		// Guard 1: only labeled workspace PVCs.
-		var pvcs corev1.PersistentVolumeClaimList
-		if err := g.List(ctx, &pvcs, client.InNamespace(ns), client.MatchingLabels{
-			LabelWorkspacePVC: "true",
-		}); err != nil {
-			return report, fmt.Errorf("list workspace pvc in %s: %w", ns, err)
-		}
-		// Guard 4: deployments still referencing claims by name.
-		referenced, err := g.referencedClaims(ctx, ns)
+		nsPending, err := g.sweepNamespace(ctx, log, ns, liveAgentIDs, &report)
 		if err != nil {
 			return report, err
 		}
-		for i := range pvcs.Items {
-			isPending, err := g.sweepOnePVC(ctx, log, &pvcs.Items[i], liveAgentIDs, referenced, &report)
-			if err != nil {
-				return report, err
-			}
-			if isPending {
-				pending++
-			}
-		}
+		pending += nsPending
 	}
 	workspacePVCPending.Set(float64(pending))
 	return report, nil
+}
+
+// sweepNamespace evaluates every labeled workspace PVC in one managed
+// namespace, updating the shared report and returning how many were
+// pending (for the gauge).
+func (g *OrphanPVCGC) sweepNamespace(
+	ctx context.Context,
+	log logr.Logger,
+	ns string,
+	liveAgentIDs map[string]bool,
+	report *OrphanSweepReport,
+) (pending int, err error) {
+	// Guard 1: only labeled workspace PVCs.
+	var pvcs corev1.PersistentVolumeClaimList
+	if err := g.List(ctx, &pvcs, client.InNamespace(ns), client.MatchingLabels{
+		LabelWorkspacePVC: "true",
+	}); err != nil {
+		return 0, fmt.Errorf("list workspace pvc in %s: %w", ns, err)
+	}
+	// Guard 4: deployments still referencing claims by name.
+	referenced, err := g.referencedClaims(ctx, ns)
+	if err != nil {
+		return 0, err
+	}
+	for i := range pvcs.Items {
+		isPending, err := g.sweepOnePVC(ctx, log, &pvcs.Items[i], liveAgentIDs, referenced, report)
+		if err != nil {
+			return pending, err
+		}
+		if isPending {
+			pending++
+		}
+	}
+	return pending, nil
 }
 
 // sweepOnePVC evaluates one labeled workspace PVC: live agents,

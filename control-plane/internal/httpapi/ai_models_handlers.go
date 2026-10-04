@@ -223,29 +223,50 @@ func (s *Server) createAIModel(w http.ResponseWriter, r *http.Request) {
 	// S-GWREG fail-loud: provision the gateway deployment BEFORE the
 	// registry row. A gateway failure means no registry row, 502, and a
 	// loud error — never a silently-unusable model.
-	gatewayDeploymentID := ""
-	if s.gatewayModelsEnabled() {
-		deploymentID, err := s.provisionGatewayModel(r.Context(), provider, modelName, model.SupportsVision)
-		if err != nil {
-			writeGatewayProvisionFailure(w, "registered", err)
-			return
-		}
-		gatewayDeploymentID = deploymentID
-	} else {
-		log.Printf("aimodel: LLM gateway not configured — skipping gateway deployment for %q (dev mode; model will NOT be routable until registered in the gateway)", modelName)
+	gatewayDeploymentID, ok := s.provisionGatewayForNewModel(w, r, provider, modelName, model.SupportsVision)
+	if !ok {
+		return
 	}
-	created, err := s.store.CreateAIModel(s.pendingUserAuditCtx(r, "aimodel.create", "ai_model", "", "", nil), model)
-	if err != nil {
-		if gatewayDeploymentID != "" {
-			s.compensateGatewayDelete(r.Context(), gatewayDeploymentID, modelName)
-		}
-		writeStorageError(w, err)
+	created, ok := s.persistNewAIModel(w, r, model, gatewayDeploymentID)
+	if !ok {
 		return
 	}
 	if gatewayDeploymentID != "" {
 		s.reloadGateway(r.Context())
 	}
 	writeJSON(w, http.StatusCreated, created)
+}
+
+// provisionGatewayForNewModel provisions the gateway deployment for a
+// model being registered. It returns the deployment id ("" when the
+// LLM gateway is not configured — dev mode). On provisioning failure
+// it writes the 502 and returns ok=false.
+func (s *Server) provisionGatewayForNewModel(w http.ResponseWriter, r *http.Request, provider *domain.LLMProvider, modelName string, supportsVision bool) (deploymentID string, ok bool) {
+	if !s.gatewayModelsEnabled() {
+		log.Printf("aimodel: LLM gateway not configured — skipping gateway deployment for %q (dev mode; model will NOT be routable until registered in the gateway)", modelName)
+		return "", true
+	}
+	deploymentID, err := s.provisionGatewayModel(r.Context(), provider, modelName, supportsVision)
+	if err != nil {
+		writeGatewayProvisionFailure(w, "registered", err)
+		return "", false
+	}
+	return deploymentID, true
+}
+
+// persistNewAIModel stores the AI model registry row, compensating a
+// provisioned gateway deployment when the store write fails. On
+// failure it writes the storage error and returns ok=false.
+func (s *Server) persistNewAIModel(w http.ResponseWriter, r *http.Request, model *domain.AIModel, gatewayDeploymentID string) (*domain.AIModel, bool) {
+	created, err := s.store.CreateAIModel(s.pendingUserAuditCtx(r, "aimodel.create", "ai_model", "", "", nil), model)
+	if err != nil {
+		if gatewayDeploymentID != "" {
+			s.compensateGatewayDelete(r.Context(), gatewayDeploymentID, model.ModelName)
+		}
+		writeStorageError(w, err)
+		return nil, false
+	}
+	return created, true
 }
 
 func (s *Server) listAIModels(w http.ResponseWriter, r *http.Request) {
