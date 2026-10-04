@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "skquad central LLM gateway (LiteLLM proxy): metering, cost, BYOM, permissions"
 requires-python = ">=3.11"
 dependencies = [
-    "litellm[proxy]>=1.40",
+    # Pinned exactly for deterministic rebuilds (S-220): matches the tested
+    # version running live as of 2026-10-04. Bump deliberately, not by accident.
+    "litellm[proxy]==1.103.2",
     "prisma>=0.15",
     "psycopg[binary]>=3.1",
 ]
