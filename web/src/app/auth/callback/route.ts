@@ -58,7 +58,7 @@ export async function GET(request: NextRequest) {
     // The session must end no later than the credential we actually present
     // upstream, so take the tighter of the OAuth `expires_in` and the ID token's
     // own `exp`. Otherwise we could keep sending a JWT the control-plane rejects.
-    const oauthExpiry = Math.floor(Date.now() / 1000) + (tokens.expires_in || 300);
+    const oauthExpiry = Math.floor(Date.now() / 1000) + (tokens.expires_in ?? 300);
     const idTokenExpiry = typeof claims.exp === "number" ? claims.exp : oauthExpiry;
     const expiry = Math.min(oauthExpiry, idTokenExpiry);
     const res = appRedirect(request, "/");

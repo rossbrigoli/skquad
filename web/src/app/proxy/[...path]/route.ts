@@ -32,8 +32,8 @@ async function liveSession(request: NextRequest): Promise<Session | null> {
         // Carry the freshly-minted ID token when present; otherwise keep the old
         // one only if it is still the credential we have.
         id_token: typeof tokens.id_token === "string" ? tokens.id_token : session.id_token,
-        refresh_token: tokens.refresh_token || session.refresh_token,
-        expiry: Math.floor(Date.now() / 1000) + (tokens.expires_in || 300),
+        refresh_token: tokens.refresh_token ?? session.refresh_token,
+        expiry: Math.floor(Date.now() / 1000) + (tokens.expires_in ?? 300),
         name: session.name,
         email: session.email,
       };
@@ -86,7 +86,7 @@ async function forward(request: NextRequest, method: string, path: string[]): Pr
     const buf = await upstream.arrayBuffer();
     const res = new NextResponse(buf.byteLength === 0 ? null : buf, {
       status: upstream.status,
-      headers: { "Content-Type": upstream.headers.get("Content-Type") || "application/json" },
+      headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "application/json" },
     });
     // If we refreshed, roll the new session into the response cookie.
     // Match the cookie to the protocol the request arrived on; see requestIsHttps.
