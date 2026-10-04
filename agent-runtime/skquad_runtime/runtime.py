@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic, sleep as default_sleep
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, NamedTuple, Protocol, cast
 from urllib import error, request
 
 # S-164: correlation of the inbox message an agent turn is currently
@@ -296,8 +296,14 @@ TURN_CONTINUE_NUDGE = "continue_nudge"
 TURN_FINAL = "final"
 TURN_CANCELLED_SUMMARY = "turn cancelled by user"
 
-# Sentinel: the no-tool-call branch handled a nudge; the tool loop continues.
-_NO_TOOL_CALL_CONTINUE = object()
+class NoToolCallContinue(NamedTuple):
+    """S-189: typed signal that the no-tool-call nudge path wants the loop to continue.
+
+    Replaces the opaque sentinel tuple so callers narrow with ``isinstance``
+    and read named fields instead of untyped ``__getitem__`` indexing.
+    """
+
+    interim_delivered: int
 
 
 def decide_turn_action(
@@ -445,6 +451,17 @@ def _embed_attempt(
     return f"data:{mime};base64,{encoded}", len(encoded), ""
 
 
+def _attachment_identity(item: object) -> "tuple[str, str] | None":
+    """S-189: return (upload_id, mime) for a usable attachment dict, else None."""
+    if not isinstance(item, dict):
+        return None
+    upload_id = str(item.get("id") or "").strip()
+    if not upload_id:
+        return None
+    mime = str(item.get("content_type") or "").strip().lower()
+    return upload_id, mime
+
+
 def build_image_content_parts(
     text: str,
     attachments: object,
@@ -483,12 +500,10 @@ def build_image_content_parts(
     total_b64 = 0
     embedded = 0
     for item in attachments:
-        if not isinstance(item, dict):
+        identity = _attachment_identity(item)
+        if identity is None:
             continue
-        upload_id = str(item.get("id") or "").strip()
-        if not upload_id:
-            continue
-        mime = str(item.get("content_type") or "").strip().lower()
+        upload_id, mime = identity
         if mime not in VISION_ALLOWED_MIME:
             _skip_attachment(stats, upload_id, "mime_not_allowed")
             continue
@@ -1616,10 +1631,10 @@ class LLMMessageHandler:
         response: object,
         tool_calls_log: list[dict[str, object]],
         chat_messages: list[dict[str, object]],
-    ) -> object:
+    ) -> "tuple[MessageResult | None, object, list[dict[str, object]], int] | NoToolCallContinue":
         """Handle a response without tool calls (S-195 interim replies).
 
-        Returns ``_NO_TOOL_CALL_CONTINUE`` when the nudge path appended
+        Returns ``NoToolCallContinue`` when the nudge path appended
         continuation messages and the loop should keep going, otherwise
         the 4-tuple to return to the caller.
         """
@@ -1671,7 +1686,7 @@ class LLMMessageHandler:
         interim_delivered += 1
         chat_messages.append({"role": "assistant", "content": interim_text})
         chat_messages.append({"role": "user", "content": CHAT_CONTINUE_PROMPT})
-        return _NO_TOOL_CALL_CONTINUE, interim_delivered
+        return NoToolCallContinue(interim_delivered=interim_delivered)
 
     def _forced_final_completion(
         self,
@@ -1713,37 +1728,27 @@ class LLMMessageHandler:
             )
         return None, response, tool_calls_log, interim_delivered
 
-    def _complete_with_tools(
+    def _compose_chat_plugins(
         self,
         message: RuntimeMessage,
         config: BootstrapConfig,
+        prompted: "PromptedRuntime | None",
+        completion: object,
         virtual_key: str,
         model: str,
-        prompted: "PromptedRuntime | None" = None,
-    ) -> tuple[MessageResult | None, object, list[dict[str, object]], int]:
-        """Run the chat tool loop.
+    ) -> "tuple[Any, Any, MessageResult | None]":
+        """S-189: builtin/plugin composition + subagent wiring for the chat path.
 
-        Returns (early_result, response, tool_calls_log, interim_delivered).
-        S-195: ``interim_delivered`` counts progress replies already posted
-        to the chat thread from inside the loop; the caller must not re-post
-        them and must tolerate an empty final response when it is non-zero.
+        BT-RUNTIME: builtin tools (when enabled) join the chat tool list.
+        A fetch failure fails the turn loudly — never answer with a
+        partially-known tool set. Returns (plugins, tools, early_result).
         """
-        chat_messages = self._build_chat_messages(message, config, prompted, model)
-        completion = self._completion or self._default_completion()
-        # BT-RUNTIME: builtin tools (when enabled) join the chat tool list.
-        # A fetch failure fails the turn loudly — never answer with a
-        # partially-known tool set.
         from .builtin_tools import compose_builtin_and_plugins
 
         try:
             plugins = compose_builtin_and_plugins(load_builtin_tools(config), self.plugins)
         except BuiltinToolsFetchError as exc:
-            return (
-                MessageResult(ok=False, summary=f"builtin-tools fetch failed: {exc}"),
-                None,
-                [],
-                0,
-            )
+            return [], [], MessageResult(ok=False, summary=f"builtin-tools fetch failed: {exc}")
         tools = self.tool_schemas(plugins)
         # S-160: subagents in the chat path too. The subagent inherits
         # the same composed chat system prompt and gateway identity.
@@ -1765,6 +1770,61 @@ class LLMMessageHandler:
                 kwargs_factory=_chat_sub_kwargs,
                 origin=f"chat:{message.id}",
             )
+        return plugins, tools, None
+
+    def _prepare_chat_step(
+        self,
+        compactor: object,
+        chat_messages: list[dict[str, object]],
+        message: RuntimeMessage,
+        config: BootstrapConfig,
+        virtual_key: str,
+        model: str,
+        tools: object,
+    ) -> "tuple[list[dict[str, object]], dict[str, object]]":
+        """S-189: per-step compaction, leading-system invariant, and kwargs."""
+        chat_messages, compaction = compactor.maybe_compact(chat_messages)
+        # S-195c: strict templates reject mid-conversation system
+        # turns; guarantee the leading-system invariant every step.
+        chat_messages = enforce_leading_system(chat_messages)
+        if compaction.changed:
+            LOGGER.info(
+                "S-161 chat compaction: tier=%d tokens %d->%d evicted=%d clipped=%d",
+                compaction.tier,
+                compaction.tokens_before,
+                compaction.tokens_after,
+                compaction.evicted_turns,
+                compaction.clipped_messages,
+            )
+        completion_kwargs = self._completion_kwargs(
+            message, config, chat_messages, virtual_key, model
+        )
+        if tools:
+            completion_kwargs["tools"] = tools
+        return chat_messages, completion_kwargs
+
+    def _complete_with_tools(
+        self,
+        message: RuntimeMessage,
+        config: BootstrapConfig,
+        virtual_key: str,
+        model: str,
+        prompted: "PromptedRuntime | None" = None,
+    ) -> tuple[MessageResult | None, object, list[dict[str, object]], int]:
+        """Run the chat tool loop.
+
+        Returns (early_result, response, tool_calls_log, interim_delivered).
+        S-195: ``interim_delivered`` counts progress replies already posted
+        to the chat thread from inside the loop; the caller must not re-post
+        them and must tolerate an empty final response when it is non-zero.
+        """
+        chat_messages = self._build_chat_messages(message, config, prompted, model)
+        completion = self._completion or self._default_completion()
+        plugins, tools, early = self._compose_chat_plugins(
+            message, config, prompted, completion, virtual_key, model
+        )
+        if early is not None:
+            return early, None, [], 0
         tool_calls_log: list[dict[str, object]] = []
         max_steps = max(1, self.max_tool_steps or DEFAULT_CHAT_TOOL_STEPS)
         # S-195: bound on interim progress replies for this turn.
@@ -1790,24 +1850,9 @@ class LLMMessageHandler:
                     tool_calls_log,
                     interim_delivered,
                 )
-            chat_messages, compaction = compactor.maybe_compact(chat_messages)
-            # S-195c: strict templates reject mid-conversation system
-            # turns; guarantee the leading-system invariant every step.
-            chat_messages = enforce_leading_system(chat_messages)
-            if compaction.changed:
-                LOGGER.info(
-                    "S-161 chat compaction: tier=%d tokens %d->%d evicted=%d clipped=%d",
-                    compaction.tier,
-                    compaction.tokens_before,
-                    compaction.tokens_after,
-                    compaction.evicted_turns,
-                    compaction.clipped_messages,
-                )
-            completion_kwargs = self._completion_kwargs(
-                message, config, chat_messages, virtual_key, model
+            chat_messages, completion_kwargs = self._prepare_chat_step(
+                compactor, chat_messages, message, config, virtual_key, model, tools
             )
-            if tools:
-                completion_kwargs["tools"] = tools
             try:
                 response = completion(**completion_kwargs)
             except Exception as exc:
@@ -1826,10 +1871,10 @@ class LLMMessageHandler:
                     interim_budget, interim_delivered, response,
                     tool_calls_log, chat_messages,
                 )
-                if isinstance(outcome, tuple) and outcome[0] is _NO_TOOL_CALL_CONTINUE:
-                    interim_delivered = outcome[1]
+                if isinstance(outcome, NoToolCallContinue):
+                    interim_delivered = outcome.interim_delivered
                     continue
-                return outcome  # type: ignore[return-value]
+                return outcome
             if step == max_steps - 1:
                 return self._forced_final_completion(
                     message, config, chat_messages, virtual_key, model,
@@ -2225,6 +2270,47 @@ class LiteLLMTaskHandler:
             task.id,
         )
 
+    def _setup_task_subagents(
+        self,
+        plugins: object,
+        tools: object,
+        system_prompt: str,
+        completion: object,
+        model: str,
+        config: BootstrapConfig,
+        virtual_key: str,
+        task: RuntimeTask,
+    ) -> "tuple[Any, Any]":
+        """S-189: S-160 subagent wiring for the task path."""
+        from .subagents import maybe_add_subagent_plugin
+
+        return maybe_add_subagent_plugin(
+            plugins,
+            tools,
+            system_prompt=system_prompt,
+            completion=completion,
+            kwargs_factory=lambda msgs, child_tools: self._completion_kwargs(
+                model, msgs, config, virtual_key, task.id, child_tools
+            ),
+            origin=f"task:{task.id}",
+        )
+
+    def _run_task_tool_round(
+        self,
+        content: str,
+        tool_calls: object,
+        config: BootstrapConfig,
+        plugins: object,
+        messages: list[dict[str, object]],
+    ) -> "TaskResult | None":
+        """S-183: working narration goes to the task thread BEFORE the
+        tool round runs, so a long/slow tool no longer leaves the
+        thread silent while the agent is mid-work.
+        """
+        if content.strip() and self.thread_sink is not None:
+            self.thread_sink(trim_text(content, TASK_THREAD_TURN_MAX_CHARS))
+        return self._run_tool_calls(tool_calls, config, plugins, messages)
+
     def handle_task(self, task: RuntimeTask, config: BootstrapConfig) -> TaskResult:
         virtual_key, model = self._task_prerequisites(config)
 
@@ -2263,17 +2349,8 @@ class LiteLLMTaskHandler:
         # S-160: subagents — spawn_subagent runs a nested loop that
         # inherits this run's model, grants, config and composed system
         # prompt but starts from an empty context.
-        from .subagents import maybe_add_subagent_plugin
-
-        plugins, tools = maybe_add_subagent_plugin(
-            plugins,
-            tools,
-            system_prompt=system_prompt,
-            completion=completion,
-            kwargs_factory=lambda msgs, child_tools: self._completion_kwargs(
-                model, msgs, config, virtual_key, task.id, child_tools
-            ),
-            origin=f"task:{task.id}",
+        plugins, tools = self._setup_task_subagents(
+            plugins, tools, system_prompt, completion, model, config, virtual_key, task
         )
         last_content = ""
         last_model_used = model
@@ -2307,12 +2384,7 @@ class LiteLLMTaskHandler:
                     summary=trim_text(final_content, config.task_summary_max_chars),
                     model_used=last_model_used,
                 )
-            # S-183: working narration goes to the task thread BEFORE the
-            # tool round runs, so a long/slow tool no longer leaves the
-            # thread silent while the agent is mid-work.
-            if content.strip() and self.thread_sink is not None:
-                self.thread_sink(trim_text(content, TASK_THREAD_TURN_MAX_CHARS))
-            blocked = self._run_tool_calls(tool_calls, config, plugins, messages)
+            blocked = self._run_task_tool_round(content, tool_calls, config, plugins, messages)
             if blocked is not None:
                 return blocked
 
@@ -2582,9 +2654,16 @@ def plugin_candidate(module: object, attr: str) -> object:
 
 
 def instantiate_plugin(candidate: object) -> RuntimePlugin:
+    """Instantiate a plugin from a class, factory callable, or instance (S-189).
+
+    Every call site is guarded by an explicit ``callable()`` check so the
+    call target is never a bare ``object`` under static type analysis.
+    """
     factory: Any = candidate
-    if inspect.isclass(factory) or (callable(factory) and not looks_like_plugin(factory)):
-        factory = factory()
+    if inspect.isclass(factory):
+        factory = cast(Callable[[], Any], factory)()
+    elif callable(factory) and not looks_like_plugin(factory):
+        factory = cast(Callable[[], Any], factory)()
     return factory
 
 
@@ -2951,12 +3030,51 @@ def _prepare_task_dirs(config: BootstrapConfig, task: RuntimeTask, prompt_sha: s
     return resumed
 
 
+def _prepare_workspace_task_dirs(
+    config: BootstrapConfig,
+    control_plane: ControlPlaneClient,
+    task: RuntimeTask,
+    state: "RuntimeState | None",
+    prompt_sha: str,
+) -> "tuple[bool, TaskResult | None]":
+    """S-139/S-189: disk-full guards + task dir prep.
+
+    Returns ``(resumed, early_block_result)`` — a block result short-
+    circuits the wake when the volume is too full before or after the
+    task dirs are created.
+    """
+    pre_base = resolve_workspace_base(config.workspace_base)
+    ok, free = check_free_space(pre_base, config.min_free_bytes)
+    if not ok:
+        return False, _block_disk_full(control_plane, task, state, pre_base, free, config.min_free_bytes)
+    resumed = _prepare_task_dirs(config, task, prompt_sha)
+    # S-139: re-check after task dir creation — the floor could have
+    # been crossed between the pre-check and now (another writer
+    # filled the volume mid-setup).
+    ok, free = check_free_space(pre_base, config.min_free_bytes)
+    if not ok:
+        return False, _block_disk_full(control_plane, task, state, pre_base, free, config.min_free_bytes)
+    return resumed, None
+
+
+def _persist_resume_note(workspace: object, task: RuntimeTask) -> None:
+    """S-189: best-effort resume-note persistence (journal never fails a task)."""
+    try:
+        if workspace.task_dir is not None:  # type: ignore[attr-defined]
+            set_resume_note(workspace.task_dir, workspace.resume_note)  # type: ignore[attr-defined]
+    except OSError as exc:  # noqa: BLE001 - journal is best-effort
+        LOGGER.warning(
+            "resume note persist failed",
+            extra={"task_id": task.id, "error": str(exc)},
+        )
+
+
 def run_task_once(
     config: BootstrapConfig,
     handler: TaskHandler,
     client: ControlPlaneClient | None = None,
     state: RuntimeState | None = None,
-) -> RuntimeTask | None:
+) -> "RuntimeTask | None":
     status = bootstrap_status(config)
     if not status.ready:
         return None
@@ -2992,33 +3110,17 @@ def run_task_once(
         attacher(lambda text: control_plane.append_task_thread(task.id, text))
     resumed = False
     if config.workspace_enabled:
-        # S-139: disk-full guard BEFORE any workspace work. Running a
-        # task on a full filesystem silently truncates writes; block the
-        # task with a clear summary instead. Best-effort: a failed stat
-        # passes (check_free_space) so odd filesystems never wedge tasks.
-        pre_base = resolve_workspace_base(config.workspace_base)
-        ok, free = check_free_space(pre_base, config.min_free_bytes)
-        if not ok:
-            return _block_disk_full(control_plane, task, state, pre_base, free, config.min_free_bytes)
-        base = pre_base
-        resumed = _prepare_task_dirs(config, task, prompt_sha)
-        # S-139: re-check after task dir creation — the floor could have
-        # been crossed between the pre-check and now (another writer
-        # filled the volume mid-setup).
-        ok, free = check_free_space(base, config.min_free_bytes)
-        if not ok:
-            return _block_disk_full(control_plane, task, state, base, free, config.min_free_bytes)
+        # S-139: disk-full guards BEFORE any workspace work (extracted
+        # to _prepare_workspace_task_dirs for S-189/S3776).
+        resumed, blocked = _prepare_workspace_task_dirs(
+            config, control_plane, task, state, prompt_sha
+        )
+        if blocked is not None:
+            return blocked
     started = monotonic()
     workspace = _prepare_task_workspace(config, control_plane, task, resumed=resumed)
     if workspace is not None and workspace.resume_note:
-        try:
-            if workspace.task_dir is not None:
-                set_resume_note(workspace.task_dir, workspace.resume_note)
-        except OSError as exc:  # noqa: BLE001 - journal is best-effort
-            LOGGER.warning(
-                "resume note persist failed",
-                extra={"task_id": task.id, "error": str(exc)},
-            )
+        _persist_resume_note(workspace, task)
     try:
         with TaskLeaseHeartbeat(control_plane, task, config.heartbeat_interval_seconds):
             result = handle_task_with_timeout(handler, task, config)
