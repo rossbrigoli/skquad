@@ -324,7 +324,7 @@ export default function InboxPage() {
     return (
       <div className="inbox-groups">
         {/* S-207 req 7: column header above the list. */}
-        <div className="inbox-columns" role="row">
+        <div className="inbox-columns">
           <input
             type="checkbox"
             className="inbox-checkbox"
@@ -358,7 +358,7 @@ export default function InboxPage() {
           {!selected ? (
             <div className="inbox-controls">
               {/* S-207 req 5: bulk actions, enabled only with a selection. */}
-              <div className="inbox-bulk" role="group" aria-label="Bulk actions">
+              <fieldset className="inbox-bulk" style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }} aria-label="Bulk actions">
                 <button
                   type="button"
                   className="btn btn-small inbox-bulk-read"
@@ -380,7 +380,7 @@ export default function InboxPage() {
                 {selectionSize > 0 ? (
                   <span className="inbox-selection-count">{selectionSize} selected</span>
                 ) : null}
-              </div>
+              </fieldset>
               {/* S-207 req 1: restyled to the platform field standard. */}
               <label className="inbox-filter">
                 <span>Show</span>

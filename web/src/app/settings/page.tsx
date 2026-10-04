@@ -74,14 +74,14 @@ type TestState = "idle" | "testing" | "done";
 
 function TestStatus({ state, result }: { readonly state: TestState; readonly result: TestResult | null }) {
   if (state === "testing") {
-    return <span className="test-result pending" role="status">Testing…</span>;
+    return <output className="test-result pending">Testing…</output>;
   }
   if (state === "done" && result) {
     return (
-      <span className={testResultClass(result)} role="status" aria-live="polite">
+      <output className={testResultClass(result)}>
         {result.ok ? "✓ " : "✗ "}
         {formatTestResult(result)}
-      </span>
+      </output>
     );
   }
   return null;

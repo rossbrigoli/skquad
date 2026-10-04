@@ -233,7 +233,7 @@ export function DeadLettersPanel() {
       {note ? <p className="field-hint">{note}</p> : null}
       {items === null ? null : items.length === 0 ? <p className="field-hint">No dead letters match.</p> : null}
       {(items?.length ?? 0) > 0 ? (
-        <div className="templates-toolbar" role="group" aria-label="Dead letter bulk actions">
+        <fieldset className="templates-toolbar" style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }} aria-label="Dead letter bulk actions">
           <label className="templates-selectall">
             <input
               ref={headerCheckbox}
@@ -264,7 +264,7 @@ export function DeadLettersPanel() {
           >
             Delete selected
           </button>
-        </div>
+        </fieldset>
       ) : null}
       {(items ?? []).map((m) => (
         <div key={m.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--border, #ddd)" }}>

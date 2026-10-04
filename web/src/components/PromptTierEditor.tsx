@@ -88,9 +88,9 @@ export function PromptTierEditor({
         </div>
       ) : null}
       {result?.warnings?.map((w) => (
-        <div key={w} className="notice warn" role="status">
+        <output key={w} className="notice warn" style={{ display: "block" }}>
           {w}
-        </div>
+        </output>
       ))}
       {saveError ? (
         <div className="notice error" role="alert">

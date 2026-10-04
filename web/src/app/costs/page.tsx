@@ -60,7 +60,7 @@ function GroupToggle({
   readonly onChange: (source: CostGroupSource) => void;
 }) {
   return (
-    <div className="chart-group-tabs" role="group" aria-label="Cost chart grouping">
+    <fieldset className="chart-group-tabs" style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }} aria-label="Cost chart grouping">
       {COST_GROUP_SOURCES.map((g) => (
         <button
           key={g.id}
@@ -71,7 +71,7 @@ function GroupToggle({
           {g.label}
         </button>
       ))}
-    </div>
+    </fieldset>
   );
 }
 

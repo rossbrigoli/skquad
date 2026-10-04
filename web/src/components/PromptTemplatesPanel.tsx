@@ -160,7 +160,7 @@ export function PromptTemplatesPanel({
       {notice && !error ? <div className="notice">{notice}</div> : null}
 
       {templates.length > 0 ? (
-        <div className="templates-toolbar" role="group" aria-label="Template bulk actions">
+        <fieldset className="templates-toolbar" style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }} aria-label="Template bulk actions">
           <label className="templates-selectall">
             <input
               ref={headerCheckbox}
@@ -181,7 +181,7 @@ export function PromptTemplatesPanel({
           >
             {bulkBusy ? "Deleting…" : "Delete selected"}
           </button>
-        </div>
+        </fieldset>
       ) : null}
 
       {renderTemplateList()}

@@ -22,15 +22,19 @@ export function TokenMeter({
   const softPct = hardCap > 0 ? Math.min(100, Math.round((softWarn / hardCap) * 100)) : 0;
   const checking = levelOverride === "checking";
   return (
-    <div
-      className={`token-meter meter-${level}${checking ? " meter-checking" : ""}`}
-      role="meter"
-      aria-valuemin={0}
-      aria-valuemax={hardCap}
-      aria-valuenow={tokens}
-      aria-label={`${tokens} tokens, soft limit ${softWarn}, hard cap ${hardCap}`}
-    >
-      <div className="token-meter-track">
+    <div className={`token-meter meter-${level}${checking ? " meter-checking" : ""}`}>
+      {/* S-189/S6819: native <meter> for assistive tech; the custom bar below is purely visual. */}
+      <meter
+        className="token-meter-native"
+        style={{ position: "absolute", width: "1px", height: "1px", overflow: "hidden", clipPath: "inset(50%)" }}
+        min={0}
+        max={hardCap}
+        value={tokens}
+        aria-label={`${tokens} tokens, soft limit ${softWarn}, hard cap ${hardCap}`}
+      >
+        {`${pct}%`}
+      </meter>
+      <div className="token-meter-track" aria-hidden="true">
         <div className="token-meter-fill" style={{ width: `${pct}%` }} />
         {softPct > 0 && softPct < 100 ? (
           <div className="token-meter-soft-mark" style={{ left: `${softPct}%` }} title={`soft limit: ${softWarn}`} />

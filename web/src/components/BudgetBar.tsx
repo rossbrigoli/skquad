@@ -32,7 +32,7 @@ export function BudgetBar({
   const pct = Math.round(model.fraction * 100);
   return (
     <div className="budget-bar" data-state={model.over ? "over" : "ok"}>
-      <div className="budget-bar-track" role="img" aria-label={`${formatMoney(model.spend, currency)} of ${formatMoney(model.budget, currency)} budget used (${pct}%)`}>
+      <div className="budget-bar-track">
         <div
           className={model.over ? "budget-bar-fill over" : "budget-bar-fill"}
           style={{ width: `${pct}%` }}

@@ -46,11 +46,10 @@ export function BarChart({
       <div className="chart-frame" style={{ height }}>
         <svg
           viewBox={`0 0 ${WIDTH} ${height}`}
-          role="img"
-          aria-label="Daily usage histogram"
           preserveAspectRatio="none"
           className="chart-svg"
         >
+          <title>Daily usage histogram</title>
           {[0, 0.5, 1].map((frac) => {
             const y = yFor(frac * max);
             return (
