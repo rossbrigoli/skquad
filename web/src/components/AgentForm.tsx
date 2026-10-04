@@ -5,7 +5,7 @@ import { Modal, ModalForm } from "./Modal";
 import { TokenMeter } from "./TokenMeter";
 import { PromptTemplatePicker } from "./PromptTemplatePicker";
 import { usePromptValidation } from "../lib/usePromptValidation";
-import { promptUserMessage, saveBlockedByValidation } from "../lib/prompt";
+import { promptUserMessage, saveBlockedByValidation, type PromptValidateResponse } from "../lib/prompt";
 import type { Agent } from "../lib/api";
 import type { AIModel } from "../lib/aimodels";
 import { modelLabel } from "../lib/agentLlm";
@@ -72,10 +72,7 @@ export function AgentFormModal({
   // reserved tokens / unknown template vars / hard-cap over are surfaced
   // inline and block submit before the PATCH ever fires.
   const { result: promptCheck, validating: promptValidating } = usePromptValidation("agent", systemPrompt);
-  const promptError =
-    promptCheck && !promptCheck.valid && promptCheck.error
-      ? promptUserMessage({ code: promptCheck.error.code, message: promptCheck.error.message })
-      : "";
+  const promptError = promptErrorMessage(promptCheck);
 
   return (
     <Modal title={title} wider onClose={onClose}>
@@ -83,12 +80,7 @@ export function AgentFormModal({
         busy={busy}
         error={error}
         submitLabel={submitLabel}
-        submitDisabled={
-          name.trim() === "" ||
-          (aiModelId === "" && !initial?.name) ||
-          (storageEnabled && !isValidStorageSize(storageSize)) ||
-          saveBlockedByValidation(promptCheck)
-        }
+        submitDisabled={formSubmitDisabled({ name, aiModelId, editing: Boolean(initial?.name), storageEnabled, storageSize, promptCheck })}
         onCancel={onClose}
         onSubmit={async () => {
           if (storageEnabled && !isValidStorageSize(storageSize)) {
@@ -98,15 +90,7 @@ export function AgentFormModal({
           setBusy(true);
           setError("");
           try {
-            await onSubmit({
-              name: name.trim(),
-              role: role.trim(),
-              system_prompt: systemPrompt,
-              idle_timeout_sec: idleTimeout.trim() === "" ? 0 : Number(idleTimeout),
-              storage_enabled: storageEnabled,
-              storage_size: storageEnabled ? storageSize.trim() : "",
-              ai_model_id: aiModelId,
-            });
+            await onSubmit(buildAgentFormValues({ name, role, systemPrompt, idleTimeout, storageEnabled, storageSize, aiModelId }));
           } catch (err) {
             setError(err instanceof Error ? err.message : "submit failed");
             setBusy(false);
@@ -253,4 +237,69 @@ export function AgentFormModal({
       </ModalForm>
     </Modal>
   );
+}
+
+// S-189/S3776: helpers extracted from AgentFormModal (pure logic, unit
+// behaviour unchanged).
+
+function promptErrorMessage(promptCheck: PromptValidateResponse | null): string {
+  if (promptCheck && !promptCheck.valid && promptCheck.error) {
+    return promptUserMessage({ code: promptCheck.error.code, message: promptCheck.error.message });
+  }
+  return "";
+}
+
+function formSubmitDisabled({
+  name,
+  aiModelId,
+  editing,
+  storageEnabled,
+  storageSize,
+  promptCheck,
+}: {
+  readonly name: string;
+  readonly aiModelId: string;
+  readonly editing: boolean;
+  readonly storageEnabled: boolean;
+  readonly storageSize: string;
+  readonly promptCheck: PromptValidateResponse | null;
+}): boolean {
+  if (name.trim() === "") {
+    return true;
+  }
+  if (aiModelId === "" && !editing) {
+    return true;
+  }
+  if (storageEnabled && !isValidStorageSize(storageSize)) {
+    return true;
+  }
+  return saveBlockedByValidation(promptCheck);
+}
+
+function buildAgentFormValues({
+  name,
+  role,
+  systemPrompt,
+  idleTimeout,
+  storageEnabled,
+  storageSize,
+  aiModelId,
+}: {
+  readonly name: string;
+  readonly role: string;
+  readonly systemPrompt: string;
+  readonly idleTimeout: string;
+  readonly storageEnabled: boolean;
+  readonly storageSize: string;
+  readonly aiModelId: string;
+}): AgentFormValues {
+  return {
+    name: name.trim(),
+    role: role.trim(),
+    system_prompt: systemPrompt,
+    idle_timeout_sec: idleTimeout.trim() === "" ? 0 : Number(idleTimeout),
+    storage_enabled: storageEnabled,
+    storage_size: storageEnabled ? storageSize.trim() : "",
+    ai_model_id: aiModelId,
+  };
 }

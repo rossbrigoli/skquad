@@ -46,6 +46,7 @@ import {
   summarizeToolArgs,
   truncateText,
   uniqueContentKeys,
+  type ChatToolCall,
   type SubagentInfo,
 } from "../../../../../lib/chat";
 import { SubagentThreadPanel } from "../../../../../components/SubagentThreadPanel";
@@ -353,71 +354,22 @@ export default function AgentProfilePage() {
               the Delete button used to sit. Delete itself moved to the
               Configuration tab's Danger zone — beside the chat it read
               like a message-delete. */}
-          <div className="metric-chips agent-title-metrics">
-          <span className={stalled.length > 0 ? "metric-chip attention" : "metric-chip"}>
-            <span className="metric-chip-label">Current lease</span>
-            <span className="metric-chip-value">{live.length > 0 ? "1 task" : "none"}</span>
-            <span className="metric-chip-sub">{leaseSub(live, stalled)}</span>
-          </span>
-          <span className="metric-chip">
-            <span className="metric-chip-label">MTD spend</span>
-            <span className="metric-chip-value">{meteringMtd.loading ? "…" : formatCost(meteringMtd.data)}</span>
-            <span className="metric-chip-sub">
-              {meteringMtd.error ? "owner and platform admins only" : `lifetime ${formatCost(metering.data)}`}
-            </span>
-          </span>
-          <span className="metric-chip">
-            <span className="metric-chip-label">Tasks</span>
-            <span className="metric-chip-value">{tasks.length}</span>
-            <span className="metric-chip-sub">{live.length} running now</span>
-          </span>
-          <span className="metric-chip">
-            <span className="metric-chip-label">Grants</span>
-            <span className="metric-chip-value">{resourceGrants.length}</span>
-            <span className="metric-chip-sub">{resourceGrants.length === 0 ? "none" : "resource grants"}</span>
-          </span>
-          <span className="metric-chip">
-            <span className="metric-chip-label">Workspace</span>
-            <span className="metric-chip-value">{storageDisplay(agent?.storage_enabled, agent?.storage_size)}</span>
-            <span className="metric-chip-sub">{agent?.storage_enabled ? "durable" : "ephemeral"}</span>
-          </span>
-          <span className="metric-chip">
-            <span className="metric-chip-label">Context</span>
-            <span className="metric-chip-value">{contextTokens === null ? "—" : formatContextTokens(contextTokens)}</span>
-            <span className="metric-chip-sub">tokens · last agent turn</span>
-          </span>
-          </div>
+          <AgentMetricChips
+            live={live}
+            stalled={stalled}
+            tasks={tasks}
+            resourceGrants={resourceGrants}
+            metering={metering}
+            meteringMtd={meteringMtd}
+            agent={agent}
+            contextTokens={contextTokens}
+          />
         </div>
         <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)" }}>
           {agent?.role ? agent.role : "no role set"} · <span className="mono">{agentId.slice(0, 12)}</span>
         </p>
 
-        <nav className="squad-tabs agent-tabs" aria-label="Agent sections" style={{ marginTop: "var(--space-4)" }}>
-          <button
-            type="button"
-            className={tab === "chat" ? "squad-tab active" : "squad-tab"}
-            aria-current={tab === "chat" ? "page" : undefined}
-            onClick={() => setTab("chat")}
-          >
-            Chat
-          </button>
-          <button
-            type="button"
-            className={tab === "config" ? "squad-tab active" : "squad-tab"}
-            aria-current={tab === "config" ? "page" : undefined}
-            onClick={() => setTab("config")}
-          >
-            Configuration
-          </button>
-          <button
-            type="button"
-            className={tab === "inbox" ? "squad-tab active" : "squad-tab"}
-            aria-current={tab === "inbox" ? "page" : undefined}
-            onClick={() => setTab("inbox")}
-          >
-            Inbox
-          </button>
-        </nav>
+        <AgentSectionTabs tab={tab} onSelect={setTab} />
 
         {tab === "inbox" ? <AgentInboxPanel agentId={agentId} /> : null}
 
@@ -689,57 +641,19 @@ function AgentConfigPane({
             />
           </label>
         </div>
-        <div className="field">
-          <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={storageEnabled}
-              onChange={(e) => {
-                setStorageEnabled(e.target.checked);
-                setSavedNote("");
-              }}
-            />
-            <span>Durable workspace storage</span>
-          </label>
-          {storageEnabled ? (
-            <>
-              <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.5rem", flexWrap: "wrap" }}>
-                {STORAGE_PRESETS.map((preset) => (
-                  <button
-                    key={preset}
-                    type="button"
-                    className={`btn btn-sm${storageSize === preset ? " btn-primary" : ""}`}
-                    onClick={() => {
-                      setStorageSize(preset);
-                      setSavedNote("");
-                    }}
-                  >
-                    {preset}
-                  </button>
-                ))}
-              </div>
-              <input
-                value={storageSize}
-                onChange={(e) => {
-                  setStorageSize(e.target.value);
-                  setSavedNote("");
-                }}
-                placeholder="custom, e.g. 3Gi"
-                style={{ marginTop: "0.5rem" }}
-                aria-label="Storage size"
-              />
-              {storageInvalid ? (
-                <p className="field-hint" style={{ color: "var(--danger, #c0392b)" }}>
-                  Must be a positive quantity like 1Gi, 2Gi or 500M.
-                </p>
-              ) : null}
-            </>
-          ) : null}
-          <p className="field-hint">
-            Durable workspace storage that survives restarts. The platform caps the maximum size;
-            the storage class is managed by your platform admin.
-          </p>
-        </div>
+        <StorageWorkspaceField
+          storageEnabled={storageEnabled}
+          storageSize={storageSize}
+          storageInvalid={storageInvalid}
+          onChangeEnabled={(v) => {
+            setStorageEnabled(v);
+            setSavedNote("");
+          }}
+          onChangeSize={(v) => {
+            setStorageSize(v);
+            setSavedNote("");
+          }}
+        />
       </section>
 
       <section style={{ marginTop: "var(--space-5)" }}>
@@ -1003,45 +917,11 @@ function ChatThread({
                   </div>
                   {renderChatBody()}
                   <AttachmentThumbs attachments={attachments} />
-                  {toolCalls.length > 0 ? (
-                    <div className="chat-tools">
-                      {toolCalls.map((call, idx) =>
-                        call.name === "spawn_subagent" && call.subagent ? (
-                          <div key={`sub-${callKeys[idx]}`} className={`chat-tool subagent-chip${call.ok ? "" : " failed"}`}>
-                            <div className="chat-tool-summary">
-                              <span className="chat-tool-name">🤖 subagent</span>
-                              <span className="chat-tool-args mono">{subagentSummary(call.subagent)}</span>
-                              <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
-                              <button
-                                type="button"
-                                className="btn ghost small"
-                                onClick={() => setOpenSubagent(call.subagent ?? null)}
-                              >
-                                Details
-                              </button>
-                            </div>
-                            {call.result ? (
-                              <div className="chat-subagent-final">{truncateText(call.result, 400)}</div>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <details key={callKeys[idx]} className={`chat-tool${call.ok ? "" : " failed"}`}>
-                            <summary className="chat-tool-summary">
-                              <span className="chat-tool-name">🔧 {call.name}</span>
-                              {summarizeToolArgs(call.arguments) ? (
-                                <span className="chat-tool-args mono">{summarizeToolArgs(call.arguments)}</span>
-                              ) : null}
-                              <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
-                            </summary>
-                            <pre className="chat-tool-detail mono">{prettyToolArgs(call.arguments)}</pre>
-                            {call.result ? (
-                              <pre className="chat-tool-detail mono result">{truncateText(call.result, 4000)}</pre>
-                            ) : null}
-                          </details>
-                        )
-                      )}
-                    </div>
-                  ) : null}
+                  <ChatToolCallList
+                    calls={toolCalls}
+                    callKeys={callKeys}
+                    onShowSubagent={(c) => setOpenSubagent(c)}
+                  />
                 </div>
               </div>
             );
@@ -1480,5 +1360,217 @@ function GrantModal({
         </label>
       </ModalForm>
     </Modal>
+  );
+}
+
+// S-189/S3776: title-row metric chips and the section tab bar extracted
+// from AgentProfilePage; render output identical to the inline JSX.
+function AgentMetricChips({
+  live,
+  stalled,
+  tasks,
+  resourceGrants,
+  metering,
+  meteringMtd,
+  agent,
+  contextTokens,
+}: {
+  readonly live: Task[];
+  readonly stalled: Task[];
+  readonly tasks: Task[];
+  readonly resourceGrants: AgentPermission[];
+  readonly metering: { loading: boolean; error: string | null; data: MeteringSummary | null };
+  readonly meteringMtd: { loading: boolean; error: string | null; data: MeteringSummary | null };
+  readonly agent: Agent | undefined;
+  readonly contextTokens: number | null;
+}) {
+  return (
+    <div className="metric-chips agent-title-metrics">
+      <span className={stalled.length > 0 ? "metric-chip attention" : "metric-chip"}>
+        <span className="metric-chip-label">Current lease</span>
+        <span className="metric-chip-value">{live.length > 0 ? "1 task" : "none"}</span>
+        <span className="metric-chip-sub">{leaseSub(live, stalled)}</span>
+      </span>
+      <span className="metric-chip">
+        <span className="metric-chip-label">MTD spend</span>
+        <span className="metric-chip-value">{meteringMtd.loading ? "…" : formatCost(meteringMtd.data)}</span>
+        <span className="metric-chip-sub">
+          {meteringMtd.error ? "owner and platform admins only" : `lifetime ${formatCost(metering.data)}`}
+        </span>
+      </span>
+      <span className="metric-chip">
+        <span className="metric-chip-label">Tasks</span>
+        <span className="metric-chip-value">{tasks.length}</span>
+        <span className="metric-chip-sub">{live.length} running now</span>
+      </span>
+      <span className="metric-chip">
+        <span className="metric-chip-label">Grants</span>
+        <span className="metric-chip-value">{resourceGrants.length}</span>
+        <span className="metric-chip-sub">{resourceGrants.length === 0 ? "none" : "resource grants"}</span>
+      </span>
+      <span className="metric-chip">
+        <span className="metric-chip-label">Workspace</span>
+        <span className="metric-chip-value">{storageDisplay(agent?.storage_enabled, agent?.storage_size)}</span>
+        <span className="metric-chip-sub">{agent?.storage_enabled ? "durable" : "ephemeral"}</span>
+      </span>
+      <span className="metric-chip">
+        <span className="metric-chip-label">Context</span>
+        <span className="metric-chip-value">{contextTokens === null ? "—" : formatContextTokens(contextTokens)}</span>
+        <span className="metric-chip-sub">tokens · last agent turn</span>
+      </span>
+    </div>
+  );
+}
+
+function AgentSectionTabs({
+  tab,
+  onSelect,
+}: {
+  readonly tab: "chat" | "config" | "inbox";
+  readonly onSelect: (tab: "chat" | "config" | "inbox") => void;
+}) {
+  return (
+    <nav className="squad-tabs agent-tabs" aria-label="Agent sections" style={{ marginTop: "var(--space-4)" }}>
+      <button
+        type="button"
+        className={tab === "chat" ? "squad-tab active" : "squad-tab"}
+        aria-current={tab === "chat" ? "page" : undefined}
+        onClick={() => onSelect("chat")}
+      >
+        Chat
+      </button>
+      <button
+        type="button"
+        className={tab === "config" ? "squad-tab active" : "squad-tab"}
+        aria-current={tab === "config" ? "page" : undefined}
+        onClick={() => onSelect("config")}
+      >
+        Configuration
+      </button>
+      <button
+        type="button"
+        className={tab === "inbox" ? "squad-tab active" : "squad-tab"}
+        aria-current={tab === "inbox" ? "page" : undefined}
+        onClick={() => onSelect("inbox")}
+      >
+        Inbox
+      </button>
+    </nav>
+  );
+}
+
+// S-189/S3776: durable-storage field extracted from AgentConfigPane;
+// render output identical to the inline JSX.
+function StorageWorkspaceField({
+  storageEnabled,
+  storageSize,
+  storageInvalid,
+  onChangeEnabled,
+  onChangeSize,
+}: {
+  readonly storageEnabled: boolean;
+  readonly storageSize: string;
+  readonly storageInvalid: boolean;
+  readonly onChangeEnabled: (v: boolean) => void;
+  readonly onChangeSize: (v: string) => void;
+}) {
+  return (
+    <div className="field">
+      <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
+        <input
+          type="checkbox"
+          checked={storageEnabled}
+          onChange={(e) => onChangeEnabled(e.target.checked)}
+        />
+        <span>Durable workspace storage</span>
+      </label>
+      {storageEnabled ? (
+        <>
+          <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.5rem", flexWrap: "wrap" }}>
+            {STORAGE_PRESETS.map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                className={`btn btn-sm${storageSize === preset ? " btn-primary" : ""}`}
+                onClick={() => onChangeSize(preset)}
+              >
+                {preset}
+              </button>
+            ))}
+          </div>
+          <input
+            value={storageSize}
+            onChange={(e) => onChangeSize(e.target.value)}
+            placeholder="custom, e.g. 3Gi"
+            style={{ marginTop: "0.5rem" }}
+            aria-label="Storage size"
+          />
+          {storageInvalid ? (
+            <p className="field-hint" style={{ color: "var(--danger, #c0392b)" }}>
+              Must be a positive quantity like 1Gi, 2Gi or 500M.
+            </p>
+          ) : null}
+        </>
+      ) : null}
+      <p className="field-hint">
+        Durable workspace storage that survives restarts. The platform caps the maximum size;
+        the storage class is managed by your platform admin.
+      </p>
+    </div>
+  );
+}
+
+// S-189/S3776: tool-call rendering extracted from ChatThread; render
+// output identical to the inline JSX.
+function ChatToolCallList({
+  calls,
+  callKeys,
+  onShowSubagent,
+}: {
+  readonly calls: ChatToolCall[];
+  readonly callKeys: string[];
+  readonly onShowSubagent: (c: SubagentInfo | null) => void;
+}) {
+  if (calls.length === 0) {
+    return null;
+  }
+  return (
+    <div className="chat-tools">
+      {calls.map((call, idx) =>
+        call.name === "spawn_subagent" && call.subagent ? (
+          <div key={`sub-${callKeys[idx]}`} className={`chat-tool subagent-chip${call.ok ? "" : " failed"}`}>
+            <div className="chat-tool-summary">
+              <span className="chat-tool-name">🤖 subagent</span>
+              <span className="chat-tool-args mono">{subagentSummary(call.subagent)}</span>
+              <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
+              <button
+                type="button"
+                className="btn ghost small"
+                onClick={() => onShowSubagent(call.subagent ?? null)}
+              >
+                Details
+              </button>
+            </div>
+            {call.result ? (
+              <div className="chat-subagent-final">{truncateText(call.result, 400)}</div>
+            ) : null}
+          </div>
+        ) : (
+          <details key={callKeys[idx]} className={`chat-tool${call.ok ? "" : " failed"}`}>
+            <summary className="chat-tool-summary">
+              <span className="chat-tool-name">🔧 {call.name}</span>
+              {summarizeToolArgs(call.arguments) ? (
+                <span className="chat-tool-args mono">{summarizeToolArgs(call.arguments)}</span>
+              ) : null}
+              <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
+            </summary>
+            <pre className="chat-tool-detail mono">{prettyToolArgs(call.arguments)}</pre>
+            {call.result ? (
+              <pre className="chat-tool-detail mono result">{truncateText(call.result, 4000)}</pre>
+            ) : null}
+          </details>
+        ),
+      )}
+    </div>
   );
 }

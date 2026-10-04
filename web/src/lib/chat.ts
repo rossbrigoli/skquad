@@ -69,6 +69,38 @@ export function uniqueContentKeys<T>(items: T[], keyOf: (item: T) => string): st
   });
 }
 
+function toolCallsFromRaw(raw: unknown): { name: string; arguments: unknown }[] | null {
+  if (!Array.isArray(raw)) {
+    return null;
+  }
+  return raw
+    .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+    .map((c) => ({
+      name: typeof c.name === "string" ? c.name : "tool",
+      arguments: c.arguments,
+    }));
+}
+
+function threadEntryFromItem(item: unknown): SubagentThreadEntry | null {
+  if (!item || typeof item !== "object" || Array.isArray(item)) {
+    return null;
+  }
+  const entry = item as Record<string, unknown>;
+  const role = entry.role;
+  if (role !== "user" && role !== "assistant" && role !== "tool" && role !== "notice") {
+    return null;
+  }
+  const parsed: SubagentThreadEntry = {
+    role,
+    content: typeof entry.content === "string" ? entry.content : "",
+  };
+  if (typeof entry.name === "string") parsed.name = entry.name;
+  if (typeof entry.ok === "boolean") parsed.ok = entry.ok;
+  const calls = toolCallsFromRaw(entry.tool_calls);
+  if (calls) parsed.tool_calls = calls;
+  return parsed;
+}
+
 /** Lenient parse of the S-163 `subagent` payload; returns null when the
  *  shape is unusable (older runtimes, truncated payloads, junk). */
 export function parseSubagent(raw: unknown): SubagentInfo | null {
@@ -77,25 +109,8 @@ export function parseSubagent(raw: unknown): SubagentInfo | null {
   const rawThread = Array.isArray(value.thread) ? value.thread : [];
   const thread: SubagentThreadEntry[] = [];
   for (const item of rawThread) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const entry = item as Record<string, unknown>;
-    const role = entry.role;
-    if (role !== "user" && role !== "assistant" && role !== "tool" && role !== "notice") continue;
-    const parsed: SubagentThreadEntry = {
-      role,
-      content: typeof entry.content === "string" ? entry.content : "",
-    };
-    if (typeof entry.name === "string") parsed.name = entry.name;
-    if (typeof entry.ok === "boolean") parsed.ok = entry.ok;
-    if (Array.isArray(entry.tool_calls)) {
-      parsed.tool_calls = entry.tool_calls
-        .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
-        .map((c) => ({
-          name: typeof c.name === "string" ? c.name : "tool",
-          arguments: c.arguments,
-        }));
-    }
-    thread.push(parsed);
+    const entry = threadEntryFromItem(item);
+    if (entry) thread.push(entry);
   }
   const turns = typeof value.turns === "number" && Number.isFinite(value.turns) ? value.turns : 0;
   const steps = Array.isArray(value.steps)

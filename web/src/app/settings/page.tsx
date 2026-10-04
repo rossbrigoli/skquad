@@ -159,45 +159,7 @@ export default function SettingsPage() {
     <AuthGate>
       <AppShell>
         <h1 className="page-title">Settings</h1>
-        <div className="tabs">
-          {isAdmin ? (
-            <TabButton active={activeTab === "ai-models"} label="AI Models" onClick={() => setTab("ai-models")} />
-          ) : (
-            <TabButton active={activeTab === "providers"} label="LLM providers" onClick={() => setTab("providers")} />
-          )}
-          {/* S-204 follow-up: navigates to the real Resources index. */}
-          <TabButton active={false} label="Resources" onClick={() => router.push("/settings/resources")} />
-          {isAdmin ? (
-            <TabButton active={activeTab === "access"} label="Access" onClick={() => setTab("access")} />
-          ) : null}
-          {isAdmin ? (
-            <TabButton active={activeTab === "prompt"} label="Prompt" onClick={() => setTab("prompt")} />
-          ) : null}
-          {isAdmin ? (
-            <TabButton
-              active={activeTab === "templates"}
-              label="Prompt Templates"
-              onClick={() => setTab("templates")}
-            />
-          ) : null}
-          {isAdmin ? (
-            <TabButton
-              active={activeTab === "dead-letters"}
-              label="Dead letters"
-              onClick={() => setTab("dead-letters")}
-            />
-          ) : null}
-          {isAdmin ? (
-            <TabButton active={activeTab === "platform"} label="Platform" onClick={() => setTab("platform")} />
-          ) : null}
-          {/* S-199: notification mute preferences are per-user, so every
-              signed-in human sees this tab (not admin-only). */}
-          <TabButton
-            active={activeTab === "notifications"}
-            label="Notifications"
-            onClick={() => setTab("notifications")}
-          />
-        </div>
+        <SettingsTabs activeTab={activeTab} isAdmin={isAdmin} onSelect={setTab} onOpenResources={() => router.push("/settings/resources")} />
 
         {!isAdmin ? (
           <div className="notice" style={{ marginBottom: "var(--space-4)" }}>
@@ -206,14 +168,7 @@ export default function SettingsPage() {
           </div>
         ) : null}
 
-        {!isAdmin && activeTab === "providers" ? <ProvidersTab isAdmin={false} /> : null}
-        {isAdmin && activeTab === "ai-models" ? <ModelHierarchyTab /> : null}
-        {isAdmin && activeTab === "access" ? <AccessTab /> : null}
-        {isAdmin && activeTab === "prompt" ? <OrganizationPromptTab /> : null}
-        {isAdmin && activeTab === "templates" ? <PromptTemplatesTab /> : null}
-        {isAdmin && activeTab === "dead-letters" ? <DeadLettersPanel /> : null}
-        {isAdmin && activeTab === "platform" ? <PlatformSettingsTab /> : null}
-        {activeTab === "notifications" ? <NotificationPreferencesPanel /> : null}
+        {renderTabContent(activeTab, isAdmin)}
       </AppShell>
     </AuthGate>
   );
@@ -1333,4 +1288,72 @@ function ProviderModal({
       </ModalForm>
     </Modal>
   );
+}
+
+// S-189/S3776: tab bar and content dispatch extracted from
+// SettingsPage; render output identical to the previous inline JSX.
+function SettingsTabs({
+  activeTab,
+  isAdmin,
+  onSelect,
+  onOpenResources,
+}: {
+  readonly activeTab: Tab;
+  readonly isAdmin: boolean;
+  readonly onSelect: (tab: Tab) => void;
+  readonly onOpenResources: () => void;
+}) {
+  return (
+    <div className="tabs">
+      {isAdmin ? (
+        <TabButton active={activeTab === "ai-models"} label="AI Models" onClick={() => onSelect("ai-models")} />
+      ) : (
+        <TabButton active={activeTab === "providers"} label="LLM providers" onClick={() => onSelect("providers")} />
+      )}
+      {/* S-204 follow-up: navigates to the real Resources index. */}
+      <TabButton active={false} label="Resources" onClick={onOpenResources} />
+      {isAdmin ? <TabButton active={activeTab === "access"} label="Access" onClick={() => onSelect("access")} /> : null}
+      {isAdmin ? <TabButton active={activeTab === "prompt"} label="Prompt" onClick={() => onSelect("prompt")} /> : null}
+      {isAdmin ? (
+        <TabButton active={activeTab === "templates"} label="Prompt Templates" onClick={() => onSelect("templates")} />
+      ) : null}
+      {isAdmin ? (
+        <TabButton active={activeTab === "dead-letters"} label="Dead letters" onClick={() => onSelect("dead-letters")} />
+      ) : null}
+      {isAdmin ? <TabButton active={activeTab === "platform"} label="Platform" onClick={() => onSelect("platform")} /> : null}
+      {/* S-199: notification mute preferences are per-user, so every
+          signed-in human sees this tab (not admin-only). */}
+      <TabButton active={activeTab === "notifications"} label="Notifications" onClick={() => onSelect("notifications")} />
+    </div>
+  );
+}
+
+function renderTabContent(activeTab: Tab, isAdmin: boolean) {
+  if (isAdmin) {
+    switch (activeTab) {
+      case "ai-models":
+        return <ModelHierarchyTab />;
+      case "access":
+        return <AccessTab />;
+      case "prompt":
+        return <OrganizationPromptTab />;
+      case "templates":
+        return <PromptTemplatesTab />;
+      case "dead-letters":
+        return <DeadLettersPanel />;
+      case "platform":
+        return <PlatformSettingsTab />;
+      case "notifications":
+        return <NotificationPreferencesPanel />;
+      default:
+        return null;
+    }
+  }
+  if (activeTab === "providers") {
+    return <ProvidersTab isAdmin={false} />;
+  }
+  if (activeTab === "notifications") {
+    return <NotificationPreferencesPanel />;
+  }
+  return null;
 }

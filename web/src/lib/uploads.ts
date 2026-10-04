@@ -30,6 +30,29 @@ export function validateImageFile(file: { type?: string; size?: number; name?: s
   return null;
 }
 
+function refFromEntry(item: unknown): UploadRef | null {
+  if (!item || typeof item !== "object" || Array.isArray(item)) {
+    return null;
+  }
+  const entry = item as Record<string, unknown>;
+  const id = typeof entry.id === "string" ? entry.id : "";
+  const url = typeof entry.url === "string" ? entry.url : "";
+  if (id === "" || url === "") {
+    return null;
+  }
+  const ref: UploadRef = {
+    id,
+    filename: typeof entry.filename === "string" && entry.filename !== "" ? entry.filename : "image",
+    content_type: typeof entry.content_type === "string" ? entry.content_type : "image",
+    size_bytes: typeof entry.size_bytes === "number" ? entry.size_bytes : 0,
+    url,
+  };
+  if (typeof entry.squad_id === "string") {
+    ref.squad_id = entry.squad_id;
+  }
+  return ref;
+}
+
 /** Lenient parse of `payload.attachments` (normalized by the control
  *  plane since S-194) into renderable references. Malformed entries are
  *  skipped, never thrown. */
@@ -38,20 +61,8 @@ export function messageAttachments(msg: Message | { payload?: Record<string, unk
   if (!Array.isArray(raw)) return [];
   const out: UploadRef[] = [];
   for (const item of raw) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const entry = item as Record<string, unknown>;
-    const id = typeof entry.id === "string" ? entry.id : "";
-    const url = typeof entry.url === "string" ? entry.url : "";
-    if (id === "" || url === "") continue;
-    const ref: UploadRef = {
-      id,
-      filename: typeof entry.filename === "string" && entry.filename !== "" ? entry.filename : "image",
-      content_type: typeof entry.content_type === "string" ? entry.content_type : "image",
-      size_bytes: typeof entry.size_bytes === "number" ? entry.size_bytes : 0,
-      url,
-    };
-    if (typeof entry.squad_id === "string") ref.squad_id = entry.squad_id;
-    out.push(ref);
+    const ref = refFromEntry(item);
+    if (ref) out.push(ref);
   }
   return out;
 }

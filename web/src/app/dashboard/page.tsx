@@ -27,6 +27,7 @@ import {
   type ChartMode,
   type ChartSource,
   type DashboardUsagePayload,
+  type ProviderUsage,
 } from "../../lib/usage";
 import {
   dashboardTotals,
@@ -34,6 +35,10 @@ import {
   resourceChip,
   taskCount,
   type DashboardPayload,
+  type DashboardProvider,
+  type DashboardResource,
+  type DashboardSquad,
+  type DashboardTotals,
 } from "../../lib/dashboard";
 
 const POLL_MS = 30_000;
@@ -67,30 +72,7 @@ export default function DashboardPage() {
           <EmptyState title="Loading your dashboard…" hint="Aggregating squads, agents, costs, providers and resources." />
         ) : (
           <>
-            <div className="metric-grid">
-              <MetricTile label="Squads" value={totals.squads} sub={isAdmin ? "all squads (platform admin)" : "owned + granted"} />
-              <MetricTile label="Agents running" value={totals.agentsRunning} sub={`${totals.agents} agents total`} />
-              <MetricTile
-                label="Agents in error"
-                value={totals.agentsError}
-                attention={totals.agentsError > 0}
-                sub={totals.agentsError > 0 ? "check the squads below" : "all healthy"}
-              />
-              <MetricTile label="Total cost" value={formatMoneyCents(totals.totalCost, currency)} sub="across your squads" />
-              <MetricTile
-                label="MTD cost"
-                value={formatMoneyCents(usage?.squad_mtd_cost ?? 0, currency)}
-                sub={isAdmin ? "this month, all squads" : "this month, your squads"}
-              />
-              {isAdmin && usage?.platform ? (
-                <>
-                  <MetricTile label="Platform total cost" value={formatMoneyCents(usage.platform.total_cost, currency)} sub="all time, all squads" />
-                  <MetricTile label="Platform MTD cost" value={formatMoneyCents(usage.platform.mtd_cost, currency)} sub="this month, all squads" />
-                  <MetricTile label="Users" value={usage.platform.users} sub="in the platform" />
-                  <MetricTile label="Agents" value={usage.platform.agents} sub="across all squads" />
-                </>
-              ) : null}
-            </div>
+            <MetricGrid totals={totals} isAdmin={isAdmin} usage={usage} currency={currency} />
 
             {/* S-201: the old per-squad + per-agent histograms are now ONE
                 chart with two sliding toggles: which series (Squads |
@@ -113,42 +95,7 @@ export default function DashboardPage() {
             ) : (
               <div className="entity-list">
                 {data!.squads.map((squad) => (
-                  <div key={squad.id} className="entity-row" style={{ flexDirection: "column", alignItems: "stretch" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                      <Link href={`/squads/${squad.id}`} className="entity-title" style={{ display: "block" }}>
-                        {squad.name}
-                      </Link>
-                      <strong>{formatCost(squad.cost ?? null)}</strong>
-                    </div>
-                    <div className="entity-meta" style={{ marginTop: "var(--space-1)" }}>
-                      {taskCount(squad, "todo")} todo · {taskCount(squad, "in-progress")} in progress
-                      {squad.owner_name ? ` · owner: ${squad.owner_name}` : ""}
-                      {" · "}
-                      {formatTokens(squad.cost ?? null)}
-                    </div>
-                    {(squad.agents?.length ?? 0) > 0 ? (
-                      <div style={{ marginTop: "var(--space-2)", borderTop: "1px solid var(--line)", paddingTop: "var(--space-2)" }}>
-                        {squad.agents!.map((agent) => (
-                          <div
-                            key={agent.id}
-                            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "var(--text-sm)", padding: "2px 0" }}
-                          >
-                            <Link href={`/squads/${squad.id}/agents/${agent.id}`} style={{ color: "var(--ink)" }}>
-                              {agent.name}
-                            </Link>
-                            <span style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                              <StatusChip status={agentStatusOf(agent)} />
-                              <span className="mono">{formatCost(agent.cost ?? null)}</span>
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="entity-meta" style={{ marginTop: "var(--space-2)" }}>
-                        no agents in this squad
-                      </div>
-                    )}
-                  </div>
+                  <SquadRow key={squad.id} squad={squad} />
                 ))}
               </div>
             )}
@@ -158,46 +105,14 @@ export default function DashboardPage() {
               <EmptyState title="No providers registered" hint="Register providers in Settings → AI Models." />
             ) : (
               <div className="entity-list">
-                {data!.providers.map((provider) => {
-                  const chip = providerChip(provider);
-                  const usageRow = providerUsage.get(provider.id);
-                  return (
-                    <div key={provider.id} className="entity-row" style={{ flexDirection: "column", alignItems: "stretch" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                        <div className="entity-main">
-                          <span className="entity-title">{provider.name}</span>
-                          <span className="entity-meta">
-                            {provider.kind}
-                            {provider.latency_ms ? ` · ${provider.latency_ms} ms` : ""}
-                            {provider.error ? ` · ${provider.error}` : ""}
-                          </span>
-                        </div>
-                        <div className="entity-side" style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                          {usageRow ? (
-                            <span className="mono">
-                              MTD {formatMoney(usageRow.cost, currency)} · {formatCompact(usageRow.tokens)} tokens
-                            </span>
-                          ) : (
-                            <span className="entity-meta">no usage this month</span>
-                          )}
-                          <span className={chip.className}>{chip.label}</span>
-                        </div>
-                      </div>
-                      {(usageRow?.models?.length ?? 0) > 0 ? (
-                        <div className="provider-models">
-                          {usageRow!.models.map((model) => (
-                            <div key={model.model} className="provider-model">
-                              <span className="mono">{model.model}</span>
-                              <span className="mono">
-                                {formatMoney(model.cost, currency)} · {formatCompact(model.tokens)} tokens
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
+                {data!.providers.map((provider) => (
+                  <ProviderRow
+                    key={provider.id}
+                    provider={provider}
+                    usageRow={providerUsage.get(provider.id)}
+                    currency={currency}
+                  />
+                ))}
               </div>
             )}
 
@@ -206,26 +121,163 @@ export default function DashboardPage() {
               <EmptyState title="No resources registered" hint="Skills, tools, APIs, knowledge bases and workspaces appear here." />
             ) : (
               <div className="entity-list">
-                {data!.resources.map((resource) => {
-                  const chip = resourceChip(resource.status);
-                  return (
-                    <div key={`${resource.type}-${resource.id}`} className="entity-row">
-                      <div className="entity-main">
-                        <span className="entity-title">{resource.name}</span>
-                        <span className="entity-meta">{resource.type.replaceAll("_", " ")}</span>
-                      </div>
-                      <div className="entity-side">
-                        <span className={chip.className}>{chip.label}</span>
-                      </div>
-                    </div>
-                  );
-                })}
+                {data!.resources.map((resource) => (
+                  <ResourceRow key={`${resource.type}-${resource.id}`} resource={resource} />
+                ))}
               </div>
             )}
           </>
         )}
       </AppShell>
     </AuthGate>
+  );
+}
+
+// S-189/S3776: the tiles grid extracted from DashboardPage (cognitive
+// complexity split). Behaviour is unchanged from the inline version.
+function MetricGrid({
+  totals,
+  isAdmin,
+  usage,
+  currency,
+}: {
+  readonly totals: DashboardTotals;
+  readonly isAdmin: boolean;
+  readonly usage: DashboardUsagePayload | null;
+  readonly currency: string;
+}) {
+  return (
+    <div className="metric-grid">
+      <MetricTile label="Squads" value={totals.squads} sub={isAdmin ? "all squads (platform admin)" : "owned + granted"} />
+      <MetricTile label="Agents running" value={totals.agentsRunning} sub={`${totals.agents} agents total`} />
+      <MetricTile
+        label="Agents in error"
+        value={totals.agentsError}
+        attention={totals.agentsError > 0}
+        sub={totals.agentsError > 0 ? "check the squads below" : "all healthy"}
+      />
+      <MetricTile label="Total cost" value={formatMoneyCents(totals.totalCost, currency)} sub="across your squads" />
+      <MetricTile
+        label="MTD cost"
+        value={formatMoneyCents(usage?.squad_mtd_cost ?? 0, currency)}
+        sub={isAdmin ? "this month, all squads" : "this month, your squads"}
+      />
+      {isAdmin && usage?.platform ? (
+        <>
+          <MetricTile label="Platform total cost" value={formatMoneyCents(usage.platform.total_cost, currency)} sub="all time, all squads" />
+          <MetricTile label="Platform MTD cost" value={formatMoneyCents(usage.platform.mtd_cost, currency)} sub="this month, all squads" />
+          <MetricTile label="Users" value={usage.platform.users} sub="in the platform" />
+          <MetricTile label="Agents" value={usage.platform.agents} sub="across all squads" />
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+// SquadRow renders one squad card with its task counts, cost and agents.
+function SquadRow({ squad }: { readonly squad: DashboardSquad }) {
+  return (
+    <div className="entity-row" style={{ flexDirection: "column", alignItems: "stretch" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <Link href={`/squads/${squad.id}`} className="entity-title" style={{ display: "block" }}>
+          {squad.name}
+        </Link>
+        <strong>{formatCost(squad.cost ?? null)}</strong>
+      </div>
+      <div className="entity-meta" style={{ marginTop: "var(--space-1)" }}>
+        {taskCount(squad, "todo")} todo · {taskCount(squad, "in-progress")} in progress
+        {squad.owner_name ? ` · owner: ${squad.owner_name}` : ""}
+        {" · "}
+        {formatTokens(squad.cost ?? null)}
+      </div>
+      {(squad.agents?.length ?? 0) > 0 ? (
+        <div style={{ marginTop: "var(--space-2)", borderTop: "1px solid var(--line)", paddingTop: "var(--space-2)" }}>
+          {squad.agents!.map((agent) => (
+            <div
+              key={agent.id}
+              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "var(--text-sm)", padding: "2px 0" }}
+            >
+              <Link href={`/squads/${squad.id}/agents/${agent.id}`} style={{ color: "var(--ink)" }}>
+                {agent.name}
+              </Link>
+              <span style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                <StatusChip status={agentStatusOf(agent)} />
+                <span className="mono">{formatCost(agent.cost ?? null)}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="entity-meta" style={{ marginTop: "var(--space-2)" }}>
+          no agents in this squad
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ProviderRow renders one provider with its MTD usage and per-model rows.
+function ProviderRow({
+  provider,
+  usageRow,
+  currency,
+}: {
+  readonly provider: DashboardProvider;
+  readonly usageRow: ProviderUsage | undefined;
+  readonly currency: string;
+}) {
+  const chip = providerChip(provider);
+  return (
+    <div className="entity-row" style={{ flexDirection: "column", alignItems: "stretch" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div className="entity-main">
+          <span className="entity-title">{provider.name}</span>
+          <span className="entity-meta">
+            {provider.kind}
+            {provider.latency_ms ? ` · ${provider.latency_ms} ms` : ""}
+            {provider.error ? ` · ${provider.error}` : ""}
+          </span>
+        </div>
+        <div className="entity-side" style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+          {usageRow ? (
+            <span className="mono">
+              MTD {formatMoney(usageRow.cost, currency)} · {formatCompact(usageRow.tokens)} tokens
+            </span>
+          ) : (
+            <span className="entity-meta">no usage this month</span>
+          )}
+          <span className={chip.className}>{chip.label}</span>
+        </div>
+      </div>
+      {(usageRow?.models?.length ?? 0) > 0 ? (
+        <div className="provider-models">
+          {usageRow!.models.map((model) => (
+            <div key={model.model} className="provider-model">
+              <span className="mono">{model.model}</span>
+              <span className="mono">
+                {formatMoney(model.cost, currency)} · {formatCompact(model.tokens)} tokens
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ResourceRow renders one registered resource line.
+function ResourceRow({ resource }: { readonly resource: DashboardResource }) {
+  const chip = resourceChip(resource.status);
+  return (
+    <div className="entity-row">
+      <div className="entity-main">
+        <span className="entity-title">{resource.name}</span>
+        <span className="entity-meta">{resource.type.replaceAll("_", " ")}</span>
+      </div>
+      <div className="entity-side">
+        <span className={chip.className}>{chip.label}</span>
+      </div>
+    </div>
   );
 }
 

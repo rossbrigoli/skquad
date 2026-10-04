@@ -39,6 +39,10 @@ const APPLIES_LABELS: Record<TemplateAppliesTo, string> = {
   both: "Squads + Agents",
 };
 
+function errMessage(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
+}
+
 export function PromptTemplatesPanel({
   templates,
   loading = false,
@@ -58,6 +62,36 @@ export function PromptTemplatesPanel({
   const [pendingSingle, setPendingSingle] = useState<PromptTemplate | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const headerCheckbox = useRef<HTMLInputElement>(null);
+
+  function renderToolbar() {
+    if (templates.length === 0) {
+      return null;
+    }
+    return (
+      <fieldset className="templates-toolbar" style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }} aria-label="Template bulk actions">
+        <label className="templates-selectall">
+          <input
+            ref={headerCheckbox}
+            type="checkbox"
+            checked={allSelected}
+            onChange={(e) => setSelectedIds(selectAllTemplates(templates, e.target.checked))}
+            aria-label="Select all templates"
+          />
+          <span>Select all</span>
+        </label>
+        {selectionSize > 0 ? <span className="bulk-count">{selectionSize} selected</span> : null}
+        <button
+          type="button"
+          className="btn btn-sm btn-danger"
+          disabled={selectionSize === 0 || bulkBusy}
+          aria-label={`Delete ${selectionSize} selected templates`}
+          onClick={() => setPendingBulk(true)}
+        >
+          {bulkBusy ? "Deleting…" : "Delete selected"}
+        </button>
+      </fieldset>
+    );
+  }
 
   function renderTemplateList() {
     if (loading && templates.length === 0) {
@@ -124,7 +158,7 @@ export function PromptTemplatesPanel({
       setSelectedIds(new Set());
       onChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "bulk delete failed");
+      setError(errMessage(err, "bulk delete failed"));
     } finally {
       setBulkBusy(false);
       setPendingBulk(false);
@@ -138,7 +172,7 @@ export function PromptTemplatesPanel({
       setNotice(`Deleted template “${template.name}”.`);
       onChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "delete failed");
+      setError(errMessage(err, "delete failed"));
     } finally {
       setPendingSingle(null);
     }
@@ -159,30 +193,7 @@ export function PromptTemplatesPanel({
       {error ? <div className="notice error">{error}</div> : null}
       {notice && !error ? <div className="notice">{notice}</div> : null}
 
-      {templates.length > 0 ? (
-        <fieldset className="templates-toolbar" style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }} aria-label="Template bulk actions">
-          <label className="templates-selectall">
-            <input
-              ref={headerCheckbox}
-              type="checkbox"
-              checked={allSelected}
-              onChange={(e) => setSelectedIds(selectAllTemplates(templates, e.target.checked))}
-              aria-label="Select all templates"
-            />
-            <span>Select all</span>
-          </label>
-          {selectionSize > 0 ? <span className="bulk-count">{selectionSize} selected</span> : null}
-          <button
-            type="button"
-            className="btn btn-sm btn-danger"
-            disabled={selectionSize === 0 || bulkBusy}
-            aria-label={`Delete ${selectionSize} selected templates`}
-            onClick={() => setPendingBulk(true)}
-          >
-            {bulkBusy ? "Deleting…" : "Delete selected"}
-          </button>
-        </fieldset>
-      ) : null}
+      {renderToolbar()}
 
       {renderTemplateList()}
 

@@ -32,6 +32,10 @@ function formatTime(value?: string): string {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
+function errNote(err: unknown, verb: string): string {
+  return err instanceof Error ? `${verb} failed: ${err.message}` : `${verb} failed.`;
+}
+
 function shortId(id: string): string {
   return id.length > 8 ? `${id.slice(0, 8)}…` : id;
 }
@@ -86,7 +90,7 @@ export function DeadLettersPanel() {
       setItems(payload.dead_letters ?? []);
       setNote(`${payload.dead_letters?.length ?? 0} dead letter(s) shown.`);
     } catch (err) {
-      setNote(err instanceof Error ? `Search failed: ${err.message}` : "Search failed.");
+      setNote(errNote(err, "Search"));
     } finally {
       setLoading(false);
     }
@@ -110,7 +114,7 @@ export function DeadLettersPanel() {
       setNote(`Replayed ${shortId(message.id)}.`);
       void search();
     } catch (err) {
-      setNote(err instanceof ApiError ? `Replay failed: ${err.message}` : "Replay failed.");
+      setNote(errNote(err, "Replay"));
     } finally {
       setBusyId("");
     }
@@ -127,7 +131,7 @@ export function DeadLettersPanel() {
       setNote(`Deleted ${shortId(message.id)}.`);
       void search();
     } catch (err) {
-      setNote(err instanceof ApiError ? `Delete failed: ${err.message}` : "Delete failed.");
+      setNote(errNote(err, "Delete"));
     } finally {
       setBusyId("");
     }

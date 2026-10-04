@@ -59,6 +59,10 @@ import {
 
 type UserFilter = { mode: "own" } | { mode: "user"; userId: string };
 
+function errMessage(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
+}
+
 export default function InboxPage() {
   const { token, user, authed } = useAuth();
   const { agentName, markRead: markAttentionRead } = useAttention();
@@ -86,7 +90,7 @@ export default function InboxPage() {
       setMessages(Array.isArray(next) ? next : []);
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "inbox fetch failed");
+      setError(errMessage(err, "inbox fetch failed"));
     } finally {
       setLoading(false);
     }
@@ -167,7 +171,7 @@ export default function InboxPage() {
       });
       if (selectedId === pendingDelete.id) setSelectedId(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "delete failed");
+      setError(errMessage(err, "delete failed"));
     } finally {
       setPendingDelete(null);
     }
@@ -207,107 +211,12 @@ export default function InboxPage() {
       if (selectedId !== null && selectedIds.has(selectedId)) setSelectedId(null);
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "bulk delete failed");
+      setError(errMessage(err, "bulk delete failed"));
     } finally {
       setSelectedIds(new Set());
       setPendingBulkDelete(false);
     }
   }, [selectedIds, token, selectedId]);
-
-  const renderRow = (message: InboxMessage) => {
-    const unreadRow = isUnread(message.read_at);
-    const kind = inboxKindMeta(message.kind);
-    const { subject, body } = inboxDisplay(message);
-    const checked = selectedIds.has(message.id);
-    return (
-      <div
-        key={message.id}
-        className={`inbox-row ${unreadRow ? "inbox-row-unread" : ""}`}
-        role="button"
-        tabIndex={0}
-        aria-label={`Open message: ${subject}`}
-        onClick={() => openMessage(message)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            openMessage(message);
-          }
-        }}
-      >
-        {/* S-207 req 4: multi-select checkbox (never opens the row). */}
-        <input
-          type="checkbox"
-          className="inbox-checkbox"
-          checked={checked}
-          aria-label={`Select message: ${subject}`}
-          onClick={(e) => e.stopPropagation()}
-          onChange={() => setSelectedIds((prev) => toggleItem(prev, message.id))}
-        />
-        {/* S-207 req 3: envelope read/unread marker. */}
-        <span className="inbox-status" aria-hidden={unreadRow ? undefined : "true"}>
-          {unreadRow ? (
-            <IconEnvelopeUnread size={18} />
-          ) : (
-            <IconEnvelopeRead size={18} />
-          )}
-        </span>
-        <span className="inbox-sender">{inboxSender(message, agentName)}</span>
-        {/* S-207 req 6: "Title — body preview", ellipsis-truncated. */}
-        <span className="inbox-titleline">
-          <span className="inbox-subject">{subject}</span>
-          {inboxPreview(body) ? (
-            <span className="inbox-preview">{" — " + inboxPreview(body)}</span>
-          ) : null}
-        </span>
-        <span className={`chip ${kind.className}`}>{kind.label}</span>
-        <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
-      </div>
-    );
-  };
-
-  const renderDetail = (message: InboxMessage) => {
-    const kind = inboxKindMeta(message.kind);
-    const { subject, body } = inboxDisplay(message);
-    const taskHref = inboxTaskLink(message);
-    return (
-      <div className="inbox-detail">
-        <div className="inbox-detail-topbar">
-          <button
-            type="button"
-            className="btn btn-small inbox-back"
-            aria-label="Back to inbox"
-            onClick={() => setSelectedId(null)}
-          >
-            ← Inbox
-          </button>
-          <button
-            type="button"
-            className="btn btn-small btn-danger inbox-delete"
-            aria-label="Delete message"
-            onClick={() => setPendingDelete(message)}
-          >
-            Delete
-          </button>
-        </div>
-        <h2 className="inbox-detail-subject">{subject}</h2>
-        <div className="inbox-detail-meta">
-          <span className="inbox-detail-from">{inboxSender(message, agentName)}</span>
-          <span className={`chip ${kind.className}`}>{kind.label}</span>
-          <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
-        </div>
-        <div className="inbox-detail-body">
-          <p className="inbox-body-text">{body}</p>
-        </div>
-        {taskHref ? (
-          <div className="inbox-detail-footer">
-            <Link className="inbox-task-link" href={taskHref}>
-              Open task →
-            </Link>
-          </div>
-        ) : null}
-      </div>
-    );
-  };
 
   function renderList() {
     if (loading && messages.length === 0) {
@@ -342,7 +251,18 @@ export default function InboxPage() {
         {sections.map((section) => (
           <section key={section.group} className="inbox-group" aria-label={section.label}>
             <h2 className="inbox-group-header">{section.label}</h2>
-            <div className="entity-list inbox-list">{section.items.map(renderRow)}</div>
+            <div className="entity-list inbox-list">
+              {section.items.map((m) => (
+                <InboxRow
+                  key={m.id}
+                  message={m}
+                  agentName={agentName}
+                  checked={selectedIds.has(m.id)}
+                  onOpen={openMessage}
+                  onToggleSelect={(id) => setSelectedIds((prev) => toggleItem(prev, id))}
+                />
+              ))}
+            </div>
           </section>
         ))}
       </div>
@@ -419,7 +339,16 @@ export default function InboxPage() {
           ) : null}
         </div>
         {error ? <div className="notice error">{error}</div> : null}
-        {selected ? renderDetail(selected) : renderList()}
+        {selected ? (
+          <InboxDetail
+            message={selected}
+            agentName={agentName}
+            onBack={() => setSelectedId(null)}
+            onDelete={(m) => setPendingDelete(m)}
+          />
+        ) : (
+          renderList()
+        )}
         {pendingDelete ? (
           <ConfirmDialog
             title="Delete inbox message"
@@ -442,3 +371,118 @@ export default function InboxPage() {
     </AuthGate>
   );
 }
+
+function InboxRow({
+  message,
+  agentName,
+  checked,
+  onOpen,
+  onToggleSelect,
+}: {
+  readonly message: InboxMessage;
+  readonly agentName: (id?: string) => string | undefined;
+  readonly checked: boolean;
+  readonly onOpen: (m: InboxMessage) => void;
+  readonly onToggleSelect: (id: string) => void;
+}) {
+    const unreadRow = isUnread(message.read_at);
+    const kind = inboxKindMeta(message.kind);
+    const { subject, body } = inboxDisplay(message);
+      return (
+      <div
+        className={`inbox-row ${unreadRow ? "inbox-row-unread" : ""}`}
+        role="button"
+        tabIndex={0}
+        aria-label={`Open message: ${subject}`}
+        onClick={() => onOpen(message)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onOpen(message);
+          }
+        }}
+      >
+        {/* S-207 req 4: multi-select checkbox (never opens the row). */}
+        <input
+          type="checkbox"
+          className="inbox-checkbox"
+          checked={checked}
+          aria-label={`Select message: ${subject}`}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => onToggleSelect(message.id)}
+        />
+        {/* S-207 req 3: envelope read/unread marker. */}
+        <span className="inbox-status" aria-hidden={unreadRow ? undefined : "true"}>
+          {unreadRow ? (
+            <IconEnvelopeUnread size={18} />
+          ) : (
+            <IconEnvelopeRead size={18} />
+          )}
+        </span>
+        <span className="inbox-sender">{inboxSender(message, agentName)}</span>
+        {/* S-207 req 6: "Title — body preview", ellipsis-truncated. */}
+        <span className="inbox-titleline">
+          <span className="inbox-subject">{subject}</span>
+          {inboxPreview(body) ? (
+            <span className="inbox-preview">{" — " + inboxPreview(body)}</span>
+          ) : null}
+        </span>
+        <span className={`chip ${kind.className}`}>{kind.label}</span>
+        <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
+      </div>
+    );
+  }
+
+function InboxDetail({
+  message,
+  agentName,
+  onBack,
+  onDelete,
+}: {
+  readonly message: InboxMessage;
+  readonly agentName: (id?: string) => string | undefined;
+  readonly onBack: () => void;
+  readonly onDelete: (m: InboxMessage) => void;
+}) {
+    const kind = inboxKindMeta(message.kind);
+    const { subject, body } = inboxDisplay(message);
+    const taskHref = inboxTaskLink(message);
+    return (
+      <div className="inbox-detail">
+        <div className="inbox-detail-topbar">
+          <button
+            type="button"
+            className="btn btn-small inbox-back"
+            aria-label="Back to inbox"
+            onClick={onBack}
+          >
+            ← Inbox
+          </button>
+          <button
+            type="button"
+            className="btn btn-small btn-danger inbox-delete"
+            aria-label="Delete message"
+            onClick={() => onDelete(message)}
+          >
+            Delete
+          </button>
+        </div>
+        <h2 className="inbox-detail-subject">{subject}</h2>
+        <div className="inbox-detail-meta">
+          <span className="inbox-detail-from">{inboxSender(message, agentName)}</span>
+          <span className={`chip ${kind.className}`}>{kind.label}</span>
+          <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
+        </div>
+        <div className="inbox-detail-body">
+          <p className="inbox-body-text">{body}</p>
+        </div>
+        {taskHref ? (
+          <div className="inbox-detail-footer">
+            <Link className="inbox-task-link" href={taskHref}>
+              Open task →
+            </Link>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
