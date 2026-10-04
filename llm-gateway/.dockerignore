@@ -1,8 +1,36 @@
+# Local env & secrets — never bake into images (S-189 hotspot hardening)
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# VCS / local tooling
 .git
+.gitignore
 .github
-__pycache__
-*.pyc
-.pytest_cache
-dist
-build
-*.egg-info
+
+# Python caches / local virtualenvs
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.venv/
+**/venv/
+**/*.egg-info/
+**/.coverage
+**/coverage/
+**/htmlcov/
+**/.tox/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# Node / Next.js local artifacts (rebuilt inside the image)
+**/node_modules/
+**/.next/
+**/out/
+**/npm-debug.log*
+**/yarn-error.log*
+
+# Dev notes & OS junk
+WORKLOG.md
+**/.DS_Store
