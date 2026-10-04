@@ -175,7 +175,68 @@ When an agent picks up a task:
 
 ---
 
-## 9. Open Points
+## 9. Execution Lease vs Scale-to-Zero Idle Timeout
+
+The **task-execution lease** (§8) and the **scale-to-zero idle timeout**
+(ADR-0003) are two *independent timers* that protect different failure
+domains but share the same heartbeat stream. They never gate each other
+directly.
+
+| | Task-execution **lease** | **Scale-to-zero** idle timeout |
+|---|---|---|
+| Scope | Per **task attempt** (`task_executions`) | Per **agent pod** (Deployment replicas) |
+| Duration | 2 min (`defaultTaskExecutionLease`), renewed every **40 s** (`SKQUAD_HEARTBEAT_INTERVAL_SECONDS`) by the runtime's lease-heartbeat thread with `execution_id` + `fencing_token` | `spec.idleTimeout` on the Agent CR (configurable per agent; minutes-scale) |
+| Owner | Control plane — the **execution reaper** (30 s sweep, 2-min grace) expires lapsed executions and re-queues the task ≈ **4 min** after the last heartbeat | Operator — tracks `status.idleSince` and scales the Deployment to 0 when `now − idleSince ≥ idleTimeout` |
+| Protects against | Worker **dying while holding work**: task stuck `in-progress` forever; zombie worker reporting on a stale attempt (fencing) | **Paying for idle pods** |
+
+### Lifecycle interaction
+
+```mermaid
+sequenceDiagram
+    participant R as Runtime (pod)
+    participant CP as Control Plane
+    participant OP as Operator
+    Note over R,CP: busy: task running — lease renewed every 40 s<br/>(heartbeat carries execution_id + fencing_token)
+    R->>CP: heartbeat(busy, execution_id)
+    CP->>CP: renew lease (+2 min)
+    Note over R: idle timer NOT ticking while busy
+    R->>CP: turn completes → lease released, heartbeat(idle)
+    CP->>OP: pending work cleared → desiredActive=false, idleSince set
+    OP->>OP: idleTimeout counts down
+    OP->>OP: scale Deployment 1 → 0
+```
+
+### Coupling points (code-level)
+
+1. **A running task can never be scaled to zero mid-turn.** Busy heartbeats
+   carry the execution id and keep the agent non-idle; the operator only
+   counts `idleSince` when the agent is not `DesiredActive`/busy.
+2. **Anti-race on the way out:** `resolveHeartbeatStatus` (control plane)
+   *upgrades* an idle heartbeat to busy if new pending work arrived — a pod
+   cannot scale down in the gap between finishing task A and picking up
+   task B.
+3. **The lease does not keep the pod alive, and the idle timeout does not
+   protect the task.** If the pod dies mid-task: the lease lapses → the
+   reaper re-queues the task (~4 min) → a future pod picks it up. The
+   idle timer is irrelevant in that path.
+4. **Budget enforcement (S-203 WP3) exploits this:** for a budget-blocked
+   owner the operator applies `idleTimeout=0` on the Agent CR, so the pod
+   tears down **immediately at end of turn** (no idle window), and the
+   wake guard refuses to reschedule until the budget is raised. Blocked
+   agents are never killed mid-turn.
+
+> **Rule of thumb:** the **lease** answers *"is the worker alive?"* —
+> failure detection, seconds-to-minutes. The **idle timeout** answers
+> *"is the pod worth keeping?"* — cost policy, minutes. Both are fed by
+> the heartbeat stream, but they are orthogonal: expiry of one never
+> triggers or blocks the other.
+
+See [execution-reaper.md](execution-reaper.md) for the reaper design and
+[ADR-0003](adr/0003-scale-to-zero.md) for the scale-to-zero decision.
+
+---
+
+## 10. Open Points
 
 - **Subtasks** — whether tasks can have subtasks (start flat; add later).
 - **Task templates** — reusable task definitions (later).
