@@ -25,4 +25,15 @@ describe("Settings page tab surface (S-204)", () => {
     expect(source).not.toContain("ResourcesTab");
     expect(source).not.toContain("RESOURCE_TABS");
   });
+
+  // S-219: the "Scaling" tab outgrew its name — it is now "Platform",
+  // rendered by the unified PlatformSettingsTab with a single Save.
+  it("renames the Scaling tab to Platform (S-219)", () => {
+    expect(source).not.toContain('"scaling"');
+    expect(source).not.toContain("label=\"Scaling\"");
+    expect(source).not.toContain("IdleScaleToZeroPanel");
+    expect(source).not.toContain("EmbedderRuntimePanel");
+    expect(source).toContain('label="Platform"');
+    expect(source).toContain("<PlatformSettingsTab />");
+  });
 });
