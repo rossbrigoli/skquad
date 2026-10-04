@@ -117,6 +117,9 @@ export default function SquadBoardPage() {
                   <div className="board-col-body">
                     {colTasks.map((task) => {
                       const lease = leaseState(task);
+                      // S-189: hoisted so the move-button handlers stay within
+                      // the function-nesting limit (S2004).
+                      const colIdx = columns.findIndex((c) => c.status === task.status);
                       return (
                         <div
                           key={task.id}
@@ -155,11 +158,10 @@ export default function SquadBoardPage() {
                             <button
                               type="button"
                               className="btn btn-sm"
-                              disabled={columns.findIndex((c) => c.status === task.status) <= 0}
+                              disabled={colIdx <= 0}
                               aria-label={`Move ${task.title} to the previous column`}
                               onClick={() => {
-                                const idx = columns.findIndex((c) => c.status === task.status);
-                                if (idx > 0) void moveTask(task.id, columns[idx - 1].status);
+                                if (colIdx > 0) void moveTask(task.id, columns[colIdx - 1].status);
                               }}
                             >
                               ←
@@ -167,11 +169,10 @@ export default function SquadBoardPage() {
                             <button
                               type="button"
                               className="btn btn-sm"
-                              disabled={columns.findIndex((c) => c.status === task.status) >= columns.length - 1}
+                              disabled={colIdx >= columns.length - 1}
                               aria-label={`Move ${task.title} to the next column`}
                               onClick={() => {
-                                const idx = columns.findIndex((c) => c.status === task.status);
-                                if (idx >= 0 && idx < columns.length - 1) void moveTask(task.id, columns[idx + 1].status);
+                                if (colIdx >= 0 && colIdx < columns.length - 1) void moveTask(task.id, columns[colIdx + 1].status);
                               }}
                             >
                               →
