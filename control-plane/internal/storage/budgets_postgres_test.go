@@ -103,3 +103,41 @@ func TestPostgresBudgetLifecycle(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestPostgresUserLevelBudgetInboxAndNotification (S-203 WP4) is the
+// live-bug regression: budget inbox messages and bell notifications are
+// user-level (empty squad scope). The inbox INSERT RETURNING and the
+// notification INSERT RETURNING must coalesce the NULL squad_id or the
+// row scan fails with "cannot scan NULL into *string" — and the widened
+// CHECK constraints (0040/0041) must admit the budget kinds/types.
+func TestPostgresUserLevelBudgetInboxAndNotification(t *testing.T) {
+	store := postgresTestStore(t)
+	ctx := context.Background()
+	f := newPGFixture(t, store)
+
+	msg, err := store.CreateInboxMessage(ctx, &domain.InboxMessage{
+		UserID:  f.user.ID,
+		Kind:    domain.InboxBudgetWarning,
+		Message: "Budget warning: 80% of your monthly budget used",
+		Subject: "Budget warning: 80% of your monthly budget used",
+		Body:    "You have used 80% of your monthly budget.",
+	})
+	require.NoError(t, err, "user-level budget inbox insert must work")
+	require.Empty(t, msg.SquadID, "squad scope stays empty after coalesce scan")
+	require.Equal(t, domain.InboxBudgetWarning, msg.Kind)
+
+	notif, err := store.CreateNotification(ctx, &domain.Notification{
+		UserID:   f.user.ID,
+		Type:     domain.NotificationBudgetStopped,
+		Severity: domain.NotificationError,
+		Message:  "Monthly budget reached — your agents are stopped",
+	})
+	require.NoError(t, err, "user-level budget notification insert must work")
+	require.Empty(t, notif.SquadID)
+	require.Equal(t, domain.NotificationBudgetStopped, notif.Type)
+
+	list, err := store.ListNotifications(ctx, f.user.ID, false, 10)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Empty(t, list[0].SquadID)
+}
