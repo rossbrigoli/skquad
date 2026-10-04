@@ -45,6 +45,7 @@ import {
   subagentSummary,
   summarizeToolArgs,
   truncateText,
+  uniqueContentKeys,
   type SubagentInfo,
 } from "../../../../../lib/chat";
 import { SubagentThreadPanel } from "../../../../../components/SubagentThreadPanel";
@@ -971,6 +972,9 @@ function ChatThread({
             const toolCalls = fromUser ? [] : chatToolCalls(msg);
             // S-194: image attachments render under the message text.
             const attachments = messageAttachments(msg);
+            // S-189: content-derived stable keys for tool calls (no natural ids;
+            // list is static message history).
+            const callKeys = uniqueContentKeys(toolCalls, (c) => `${msg.id}|${c.name}|${JSON.stringify(c.arguments)}`);
             return (
               <div key={msg.id} className={`chat-row ${fromUser ? "mine" : "theirs"}`}>
                 <div className={`chat-avatar ${fromUser ? "me" : "agent"}`} aria-hidden="true">
@@ -996,7 +1000,7 @@ function ChatThread({
                     <div className="chat-tools">
                       {toolCalls.map((call, idx) =>
                         call.name === "spawn_subagent" && call.subagent ? (
-                          <div key={`sub-${idx}`} className={`chat-tool subagent-chip${call.ok ? "" : " failed"}`}>
+                          <div key={`sub-${callKeys[idx]}`} className={`chat-tool subagent-chip${call.ok ? "" : " failed"}`}>
                             <div className="chat-tool-summary">
                               <span className="chat-tool-name">🤖 subagent</span>
                               <span className="chat-tool-args mono">{subagentSummary(call.subagent)}</span>
@@ -1014,7 +1018,7 @@ function ChatThread({
                             ) : null}
                           </div>
                         ) : (
-                          <details key={`${call.name}-${idx}`} className={`chat-tool${call.ok ? "" : " failed"}`}>
+                          <details key={callKeys[idx]} className={`chat-tool${call.ok ? "" : " failed"}`}>
                             <summary className="chat-tool-summary">
                               <span className="chat-tool-name">🔧 {call.name}</span>
                               {summarizeToolArgs(call.arguments) ? (

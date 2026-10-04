@@ -56,6 +56,19 @@ export function chatToolCalls(msg: Message): ChatToolCall[] {
   return calls;
 }
 
+/** S-189: stable React keys for lists without natural ids. Content-derived,
+ * with an occurrence suffix so exact duplicates stay unique. Only valid for
+ * lists that are not reordered/edited in place while rendered. */
+export function uniqueContentKeys<T>(items: T[], keyOf: (item: T) => string): string[] {
+  const seen = new Map<string, number>();
+  return items.map((item) => {
+    const base = keyOf(item);
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    return n > 1 ? `${base}#${n}` : base;
+  });
+}
+
 /** Lenient parse of the S-163 `subagent` payload; returns null when the
  *  shape is unusable (older runtimes, truncated payloads, junk). */
 export function parseSubagent(raw: unknown): SubagentInfo | null {
