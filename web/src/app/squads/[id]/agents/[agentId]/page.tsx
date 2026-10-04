@@ -217,6 +217,9 @@ function RuntimeIdentitySection({
   );
 }
 
+// S-189/S4323: agent profile page tabs.
+type AgentTab = "chat" | "config" | "inbox";
+
 export default function AgentProfilePage() {
   const params = useParams<{ id: string; agentId: string }>();
   const squadId = String(params?.id ?? "");
@@ -236,7 +239,8 @@ export default function AgentProfilePage() {
   // S-169: Talk-first layout — Chat is the default tab, Configuration holds
   // everything the old Edit modal + stacked sections carried.
   // S-174: Inbox adds the delivery-queue observability panel (owner/admin).
-  const [tab, setTab] = useState<"chat" | "config" | "inbox">("chat");
+  // S-189/S4323: named union for the tab state.
+  const [tab, setTab] = useState<AgentTab>("chat");
   const [deleting, setDeleting] = useState(false);
   // S-202: restart/reset go through the shared ConfirmDialog instead of
   // window.confirm, matching every other destructive action in the app.

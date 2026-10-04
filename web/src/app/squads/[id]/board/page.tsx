@@ -227,7 +227,7 @@ function TaskCreateModal({
               description: description.trim(),
               assignee_agent_id: assignee,
               // S-213: create lands directly in the target column (e.g.
-              // Backlog) — no create-in-todo-then-move race an agent
+              // Backlog) — no create-then-move race an agent
               // could win in between.
               status: targetStatus,
             });

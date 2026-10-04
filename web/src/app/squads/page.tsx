@@ -29,7 +29,7 @@ export default function SquadsPage() {
           if (name) {
             return name;
           }
-          return emailPrefix ? emailPrefix : undefined;
+          return emailPrefix?.length ? emailPrefix : undefined;
         },
       }
     : undefined;

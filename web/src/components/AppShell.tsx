@@ -353,7 +353,7 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
           if (name) {
             return name;
           }
-          return emailPrefix ? emailPrefix : undefined;
+          return emailPrefix?.length ? emailPrefix : undefined;
         },
       }
     : undefined;

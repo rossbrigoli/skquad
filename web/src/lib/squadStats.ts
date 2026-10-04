@@ -5,7 +5,7 @@
 // Buckets (mutually exclusive for open/blocked/done):
 //   done    — status "done"
 //   blocked — status "blocked"
-//   open    — everything else (todo, in-review, running, stalled…)
+//   open    — everything else (to-do, in-review, running, stalled…)
 //
 // Ross's example: 3 cards, 1 done, 2 blocked → open=0, blocked=2.
 

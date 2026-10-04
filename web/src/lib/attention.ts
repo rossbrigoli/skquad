@@ -140,8 +140,8 @@ function inboxAttentionItems(message: InboxMessage): AttentionItem[] {
   const trimmedBody = message.body?.trim();
   // Truthy (not nullish) on purpose: an empty/whitespace subject or body
   // must still fall back to the legacy message / absent body.
-  const title = subject ? subject : message.message;
-  const body = trimmedBody ? trimmedBody : undefined;
+  const title = subject?.length ? subject : message.message;
+  const body = trimmedBody?.length ? trimmedBody : undefined;
   if (message.kind === "action_required") {
     return [
       {
