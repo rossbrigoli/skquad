@@ -88,19 +88,23 @@ var executableMagic = []struct {
 	}},
 }
 
+// mimeAudioOgg is the canonical MIME type we assign to Ogg audio
+// (S-189: single literal for the three sniff/policy sites).
+const mimeAudioOgg = "audio/ogg"
+
 // inspectableContentTypes are canonical MIME types (as produced by
 // sniffContentType) accepted for non-text attachments.
 var inspectableContentTypes = map[string]bool{
-	"image/png":  true,
-	"image/jpeg": true,
-	"image/gif":  true,
-	"image/webp": true,
-	"image/bmp":  true,
-	"video/mp4":  true,
-	"video/webm": true,
+	"image/png":        true,
+	"image/jpeg":       true,
+	"image/gif":        true,
+	"image/webp":       true,
+	"image/bmp":        true,
+	"video/mp4":        true,
+	"video/webm":       true,
 	"video/x-matroska": true,
 	"audio/mpeg":       true,
-	"audio/ogg":        true,
+	mimeAudioOgg:       true,
 	"audio/wav":        true,
 	"audio/flac":       true,
 	"application/pdf":  true,
@@ -165,7 +169,7 @@ func sniffContentType(head []byte) string {
 	case "application/ogg":
 		// DetectContentType knows the container but not that we treat
 		// Ogg as inspectable audio.
-		return "audio/ogg"
+		return mimeAudioOgg
 	case "application/octet-stream":
 		// Custom sniffs for common binaries DetectContentType misses.
 		switch {
@@ -176,7 +180,7 @@ func sniffContentType(head []byte) string {
 		case len(head) >= 4 && head[0] == 0x1a && head[1] == 0x45 && head[2] == 0xdf && head[3] == 0xa3:
 			return "video/webm" // EBML (webm/matroska)
 		case len(head) >= 4 && string(head[0:4]) == "OggS":
-			return "audio/ogg"
+			return mimeAudioOgg
 		case len(head) >= 4 && string(head[0:4]) == "fLaC":
 			return "audio/flac"
 		}

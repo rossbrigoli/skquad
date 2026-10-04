@@ -43,7 +43,7 @@ func memorySearchHandler(t *testing.T, embedder EmbeddingsClient) (http.Handler,
 	cfg.MemoryEmbeddingModel = "qwen3-embed-0.6b"
 	store := storage.NewMemoryStore()
 	fw := &fakeCRWriter{}
-	handler := newServer(cfg, store, nil, fw, nil, nil, nil, nil, embedder, nil)
+	handler := newServer(cfg, store, serverDeps{crWriter: fw, injectedEmbeddings: embedder})
 	return handler, store, fw
 }
 
@@ -159,7 +159,7 @@ func TestMemorySearchValidation(t *testing.T) {
 func TestMemorySearchDisabledFeature(t *testing.T) {
 	cfg := testConfig() // embeddings disabled
 	fw := &fakeCRWriter{}
-	handler := newServer(cfg, storage.NewMemoryStore(), nil, fw, nil, nil, nil, nil, nil, nil)
+	handler := newServer(cfg, storage.NewMemoryStore(), serverDeps{crWriter: fw})
 	agentID, token := agentWithCredential(t, handler, fw, "off-squad", "off")
 
 	rec := doAgentRequest(t, handler, agentID, token, http.MethodGet, "/api/v1/agents/me/memory/search?q=x", nil)

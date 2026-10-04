@@ -65,7 +65,7 @@ func agentWithCredential(t *testing.T, handler http.Handler, fw *fakeCRWriter, s
 func toolsHandler(t *testing.T, providers map[string]search.Provider) (http.Handler, *fakeCRWriter) {
 	t.Helper()
 	fw := &fakeCRWriter{}
-	handler := newServer(testConfig(), storage.NewMemoryStore(), nil, fw, providers, nil, nil, nil, nil, nil)
+	handler := newServer(testConfig(), storage.NewMemoryStore(), serverDeps{crWriter: fw, searchProviders: providers})
 	return handler, fw
 }
 

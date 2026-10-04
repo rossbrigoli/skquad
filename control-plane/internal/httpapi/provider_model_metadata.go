@@ -96,9 +96,9 @@ func openaiProviderGet(ctx context.Context, client *http.Client, endpoint, apiKe
 		}
 		req.Header.Set("anthropic-version", "2023-06-01")
 	} else if key := strings.TrimSpace(apiKey); key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set(hdrAuthorization, bearerAuthPrefix+key)
 	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set(hdrAccept, contentTypeJSON)
 	// #nosec G704 -- see note above: admin-registered base_url only.
 	resp, err := client.Do(req)
 	if err != nil {
@@ -218,8 +218,8 @@ func fetchOllamaModelMetadata(ctx context.Context, client *http.Client, baseURL,
 	if err != nil {
 		return nil, errors.New("could not build ollama model-metadata request")
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set(hdrContentType, contentTypeJSON)
+	req.Header.Set(hdrAccept, contentTypeJSON)
 	// #nosec G704 -- admin-registered base_url, admin-only route.
 	resp, err := client.Do(req)
 	if err != nil {
@@ -249,26 +249,40 @@ func parseOllamaShowResponse(body []byte) (*providerModelMetadata, error) {
 		return nil, errors.New("ollama model-metadata response was not valid JSON")
 	}
 	meta := &providerModelMetadata{Source: "ollama api/show"}
-	for key, value := range parsed.ModelInfo {
+	meta.ContextWindow = ollamaContextLengthFromModelInfo(parsed.ModelInfo)
+	if meta.ContextWindow == 0 {
+		meta.ContextWindow = ollamaContextLengthFromText(parsed.Parameters, parsed.ModelFile)
+	}
+	return meta, nil
+}
+
+// ollamaContextLengthFromModelInfo prefers the structured model_info
+// `*.general.context_length` entry (S-189 split).
+func ollamaContextLengthFromModelInfo(info map[string]any) int {
+	for key, value := range info {
 		if !strings.HasSuffix(key, ".general.context_length") {
 			continue
 		}
 		if num, ok := value.(float64); ok && num > 0 {
-			meta.ContextWindow = int(num)
-			break
+			return int(num)
 		}
 	}
-	if meta.ContextWindow == 0 {
-		for _, source := range []string{parsed.Parameters, parsed.ModelFile} {
-			if match := numCtxPattern.FindStringSubmatch(source); match != nil {
-				if num, err := strconv.Atoi(match[1]); err == nil && num > 0 {
-					meta.ContextWindow = num
-					break
-				}
-			}
+	return 0
+}
+
+// ollamaContextLengthFromText falls back to `num_ctx` found in the
+// parameters string or modelfile (S-189 split).
+func ollamaContextLengthFromText(sources ...string) int {
+	for _, source := range sources {
+		match := numCtxPattern.FindStringSubmatch(source)
+		if match == nil {
+			continue
+		}
+		if num, err := strconv.Atoi(match[1]); err == nil && num > 0 {
+			return num
 		}
 	}
-	return meta, nil
+	return 0
 }
 
 // providerBaseEndpoint validates the admin-registered base_url and

@@ -214,7 +214,7 @@ type TaskStatus string
 
 const (
 	// TaskBacklog (S-213) is the parking column for tasks that are NOT yet
-	// ready to be started. It sits left of "todo" on the board and is
+	// ready to be started. It sits left of the TO DO column on the board and is
 	// deliberately excluded from every agent-facing pickup/listing path:
 	// a human moving a card out of Backlog is the instruction to start it.
 	TaskBacklog    TaskStatus = "backlog"
@@ -271,9 +271,9 @@ type Task struct {
 	// TaskNumber is the per-squad sequential display reference (S-184),
 	// rendered "T-<n>" on board cards and the task screen. Immutable after
 	// creation (backfilled by migration 0027 for pre-existing tasks).
-	TaskNumber int `json:"task_number"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	TaskNumber int       `json:"task_number"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 	// OriginMessageID links a task back to the delegate/handoff message
 	// that materialized it ("" for user-created tasks).
 	OriginMessageID string `json:"origin_message_id,omitempty"`
@@ -549,20 +549,20 @@ const (
 // Read state is tracked; removal is not required (retention policy is a
 // follow-up concern).
 type Notification struct {
-	ID      string             `json:"id"`
-	UserID  string             `json:"user_id"`
-	SquadID string             `json:"squad_id"`
-	TaskID  string             `json:"task_id,omitempty"`
-	AgentID string             `json:"agent_id,omitempty"`
-	Type    NotificationType   `json:"type"`
+	ID       string               `json:"id"`
+	UserID   string               `json:"user_id"`
+	SquadID  string               `json:"squad_id"`
+	TaskID   string               `json:"task_id,omitempty"`
+	AgentID  string               `json:"agent_id,omitempty"`
+	Type     NotificationType     `json:"type"`
 	Severity NotificationSeverity `json:"severity"`
-	Message string             `json:"message"`
+	Message  string               `json:"message"`
 	// ReadAt is a pointer so that unread rows serialize without the
 	// read_at key at all: time.Time + omitempty still emits
 	// "0001-01-01T00:00:00Z" for unset values, which the frontend
 	// treats as read (S-209 retest bug).
-	ReadAt    *time.Time       `json:"read_at,omitempty"`
-	CreatedAt time.Time        `json:"created_at"`
+	ReadAt    *time.Time `json:"read_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // IsRead reports whether the recipient has acknowledged the alert.
@@ -592,10 +592,10 @@ type InboxMessage struct {
 	// link to the task screen. Both are optional — older messages and
 	// plain notifications leave them empty and consumers fall back to
 	// Message.
-	Subject   string    `json:"subject,omitempty"`
-	Body      string    `json:"body,omitempty"`
+	Subject   string     `json:"subject,omitempty"`
+	Body      string     `json:"body,omitempty"`
 	ReadAt    *time.Time `json:"read_at,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	CreatedAt time.Time  `json:"created_at"`
 	// Attachments (S-216) carries the file attachments delivered with
 	// this message via send_inbox. It is populated by the HTTP layer
 	// (list/detail enrichment) — storage scans leave it empty. Bytes

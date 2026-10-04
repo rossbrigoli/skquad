@@ -19,11 +19,11 @@ import (
 )
 
 const (
-	BuiltinToolExec        = "exec"
-	BuiltinToolWebFetch    = "web_fetch"
-	BuiltinToolWebSearch   = "web_search"
-	BuiltinToolSendMessage = "send_message"
-	BuiltinToolSendInbox   = "send_inbox"
+	BuiltinToolExec         = "exec"
+	BuiltinToolWebFetch     = "web_fetch"
+	BuiltinToolWebSearch    = "web_search"
+	BuiltinToolSendMessage  = "send_message"
+	BuiltinToolSendInbox    = "send_inbox"
 	BuiltinToolNotifyOwner  = "notify_owner"
 	BuiltinToolMemorySearch = "memory_search"
 )
@@ -119,26 +119,14 @@ func ValidateBuiltinPolicy(name string, policy json.RawMessage) []string {
 			"maxResults":     requirePositiveInt,
 			"provider":       requireSearchProvider,
 		}
-	case BuiltinToolSendMessage:
-		// S-164: timeoutSeconds bounds the peers-fetch and send round trips.
-		// maxMessageChars caps the message body so one agent cannot flood a
-		// peer's context with a novel.
-		allowed = map[string]func(string, json.RawMessage) []string{
-			"timeoutSeconds":  requirePositiveInt,
-			"maxMessageChars": requirePositiveInt,
-		}
-	case BuiltinToolSendInbox:
-		// S-193: send_inbox delivers human-requested content to the
-		// squad owner's inbox (kind agent_message). Policy keys mirror
-		// send_message; maxMessageChars matches the server-side inbox cap.
-		allowed = map[string]func(string, json.RawMessage) []string{
-			"timeoutSeconds":  requirePositiveInt,
-			"maxMessageChars": requirePositiveInt,
-		}
-	case BuiltinToolNotifyOwner:
-		// notify_owner: timeoutSeconds bounds the POST round trip;
-		// maxMessageChars mirrors the server-side maxInboxMessageChars cap
-		// (10000, S-229) so the tool fails fast instead of being silently trimmed.
+	case BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner:
+		// S-164/S-193: send_message, send_inbox and notify_owner share the
+		// same policy keys. timeoutSeconds bounds the peers-fetch/send (or
+		// owner-POST) round trips; maxMessageChars caps the body so one
+		// agent cannot flood a peer's context — or the owner's inbox —
+		// with a novel. The notify_owner cap mirrors the server-side
+		// maxInboxMessageChars cap (10000, S-229) so the tool fails fast
+		// instead of being silently trimmed.
 		allowed = map[string]func(string, json.RawMessage) []string{
 			"timeoutSeconds":  requirePositiveInt,
 			"maxMessageChars": requirePositiveInt,

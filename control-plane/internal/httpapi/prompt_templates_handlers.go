@@ -55,7 +55,7 @@ func (s *Server) listPromptTemplates(w http.ResponseWriter, r *http.Request) {
 	// Optional picker filter: ?applies_to=agent also matches "both".
 	if filter := strings.TrimSpace(r.URL.Query().Get("applies_to")); filter != "" {
 		if !domain.ValidPromptTemplateAppliesTo(filter) {
-			writeError(w, http.StatusBadRequest, "bad_request", "applies_to must be squad, agent or both")
+			writeError(w, http.StatusBadRequest, "bad_request", msgAppliesToInvalid)
 			return
 		}
 		filtered := make([]*domain.PromptTemplate, 0, len(templates))
@@ -96,7 +96,7 @@ func (s *Server) createPromptTemplate(w http.ResponseWriter, r *http.Request) {
 		appliesTo = domain.PromptTemplateAppliesAgent
 	}
 	if !domain.ValidPromptTemplateAppliesTo(appliesTo) {
-		writeError(w, http.StatusBadRequest, "bad_request", "applies_to must be squad, agent or both")
+		writeError(w, http.StatusBadRequest, "bad_request", msgAppliesToInvalid)
 		return
 	}
 	content := strings.TrimSpace(derefString(req.Content))
@@ -154,7 +154,7 @@ func (s *Server) updatePromptTemplate(w http.ResponseWriter, r *http.Request) {
 	if req.AppliesTo != nil {
 		appliesTo := strings.TrimSpace(*req.AppliesTo)
 		if !domain.ValidPromptTemplateAppliesTo(appliesTo) {
-			writeError(w, http.StatusBadRequest, "bad_request", "applies_to must be squad, agent or both")
+			writeError(w, http.StatusBadRequest, "bad_request", msgAppliesToInvalid)
 			return
 		}
 		template.AppliesTo = appliesTo

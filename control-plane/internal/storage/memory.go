@@ -56,7 +56,7 @@ type MemoryStore struct {
 	// S-216: inbox attachments, keyed by attachment id. Cascade with
 	// the message delete mirrors the Postgres ON DELETE CASCADE.
 	inboxAttachments map[string]*domain.InboxAttachment
-	notifications   map[string]*domain.Notification
+	notifications    map[string]*domain.Notification
 	// S-199: per-user notification mute lists, mirroring the Postgres
 	// user_notification_preferences table. Absent key ⇒ all enabled.
 	notifPrefs map[string][]domain.NotificationType
@@ -69,7 +69,7 @@ type MemoryStore struct {
 	// S-203 WP3: budget enforcement state, mirroring budget_blocks and
 	// budget_notify_markers (migration 0037). Key for the marker set is
 	// "userID|period|marker".
-	budgetBlocks       map[string]*domain.BudgetBlock
+	budgetBlocks        map[string]*domain.BudgetBlock
 	budgetNotifyMarkers map[string]bool
 
 	// S-PROMPT WP2: organization tier settings (single-row, mirroring
@@ -99,43 +99,43 @@ type MemoryStore struct {
 // NewMemoryStore creates an empty development store.
 func NewMemoryStore() *MemoryStore {
 	store := &MemoryStore{
-		users:            map[string]*domain.User{},
-		usersByEmail:     map[string]string{},
-		usersByOIDC:      map[string]string{},
-		squads:           map[string]*domain.Squad{},
-		agents:           map[string]*domain.Agent{},
-		identities:       map[string]*domain.AgentIdentity{},
-		identityAgent:    map[string]string{},
-		boards:           map[string]*domain.Board{},
-		boardsBySquad:    map[string]string{},
-		grants:           map[string]*domain.AccessGrant{},
-		llmProviders:     map[string]*domain.LLMProvider{},
-		aiModels:         map[string]*domain.AIModel{},
-		userModelGrants:  map[string]*domain.UserModelGrant{},
-		grantPair:        map[string]string{},
-		resources:        map[string]*domain.RegistryResource{},
-		permissions:      map[string]*domain.AgentPermission{},
-		metering:         map[string]*domain.MeteringEvent{},
-		wakeLatency:      map[string]*domain.WakeLatencyEvent{},
-		wakeLatencyKey:   map[string]string{},
-		auditLog:         map[string]*domain.AuditEntry{},
-		tasks:            map[string]*domain.Task{},
-		taskExecs:        map[string]*domain.TaskExecution{},
-		agentMemory:      map[string]*domain.AgentMemory{},
-		messages:         map[string]*domain.Message{},
-		inbox:            map[string]*domain.InboxMessage{},
-		inboxAttachments: map[string]*domain.InboxAttachment{},
-		notifications:    map[string]*domain.Notification{},
-		notifPrefs:       map[string][]domain.NotificationType{},
-		k8sOutbox:        map[string]*domain.KubernetesOutboxEvent{},
-		userBudgets:      map[string]*domain.UserBudget{},
-		budgetBlocks:       map[string]*domain.BudgetBlock{},
+		users:               map[string]*domain.User{},
+		usersByEmail:        map[string]string{},
+		usersByOIDC:         map[string]string{},
+		squads:              map[string]*domain.Squad{},
+		agents:              map[string]*domain.Agent{},
+		identities:          map[string]*domain.AgentIdentity{},
+		identityAgent:       map[string]string{},
+		boards:              map[string]*domain.Board{},
+		boardsBySquad:       map[string]string{},
+		grants:              map[string]*domain.AccessGrant{},
+		llmProviders:        map[string]*domain.LLMProvider{},
+		aiModels:            map[string]*domain.AIModel{},
+		userModelGrants:     map[string]*domain.UserModelGrant{},
+		grantPair:           map[string]string{},
+		resources:           map[string]*domain.RegistryResource{},
+		permissions:         map[string]*domain.AgentPermission{},
+		metering:            map[string]*domain.MeteringEvent{},
+		wakeLatency:         map[string]*domain.WakeLatencyEvent{},
+		wakeLatencyKey:      map[string]string{},
+		auditLog:            map[string]*domain.AuditEntry{},
+		tasks:               map[string]*domain.Task{},
+		taskExecs:           map[string]*domain.TaskExecution{},
+		agentMemory:         map[string]*domain.AgentMemory{},
+		messages:            map[string]*domain.Message{},
+		inbox:               map[string]*domain.InboxMessage{},
+		inboxAttachments:    map[string]*domain.InboxAttachment{},
+		notifications:       map[string]*domain.Notification{},
+		notifPrefs:          map[string][]domain.NotificationType{},
+		k8sOutbox:           map[string]*domain.KubernetesOutboxEvent{},
+		userBudgets:         map[string]*domain.UserBudget{},
+		budgetBlocks:        map[string]*domain.BudgetBlock{},
 		budgetNotifyMarkers: map[string]bool{},
-		instanceSettings: &domain.InstanceSettings{},
-		promptRevisions:  []*domain.PromptRevision{},
-		builtinTools:     map[string]*domain.BuiltinToolConfig{},
-		promptTemplates:  map[string]*domain.PromptTemplate{},
-		uploads:          map[string]*domain.Upload{},
+		instanceSettings:    &domain.InstanceSettings{},
+		promptRevisions:     []*domain.PromptRevision{},
+		builtinTools:        map[string]*domain.BuiltinToolConfig{},
+		promptTemplates:     map[string]*domain.PromptTemplate{},
+		uploads:             map[string]*domain.Upload{},
 	}
 	store.platformSettings = map[string]string{
 		domain.PlatformSettingIdleScaleToZeroSeconds: "900",
@@ -1262,18 +1262,12 @@ func (m *MemoryStore) SumMeteringDaily(_ context.Context, since time.Time, squad
 		allowed[id] = true
 	}
 
-	type groupKey struct {
-		day, squadID, agentID, providerID, model string
-	}
-	agg := map[groupKey]*domain.MeteringDailyRow{}
+	agg := map[meteringGroupKey]*domain.MeteringDailyRow{}
 	for _, event := range m.metering {
-		if !since.IsZero() && event.Timestamp.Before(since) {
+		if !meteringEventInWindow(event, since, allowed) {
 			continue
 		}
-		if len(allowed) > 0 && !allowed[event.SquadID] {
-			continue
-		}
-		key := groupKey{
+		key := meteringGroupKey{
 			day:        event.Timestamp.UTC().Format("2006-01-02"),
 			squadID:    event.SquadID,
 			agentID:    event.AgentID,
@@ -1282,23 +1276,7 @@ func (m *MemoryStore) SumMeteringDaily(_ context.Context, since time.Time, squad
 		}
 		row, ok := agg[key]
 		if !ok {
-			row = &domain.MeteringDailyRow{
-				Day:        key.day,
-				SquadID:    key.squadID,
-				AgentID:    key.agentID,
-				ProviderID: key.providerID,
-				Model:      key.model,
-				Currency:   "USD",
-			}
-			if squad, ok := m.squads[event.SquadID]; ok {
-				row.SquadName = squad.Name
-			}
-			if agent, ok := m.agents[event.AgentID]; ok {
-				row.AgentName = agent.Name
-			}
-			if provider, ok := m.llmProviders[event.ProviderID]; ok {
-				row.ProviderName = provider.Name
-			}
+			row = m.newMeteringRowLocked(key, event)
 			agg[key] = row
 		}
 		row.InputTokens += event.InputTokens
@@ -1313,6 +1291,54 @@ func (m *MemoryStore) SumMeteringDaily(_ context.Context, since time.Time, squad
 	for _, row := range agg {
 		out = append(out, *row)
 	}
+	sortMeteringRows(out)
+	return out, nil
+}
+
+// meteringGroupKey is the aggregation key for daily metering rows
+// (S-189: hoisted to package scope for the extracted helpers).
+type meteringGroupKey struct {
+	day, squadID, agentID, providerID, model string
+}
+
+// meteringEventInWindow applies the since-window and squad-allowlist
+// filters to one metering event (S-189 split out of SumMeteringDaily).
+func meteringEventInWindow(event *domain.MeteringEvent, since time.Time, allowed map[string]bool) bool {
+	if !since.IsZero() && event.Timestamp.Before(since) {
+		return false
+	}
+	if len(allowed) > 0 && !allowed[event.SquadID] {
+		return false
+	}
+	return true
+}
+
+// newMeteringRowLocked builds the first aggregate row for a group key,
+// resolving display names from the in-memory indexes (caller holds the
+// read lock).
+func (m *MemoryStore) newMeteringRowLocked(key meteringGroupKey, event *domain.MeteringEvent) *domain.MeteringDailyRow {
+	row := &domain.MeteringDailyRow{
+		Day:        key.day,
+		SquadID:    key.squadID,
+		AgentID:    key.agentID,
+		ProviderID: key.providerID,
+		Model:      key.model,
+		Currency:   "USD",
+	}
+	if squad, ok := m.squads[event.SquadID]; ok {
+		row.SquadName = squad.Name
+	}
+	if agent, ok := m.agents[event.AgentID]; ok {
+		row.AgentName = agent.Name
+	}
+	if provider, ok := m.llmProviders[event.ProviderID]; ok {
+		row.ProviderName = provider.Name
+	}
+	return row
+}
+
+// sortMeteringRows orders rows by day, squad, agent, provider, model.
+func sortMeteringRows(out []domain.MeteringDailyRow) {
 	slices.SortFunc(out, func(a, b domain.MeteringDailyRow) int {
 		if c := strings.Compare(a.Day, b.Day); c != 0 {
 			return c
@@ -1328,7 +1354,6 @@ func (m *MemoryStore) SumMeteringDaily(_ context.Context, since time.Time, squad
 		}
 		return strings.Compare(a.Model, b.Model)
 	})
-	return out, nil
 }
 
 func (m *MemoryStore) RecordAudit(_ context.Context, entry *domain.AuditEntry) error {
@@ -1720,7 +1745,8 @@ func (m *MemoryStore) ListBoardTaskExecutions(_ context.Context, boardID string)
 
 // ReapExpiredTaskExecutions expires dead attempts and re-queues their tasks.
 // Mirrors the Postgres implementation: only active attempts whose lease
-// lapsed before cutoff are expired, and a task is re-queued to todo only
+// lapsed before cutoff are expired, and a task is re-queued to the TO DO
+// column only
 // when no other live attempt remains.
 func (m *MemoryStore) ReapExpiredTaskExecutions(_ context.Context, cutoff time.Time) ([]domain.ReapedExecution, error) {
 	m.mu.Lock()
@@ -1837,10 +1863,7 @@ func (m *MemoryStore) SearchAgentMemory(_ context.Context, agentID string, squad
 	}
 	candidates := make([]scored, 0)
 	for _, item := range m.agentMemory {
-		if item.AgentID != agentID || item.ReviewStatus == "rejected" || len(item.Embedding) == 0 {
-			continue
-		}
-		if item.SquadID != "" && item.SquadID != squadID {
+		if !agentMemorySearchable(item, agentID, squadID) {
 			continue
 		}
 		score, ok := cosineSimilarity(item.Embedding, queryEmbedding)
@@ -1867,6 +1890,21 @@ func (m *MemoryStore) SearchAgentMemory(_ context.Context, agentID string, squad
 	}
 	return hits, nil
 }
+
+// agentMemorySearchable reports whether one memory item participates in
+// semantic search for the given agent/squad: not rejected, embedded,
+// and either squad-agnostic or matching the requested squad
+// (S-189 split out of SearchAgentMemory).
+func agentMemorySearchable(item *domain.AgentMemory, agentID, squadID string) bool {
+	if item.AgentID != agentID || item.ReviewStatus == "rejected" || len(item.Embedding) == 0 {
+		return false
+	}
+	if item.SquadID != "" && item.SquadID != squadID {
+		return false
+	}
+	return true
+}
+
 // embedding (valid matches first, higher score first), falling back to
 // recency for ties and invalid vectors.
 func memoryVectorComparator(queryEmbedding []float64) func(a, b *domain.AgentMemory) int {
@@ -2191,12 +2229,12 @@ func (m *MemoryStore) ResetAgentChat(_ context.Context, agentID, squadID, transc
 	}
 	if archived > 0 {
 		mem := &domain.AgentMemory{
-			ID:           uuid.NewString(),
-			AgentID:      agentID,
-			SquadID:      squadID,
-			Content:      transcript,
-			TrustLevel:   "distilled",
-			Provenance:   "chat_reset",
+			ID:             uuid.NewString(),
+			AgentID:        agentID,
+			SquadID:        squadID,
+			Content:        transcript,
+			TrustLevel:     "distilled",
+			Provenance:     "chat_reset",
 			ReviewStatus:   "approved",
 			Embedding:      append([]float64(nil), embedding...),
 			EmbeddingModel: embeddingModel,
@@ -2279,16 +2317,7 @@ func (m *MemoryStore) CancelChatTurn(_ context.Context, agentID string) (*domain
 	resetAt := m.agents[agentID].ChatResetAt
 	var live *domain.Message
 	for _, msg := range m.messages {
-		if msg.ToAgentID != agentID || msg.FromType != "user" {
-			continue
-		}
-		if msg.Status != domain.MessagePending && msg.Status != domain.MessageDelivered {
-			continue
-		}
-		if !resetAt.IsZero() && !msg.CreatedAt.After(resetAt) {
-			continue
-		}
-		if m.agentRepliedToLocked(msg.ID) {
+		if !m.cancelableChatTurnLocked(msg, agentID, resetAt) {
 			continue
 		}
 		if live == nil || msg.CreatedAt.After(live.CreatedAt) {
@@ -2301,6 +2330,25 @@ func (m *MemoryStore) CancelChatTurn(_ context.Context, agentID string) (*domain
 	live.Status = domain.MessageCancelled
 	live.TerminalReason = "cancelled by user"
 	return cloneMessage(live), nil
+}
+
+// cancelableChatTurnLocked reports whether one message is a live
+// user→agent turn that a chat reset can cancel (S-189 split out of
+// CancelChatTurn). Caller holds the write lock.
+func (m *MemoryStore) cancelableChatTurnLocked(msg *domain.Message, agentID string, resetAt time.Time) bool {
+	if msg.ToAgentID != agentID || msg.FromType != "user" {
+		return false
+	}
+	if msg.Status != domain.MessagePending && msg.Status != domain.MessageDelivered {
+		return false
+	}
+	if !resetAt.IsZero() && !msg.CreatedAt.After(resetAt) {
+		return false
+	}
+	if m.agentRepliedToLocked(msg.ID) {
+		return false
+	}
+	return true
 }
 
 // agentRepliedToLocked reports whether the agent has already answered the
@@ -2358,34 +2406,7 @@ func (m *MemoryStore) ListAgentInbox(_ context.Context, agentID string, limit in
 		if msg.ToAgentID != agentID {
 			continue
 		}
-		switch msg.Status {
-		case domain.MessagePending:
-			if msg.Attempts <= 0 {
-				snap.PendingCount++
-				if snap.OldestPendingAt == nil || msg.CreatedAt.Before(*snap.OldestPendingAt) {
-					t := msg.CreatedAt
-					snap.OldestPendingAt = &t
-				}
-				if len(snap.Pending) < limit {
-					snap.Pending = append(snap.Pending, cloneMessage(msg))
-				}
-			} else {
-				snap.RetryingCount++
-				if len(snap.Retrying) < limit {
-					snap.Retrying = append(snap.Retrying, cloneMessage(msg))
-				}
-			}
-		case domain.MessageDelivered:
-			snap.DeliveredCount++
-			if len(snap.Delivered) < limit {
-				snap.Delivered = append(snap.Delivered, cloneMessage(msg))
-			}
-		case domain.MessageDead:
-			snap.DeadCount++
-			if len(snap.Dead) < limit {
-				snap.Dead = append(snap.Dead, cloneMessage(msg))
-			}
-		}
+		bucketAgentInboxMessage(snap, msg, limit)
 	}
 	sortMessages(snap.Pending) // oldest waiting first
 	sortMessages(snap.Retrying)
@@ -2395,6 +2416,40 @@ func (m *MemoryStore) ListAgentInbox(_ context.Context, agentID string, limit in
 	sortMessages(snap.Dead)
 	reverseMessages(snap.Dead)
 	return snap, nil
+}
+
+// bucketAgentInboxMessage folds one message into the inbox snapshot:
+// counts always, list entries only while under the per-status limit
+// (S-189 split out of ListAgentInbox).
+func bucketAgentInboxMessage(snap *domain.AgentInboxSnapshot, msg *domain.Message, limit int) {
+	switch msg.Status {
+	case domain.MessagePending:
+		if msg.Attempts > 0 {
+			snap.RetryingCount++
+			if len(snap.Retrying) < limit {
+				snap.Retrying = append(snap.Retrying, cloneMessage(msg))
+			}
+			return
+		}
+		snap.PendingCount++
+		if snap.OldestPendingAt == nil || msg.CreatedAt.Before(*snap.OldestPendingAt) {
+			t := msg.CreatedAt
+			snap.OldestPendingAt = &t
+		}
+		if len(snap.Pending) < limit {
+			snap.Pending = append(snap.Pending, cloneMessage(msg))
+		}
+	case domain.MessageDelivered:
+		snap.DeliveredCount++
+		if len(snap.Delivered) < limit {
+			snap.Delivered = append(snap.Delivered, cloneMessage(msg))
+		}
+	case domain.MessageDead:
+		snap.DeadCount++
+		if len(snap.Dead) < limit {
+			snap.Dead = append(snap.Dead, cloneMessage(msg))
+		}
+	}
 }
 
 // ReplayDeadMessage (S-174) puts a dead letter back on the queue. The
@@ -2435,25 +2490,7 @@ func (m *MemoryStore) ListDeadLetters(_ context.Context, filter domain.DeadLette
 	reason := strings.ToLower(strings.TrimSpace(filter.Reason))
 	out := []*domain.Message{}
 	for _, msg := range m.messages {
-		if msg.Status != domain.MessageDead {
-			continue
-		}
-		if filter.SquadID != "" && msg.SquadID != filter.SquadID {
-			continue
-		}
-		if filter.AgentID != "" && msg.ToAgentID != filter.AgentID {
-			continue
-		}
-		if filter.Type != "" && string(msg.Type) != filter.Type {
-			continue
-		}
-		if reason != "" && !strings.Contains(strings.ToLower(msg.TerminalReason), reason) {
-			continue
-		}
-		if filter.Since != nil && msg.CreatedAt.Before(*filter.Since) {
-			continue
-		}
-		if filter.Until != nil && msg.CreatedAt.After(*filter.Until) {
+		if !deadLetterMatches(msg, filter, reason) {
 			continue
 		}
 		if len(out) < limit {
@@ -2463,6 +2500,34 @@ func (m *MemoryStore) ListDeadLetters(_ context.Context, filter domain.DeadLette
 	sortMessages(out)
 	reverseMessages(out)
 	return out, nil
+}
+
+// deadLetterMatches applies the dead-letter filter (squad, agent, type,
+// reason substring, created window) to one message (S-189 split out of
+// ListDeadLetters). `reason` is the pre-lowercased filter reason.
+func deadLetterMatches(msg *domain.Message, filter domain.DeadLetterFilter, reason string) bool {
+	if msg.Status != domain.MessageDead {
+		return false
+	}
+	if filter.SquadID != "" && msg.SquadID != filter.SquadID {
+		return false
+	}
+	if filter.AgentID != "" && msg.ToAgentID != filter.AgentID {
+		return false
+	}
+	if filter.Type != "" && string(msg.Type) != filter.Type {
+		return false
+	}
+	if reason != "" && !strings.Contains(strings.ToLower(msg.TerminalReason), reason) {
+		return false
+	}
+	if filter.Since != nil && msg.CreatedAt.Before(*filter.Since) {
+		return false
+	}
+	if filter.Until != nil && msg.CreatedAt.After(*filter.Until) {
+		return false
+	}
+	return true
 }
 
 // DeleteMessage hard-prunes one row (admin only; handler enforces).
@@ -2484,20 +2549,8 @@ func (m *MemoryStore) SweepConsultTimeouts(_ context.Context, now time.Time) (in
 	defer m.mu.Unlock()
 	posted := 0
 	for _, msg := range m.messages {
-		if msg.Type != domain.MessageConsult || msg.FromType != "agent" {
-			continue
-		}
-		if msg.TimeoutAt.IsZero() || !msg.TimeoutNotifiedAt.IsZero() || msg.TimeoutAt.After(now) {
-			continue
-		}
-		if msg.Status != domain.MessagePending && msg.Status != domain.MessageDelivered {
-			continue
-		}
-		thread := msg.CorrelationID
-		if thread == "" {
-			thread = msg.ID
-		}
-		if m.threadHasReplyLocked(thread, msg.ToAgentID) {
+		thread := consultThreadID(msg)
+		if !m.consultTimeoutDueLocked(msg, now, thread) {
 			continue
 		}
 		msg.TimeoutNotifiedAt = now
@@ -2505,27 +2558,62 @@ func (m *MemoryStore) SweepConsultTimeouts(_ context.Context, now time.Time) (in
 		if !ok {
 			continue // sender deleted: nothing to notify, but never re-notify
 		}
-		reply := &domain.Message{
-			ID:             uuid.NewString(),
-			FromType:       "agent",
-			FromID:         msg.ToAgentID,
-			ToAgentID:      msg.FromID,
-			SquadID:        asker.SquadID,
-			Type:           domain.MessageReply,
-			Payload:        consultTimeoutPayload(msg),
-			Status:         domain.MessagePending,
-			CorrelationID:  thread,
-			Attempts:       0,
-			MaxAttempts:    defaultMessageMaxAttempts,
-			NextRetryAt:    now,
-			ExpiresAt:      now.Add(defaultMessageTTL),
-			TerminalReason: consultTimeoutReason,
-			CreatedAt:      now,
-		}
+		reply := buildConsultTimeoutReply(msg, asker.SquadID, thread, now)
 		m.messages[reply.ID] = reply
 		posted++
 	}
 	return posted, nil
+}
+
+// consultThreadID resolves the conversation thread for a consult: the
+// correlation id when present, otherwise the message's own id
+// (S-189 split out of SweepConsultTimeouts).
+func consultThreadID(msg *domain.Message) string {
+	if msg.CorrelationID != "" {
+		return msg.CorrelationID
+	}
+	return msg.ID
+}
+
+// consultTimeoutDueLocked reports whether one message is an agent consult
+// whose deadline passed without a reply (S-189 split). Caller holds the
+// write lock.
+func (m *MemoryStore) consultTimeoutDueLocked(msg *domain.Message, now time.Time, thread string) bool {
+	if msg.Type != domain.MessageConsult || msg.FromType != "agent" {
+		return false
+	}
+	if msg.TimeoutAt.IsZero() || !msg.TimeoutNotifiedAt.IsZero() || msg.TimeoutAt.After(now) {
+		return false
+	}
+	if msg.Status != domain.MessagePending && msg.Status != domain.MessageDelivered {
+		return false
+	}
+	if m.threadHasReplyLocked(thread, msg.ToAgentID) {
+		return false
+	}
+	return true
+}
+
+// buildConsultTimeoutReply fabricates the synthetic timeout reply posted
+// back to the asking agent (S-189 split).
+func buildConsultTimeoutReply(msg *domain.Message, squadID, thread string, now time.Time) *domain.Message {
+	return &domain.Message{
+		ID:             uuid.NewString(),
+		FromType:       "agent",
+		FromID:         msg.ToAgentID,
+		ToAgentID:      msg.FromID,
+		SquadID:        squadID,
+		Type:           domain.MessageReply,
+		Payload:        consultTimeoutPayload(msg),
+		Status:         domain.MessagePending,
+		CorrelationID:  thread,
+		Attempts:       0,
+		MaxAttempts:    defaultMessageMaxAttempts,
+		NextRetryAt:    now,
+		ExpiresAt:      now.Add(defaultMessageTTL),
+		TerminalReason: consultTimeoutReason,
+		CreatedAt:      now,
+	}
 }
 
 // threadHasReplyLocked reports whether the responder already answered in

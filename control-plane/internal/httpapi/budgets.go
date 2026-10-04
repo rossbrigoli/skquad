@@ -213,82 +213,24 @@ func (s *Server) putPlatformBudget(w http.ResponseWriter, r *http.Request) {
 			"at least one of default_monthly_usd / max_usd / platform_monthly_limit_usd is required")
 		return
 	}
-	known := map[string]bool{
-		"default_monthly_usd":        true,
-		"max_usd":                    true,
-		"platform_monthly_limit_usd": true,
-	}
-	for k := range fields {
-		if !known[k] {
-			writeError(w, http.StatusBadRequest, "bad_request", "unknown field: "+k)
-			return
-		}
-	}
-	parseKnob := func(name string) (*float64, bool) {
-		raw, present := fields[name]
-		if !present {
-			return nil, false
-		}
-		if string(raw) == "null" {
-			return nil, true // explicit clear
-		}
-		var v float64
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return nil, false
-		}
-		return &v, true
-	}
-	defVal, defSet := parseKnob("default_monthly_usd")
-	maxVal, maxSet := parseKnob("max_usd")
-	limitVal, limitSet := parseKnob("platform_monthly_limit_usd")
-	if (defSet && defVal == nil && fields["default_monthly_usd"] != nil && string(fields["default_monthly_usd"]) != "null") ||
-		(maxSet && maxVal == nil && string(fields["max_usd"]) != "null") ||
-		(limitSet && limitVal == nil && string(fields["platform_monthly_limit_usd"]) != "null") {
-		writeError(w, http.StatusBadRequest, "bad_request", "budget values must be numbers or null")
+	knobs, ok := parseBudgetKnobs(w, fields)
+	if !ok {
 		return
 	}
-	for _, v := range []*float64{defVal, maxVal, limitVal} {
-		if v != nil && !validateBudgetRange(w, *v) {
-			return
-		}
-	}
+	defVal, defSet := knobs[0].Value, knobs[0].Set
+	maxVal, maxSet := knobs[1].Value, knobs[1].Set
+	limitVal := knobs[2].Value
 
-	current, err := s.store.GetPlatformBudgets(r.Context())
-	if err != nil {
-		writeStorageError(w, err)
-		return
-	}
-	// Consistency: the default may not exceed the max (either value in
-	// this request or the one already stored).
-	effMax := current.MaxUSD
-	if maxSet {
-		effMax = maxVal
-	}
-	effDefault := current.DefaultMonthlyUSD
-	if defSet {
-		effDefault = defVal
-	}
-	if effMax != nil && effDefault != nil && *effDefault > *effMax {
-		writeError(w, http.StatusBadRequest, "bad_request",
-			"default_monthly_usd must not exceed max_usd")
+	if !s.validateBudgetConsistency(w, r, defVal, defSet, maxVal, maxSet) {
 		return
 	}
 
 	userID := currentUser(r.Context()).ID
-	writes := []struct {
-		key   string
-		value *float64
-		set   bool
-	}{
-		{domain.PlatformSettingBudgetDefaultUSD, defVal, defSet},
-		{domain.PlatformSettingBudgetMaxUSD, maxVal, maxSet},
-		{domain.PlatformSettingBudgetPlatformMonthlyLimitUSD, limitVal, limitSet},
-	}
-	for _, wr := range writes {
-		if !wr.set {
+	for _, wr := range knobs {
+		if !wr.Set {
 			continue
 		}
-		if err := s.store.SetPlatformBudgetSetting(r.Context(), wr.key, wr.value, userID); err != nil {
+		if err := s.store.SetPlatformBudgetSetting(r.Context(), wr.Key, wr.Value, userID); err != nil {
 			writeStorageError(w, err)
 			return
 		}
@@ -326,6 +268,78 @@ func (s *Server) putPlatformBudget(w http.ResponseWriter, r *http.Request) {
 	resp["max_usd"] = budgets.MaxUSD
 	resp["platform_monthly_limit_usd"] = budgets.PlatformMonthlyLimitUSD
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// budgetKnob is one parsed platform-budget setting: the settings-store
+// key, the parsed value (nil = clear) and whether the field was present
+// in the request (S-189 split out of putPlatformBudget).
+type budgetKnob struct {
+	Key   string
+	Value *float64
+	Set   bool
+}
+
+// parseBudgetKnobs validates the request field names, parses the three
+// budget knobs (number or explicit null) and range-checks them.
+func parseBudgetKnobs(w http.ResponseWriter, fields map[string]json.RawMessage) ([]budgetKnob, bool) {
+	known := map[string]string{
+		"default_monthly_usd":        domain.PlatformSettingBudgetDefaultUSD,
+		"max_usd":                    domain.PlatformSettingBudgetMaxUSD,
+		"platform_monthly_limit_usd": domain.PlatformSettingBudgetPlatformMonthlyLimitUSD,
+	}
+	for k := range fields {
+		if _, isKnown := known[k]; !isKnown {
+			writeError(w, http.StatusBadRequest, "bad_request", "unknown field: "+k)
+			return nil, false
+		}
+	}
+	names := []string{"default_monthly_usd", "max_usd", "platform_monthly_limit_usd"}
+	knobs := make([]budgetKnob, 0, len(names))
+	for _, name := range names {
+		raw, present := fields[name]
+		if !present {
+			knobs = append(knobs, budgetKnob{Key: known[name]})
+			continue
+		}
+		if string(raw) == "null" {
+			knobs = append(knobs, budgetKnob{Key: known[name], Set: true}) // explicit clear
+			continue
+		}
+		var v float64
+		if err := json.Unmarshal(raw, &v); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "budget values must be numbers or null")
+			return nil, false
+		}
+		if !validateBudgetRange(w, v) {
+			return nil, false
+		}
+		knobs = append(knobs, budgetKnob{Key: known[name], Value: &v, Set: true})
+	}
+	return knobs, true
+}
+
+// validateBudgetConsistency enforces that the effective default may not
+// exceed the effective max (request values or already-stored ones).
+func (s *Server) validateBudgetConsistency(w http.ResponseWriter, r *http.Request, defVal *float64, defSet bool, maxVal *float64, maxSet bool) bool {
+	current, err := s.store.GetPlatformBudgets(r.Context())
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	effMax := current.MaxUSD
+	if maxSet {
+		effMax = maxVal
+	}
+	effDefault := current.DefaultMonthlyUSD
+	if defSet {
+		effDefault = defVal
+	}
+	if effMax != nil && effDefault != nil && *effDefault > *effMax {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			"default_monthly_usd must not exceed max_usd")
+		return false
+	}
+	return true
 }
 
 // ---------------------------------------------------------------------------

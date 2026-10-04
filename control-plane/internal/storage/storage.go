@@ -183,7 +183,7 @@ type TaskStore interface {
 	GetLatestTaskExecution(ctx context.Context, taskID string) (*domain.TaskExecution, error)
 	CompleteTaskExecution(ctx context.Context, agentID string, taskID string, executionID string, fencingToken string, status domain.TaskStatus, summary string) (*domain.Task, error)
 	// ReapExpiredTaskExecutions marks active executions whose lease expired
-	// before cutoff as expired and re-queues their tasks (in-progress → todo)
+	// before cutoff as expired and re-queues their tasks (in-progress → TO DO)
 	// when no other live execution remains. Returns the reaped executions
 	// (S-193: the reaper notifies squad owners about dead attempts) so the
 	// caller can identify what died without a second sweep. Safe to run

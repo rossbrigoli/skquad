@@ -56,19 +56,7 @@ func Run(ctx context.Context, store RowStore, embedder Embedder, currentModel st
 		}
 		embeddedBefore := stats.Embedded
 		for _, row := range rows {
-			stats.Scanned++
-			vec, err := embedder.Embed(ctx, row.Content)
-			if err != nil {
-				stats.Failed++
-				log.Printf("embed-backfill: embed failed memory=%s: %v", row.ID, err)
-				continue
-			}
-			if err := store.SetAgentMemoryEmbedding(ctx, row.ID, vec, currentModel); err != nil {
-				stats.Failed++
-				log.Printf("embed-backfill: store failed memory=%s: %v", row.ID, err)
-				continue
-			}
-			stats.Embedded++
+			embedRow(ctx, store, embedder, currentModel, row, &stats)
 		}
 		if len(rows) < batchSize {
 			return stats, nil
@@ -78,4 +66,23 @@ func Run(ctx context.Context, store RowStore, embedder Embedder, currentModel st
 			return stats, nil
 		}
 	}
+}
+
+// embedRow embeds and persists one memory row, folding the outcome into
+// stats (S-189 split out of Run). Failures are counted and logged; the
+// batch continues.
+func embedRow(ctx context.Context, store RowStore, embedder Embedder, currentModel string, row *domain.AgentMemory, stats *Stats) {
+	stats.Scanned++
+	vec, err := embedder.Embed(ctx, row.Content)
+	if err != nil {
+		stats.Failed++
+		log.Printf("embed-backfill: embed failed memory=%s: %v", row.ID, err)
+		return
+	}
+	if err := store.SetAgentMemoryEmbedding(ctx, row.ID, vec, currentModel); err != nil {
+		stats.Failed++
+		log.Printf("embed-backfill: store failed memory=%s: %v", row.ID, err)
+		return
+	}
+	stats.Embedded++
 }
