@@ -29,6 +29,18 @@ const MOVE_TARGETS: { status: string; label: string }[] = [
   { status: "blocked", label: "Blocked" },
 ];
 
+// S-189/S3776: lease hint extracted so the page component stays under
+// the cognitive-complexity limit.
+function leaseSuffix(state: string): string {
+  if (state === "running") {
+    return " · lease live";
+  }
+  if (state === "stalled") {
+    return " · lease stalled";
+  }
+  return "";
+}
+
 export default function TaskDetailPage() {
   const params = useParams<{ id: string; tid: string }>();
   const squadId = String(params?.id ?? "");
@@ -165,8 +177,7 @@ export default function TaskDetailPage() {
             "unassigned"
           )}{" "}
           · updated {formatRelativeTime(current.updated_at)}
-          {leaseState(current) === "running" ? " · lease live" : ""}
-          {leaseState(current) === "stalled" ? " · lease stalled" : ""}
+  {leaseSuffix(leaseState(current))}
         </p>
         {current.description ? (
           <p style={{ whiteSpace: "pre-wrap", marginTop: "var(--space-3)" }}>{current.description}</p>

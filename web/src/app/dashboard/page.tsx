@@ -43,6 +43,27 @@ import {
 
 const POLL_MS = 30_000;
 
+// S-189/S3776: helpers extracted from DashboardPage — identical
+// behaviour, smaller cognitive surface in the page component.
+function makeValueFormatter(mode: ChartMode, currency: string): (n: number) => string {
+  return mode === "cost"
+    ? (n: number) => formatMoney(n, currency)
+    : (n: number) => formatCompact(n);
+}
+
+interface UsageCharts {
+  readonly squads: ReturnType<typeof buildStackedChart>;
+  readonly agents: ReturnType<typeof buildStackedChart>;
+}
+
+function buildUsageCharts(usage: DashboardUsagePayload | null, mode: ChartMode): UsageCharts {
+  const days = usage?.days ?? [];
+  return {
+    squads: buildStackedChart(days, usage?.by_squad ?? [], mode),
+    agents: buildStackedChart(days, usage?.by_agent ?? [], mode),
+  };
+}
+
 export default function DashboardPage() {
   const { data, loading, error, refresh } = useApi<DashboardPayload>("/dashboard", POLL_MS);
   const { data: usage, error: usageError } = useApi<DashboardUsagePayload>("/dashboard/usage?days=30", POLL_MS);
@@ -51,10 +72,9 @@ export default function DashboardPage() {
   const totals = dashboardTotals(data);
   const isAdmin = data?.scope === "all";
   const currency = usage?.currency ?? "USD";
-  const formatValue = mode === "cost" ? (n: number) => formatMoney(n, currency) : (n: number) => formatCompact(n);
-  const squadChart = buildStackedChart(usage?.days ?? [], usage?.by_squad ?? [], mode);
-  const agentChart = buildStackedChart(usage?.days ?? [], usage?.by_agent ?? [], mode);
-  const usageChart = source === "agents" ? agentChart : squadChart;
+  const formatValue = makeValueFormatter(mode, currency);
+  const charts = buildUsageCharts(usage, mode);
+  const usageChart = source === "agents" ? charts.agents : charts.squads;
   const providerUsage = providerUsageMap(usage?.providers);
 
   return (
@@ -89,47 +109,80 @@ export default function DashboardPage() {
               <BarChart model={usageChart} formatValue={formatValue} />
             </div>
 
-            <h2 className="section-title">Squads</h2>
-            {(data?.squads?.length ?? 0) === 0 ? (
-              <EmptyState title="No squads yet" hint="Create a squad to see it here with its task counts and costs." />
-            ) : (
-              <div className="entity-list">
-                {data!.squads.map((squad) => (
-                  <SquadRow key={squad.id} squad={squad} />
-                ))}
-              </div>
-            )}
+            <SquadsSection squads={data?.squads} />
 
-            <h2 className="section-title">LLM Providers</h2>
-            {(data?.providers?.length ?? 0) === 0 ? (
-              <EmptyState title="No providers registered" hint="Register providers in Settings → AI Models." />
-            ) : (
-              <div className="entity-list">
-                {data!.providers.map((provider) => (
-                  <ProviderRow
-                    key={provider.id}
-                    provider={provider}
-                    usageRow={providerUsage.get(provider.id)}
-                    currency={currency}
-                  />
-                ))}
-              </div>
-            )}
+            <ProvidersSection providers={data?.providers} providerUsage={providerUsage} currency={currency} />
 
-            <h2 className="section-title">Resources</h2>
-            {(data?.resources?.length ?? 0) === 0 ? (
-              <EmptyState title="No resources registered" hint="Skills, tools, APIs, knowledge bases and workspaces appear here." />
-            ) : (
-              <div className="entity-list">
-                {data!.resources.map((resource) => (
-                  <ResourceRow key={`${resource.type}-${resource.id}`} resource={resource} />
-                ))}
-              </div>
-            )}
+            <ResourcesSection resources={data?.resources} />
           </>
         )}
       </AppShell>
     </AuthGate>
+  );
+}
+
+// S-189/S3776: the three list sections extracted from DashboardPage.
+function SquadsSection({ squads }: { readonly squads?: DashboardSquad[] }) {
+  return (
+    <>
+      <h2 className="section-title">Squads</h2>
+      {(squads?.length ?? 0) === 0 ? (
+        <EmptyState title="No squads yet" hint="Create a squad to see it here with its task counts and costs." />
+      ) : (
+        <div className="entity-list">
+          {squads!.map((squad) => (
+            <SquadRow key={squad.id} squad={squad} />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function ProvidersSection({
+  providers,
+  providerUsage,
+  currency,
+}: {
+  readonly providers?: DashboardPayload["providers"];
+  readonly providerUsage: ReturnType<typeof providerUsageMap>;
+  readonly currency: string;
+}) {
+  return (
+    <>
+      <h2 className="section-title">LLM Providers</h2>
+      {(providers?.length ?? 0) === 0 ? (
+        <EmptyState title="No providers registered" hint="Register providers in Settings → AI Models." />
+      ) : (
+        <div className="entity-list">
+          {providers!.map((provider) => (
+            <ProviderRow
+              key={provider.id}
+              provider={provider}
+              usageRow={providerUsage.get(provider.id)}
+              currency={currency}
+            />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function ResourcesSection({ resources }: { readonly resources?: DashboardPayload["resources"] }) {
+  return (
+    <>
+      <h2 className="section-title">Resources</h2>
+      {(resources?.length ?? 0) === 0 ? (
+        <EmptyState title="No resources registered" hint="Skills, tools, APIs, knowledge bases and workspaces appear here." />
+      ) : (
+        <div className="entity-list">
+          {resources!.map((resource) => (
+            <ResourceRow key={`${resource.type}-${resource.id}`} resource={resource} />
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 

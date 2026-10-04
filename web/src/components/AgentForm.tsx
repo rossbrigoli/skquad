@@ -65,7 +65,7 @@ export function AgentFormModal({
     initial?.idle_timeout_sec ? String(initial.idle_timeout_sec) : "",
   );
   const [storageEnabled, setStorageEnabled] = useState(initial?.storage_enabled ?? false);
-  const [storageSize, setStorageSize] = useState(initial?.storage_size ? initial.storage_size : DEFAULT_AGENT_STORAGE_SIZE);
+  const [storageSize, setStorageSize] = useState(initialStorageSize(initial));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // S-PROMPT WP4: layer-4 validation battery runs debounced while typing;
@@ -92,7 +92,7 @@ export function AgentFormModal({
           try {
             await onSubmit(buildAgentFormValues({ name, role, systemPrompt, idleTimeout, storageEnabled, storageSize, aiModelId }));
           } catch (err) {
-            setError(err instanceof Error ? err.message : "submit failed");
+            setError(submitErrorMessage(err));
             setBusy(false);
           }
         }}
@@ -241,6 +241,16 @@ export function AgentFormModal({
 
 // S-189/S3776: helpers extracted from AgentFormModal (pure logic, unit
 // behaviour unchanged).
+
+// S-189/S3776: small pure helpers extracted from the modal body to keep
+// its cognitive complexity under the limit.
+function initialStorageSize(initial?: Partial<Agent>): string {
+  return initial?.storage_size ? initial.storage_size : DEFAULT_AGENT_STORAGE_SIZE;
+}
+
+function submitErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : "submit failed";
+}
 
 function promptErrorMessage(promptCheck: PromptValidateResponse | null): string {
   if (promptCheck && !promptCheck.valid && promptCheck.error) {

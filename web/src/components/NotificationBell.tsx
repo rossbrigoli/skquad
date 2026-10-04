@@ -133,7 +133,7 @@ export function NotificationBell() {
         ) : null}
       </button>
       {open ? (
-        <div className="notif-popover" role="dialog" aria-label="Notifications">
+        <dialog className="notif-popover" open aria-label="Notifications">
           <div className="notif-popover-header">
             <span className="notif-popover-title">Notifications</span>
             {unread > 0 ? (
@@ -188,7 +188,7 @@ export function NotificationBell() {
               })}
             </ul>
           )}
-        </div>
+        </dialog>
       ) : null}
     </div>
   );

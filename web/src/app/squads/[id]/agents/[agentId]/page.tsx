@@ -217,6 +217,93 @@ function RuntimeIdentitySection({
   );
 }
 
+// S-189/S4323: agent profile page tabs.
+type AgentTab = "chat" | "config" | "inbox";
+
+// S-189/S3776: pure helpers extracted from AgentProfilePage so its
+// cognitive complexity stays under the limit.
+function describeLlmBinding(models: AIModel[], id: string | undefined): string {
+  if (!id) {
+    return "no model bound";
+  }
+  const m = findModelById(models, id);
+  return m ? modelLabel(m) : `${id.slice(0, 12)}…`;
+}
+
+function errMsg(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
+}
+
+// S-189/S3776: title row + meta line extracted from AgentProfilePage;
+// render output identical to the inline JSX.
+function AgentTitleRow({
+  agent,
+  agentId,
+  restartBusy,
+  restartNote,
+  onConfirmRestart,
+  live,
+  stalled,
+  tasks,
+  resourceGrants,
+  metering,
+  meteringMtd,
+  contextTokens,
+}: {
+  readonly agent: Agent | undefined;
+  readonly agentId: string;
+  readonly restartBusy: boolean;
+  readonly restartNote: string;
+  readonly onConfirmRestart: () => void;
+  readonly live: Task[];
+  readonly stalled: Task[];
+  readonly tasks: Task[];
+  readonly resourceGrants: AgentPermission[];
+  readonly metering: MeteringState;
+  readonly meteringMtd: MeteringState;
+  readonly contextTokens: number | null;
+}) {
+  return (
+    <>
+      <div className="section-head agent-title-row">
+        <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-3)", flexWrap: "wrap" }}>
+          <h1 className="page-title" style={{ margin: 0 }}>
+            {agent?.name ?? "Agent"}
+          </h1>
+          {agent ? <StatusChip status={agentStatus(agent)} /> : null}
+          {/* S-169 item 9b: restart lives beside the page title now. */}
+          <button
+            type="button"
+            className="btn btn-sm btn-danger"
+            disabled={!agent || restartBusy}
+            onClick={onConfirmRestart}
+          >
+            {restartBusy ? "Restarting…" : "Restart agent"}
+          </button>
+          {restartNote ? <span className="field-hint">{restartNote}</span> : null}
+        </div>
+        {/* S-178: the metric chips moved up into the title row, where
+            the Delete button used to sit. Delete itself moved to the
+            Configuration tab's Danger zone — beside the chat it read
+            like a message-delete. */}
+        <AgentMetricChips
+          live={live}
+          stalled={stalled}
+          tasks={tasks}
+          resourceGrants={resourceGrants}
+          metering={metering}
+          meteringMtd={meteringMtd}
+          agent={agent}
+          contextTokens={contextTokens}
+        />
+      </div>
+      <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)" }}>
+        {agent?.role ? agent.role : "no role set"} · <span className="mono">{agentId.slice(0, 12)}</span>
+      </p>
+    </>
+  );
+}
+
 export default function AgentProfilePage() {
   const params = useParams<{ id: string; agentId: string }>();
   const squadId = String(params?.id ?? "");
@@ -236,7 +323,8 @@ export default function AgentProfilePage() {
   // S-169: Talk-first layout — Chat is the default tab, Configuration holds
   // everything the old Edit modal + stacked sections carried.
   // S-174: Inbox adds the delivery-queue observability panel (owner/admin).
-  const [tab, setTab] = useState<"chat" | "config" | "inbox">("chat");
+  // S-189/S4323: named union for the tab state.
+  const [tab, setTab] = useState<AgentTab>("chat");
   const [deleting, setDeleting] = useState(false);
   // S-202: restart/reset go through the shared ConfirmDialog instead of
   // window.confirm, matching every other destructive action in the app.
@@ -286,12 +374,10 @@ export default function AgentProfilePage() {
   // S-178: human-readable name of the agent's bound LLM for the composer
   // chip; falls back to the bare id when the model is no longer visible
   // via /models/me (revoked/deprecated).
-  const llmLabel = useMemo(() => {
-    const id = agent?.ai_model_id;
-    if (!id) return "no model bound";
-    const m = findModelById(myModels.data ?? [], id);
-    return m ? modelLabel(m) : `${id.slice(0, 12)}…`;
-  }, [agent?.ai_model_id, myModels.data]);
+  const llmLabel = useMemo(
+    () => describeLlmBinding(myModels.data ?? [], agent?.ai_model_id),
+    [agent?.ai_model_id, myModels.data],
+  );
 
   async function resetChat() {
     setChatActionBusy(true);
@@ -301,7 +387,7 @@ export default function AgentProfilePage() {
       setChatNote(`Thread reset · ${res?.archived ?? 0} earlier message(s) archived to memory`);
       chat.refresh();
     } catch (err) {
-      setChatNote(err instanceof Error ? err.message : "reset failed");
+      setChatNote(errMsg(err, "reset failed"));
     } finally {
       setChatActionBusy(false);
     }
@@ -314,7 +400,7 @@ export default function AgentProfilePage() {
       const res = await apiPost<{ pods: number }>(`/agents/${agentId}/restart`, token, {});
       setRestartNote(`Restarting agent (${res?.pods ?? 0} pod(s) evicted)`);
     } catch (err) {
-      setRestartNote(err instanceof Error ? err.message : "restart failed");
+      setRestartNote(errMsg(err, "restart failed"));
     } finally {
       setRestartBusy(false);
     }
@@ -333,41 +419,20 @@ export default function AgentProfilePage() {
   return (
     <AuthGate>
       <AppShell>
-        <div className="section-head agent-title-row">
-          <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-3)", flexWrap: "wrap" }}>
-            <h1 className="page-title" style={{ margin: 0 }}>
-              {agent?.name ?? "Agent"}
-            </h1>
-            {agent ? <StatusChip status={agentStatus(agent)} /> : null}
-            {/* S-169 item 9b: restart lives beside the page title now. */}
-            <button
-              type="button"
-              className="btn btn-sm btn-danger"
-              disabled={!agent || restartBusy}
-              onClick={() => setConfirmRestart(true)}
-            >
-              {restartBusy ? "Restarting…" : "Restart agent"}
-            </button>
-            {restartNote ? <span className="field-hint">{restartNote}</span> : null}
-          </div>
-          {/* S-178: the metric chips moved up into the title row, where
-              the Delete button used to sit. Delete itself moved to the
-              Configuration tab's Danger zone — beside the chat it read
-              like a message-delete. */}
-          <AgentMetricChips
-            live={live}
-            stalled={stalled}
-            tasks={tasks}
-            resourceGrants={resourceGrants}
-            metering={metering}
-            meteringMtd={meteringMtd}
-            agent={agent}
-            contextTokens={contextTokens}
-          />
-        </div>
-        <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)" }}>
-          {agent?.role ? agent.role : "no role set"} · <span className="mono">{agentId.slice(0, 12)}</span>
-        </p>
+        <AgentTitleRow
+          agent={agent}
+          agentId={agentId}
+          restartBusy={restartBusy}
+          restartNote={restartNote}
+          onConfirmRestart={() => setConfirmRestart(true)}
+          live={live}
+          stalled={stalled}
+          tasks={tasks}
+          resourceGrants={resourceGrants}
+          metering={metering}
+          meteringMtd={meteringMtd}
+          contextTokens={contextTokens}
+        />
 
         <AgentSectionTabs tab={tab} onSelect={setTab} />
 
@@ -435,7 +500,7 @@ export default function AgentProfilePage() {
                 agents.refresh();
               } catch (err) {
                 const fallbackMsg = agent?.identity_id ? "rotate failed" : "provision failed";
-                setIdentityError(err instanceof Error ? err.message : fallbackMsg);
+                setIdentityError(errMsg(err, fallbackMsg));
               } finally {
                 setIdentityBusy(false);
               }
@@ -565,7 +630,7 @@ function AgentConfigPane({
   const [savedNote, setSavedNote] = useState("");
 
   const storageInvalid = storageEnabled && !isValidStorageSize(storageSize);
-  const storageBaseline = agent.storage_size || DEFAULT_AGENT_STORAGE_SIZE;
+  const storageBaseline = agent.storage_size ? agent.storage_size : DEFAULT_AGENT_STORAGE_SIZE;
   const storageSizeDirty = storageEnabled && storageSize.trim() !== storageBaseline;
   const dirty =
     role !== (agent.role ?? "") ||
@@ -1369,6 +1434,9 @@ function GrantModal({
   );
 }
 
+// S-189/S4323: shared shape for the two metering fetch states.
+type MeteringState = { loading: boolean; error: string | null; data: MeteringSummary | null };
+
 // S-189/S3776: title-row metric chips and the section tab bar extracted
 // from AgentProfilePage; render output identical to the inline JSX.
 function AgentMetricChips({
@@ -1385,8 +1453,8 @@ function AgentMetricChips({
   readonly stalled: Task[];
   readonly tasks: Task[];
   readonly resourceGrants: AgentPermission[];
-  readonly metering: { loading: boolean; error: string | null; data: MeteringSummary | null };
-  readonly meteringMtd: { loading: boolean; error: string | null; data: MeteringSummary | null };
+  readonly metering: MeteringState;
+  readonly meteringMtd: MeteringState;
   readonly agent: Agent | undefined;
   readonly contextTokens: number | null;
 }) {
@@ -1526,8 +1594,55 @@ function StorageWorkspaceField({
   );
 }
 
-// S-189/S3776: tool-call rendering extracted from ChatThread; render
-// output identical to the inline JSX.
+// S-189/S3776: the two tool-call render branches extracted from
+// ChatToolCallList; render output identical to the inline JSX.
+function SubagentCallChip({
+  call,
+  subagent,
+  onShowSubagent,
+}: {
+  readonly call: ChatToolCall;
+  readonly subagent: SubagentInfo;
+  readonly onShowSubagent: (c: SubagentInfo | null) => void;
+}) {
+  return (
+    <div className={`chat-tool subagent-chip${call.ok ? "" : " failed"}`}>
+      <div className="chat-tool-summary">
+        <span className="chat-tool-name">🤖 subagent</span>
+        <span className="chat-tool-args mono">{subagentSummary(subagent)}</span>
+        <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
+        <button
+          type="button"
+          className="btn ghost small"
+          onClick={() => onShowSubagent(subagent)}
+        >
+          Details
+        </button>
+      </div>
+      {call.result ? (
+        <div className="chat-subagent-final">{truncateText(call.result, 400)}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function PlainToolCall({ call }: { readonly call: ChatToolCall }) {
+  const argsSummary = summarizeToolArgs(call.arguments);
+  return (
+    <details className={`chat-tool${call.ok ? "" : " failed"}`}>
+      <summary className="chat-tool-summary">
+        <span className="chat-tool-name">🔧 {call.name}</span>
+        {argsSummary ? <span className="chat-tool-args mono">{argsSummary}</span> : null}
+        <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
+      </summary>
+      <pre className="chat-tool-detail mono">{prettyToolArgs(call.arguments)}</pre>
+      {call.result ? (
+        <pre className="chat-tool-detail mono result">{truncateText(call.result, 4000)}</pre>
+      ) : null}
+    </details>
+  );
+}
+
 function ChatToolCallList({
   calls,
   callKeys,
@@ -1544,37 +1659,9 @@ function ChatToolCallList({
     <div className="chat-tools">
       {calls.map((call, idx) =>
         call.name === "spawn_subagent" && call.subagent ? (
-          <div key={`sub-${callKeys[idx]}`} className={`chat-tool subagent-chip${call.ok ? "" : " failed"}`}>
-            <div className="chat-tool-summary">
-              <span className="chat-tool-name">🤖 subagent</span>
-              <span className="chat-tool-args mono">{subagentSummary(call.subagent)}</span>
-              <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
-              <button
-                type="button"
-                className="btn ghost small"
-                onClick={() => onShowSubagent(call.subagent ?? null)}
-              >
-                Details
-              </button>
-            </div>
-            {call.result ? (
-              <div className="chat-subagent-final">{truncateText(call.result, 400)}</div>
-            ) : null}
-          </div>
+          <SubagentCallChip key={`sub-${callKeys[idx]}`} call={call} subagent={call.subagent} onShowSubagent={onShowSubagent} />
         ) : (
-          <details key={callKeys[idx]} className={`chat-tool${call.ok ? "" : " failed"}`}>
-            <summary className="chat-tool-summary">
-              <span className="chat-tool-name">🔧 {call.name}</span>
-              {summarizeToolArgs(call.arguments) ? (
-                <span className="chat-tool-args mono">{summarizeToolArgs(call.arguments)}</span>
-              ) : null}
-              <span className="chat-tool-state">{call.ok ? "ok" : "failed"}</span>
-            </summary>
-            <pre className="chat-tool-detail mono">{prettyToolArgs(call.arguments)}</pre>
-            {call.result ? (
-              <pre className="chat-tool-detail mono result">{truncateText(call.result, 4000)}</pre>
-            ) : null}
-          </details>
+          <PlainToolCall key={callKeys[idx]} call={call} />
         ),
       )}
     </div>

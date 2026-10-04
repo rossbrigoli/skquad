@@ -138,8 +138,10 @@ function inboxAttentionItems(message: InboxMessage): AttentionItem[] {
   // one-line message for notifications created before the change.
   const subject = message.subject?.trim();
   const trimmedBody = message.body?.trim();
-  const title = subject || message.message;
-  const body = trimmedBody || undefined;
+  // Truthy (not nullish) on purpose: an empty/whitespace subject or body
+  // must still fall back to the legacy message / absent body.
+  const title = subject?.length ? subject : message.message;
+  const body = trimmedBody?.length ? trimmedBody : undefined;
   if (message.kind === "action_required") {
     return [
       {

@@ -94,6 +94,12 @@ export function PromptTemplatesPanel({
     );
   }
 
+  // S-189/S2004: hoisted row-toggle so the list JSX stays under the
+  // function-nesting limit.
+  function toggleTemplateSelected(id: string) {
+    setSelectedIds((prev) => toggleTemplateSelection(prev, id));
+  }
+
   function renderTemplateList() {
     if (loading && templates.length === 0) {
       return <p className="field-hint">Loading templates…</p>;
@@ -114,7 +120,7 @@ export function PromptTemplatesPanel({
               type="checkbox"
               className="entity-checkbox"
               checked={selected.has(t.id)}
-              onChange={() => setSelectedIds((prev) => toggleTemplateSelection(prev, t.id))}
+              onChange={() => toggleTemplateSelected(t.id)}
               aria-label={`Select template ${t.name}`}
             />
             <div className="entity-main">

@@ -5,7 +5,7 @@ import type { TaskStatus } from "./api";
 // domain.TaskStatus). Per-squad configuration may reorder, rename, and hide
 // columns, but cannot introduce new statuses without breaking the agent
 // runtime contract. See docs/KANBAN-BOARD-DESIGN rationale in UIv2-11 card.
-// S-213: "backlog" is the parking column left of "todo". Tasks there are
+// S-213: "backlog" is the parking column left of "To do". Tasks there are
 // NOT ready to start; the control plane excludes them from every agent
 // pickup/listing path until a human moves them out.
 export const CANONICAL_STATUSES: TaskStatus[] = ["backlog", "todo", "in-progress", "in-review", "done", "blocked"];
@@ -53,9 +53,9 @@ function columnFromItem(item: unknown, seen: Set<TaskStatus>): BoardColumnConfig
 }
 
 // S-213: squads configured before Backlog existed must get it inserted
-// immediately left of "todo" (its canonical home). Handled after the
-// other missing columns so the relative order stays canonical even when
-// "todo" itself was absent from the persisted config.
+// immediately left of the "To do" column (its canonical home). Handled
+// after the other missing columns so the relative order stays canonical
+// even when "To do" itself was absent from the persisted config.
 function insertBacklog(out: BoardColumnConfig[], seen: Set<TaskStatus>): void {
   if (seen.has("backlog")) {
     return;
