@@ -5,13 +5,22 @@
 // window), and per-message REPLAY (same semantics as the owner replay,
 // any target) and PRUNE (hard delete, admin-only).
 //
-// Bulk prune (all dead older than N days) is a deliberate v1 omission —
-// see the card; per-row prune keeps the audit trail granular.
+// Bulk replay/delete of selected rows (S-227) fans out over the existing
+// per-item endpoints with Promise.allSettled so one failure never aborts
+// the batch; per-item errors are surfaced in the note line.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiDelete, apiGet, apiPost, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { buildDeadLetterQuery, isConsultTimeout, type DeadLetterQuery, type InboxMessageRow } from "../lib/inbox";
+import {
+  pruneDeadLetterSelection,
+  runBulkAction,
+  selectAllDeadLetters,
+  summarizeBulkResults,
+  toggleDeadLetterSelection,
+} from "../lib/deadLetters";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 type DeadLettersResponse = { dead_letters?: InboxMessageRow[] };
 
@@ -35,6 +44,29 @@ export function DeadLettersPanel() {
   const [loading, setLoading] = useState(false);
   const [note, setNote] = useState("");
   const [busyId, setBusyId] = useState("");
+  // S-227: multi-select for bulk Replay/Delete (S-214 pattern).
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [pendingBulkDelete, setPendingBulkDelete] = useState(false);
+  const headerCheckbox = useRef<HTMLInputElement>(null);
+
+  // Selection is pruned against the live list at render time so deleted
+  // or vanished messages can never linger in the selection.
+  const selected = useMemo(
+    () => pruneDeadLetterSelection(selectedIds, items ?? []),
+    [selectedIds, items],
+  );
+  const selectionSize = selected.size;
+  const allSelected = (items?.length ?? 0) > 0 && (items ?? []).every((m) => selected.has(m.id));
+  const someSelected = selectionSize > 0 && !allSelected;
+
+  // Header checkbox: checked when all selected, indeterminate when a
+  // subset is (same pattern as S-207 inbox / S-214 templates).
+  useEffect(() => {
+    if (headerCheckbox.current) {
+      headerCheckbox.current.indeterminate = someSelected;
+    }
+  }, [someSelected]);
 
   function setFilter(key: keyof DeadLetterQuery, value: string) {
     setFilters((prev) => ({ ...prev, [key]: value }));
@@ -84,7 +116,7 @@ export function DeadLettersPanel() {
     }
   }
 
-  async function prune(message: InboxMessageRow) {
+  async function remove(message: InboxMessageRow) {
     if (!window.confirm(`Permanently delete dead message ${shortId(message.id)}? This cannot be undone.`)) {
       return;
     }
@@ -92,12 +124,58 @@ export function DeadLettersPanel() {
     setNote("");
     try {
       await apiDelete(`/admin/dead-letters/${message.id}`, authedToken);
-      setNote(`Pruned ${shortId(message.id)}.`);
+      setNote(`Deleted ${shortId(message.id)}.`);
       void search();
     } catch (err) {
-      setNote(err instanceof ApiError ? `Prune failed: ${err.message}` : "Prune failed.");
+      setNote(err instanceof ApiError ? `Delete failed: ${err.message}` : "Delete failed.");
     } finally {
       setBusyId("");
+    }
+  }
+
+  // S-227: bulk actions fan out over the existing per-item endpoints.
+  // allSettled semantics: one bad message never aborts the batch; the
+  // note reports succeeded/failed counts and the failed ids.
+  async function bulkReplay() {
+    const ids = [...selected];
+    if (ids.length === 0 || bulkBusy) return;
+    setBulkBusy(true);
+    setNote("");
+    try {
+      const summary = summarizeBulkResults(
+        await runBulkAction(ids, (id) => apiPost(`/admin/dead-letters/${id}/replay`, authedToken, {})),
+      );
+      setNote(
+        summary.failed === 0
+          ? `Replayed ${summary.succeeded} message${summary.succeeded === 1 ? "" : "s"}.`
+          : `Replayed ${summary.succeeded}/${summary.total}; failed: ${summary.failedIds.map(shortId).join(", ")}.`,
+      );
+      setSelectedIds(new Set());
+      void search();
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function bulkDelete() {
+    const ids = [...selected];
+    if (ids.length === 0 || bulkBusy) return;
+    setBulkBusy(true);
+    setNote("");
+    try {
+      const summary = summarizeBulkResults(
+        await runBulkAction(ids, (id) => apiDelete(`/admin/dead-letters/${id}`, authedToken)),
+      );
+      setNote(
+        summary.failed === 0
+          ? `Deleted ${summary.succeeded} message${summary.succeeded === 1 ? "" : "s"}.`
+          : `Deleted ${summary.succeeded}/${summary.total}; failed: ${summary.failedIds.map(shortId).join(", ")}.`,
+      );
+      setSelectedIds(new Set());
+      void search();
+    } finally {
+      setBulkBusy(false);
+      setPendingBulkDelete(false);
     }
   }
 
@@ -107,7 +185,7 @@ export function DeadLettersPanel() {
         <h2>Dead letters</h2>
       </div>
       <p className="field-hint">
-        Messages that exhausted their delivery attempts or expired. Replay puts one back on the queue; prune deletes it forever.
+        Messages that exhausted their delivery attempts or expired. Replay puts one back on the queue; delete removes it forever.
       </p>
       {/* S-205: filters now use the app's standard .field / .field-row form
           components (same styled inputs + selects as every settings dialog)
@@ -152,19 +230,61 @@ export function DeadLettersPanel() {
       </button>
       {note ? <p className="field-hint">{note}</p> : null}
       {items === null ? null : items.length === 0 ? <p className="field-hint">No dead letters match.</p> : null}
+      {(items?.length ?? 0) > 0 ? (
+        <div className="templates-toolbar" role="group" aria-label="Dead letter bulk actions">
+          <label className="templates-selectall">
+            <input
+              ref={headerCheckbox}
+              type="checkbox"
+              checked={allSelected}
+              onChange={(e) => setSelectedIds(selectAllDeadLetters(items ?? [], e.target.checked))}
+              disabled={bulkBusy}
+              aria-label="Select all dead letters"
+            />
+            <span>Select all</span>
+          </label>
+          {selectionSize > 0 ? <span className="bulk-count">{selectionSize} selected</span> : null}
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={selectionSize === 0 || bulkBusy}
+            aria-label={`Replay ${selectionSize} selected messages`}
+            onClick={() => void bulkReplay()}
+          >
+            {bulkBusy ? "Working…" : "Replay selected"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-danger"
+            disabled={selectionSize === 0 || bulkBusy}
+            aria-label={`Delete ${selectionSize} selected messages`}
+            onClick={() => setPendingBulkDelete(true)}
+          >
+            Delete selected
+          </button>
+        </div>
+      ) : null}
       {(items ?? []).map((m) => (
         <div key={m.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--border, #ddd)" }}>
           <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              type="checkbox"
+              className="entity-checkbox"
+              checked={selected.has(m.id)}
+              disabled={bulkBusy}
+              onChange={() => setSelectedIds((prev) => toggleDeadLetterSelection(prev, m.id))}
+              aria-label={`Select message ${shortId(m.id)}`}
+            />
             <strong>{m.type}</strong>
             <span className="metric-chip-sub" title={m.id}>{shortId(m.id)}</span>
             <span className="metric-chip-sub">to agent {shortId(m.to_agent_id)}</span>
             <span className="metric-chip-sub">squad {shortId(m.squad_id)}</span>
             {isConsultTimeout(m) ? <span className="status-chip" style={{ color: "var(--danger, #b00020)" }}>consult timeout</span> : null}
-            <button type="button" className="btn btn-sm" disabled={busyId === m.id} onClick={() => void replay(m)}>
+            <button type="button" className="btn btn-sm" disabled={busyId === m.id || bulkBusy} onClick={() => void replay(m)}>
               Replay
             </button>
-            <button type="button" className="btn btn-sm" disabled={busyId === m.id} onClick={() => void prune(m)}>
-              Prune
+            <button type="button" className="btn btn-sm btn-danger" disabled={busyId === m.id || bulkBusy} onClick={() => void remove(m)}>
+              Delete
             </button>
           </div>
           <div className="metric-chip-sub">
@@ -172,6 +292,16 @@ export function DeadLettersPanel() {
           </div>
         </div>
       ))}
+
+      {pendingBulkDelete ? (
+        <ConfirmDialog
+          title="Delete selected dead letters?"
+          body={`This will permanently delete ${selectionSize} dead message${selectionSize === 1 ? "" : "s"}. This cannot be undone.`}
+          confirmLabel={`Delete ${selectionSize}`}
+          onConfirm={() => void bulkDelete()}
+          onClose={() => setPendingBulkDelete(false)}
+        />
+      ) : null}
     </section>
   );
 }

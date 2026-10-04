@@ -53,3 +53,37 @@ describe("DeadLettersPanel filter styling (S-205)", () => {
     }
   });
 });
+
+// S-227: per-row selection + bulk Replay/Delete, and the Prune→Delete rename.
+describe("DeadLettersPanel bulk actions (S-227)", () => {
+  it("renames the Prune button to Delete (no 'Prune' label remains)", () => {
+    expect(source).not.toMatch(/>\s*Prune\s*</);
+    expect(source).not.toContain("Prune failed");
+    expect(source).toMatch(/>\s*Delete\s*<\/button>/);
+  });
+
+  it("renders a select-all header checkbox with indeterminate support", () => {
+    expect(source).toContain("headerCheckbox");
+    expect(source).toContain("indeterminate");
+    expect(source).toContain("Select all dead letters");
+  });
+
+  it("wires bulk Replay and Delete buttons over the selection", () => {
+    expect(source).toContain("Replay selected");
+    expect(source).toContain("Delete selected");
+    expect(source).toContain("bulkReplay");
+    expect(source).toContain("bulkDelete");
+  });
+
+  it("uses the shared toolbar styling from the S-214 templates pattern", () => {
+    expect(source).toContain('className="templates-toolbar"');
+    expect(source).toContain('className="templates-selectall"');
+    expect(source).toContain('className="bulk-count"');
+    expect(source).toContain('className="entity-checkbox"');
+  });
+
+  it("confirms bulk delete via the shared ConfirmDialog", () => {
+    expect(source).toContain("ConfirmDialog");
+    expect(source).toContain("pendingBulkDelete");
+  });
+});
