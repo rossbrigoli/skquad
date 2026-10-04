@@ -63,8 +63,8 @@ func (c *liteLLMGatewayClient) ProvisionAgentKey(ctx context.Context, req Gatewa
 	if err != nil {
 		return "", "", fmt.Errorf("litellm: build key request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
-	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set(hdrAuthorization, bearerAuthPrefix+c.masterKey)
+	httpReq.Header.Set(hdrContentType, contentTypeJSON)
 
 	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
 	// path; no user-controlled component reaches this request.
@@ -113,7 +113,7 @@ func (c *liteLLMGatewayClient) FindKeyByAlias(ctx context.Context, alias string)
 	if err != nil {
 		return "", false, fmt.Errorf("litellm: build key list request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
+	httpReq.Header.Set(hdrAuthorization, bearerAuthPrefix+c.masterKey)
 
 	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
 	// path; no user-controlled component reaches this request.
@@ -247,8 +247,8 @@ func (c *liteLLMGatewayClient) postKeyAdminStatus(ctx context.Context, path stri
 	if err != nil {
 		return 0, fmt.Errorf("litellm: build %s request: %w", op, err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
-	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set(hdrAuthorization, bearerAuthPrefix+c.masterKey)
+	httpReq.Header.Set(hdrContentType, contentTypeJSON)
 
 	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
 	// path; no user-controlled component reaches this request.
@@ -344,8 +344,8 @@ func (c *liteLLMGatewayClient) DeployModel(ctx context.Context, spec GatewayMode
 	if err != nil {
 		return "", fmt.Errorf("litellm: build model deploy request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
-	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set(hdrAuthorization, bearerAuthPrefix+c.masterKey)
+	httpReq.Header.Set(hdrContentType, contentTypeJSON)
 	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
 	// path; no user-controlled component reaches this request.
 	resp, err := c.client.Do(httpReq)
@@ -389,8 +389,8 @@ func (c *liteLLMGatewayClient) UpdateModelDeployment(ctx context.Context, deploy
 	if err != nil {
 		return fmt.Errorf("litellm: build model update request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
-	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set(hdrAuthorization, bearerAuthPrefix+c.masterKey)
+	httpReq.Header.Set(hdrContentType, contentTypeJSON)
 	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
 	// path; no user-controlled component reaches this request.
 	resp, err := c.client.Do(httpReq)
@@ -419,8 +419,8 @@ func (c *liteLLMGatewayClient) DeleteModelDeployment(ctx context.Context, deploy
 	if err != nil {
 		return fmt.Errorf("litellm: build model delete request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
-	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set(hdrAuthorization, bearerAuthPrefix+c.masterKey)
+	httpReq.Header.Set(hdrContentType, contentTypeJSON)
 	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
 	// path; no user-controlled component reaches this request.
 	resp, err := c.client.Do(httpReq)
@@ -442,7 +442,7 @@ func (c *liteLLMGatewayClient) ListModelDeployments(ctx context.Context) ([]Gate
 	if err != nil {
 		return nil, fmt.Errorf("litellm: build model info request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.masterKey)
+	httpReq.Header.Set(hdrAuthorization, bearerAuthPrefix+c.masterKey)
 	// #nosec G704 -- URL is the validated admin-configured gateway base + fixed
 	// path; no user-controlled component reaches this request.
 	resp, err := c.client.Do(httpReq)

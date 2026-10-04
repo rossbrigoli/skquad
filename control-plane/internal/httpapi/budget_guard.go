@@ -159,33 +159,18 @@ func (s *Server) squadOwnerIDs(ctx context.Context) []string {
 // user who has not spent anything.
 func (s *Server) applyBudgetVerdict(ctx context.Context, source, userID string, now time.Time, budget, spend float64) error {
 	period := currentBudgetPeriod(now)
-	if budget > 0 {
-		pct := spend / budget * 100
-		for _, threshold := range budgetThresholds {
-			if pct >= float64(threshold) {
-				if err := s.notifyBudgetThreshold(ctx, source, userID, period, threshold, spend, budget, false); err != nil {
-					log.Printf("budget-enforce: %s %d%% notification failed for %s: %v", source, threshold, userID, err)
-				}
-			}
-		}
-	}
+	s.notifyBudgetWarnings(ctx, source, userID, period, spend, budget)
 	blockedNow := spend > 0 && spend >= budget
 
-	wasBlocked := false
-	existing, err := s.store.GetBudgetBlock(ctx, userID)
-	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+	wasBlocked, err := s.budgetBlockedFor(ctx, userID, period)
+	if err != nil {
 		return err
-	}
-	if err == nil {
-		wasBlocked = existing.EffectiveBlocked(period)
 	}
 	if _, err := s.store.SetBudgetBlock(ctx, userID, period, source, blockedNow); err != nil {
 		return err
 	}
 	if blockedNow {
-		if err := s.notifyBudgetThreshold(ctx, source, userID, period, 100, spend, budget, true); err != nil {
-			log.Printf("budget-enforce: %s 100%% notification failed for %s: %v", source, userID, err)
-		}
+		s.notifyBudgetStopped(ctx, source, userID, period, spend, budget)
 		// Newly blocked: push fresh CRs so idle-warm pods (desiredActive
 		// already false) scale to zero immediately under the blocked
 		// idle-timeout override. Busy agents keep desiredActive=true and
@@ -199,15 +184,60 @@ func (s *Server) applyBudgetVerdict(ctx context.Context, source, userID string, 
 	// flipped blocked→clear, re-mirror the user's agents so the CRs
 	// lose the blocked idle-timeout override and scheduling resumes.
 	if wasBlocked {
-		after, err := s.store.GetBudgetBlock(ctx, userID)
-		if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		stillBlocked, err := s.budgetBlockedFor(ctx, userID, period)
+		if err != nil {
 			return err
 		}
-		if !after.EffectiveBlocked(period) {
+		if !stillBlocked {
 			s.remirrorUserAgents(ctx, userID)
 		}
 	}
 	return nil
+}
+
+// notifyBudgetWarnings fires the incremental threshold notifications
+// (80/90/… as configured) for one spend-vs-budget pair. Best-effort:
+// notification failures are logged, never propagated.
+func (s *Server) notifyBudgetWarnings(ctx context.Context, source, userID, period string, spend, budget float64) {
+	if budget <= 0 {
+		return
+	}
+	pct := spend / budget * 100
+	for _, threshold := range budgetThresholds {
+		if pct < float64(threshold) {
+			continue
+		}
+		if err := s.notifyBudgetThreshold(ctx, budgetNotifyParams{
+			Source: source, UserID: userID, Period: period,
+			Threshold: threshold, Spend: spend, Budget: budget,
+		}); err != nil {
+			log.Printf("budget-enforce: %s %d%% notification failed for %s: %v", source, threshold, userID, err)
+		}
+	}
+}
+
+// notifyBudgetStopped fires the terminal 100%/stopped notification.
+// Best-effort like the warning path.
+func (s *Server) notifyBudgetStopped(ctx context.Context, source, userID, period string, spend, budget float64) {
+	if err := s.notifyBudgetThreshold(ctx, budgetNotifyParams{
+		Source: source, UserID: userID, Period: period,
+		Threshold: 100, Spend: spend, Budget: budget, Stopped: true,
+	}); err != nil {
+		log.Printf("budget-enforce: %s 100%% notification failed for %s: %v", source, userID, err)
+	}
+}
+
+// budgetBlockedFor reads the effective blocked state for one user in one
+// period. A missing block row means "not blocked".
+func (s *Server) budgetBlockedFor(ctx context.Context, userID, period string) (bool, error) {
+	existing, err := s.store.GetBudgetBlock(ctx, userID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return existing.EffectiveBlocked(period), nil
 }
 
 // notifyBudgetThreshold sends the inbox notification for one threshold
@@ -218,7 +248,21 @@ func (s *Server) applyBudgetVerdict(ctx context.Context, source, userID string, 
 // the inbox row and the bell alert share one exactly-once-per-threshold
 // -per-month guarantee. The bell emit is best-effort: a failure is
 // logged by the caller and never rolls back the inbox write.
-func (s *Server) notifyBudgetThreshold(ctx context.Context, source, userID, period string, threshold int, spend, budget float64, stopped bool) error {
+// budgetNotifyParams carries one threshold-notification request (S-189:
+// params struct replaces the 8-arg signature).
+type budgetNotifyParams struct {
+	Source    string
+	UserID    string
+	Period    string
+	Threshold int
+	Spend     float64
+	Budget    float64
+	Stopped   bool
+}
+
+func (s *Server) notifyBudgetThreshold(ctx context.Context, p budgetNotifyParams) error {
+	source, userID, period, threshold := p.Source, p.UserID, p.Period, p.Threshold
+	spend, budget, stopped := p.Spend, p.Budget, p.Stopped
 	marker := domain.BudgetNotifyMarker(source, threshold)
 	claimed, err := s.store.ClaimBudgetNotification(ctx, userID, period, marker)
 	if err != nil || !claimed {

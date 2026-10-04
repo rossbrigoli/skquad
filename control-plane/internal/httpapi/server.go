@@ -246,24 +246,24 @@ func New(cfg *config.Config, store Store) http.Handler {
 // NewWithCRWriter returns an HTTP handler that mirrors squad/agent mutations
 // to Kubernetes CRs.
 func NewWithCRWriter(cfg *config.Config, store Store, crWriter CRWriter) http.Handler {
-	return newServer(cfg, store, nil, crWriter, nil, nil, nil, nil, nil, nil)
+	return newServer(cfg, store, serverDeps{crWriter: crWriter})
 }
 
 // NewWithDependencies returns an HTTP handler with explicit optional
 // integrations for tests and production startup.
 func NewWithDependencies(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, providerKeys ProviderKeyStore) http.Handler {
-	return newServer(cfg, store, oidcAuth, crWriter, nil, providerKeys, nil, nil, nil, nil)
+	return newServer(cfg, store, serverDeps{oidcAuth: oidcAuth, crWriter: crWriter, providerKeys: providerKeys})
 }
 
 // NewWithPodRestarter wires an explicit PodRestarter (S-162 tests).
 func NewWithPodRestarter(cfg *config.Config, store Store, restarter PodRestarter) http.Handler {
-	return newServer(cfg, store, nil, nil, nil, nil, restarter, nil, nil, nil)
+	return newServer(cfg, store, serverDeps{restarter: restarter})
 }
 
 // NewWithOIDCAuthenticator returns an HTTP handler using oidcAuth when
 // SKQUAD_AUTH_MODE=oidc.
 func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator) http.Handler {
-	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil, nil, nil, nil)
+	return newServer(cfg, store, serverDeps{oidcAuth: oidcAuth})
 }
 
 // NewWithSearchProviders returns an HTTP handler whose web_search proxy
@@ -271,7 +271,7 @@ func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuth
 // from config secrets (duckduckgo always; brave/perplexity only when
 // their API keys are set). Tests inject stub providers here.
 func NewWithSearchProviders(cfg *config.Config, store Store, providers map[string]search.Provider) http.Handler {
-	return newServer(cfg, store, nil, nil, providers, nil, nil, nil, nil, nil)
+	return newServer(cfg, store, serverDeps{searchProviders: providers})
 }
 
 // NewWithProviderKeyStore returns an HTTP handler whose pasted provider
@@ -279,7 +279,7 @@ func NewWithSearchProviders(cfg *config.Config, store Store, providers map[strin
 // this to inject a fake; production builds the store from config inside
 // newServer.
 func NewWithProviderKeyStore(cfg *config.Config, store Store, keys ProviderKeyStore) http.Handler {
-	return newServer(cfg, store, nil, nil, nil, keys, nil, nil, nil, nil)
+	return newServer(cfg, store, serverDeps{providerKeys: keys})
 }
 
 // NewWithGatewayReload returns an HTTP handler using the given gateway
@@ -287,112 +287,199 @@ func NewWithProviderKeyStore(cfg *config.Config, store Store, keys ProviderKeySt
 // is built from cfg.LiteLLMAdminURL/master key (point those at an
 // httptest fake gateway in tests); the reloader is injected here.
 func NewWithGatewayReload(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, reloader GatewayReloader) http.Handler {
-	return newServer(cfg, store, oidcAuth, nil, nil, nil, nil, reloader, nil, nil)
+	return newServer(cfg, store, serverDeps{oidcAuth: oidcAuth, gwReloader: reloader})
 }
 
 // NewWithEmbedderRuntimeWriter wires an explicit EmbedderConfigWriter
 // (S-212, ADR-0013 §5 tests). Production builds the writer from
 // in-cluster K8s config inside newServer.
 func NewWithEmbedderRuntimeWriter(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, writer EmbedderConfigWriter) http.Handler {
-	return newServer(cfg, store, oidcAuth, crWriter, nil, nil, nil, nil, nil, writer)
+	return newServer(cfg, store, serverDeps{oidcAuth: oidcAuth, crWriter: crWriter, embedderConfig: writer})
 }
 
-func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, searchProviders map[string]search.Provider, providerKeys ProviderKeyStore, restarter PodRestarter, gwReloader GatewayReloader, injectedEmbeddings EmbeddingsClient, embedderConfig EmbedderConfigWriter) http.Handler {
+// serverDeps bundles the optional integrations for newServer (S-189:
+// params struct replaces the 10-arg signature). Zero values mean
+// "not wired", exactly like the previous nil arguments.
+type serverDeps struct {
+	oidcAuth           OIDCAuthenticator
+	crWriter           CRWriter
+	searchProviders    map[string]search.Provider
+	providerKeys       ProviderKeyStore
+	restarter          PodRestarter
+	gwReloader         GatewayReloader
+	injectedEmbeddings EmbeddingsClient
+	embedderConfig     EmbedderConfigWriter
+}
+
+// buildLLMGateway constructs the LiteLLM gateway provisioner and model
+// registry from config (S-189 split out of newServer). Missing config
+// leaves the noop provisioner in place. Misconfiguration with a partial
+// setup panics — same as the pre-split inline code.
+func buildLLMGateway(cfg *config.Config) (LLMGatewayProvisioner, GatewayModelRegistry) {
+	llmGateway := LLMGatewayProvisioner(noopLLMGateway{})
+	var gwModels GatewayModelRegistry
+	if cfg == nil || cfg.LiteLLMAdminURL == "" || cfg.LiteLLMMasterKey == "" {
+		return llmGateway, gwModels
+	}
+	gw, err := newLiteLLMGatewayClient(cfg.LiteLLMAdminURL, cfg.LiteLLMMasterKey)
+	if err != nil {
+		panic(fmt.Sprintf("litellm gateway client: %v", err))
+	}
+	// S-GWREG: same client, model-deployment surface (avoids a
+	// second HTTP pool / duplicated master-key handling).
+	return gw, gw
+}
+
+// resolveProviderKeys returns the explicit provider-key store when given,
+// otherwise builds one from in-cluster K8s config (S-189 split).
+func resolveProviderKeys(cfg *config.Config, explicit ProviderKeyStore) ProviderKeyStore {
+	if explicit != nil || cfg == nil || !cfg.K8sEnabled || cfg.K8sAPIBase == "" || cfg.K8sTokenFile == "" {
+		return explicit
+	}
+	keys, err := kube.NewSecretStore(cfg)
+	if err != nil {
+		log.Printf("provider key store unavailable (provider key paste disabled): %v", err)
+		return nil
+	}
+	return keys
+}
+
+// resolvePodRestarter returns the explicit restarter when given, otherwise
+// builds from in-cluster K8s config. Guard against the typed-nil trap:
+// newPodRestarter returns a nil *kube.PodRestarter when config is absent,
+// which must not be assigned to the non-nil PodRestarter interface.
+func resolvePodRestarter(cfg *config.Config, explicit PodRestarter) PodRestarter {
+	if explicit != nil {
+		return explicit
+	}
+	built, err := newPodRestarter(cfg)
+	if err != nil {
+		log.Printf("pod restarter unavailable (restart agent disabled): %v", err)
+		return nil
+	}
+	if built == nil {
+		return nil
+	}
+	return built
+}
+
+// resolveGatewayReloader returns the explicit reloader when given,
+// otherwise builds from in-cluster K8s config. Same typed-nil guard
+// pattern as the pod restarter.
+func resolveGatewayReloader(cfg *config.Config, explicit GatewayReloader) GatewayReloader {
+	if explicit != nil {
+		return explicit
+	}
+	built, err := newGatewayReloader(cfg)
+	if err != nil {
+		log.Printf("gateway reloader unavailable (model changes need a manual gateway restart): %v", err)
+		return nil
+	}
+	if built == nil {
+		return nil
+	}
+	return built
+}
+
+// resolveEmbedderConfig returns the explicit embedder runtime override
+// writer when given, otherwise builds from in-cluster K8s config.
+func resolveEmbedderConfig(cfg *config.Config, explicit EmbedderConfigWriter) EmbedderConfigWriter {
+	if explicit != nil {
+		return explicit
+	}
+	if cfg == nil || !cfg.K8sEnabled || cfg.K8sAPIBase == "" || cfg.K8sTokenFile == "" {
+		return nil
+	}
+	built, err := kube.NewEmbedderConfigStore(cfg)
+	if err != nil {
+		log.Printf("embedder runtime override writer unavailable (PUT embedder_runtime disabled): %v", err)
+		return nil
+	}
+	if built == nil {
+		return nil
+	}
+	return built
+}
+
+// buildMemoryEmbeddings builds the memory-RAG embeddings client when the
+// feature is enabled with a model and a reachable gateway config.
+// Gateway base prefers the admin URL (same LiteLLM instance) and falls
+// back to the agent-facing gateway URL; the master key authenticates the
+// control plane as a platform caller.
+func buildMemoryEmbeddings(cfg *config.Config) EmbeddingsClient {
+	if cfg == nil || !cfg.MemoryEmbeddingsEnabled || cfg.MemoryEmbeddingModel == "" {
+		return nil
+	}
+	gatewayBase := cfg.LiteLLMAdminURL
+	if gatewayBase == "" {
+		gatewayBase = cfg.LLMGatewayURL
+	}
+	if gatewayBase == "" || cfg.LiteLLMMasterKey == "" {
+		return nil
+	}
+	embedder, err := embeddings.NewClient(gatewayBase, cfg.LiteLLMMasterKey, cfg.MemoryEmbeddingModel)
+	if err != nil {
+		log.Printf("memory embeddings client unavailable (memories stored without vectors): %v", err)
+		return nil
+	}
+	return embedder
+}
+
+// buildBreakGlass builds the break-glass emergency admin path from config.
+// Returns nil when disabled; panics when enabled-but-misconfigured so the
+// failure surfaces at startup, not at 3am.
+func buildBreakGlass(cfg *config.Config) *breakglass.Auth {
+	if cfg == nil || !cfg.BreakGlassEnabled {
+		return nil
+	}
+	bgCfg, err := cfg.BreakGlassConfig()
+	if err != nil {
+		panic(fmt.Sprintf("break-glass is enabled but misconfigured: %v", err))
+	}
+	bg, err := breakglass.New(*bgCfg)
+	if err != nil {
+		panic(fmt.Sprintf("break-glass is enabled but misconfigured: %v", err))
+	}
+	log.Printf("break-glass admin path ENABLED (username=%q, allowed_cidrs=%d, ttl=%s) - reachable only from the allowlisted networks",
+		cfg.BreakGlassUsername, len(bgCfg.AllowedCIDRs), cfg.BreakGlassTokenTTL)
+	return bg
+}
+
+func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
+	crWriter := deps.crWriter
 	if crWriter == nil {
 		crWriter = noopCRWriter{}
 	}
-	llmGateway := LLMGatewayProvisioner(noopLLMGateway{})
-	var gwModels GatewayModelRegistry
-	if cfg != nil && cfg.LiteLLMAdminURL != "" && cfg.LiteLLMMasterKey != "" {
-		gw, err := newLiteLLMGatewayClient(cfg.LiteLLMAdminURL, cfg.LiteLLMMasterKey)
-		if err != nil {
-			panic(fmt.Sprintf("litellm gateway client: %v", err))
-		}
-		llmGateway = gw
-		// S-GWREG: same client, model-deployment surface (avoids a
-		// second HTTP pool / duplicated master-key handling).
-		gwModels = gw
-	}
-	s := &Server{cfg: cfg, store: store, oidcAuth: oidcAuth, crWriter: crWriter, llmGateway: llmGateway}
+	llmGateway, gwModels := buildLLMGateway(cfg)
+	s := &Server{cfg: cfg, store: store, oidcAuth: deps.oidcAuth, crWriter: crWriter, llmGateway: llmGateway}
 	// S-155: provider-key Secret store. Explicit argument wins (tests);
 	// otherwise build from in-cluster K8s config. Absent config is fine
 	// (dev); handlers surface the gap when a key is actually pasted.
-	if providerKeys == nil && cfg != nil && cfg.K8sEnabled && cfg.K8sAPIBase != "" && cfg.K8sTokenFile != "" {
-		keys, err := kube.NewSecretStore(cfg)
-		if err != nil {
-			log.Printf("provider key store unavailable (provider key paste disabled): %v", err)
-		} else {
-			providerKeys = keys
-		}
-	}
-	s.providerKeys = providerKeys
+	s.providerKeys = resolveProviderKeys(cfg, deps.providerKeys)
 	// S-162: pod restarter for the Restart Agent button. Explicit
 	// argument wins (tests); otherwise build from in-cluster K8s config.
-	// Guard against the typed-nil trap: newPodRestarter returns a nil
-	// *kube.PodRestarter when config is absent, which must not be
-	// assigned to the non-nil PodRestarter interface.
-	if restarter == nil {
-		if built, err := newPodRestarter(cfg); err != nil {
-			log.Printf("pod restarter unavailable (restart agent disabled): %v", err)
-		} else if built != nil {
-			restarter = built
-		}
-	}
-	s.podRestarter = restarter
+	s.podRestarter = resolvePodRestarter(cfg, deps.restarter)
 	// S-GWREG: gateway rollout reloader. Explicit argument wins (tests);
-	// otherwise build from in-cluster K8s config. Same typed-nil guard
-	// pattern as the pod restarter.
-	if gwReloader == nil {
-		if built, err := newGatewayReloader(cfg); err != nil {
-			log.Printf("gateway reloader unavailable (model changes need a manual gateway restart): %v", err)
-		} else if built != nil {
-			gwReloader = built
-		}
-	}
-	s.gwReloader = gwReloader
+	// otherwise build from in-cluster K8s config.
+	s.gwReloader = resolveGatewayReloader(cfg, deps.gwReloader)
 	s.gwModels = gwModels
 	// S-212 (ADR-0013 §5): embedder runtime override writer. Built
 	// from the same in-cluster K8s config as the provider-key store;
 	// absent config (dev) leaves nil and the admin PUT answers 503
 	// rather than storing a setting nothing acts on.
-	if embedderConfig != nil {
-		s.embedderConfig = embedderConfig
-	}
-	if s.embedderConfig == nil && cfg != nil && cfg.K8sEnabled && cfg.K8sAPIBase != "" && cfg.K8sTokenFile != "" {
-		built, err := kube.NewEmbedderConfigStore(cfg)
-		if err != nil {
-			log.Printf("embedder runtime override writer unavailable (PUT embedder_runtime disabled): %v", err)
-		} else if built != nil {
-			s.embedderConfig = built
-		}
-	}
+	s.embedderConfig = resolveEmbedderConfig(cfg, deps.embedderConfig)
 	// S-212: embeddings client for memory RAG. Built only when the
 	// feature is enabled with a model and a reachable gateway config.
-	// Gateway base prefers the admin URL (same LiteLLM instance) and
-	// falls back to the agent-facing gateway URL; the master key
-	// authenticates the control plane as a platform caller.
-	if cfg != nil && cfg.MemoryEmbeddingsEnabled && cfg.MemoryEmbeddingModel != "" {
-		gatewayBase := cfg.LiteLLMAdminURL
-		if gatewayBase == "" {
-			gatewayBase = cfg.LLMGatewayURL
-		}
-		if gatewayBase != "" && cfg.LiteLLMMasterKey != "" {
-			embedder, err := embeddings.NewClient(gatewayBase, cfg.LiteLLMMasterKey, cfg.MemoryEmbeddingModel)
-			if err != nil {
-				log.Printf("memory embeddings client unavailable (memories stored without vectors): %v", err)
-			} else {
-				s.embeddings = embedder
-			}
-		}
-	}
+	s.embeddings = buildMemoryEmbeddings(cfg)
+	searchProviders := deps.searchProviders
 	if searchProviders == nil {
 		searchProviders = defaultSearchProviders(cfg)
 	}
 	s.searchProviders = searchProviders
 	// S-212 test seam: an injected embeddings client wins over the
 	// config-built one (mirrors the providerKeys/restarter pattern).
-	if injectedEmbeddings != nil {
-		s.embeddings = injectedEmbeddings
+	if deps.injectedEmbeddings != nil {
+		s.embeddings = deps.injectedEmbeddings
 	}
 
 	// Platform-prompt override is loaded at startup and fails loudly: an
@@ -407,19 +494,7 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 	// Break-glass is built at startup. If it is ENABLED but misconfigured we fail
 	// loudly here rather than quietly running with a broken emergency path — a
 	// silent failure would only be discovered at 3am when it is actually needed.
-	if cfg != nil && cfg.BreakGlassEnabled {
-		bgCfg, err := cfg.BreakGlassConfig()
-		if err != nil {
-			panic(fmt.Sprintf("break-glass is enabled but misconfigured: %v", err))
-		}
-		bg, err := breakglass.New(*bgCfg)
-		if err != nil {
-			panic(fmt.Sprintf("break-glass is enabled but misconfigured: %v", err))
-		}
-		s.breakGlass = bg
-		log.Printf("break-glass admin path ENABLED (username=%q, allowed_cidrs=%d, ttl=%s) - reachable only from the allowlisted networks",
-			cfg.BreakGlassUsername, len(bgCfg.AllowedCIDRs), cfg.BreakGlassTokenTTL)
-	}
+	s.breakGlass = buildBreakGlass(cfg)
 
 	r := chi.NewRouter()
 	r.Get("/healthz", s.health)
@@ -653,11 +728,11 @@ func newServer(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWr
 			// S-158: prompt templates. Every authenticated user may list
 			// them (create-time picker); only platform admins may mutate.
 			r.Get("/prompt-templates", s.listPromptTemplates)
-			r.Get("/prompt-templates/{templateID}", s.getPromptTemplate)
+			r.Get(routePromptTemplateByID, s.getPromptTemplate)
 			r.Post("/prompt-templates", s.createPromptTemplate)
-			r.Patch("/prompt-templates/{templateID}", s.updatePromptTemplate)
+			r.Patch(routePromptTemplateByID, s.updatePromptTemplate)
 			r.Delete("/prompt-templates/bulk", s.bulkDeletePromptTemplates)
-			r.Delete("/prompt-templates/{templateID}", s.deletePromptTemplate)
+			r.Delete(routePromptTemplateByID, s.deletePromptTemplate)
 		})
 	})
 
@@ -1022,36 +1097,58 @@ func (s *Server) createLLMProvider(w http.ResponseWriter, r *http.Request) {
 		RegisteredBy: u.ID,
 	}
 	ctx := s.pendingUserAuditCtx(r, "registry.llm_provider.create", string(domain.ResLLMProvider), "", "", nil)
-	if key != "" && s.providerKeys == nil {
-		// Dev fallback (no K8s store configured): keep today's literal
-		// behavior so out-of-cluster dev works. Production always has
-		// the Secret store and never lands here.
-		log.Printf("provider %q: no Kubernetes secret store configured — storing the API key literally (dev mode only)", provider.Name)
-		provider.APIKeyRef = key
-		provider.APIKeyMask = maskProviderKey(key)
-		key = ""
-	}
+	key = s.devFallbackProviderKey(provider, key)
 	created, err := s.store.CreateLLMProvider(ctx, provider)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
 	if key != "" {
-		if err := s.setProviderKey(ctx, created, key); err != nil {
-			// Compensate: never leave a provider row whose key failed to
-			// land in the Secret store.
-			if delErr := s.store.DeleteLLMProvider(ctx, created.ID); delErr != nil {
-				log.Printf("provider %s: rollback after secret failure: %v", created.ID, delErr)
-			}
-			writeError(w, http.StatusBadGateway, "provider_key_store_failed", "could not store the provider key as a Kubernetes Secret")
+		updated, ok := s.persistProviderKeyCreate(w, ctx, created, key)
+		if !ok {
 			return
 		}
-		if created, err = s.store.UpdateLLMProvider(ctx, created); err != nil {
-			writeStorageError(w, err)
-			return
-		}
+		created = updated
 	}
 	writeJSON(w, http.StatusCreated, providerJSON(created))
+}
+
+// devFallbackProviderKey keeps out-of-cluster dev working: with no K8s
+// Secret store configured the pasted key is stored literally (S-189
+// split out of createLLMProvider). Returns the key that still needs
+// Secret-store persistence ("" when fully handled here).
+func (s *Server) devFallbackProviderKey(provider *domain.LLMProvider, key string) string {
+	if key == "" || s.providerKeys != nil {
+		return key
+	}
+	// Dev fallback (no K8s store configured): keep today's literal
+	// behavior so out-of-cluster dev works. Production always has
+	// the Secret store and never lands here.
+	log.Printf("provider %q: no Kubernetes secret store configured — storing the API key literally (dev mode only)", provider.Name)
+	provider.APIKeyRef = key
+	provider.APIKeyMask = maskProviderKey(key)
+	return ""
+}
+
+// persistProviderKeyCreate stores the provider key in the managed Secret
+// store right after row creation, rolling the row back if the Secret
+// write fails (never leave a provider row whose key failed to land).
+func (s *Server) persistProviderKeyCreate(w http.ResponseWriter, ctx context.Context, created *domain.LLMProvider, key string) (*domain.LLMProvider, bool) {
+	if err := s.setProviderKey(ctx, created, key); err != nil {
+		// Compensate: never leave a provider row whose key failed to
+		// land in the Secret store.
+		if delErr := s.store.DeleteLLMProvider(ctx, created.ID); delErr != nil {
+			log.Printf("provider %s: rollback after secret failure: %v", created.ID, delErr)
+		}
+		writeError(w, http.StatusBadGateway, "provider_key_store_failed", "could not store the provider key as a Kubernetes Secret")
+		return nil, false
+	}
+	updated, err := s.store.UpdateLLMProvider(ctx, created)
+	if err != nil {
+		writeStorageError(w, err)
+		return nil, false
+	}
+	return updated, true
 }
 
 func (s *Server) listLLMProviders(w http.ResponseWriter, r *http.Request) {
@@ -1081,64 +1178,15 @@ func (s *Server) updateLLMProvider(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	var req struct {
-		Name    *string `json:"name"`
-		Kind    *string `json:"kind"`
-		BaseURL *string `json:"base_url"`
-		// APIKey (S-155): omitted = keep the stored key; non-empty =
-		// replace it; empty string = clear the key and delete the
-		// managed Secret.
-		APIKey *string `json:"api_key"`
-		// LegacyAPIKeyRef (S-155): a cached old web bundle still sends
-		// the previously-visible value here — which was the literal key.
-		// Treat it as a pasted key, never as a caller-chosen reference.
-		LegacyAPIKeyRef *string `json:"api_key_ref"`
-		// WP8 (0014): legacy "default_model"/"models" accepted-and-
-		// discarded on update too (see create for why).
-		LegacyDefaultModel json.RawMessage `json:"default_model,omitempty"`
-		LegacyModels       json.RawMessage `json:"models,omitempty"`
-		LegacyPricing      json.RawMessage `json:"pricing,omitempty"`
-	}
+	var req updateLLMProviderRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Name != nil {
-		if !validateName(w, *req.Name) {
-			return
-		}
-		provider.Name = strings.TrimSpace(*req.Name)
+	if !applyProviderFieldUpdates(w, provider, &req) {
+		return
 	}
-	if req.Kind != nil {
-		if !validateRequired(w, "kind", *req.Kind) {
-			return
-		}
-		provider.Kind = strings.TrimSpace(*req.Kind)
-	}
-	if req.BaseURL != nil {
-		if !validateRequired(w, "base_url", *req.BaseURL) {
-			return
-		}
-		provider.BaseURL = strings.TrimSpace(*req.BaseURL)
-	}
-	if req.APIKey != nil || req.LegacyAPIKeyRef != nil {
-		key := ""
-		if req.APIKey != nil {
-			key = strings.TrimSpace(*req.APIKey)
-		} else if req.LegacyAPIKeyRef != nil {
-			key = strings.TrimSpace(*req.LegacyAPIKeyRef)
-		}
-		if key == "" {
-			s.clearProviderKey(r.Context(), provider)
-		} else if s.providerKeys == nil {
-			log.Printf("provider %s: no Kubernetes secret store configured — storing the API key literally (dev mode only)", provider.ID)
-			provider.APIKeyRef = key
-			provider.APIKeyMask = maskProviderKey(key)
-		} else {
-			if err := s.setProviderKey(r.Context(), provider, key); err != nil {
-				writeError(w, http.StatusBadGateway, "provider_key_store_failed", "could not store the provider key as a Kubernetes Secret")
-				return
-			}
-		}
+	if !s.applyProviderKeyUpdate(w, r, provider, &req) {
+		return
 	}
 	updated, err := s.store.UpdateLLMProvider(s.pendingUserAuditCtx(r, "registry.llm_provider.update", string(domain.ResLLMProvider), provider.ID, "", nil), provider)
 	if err != nil {
@@ -1146,6 +1194,79 @@ func (s *Server) updateLLMProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, providerJSON(updated))
+}
+
+// updateLLMProviderRequest is the JSON body for PUT /registry/llm-providers/{id}.
+type updateLLMProviderRequest struct {
+	Name    *string `json:"name"`
+	Kind    *string `json:"kind"`
+	BaseURL *string `json:"base_url"`
+	// APIKey (S-155): omitted = keep the stored key; non-empty =
+	// replace it; empty string = clear the key and delete the
+	// managed Secret.
+	APIKey *string `json:"api_key"`
+	// LegacyAPIKeyRef (S-155): a cached old web bundle still sends
+	// the previously-visible value here — which was the literal key.
+	// Treat it as a pasted key, never as a caller-chosen reference.
+	LegacyAPIKeyRef *string `json:"api_key_ref"`
+	// WP8 (0014): legacy "default_model"/"models" accepted-and-
+	// discarded on update too (see create for why).
+	LegacyDefaultModel json.RawMessage `json:"default_model,omitempty"`
+	LegacyModels       json.RawMessage `json:"models,omitempty"`
+	LegacyPricing      json.RawMessage `json:"pricing,omitempty"`
+}
+
+// applyProviderFieldUpdates validates and stages the optional scalar
+// fields of a provider update (S-189 split out of updateLLMProvider).
+func applyProviderFieldUpdates(w http.ResponseWriter, provider *domain.LLMProvider, req *updateLLMProviderRequest) bool {
+	if req.Name != nil {
+		if !validateName(w, *req.Name) {
+			return false
+		}
+		provider.Name = strings.TrimSpace(*req.Name)
+	}
+	if req.Kind != nil {
+		if !validateRequired(w, "kind", *req.Kind) {
+			return false
+		}
+		provider.Kind = strings.TrimSpace(*req.Kind)
+	}
+	if req.BaseURL != nil {
+		if !validateRequired(w, "base_url", *req.BaseURL) {
+			return false
+		}
+		provider.BaseURL = strings.TrimSpace(*req.BaseURL)
+	}
+	return true
+}
+
+// applyProviderKeyUpdate handles the S-155 key semantics on update:
+// omitted keeps the stored key, non-empty replaces it, empty clears the
+// key and deletes the managed Secret.
+func (s *Server) applyProviderKeyUpdate(w http.ResponseWriter, r *http.Request, provider *domain.LLMProvider, req *updateLLMProviderRequest) bool {
+	if req.APIKey == nil && req.LegacyAPIKeyRef == nil {
+		return true
+	}
+	key := ""
+	if req.APIKey != nil {
+		key = strings.TrimSpace(*req.APIKey)
+	} else if req.LegacyAPIKeyRef != nil {
+		key = strings.TrimSpace(*req.LegacyAPIKeyRef)
+	}
+	switch {
+	case key == "":
+		s.clearProviderKey(r.Context(), provider)
+	case s.providerKeys == nil:
+		log.Printf("provider %s: no Kubernetes secret store configured — storing the API key literally (dev mode only)", provider.ID)
+		provider.APIKeyRef = key
+		provider.APIKeyMask = maskProviderKey(key)
+	default:
+		if err := s.setProviderKey(r.Context(), provider, key); err != nil {
+			writeError(w, http.StatusBadGateway, "provider_key_store_failed", "could not store the provider key as a Kubernetes Secret")
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) deprecateLLMProvider(w http.ResponseWriter, r *http.Request) {
@@ -1601,48 +1722,18 @@ func (s *Server) updateSquad(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Name != nil {
-		name := strings.TrimSpace(*req.Name)
-		if name == "" {
-			writeError(w, http.StatusBadRequest, "bad_request", "name must not be empty")
-			return
-		}
-		// S-156: the K8s namespace is derived from the squad name, so a
-		// rename would desync the squad from its namespace. Names are
-		// immutable; sending the same name back is a no-op.
-		if !strings.EqualFold(name, squad.Name) {
-			writeError(w, http.StatusBadRequest, "name_immutable", "squad name cannot be changed after creation (it is bound to the Kubernetes namespace "+squad.Namespace+")")
-			return
-		}
+	if !s.applySquadNameUpdate(w, squad, req.Name) {
+		return
 	}
-	if req.Mission != nil {
-		// S-179: the mission is injected into the composed squad tier, so
-		// it gets the same save-time validation as the Squad Context text —
-		// otherwise forged delimiters, unknown template vars, or an
-		// over-budget mission would make the fail-closed composer break
-		// every agent wake in the squad.
-		if _, _, failure := checkPromptDraft(promptcompo.TierSquad, *req.Mission); failure != nil {
-			writePromptFailure(w, failure)
-			return
-		}
-		squad.Mission = *req.Mission
+	if !s.applySquadMissionUpdate(w, squad, req.Mission) {
+		return
 	}
 	// S-PROMPT WP2: the squad tier gets sanitize + template-var + budget
 	// validation, and the save carries a revision intent so the history row
 	// commits with the squad update.
-	var promptIntent *storage.PromptRevisionIntent
-	if req.Prompt != nil {
-		prompt := strings.TrimSpace(*req.Prompt)
-		if _, _, failure := checkPromptDraft(promptcompo.TierSquad, prompt); failure != nil {
-			writePromptFailure(w, failure)
-			return
-		}
-		squad.Prompt = prompt
-		promptIntent = &storage.PromptRevisionIntent{
-			Scope:   domain.PromptScopeSquad,
-			ScopeID: squad.ID,
-			SavedBy: currentUser(r.Context()).ID,
-		}
+	promptIntent, ok := s.applySquadPromptUpdate(w, r, squad, req.Prompt)
+	if !ok {
+		return
 	}
 	if req.OperatingModel != nil {
 		squad.OperatingModel = *req.OperatingModel
@@ -1658,6 +1749,62 @@ func (s *Server) updateSquad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// applySquadNameUpdate validates an optional squad rename (S-156: names
+// are immutable because the K8s namespace is derived from them).
+// Returns false when an error response was written.
+func (s *Server) applySquadNameUpdate(w http.ResponseWriter, squad *domain.Squad, raw *string) bool {
+	if raw == nil {
+		return true
+	}
+	name := strings.TrimSpace(*raw)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "name must not be empty")
+		return false
+	}
+	// S-156: the K8s namespace is derived from the squad name, so a
+	// rename would desync the squad from its namespace. Names are
+	// immutable; sending the same name back is a no-op.
+	if !strings.EqualFold(name, squad.Name) {
+		writeError(w, http.StatusBadRequest, "name_immutable", "squad name cannot be changed after creation (it is bound to the Kubernetes namespace "+squad.Namespace+")")
+		return false
+	}
+	return true
+}
+
+// applySquadMissionUpdate validates and stages the optional mission
+// change (S-179: same save-time prompt validation as the Squad Context
+// text, since the mission is injected into the composed squad tier).
+func (s *Server) applySquadMissionUpdate(w http.ResponseWriter, squad *domain.Squad, raw *string) bool {
+	if raw == nil {
+		return true
+	}
+	if _, _, failure := checkPromptDraft(promptcompo.TierSquad, *raw); failure != nil {
+		writePromptFailure(w, failure)
+		return false
+	}
+	squad.Mission = *raw
+	return true
+}
+
+// applySquadPromptUpdate validates and stages the optional squad prompt
+// change, returning the revision intent to commit alongside the update.
+func (s *Server) applySquadPromptUpdate(w http.ResponseWriter, r *http.Request, squad *domain.Squad, raw *string) (*storage.PromptRevisionIntent, bool) {
+	if raw == nil {
+		return nil, true
+	}
+	prompt := strings.TrimSpace(*raw)
+	if _, _, failure := checkPromptDraft(promptcompo.TierSquad, prompt); failure != nil {
+		writePromptFailure(w, failure)
+		return nil, false
+	}
+	squad.Prompt = prompt
+	return &storage.PromptRevisionIntent{
+		Scope:   domain.PromptScopeSquad,
+		ScopeID: squad.ID,
+		SavedBy: currentUser(r.Context()).ID,
+	}, true
 }
 
 func (s *Server) deleteSquad(w http.ResponseWriter, r *http.Request) {
@@ -1981,41 +2128,18 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	if existing, err := s.store.GetAgentByNameForOwner(r.Context(), squad.OwnerID, req.Name); err != nil && !errors.Is(err, storage.ErrNotFound) {
-		writeStorageError(w, err)
-		return
-	} else if existing != nil {
-		where := "another squad"
-		if existing.SquadID == squad.ID {
-			where = "this squad"
-		}
-		writeError(w, http.StatusConflict, "name_taken", "you already have an agent named "+existing.Name+" in "+where+"; agent names must be unique per user")
+	if !s.ensureAgentNameFree(w, r, squad, req.Name) {
 		return
 	}
-	storageEnabled := req.StorageEnabled != nil && *req.StorageEnabled
-	storageSize := strings.TrimSpace(req.StorageSize)
-	if storageSize != "" {
-		if err := s.validateStorageSize(storageSize); err != nil {
-			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-			return
-		}
-	}
-	if storageEnabled && storageSize == "" {
-		storageSize = s.cfg.DefaultAgentStorageSize
+	storageEnabled, storageSize, ok := s.resolveCreateAgentStorage(w, req.StorageEnabled, req.StorageSize)
+	if !ok {
+		return
 	}
 	// S-170: validate the requested primary model BEFORE creating the
 	// row — a bad model must not produce a half-born agent.
 	requestedModel := strings.TrimSpace(req.AIModelID)
-	if requestedModel != "" {
-		granted, err := s.ownerGrantedModelIDs(r.Context(), squad.OwnerID)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		if _, err := s.resolveBindingModel(r.Context(), requestedModel, "ai_model_id", granted); err != nil {
-			writeBindingError(w, err)
-			return
-		}
+	if requestedModel != "" && !s.validateCreateAgentModel(w, r, squad.OwnerID, requestedModel) {
+		return
 	}
 
 	agent := &domain.Agent{
@@ -2058,6 +2182,59 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusCreated, created)
+}
+
+// ensureAgentNameFree enforces S-156 name uniqueness (per user, across
+// squads) for a new agent, writing the conflict response when taken.
+func (s *Server) ensureAgentNameFree(w http.ResponseWriter, r *http.Request, squad *domain.Squad, name string) bool {
+	existing, err := s.store.GetAgentByNameForOwner(r.Context(), squad.OwnerID, name)
+	switch {
+	case err != nil && !errors.Is(err, storage.ErrNotFound):
+		writeStorageError(w, err)
+		return false
+	case existing == nil:
+		return true
+	}
+	where := "another squad"
+	if existing.SquadID == squad.ID {
+		where = "this squad"
+	}
+	writeError(w, http.StatusConflict, "name_taken", "you already have an agent named "+existing.Name+" in "+where+"; agent names must be unique per user")
+	return false
+}
+
+// resolveCreateAgentStorage validates the requested storage size and
+// applies the platform default when storage is enabled without a size
+// (S-189 split out of createAgent).
+func (s *Server) resolveCreateAgentStorage(w http.ResponseWriter, enabledPtr *bool, rawSize string) (bool, string, bool) {
+	storageEnabled := enabledPtr != nil && *enabledPtr
+	storageSize := strings.TrimSpace(rawSize)
+	if storageSize != "" {
+		if err := s.validateStorageSize(storageSize); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return false, "", false
+		}
+	}
+	if storageEnabled && storageSize == "" {
+		storageSize = s.cfg.DefaultAgentStorageSize
+	}
+	return storageEnabled, storageSize, true
+}
+
+// validateCreateAgentModel checks the requested primary model against the
+// owner's grants before the agent row exists (S-170: a bad model must
+// not produce a half-born agent).
+func (s *Server) validateCreateAgentModel(w http.ResponseWriter, r *http.Request, ownerID, requestedModel string) bool {
+	granted, err := s.ownerGrantedModelIDs(r.Context(), ownerID)
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	if _, err := s.resolveBindingModel(r.Context(), requestedModel, "ai_model_id", granted); err != nil {
+		writeBindingError(w, err)
+		return false
+	}
+	return true
 }
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
@@ -2123,37 +2300,66 @@ func (s *Server) applyAgentScalarUpdates(agent *domain.Agent, req updateAgentReq
 	if req.Permissions != nil {
 		agent.Permissions = *req.Permissions
 	}
-	if req.IdleTimeoutSec != nil {
-		// S-183: 0 clears the per-agent override (follow the platform
-		// setting); negative is invalid.
-		if *req.IdleTimeoutSec < 0 {
-			return errors.New("idle_timeout_sec cannot be negative")
-		}
-		agent.IdleTimeoutSec = *req.IdleTimeoutSec
+	if err := applyIdleTimeoutUpdate(agent, req.IdleTimeoutSec); err != nil {
+		return err
 	}
 	if req.StorageEnabled != nil {
 		agent.StorageEnabled = *req.StorageEnabled
 	}
-	if req.StorageSize != nil {
-		size := strings.TrimSpace(*req.StorageSize)
-		if size != "" {
-			if err := s.validateStorageSize(size); err != nil {
-				return err
-			}
-		}
-		agent.StorageSize = size
+	if err := applyStorageSizeUpdate(agent, req.StorageSize, s.validateStorageSize); err != nil {
+		return err
 	}
-	if req.ThinkingLevel != nil {
-		level := strings.TrimSpace(*req.ThinkingLevel)
-		switch level {
-		case "", "low", "medium", "high":
-			agent.ThinkingLevel = level
-		default:
-			return errors.New("thinking_level must be one of low, medium, high (or empty to unset)")
-		}
+	if err := applyThinkingLevelUpdate(agent, req.ThinkingLevel); err != nil {
+		return err
 	}
 	if agent.StorageEnabled && agent.StorageSize == "" {
 		agent.StorageSize = s.cfg.DefaultAgentStorageSize
+	}
+	return nil
+}
+
+// applyIdleTimeoutUpdate stages the per-agent idle timeout (S-183: 0
+// clears the override and follows the platform setting; negative is
+// invalid). S-189 split out of applyAgentScalarUpdates.
+func applyIdleTimeoutUpdate(agent *domain.Agent, v *int) error {
+	if v == nil {
+		return nil
+	}
+	if *v < 0 {
+		return errors.New("idle_timeout_sec cannot be negative")
+	}
+	agent.IdleTimeoutSec = *v
+	return nil
+}
+
+// applyStorageSizeUpdate stages the per-agent storage size, running the
+// supplied validator for non-empty values (S-189 split).
+func applyStorageSizeUpdate(agent *domain.Agent, v *string, validate func(string) error) error {
+	if v == nil {
+		return nil
+	}
+	size := strings.TrimSpace(*v)
+	if size != "" {
+		if err := validate(size); err != nil {
+			return err
+		}
+	}
+	agent.StorageSize = size
+	return nil
+}
+
+// applyThinkingLevelUpdate stages the S-178 thinking level. Empty string
+// unsets it (provider default). S-189 split.
+func applyThinkingLevelUpdate(agent *domain.Agent, v *string) error {
+	if v == nil {
+		return nil
+	}
+	level := strings.TrimSpace(*v)
+	switch level {
+	case "", "low", "medium", "high":
+		agent.ThinkingLevel = level
+	default:
+		return errors.New("thinking_level must be one of low, medium, high (or empty to unset)")
 	}
 	return nil
 }
@@ -2253,19 +2459,8 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	// S-156: the K8s Deployment name is derived from the agent name, so a
-	// rename would desync the agent from its Deployment. Names are
-	// immutable; sending the same name back is a no-op.
-	if req.Name != nil {
-		name := strings.TrimSpace(*req.Name)
-		if name == "" {
-			writeError(w, http.StatusBadRequest, "bad_request", "name must not be empty")
-			return
-		}
-		if !strings.EqualFold(name, agent.Name) {
-			writeError(w, http.StatusBadRequest, "name_immutable", "agent name cannot be changed after creation (it is bound to the Kubernetes deployment "+agent.DeploymentName+")")
-			return
-		}
+	if !validateAgentNameImmutable(w, agent, req.Name) {
+		return
 	}
 	// S-PROMPT WP2: the agent tier gets the same sanitize + template-var +
 	// budget battery as the other editable tiers before anything is applied.
@@ -2311,6 +2506,25 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// validateAgentNameImmutable enforces S-156: the K8s Deployment name is
+// derived from the agent name, so renames are rejected. Sending the same
+// name back is a no-op.
+func validateAgentNameImmutable(w http.ResponseWriter, agent *domain.Agent, raw *string) bool {
+	if raw == nil {
+		return true
+	}
+	name := strings.TrimSpace(*raw)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "name must not be empty")
+		return false
+	}
+	if !strings.EqualFold(name, agent.Name) {
+		writeError(w, http.StatusBadRequest, "name_immutable", "agent name cannot be changed after creation (it is bound to the Kubernetes deployment "+agent.DeploymentName+")")
+		return false
+	}
+	return true
 }
 
 func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
@@ -2429,9 +2643,15 @@ func (s *Server) notifyDelegationResult(ctx context.Context, task *domain.Task, 
 		_ = s.syncAgentStatusFromPendingWork(ctx, source.ID)
 	}
 	delegSubject, delegBody := taskNotifySubjectBody(task, completingAgent.Name, status, summary)
-	s.notifySquadOwnerRich(ctx, source.SquadID, domain.InboxTaskCompleted, completingAgent.ID, task.ID,
-		fmt.Sprintf("Task %q delegated from agent %s finished with status %s", task.Title, source.Name, status),
-		delegSubject, delegBody)
+	s.notifySquadOwnerRich(ctx, ownerNotification{
+		SquadID:     source.SquadID,
+		Kind:        domain.InboxTaskCompleted,
+		FromAgentID: completingAgent.ID,
+		TaskID:      task.ID,
+		Message:     fmt.Sprintf("Task %q delegated from agent %s finished with status %s", task.Title, source.Name, status),
+		Subject:     delegSubject,
+		Body:        delegBody,
+	})
 }
 
 // notifyDelegationBlocked informs the requesting squad's owner when a
@@ -2445,22 +2665,41 @@ func (s *Server) notifyDelegationBlocked(ctx context.Context, task *domain.Task,
 		return
 	}
 	delegSubject, delegBody := taskNotifySubjectBody(task, blockingAgent.Name, string(domain.TaskBlocked), task.Result)
-	s.notifySquadOwnerRich(ctx, source.SquadID, domain.InboxActionRequired, blockingAgent.ID, task.ID,
-		fmt.Sprintf("Task %q delegated from agent %s was blocked by %s", task.Title, source.Name, blockingAgent.Name),
-		delegSubject, delegBody)
+	s.notifySquadOwnerRich(ctx, ownerNotification{
+		SquadID:     source.SquadID,
+		Kind:        domain.InboxActionRequired,
+		FromAgentID: blockingAgent.ID,
+		TaskID:      task.ID,
+		Message:     fmt.Sprintf("Task %q delegated from agent %s was blocked by %s", task.Title, source.Name, blockingAgent.Name),
+		Subject:     delegSubject,
+		Body:        delegBody,
+	})
 }
 
 // notifySquadOwner files an owner-facing inbox notification. It is best-effort
 // by design: a notification failure must never fail the underlying task flow.
 func (s *Server) notifySquadOwner(ctx context.Context, squadID string, kind domain.InboxKind, fromAgentID string, taskID string, message string) {
-	s.notifySquadOwnerRich(ctx, squadID, kind, fromAgentID, taskID, message, "", "")
+	s.notifySquadOwnerRich(ctx, ownerNotification{SquadID: squadID, Kind: kind, FromAgentID: fromAgentID, TaskID: taskID, Message: message})
 }
 
 // notifySquadOwnerRich (S-181) files an owner-facing inbox notification with
 // an optional email-style subject and body alongside the legacy one-line
 // message. Consumers that predate the richer payload keep reading Message;
 // newer ones prefer Subject/Body. Best-effort like notifySquadOwner.
-func (s *Server) notifySquadOwnerRich(ctx context.Context, squadID string, kind domain.InboxKind, fromAgentID, taskID, message, subject, body string) {
+// ownerNotification carries the fields for one owner-facing inbox
+// notification (S-189: params struct replaces the 8-arg signature).
+type ownerNotification struct {
+	SquadID     string
+	Kind        domain.InboxKind
+	FromAgentID string
+	TaskID      string
+	Message     string
+	Subject     string
+	Body        string
+}
+
+func (s *Server) notifySquadOwnerRich(ctx context.Context, n ownerNotification) {
+	squadID, kind, fromAgentID, taskID, message, subject, body := n.SquadID, n.Kind, n.FromAgentID, n.TaskID, n.Message, n.Subject, n.Body
 	squad, err := s.store.GetSquad(ctx, squadID)
 	if err != nil || squad.OwnerID == "" {
 		return
@@ -2545,7 +2784,7 @@ func (s *Server) notifyOwnerFromAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	message := trimRunes(strings.TrimSpace(req.Message), maxInboxMessageChars)
 	if message == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "message is required")
+		writeError(w, http.StatusBadRequest, "bad_request", msgMessageRequired)
 		return
 	}
 	principal := currentAgent(r.Context())
@@ -2624,7 +2863,7 @@ func writeIdentityProvisionError(w http.ResponseWriter, err error) {
 		if writeBindingError(w, pe.err) {
 			return
 		}
-		writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to provision LLM gateway virtual key")
+		writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", msgGatewayKeyFailed)
 	case "store":
 		writeStorageError(w, pe.err)
 	default:
@@ -2655,7 +2894,7 @@ func (s *Server) provisionAgentIdentity(ctx context.Context, agent *domain.Agent
 	}
 	virtualKey, keyToken, err := s.provisionAgentVirtualKey(ctx, agent)
 	if err != nil {
-		return nil, &identityProvisionError{step: "gateway", err: err, message: "failed to provision LLM gateway virtual key"}
+		return nil, &identityProvisionError{step: "gateway", err: err, message: msgGatewayKeyFailed}
 	}
 	identity.CredentialHash = hashCredential(credential)
 	identity.GatewayKeyToken = keyToken
@@ -2701,7 +2940,7 @@ func (s *Server) rotateAgentIdentity(w http.ResponseWriter, r *http.Request) {
 		if writeBindingError(w, err) {
 			return
 		}
-		writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", "failed to provision LLM gateway virtual key")
+		writeError(w, http.StatusBadGateway, "llm_gateway_unavailable", msgGatewayKeyFailed)
 		return
 	}
 	credentialRef := generatedCredentialRef(squad.Namespace, agent.ID)
@@ -3431,13 +3670,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	var req struct {
-		Title           string            `json:"title"`
-		Description     string            `json:"description"`
-		AssigneeAgentID string            `json:"assignee_agent_id"`
-		Status          domain.TaskStatus `json:"status"`
-		Metadata        map[string]string `json:"metadata"`
-	}
+	var req createTaskRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
@@ -3447,26 +3680,18 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// S-213: allow creating directly into a non-default column (Backlog).
-	// Without this the UI would create in todo and move afterwards, leaving
+	// Without this the UI would create in the TO DO column and move afterwards, leaving
 	// a race where an agent can claim the task before the move lands.
 	initialStatus := req.Status
 	if initialStatus == "" {
 		initialStatus = domain.TaskTodo
 	}
 	if !initialStatus.Valid() {
-		writeError(w, http.StatusBadRequest, "bad_request", "status is invalid")
+		writeError(w, http.StatusBadRequest, "bad_request", msgStatusInvalid)
 		return
 	}
-	if req.AssigneeAgentID != "" {
-		agent, err := s.store.GetAgent(r.Context(), req.AssigneeAgentID)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		if agent.SquadID != squad.ID {
-			writeError(w, http.StatusBadRequest, "bad_request", "assignee_agent_id must belong to this squad")
-			return
-		}
+	if req.AssigneeAgentID != "" && !s.validateTaskAssignee(w, r, squad.ID, req.AssigneeAgentID) {
+		return
 	}
 	u := currentUser(r.Context())
 	task := &domain.Task{
@@ -3484,20 +3709,53 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	if created.AssigneeAgentID != "" {
-		// S-181: seed the task thread so the page is not empty for tasks
-		// that actually ran — the creation itself is the opening message.
-		threadText := created.Title
-		if desc := strings.TrimSpace(created.Description); desc != "" {
-			threadText = created.Title + "\n\n" + desc
-		}
-		s.appendTaskThreadEvent(r.Context(), created, "user", u.ID, domain.MessageConsult, threadText)
-		if err := s.syncAgentStatusFromPendingWork(r.Context(), created.AssigneeAgentID); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
-			return
-		}
+	if created.AssigneeAgentID != "" && !s.seedTaskThreadOnCreate(w, r, created, u.ID) {
+		return
 	}
 	writeJSON(w, http.StatusCreated, created)
+}
+
+// createTaskRequest is the JSON body for POST /tasks (S-189: named for
+// the extracted validation helpers).
+type createTaskRequest struct {
+	Title           string            `json:"title"`
+	Description     string            `json:"description"`
+	AssigneeAgentID string            `json:"assignee_agent_id"`
+	Status          domain.TaskStatus `json:"status"`
+	Metadata        map[string]string `json:"metadata"`
+}
+
+// validateTaskAssignee checks the assignee exists and belongs to the
+// squad, writing the error response when not (S-189 split).
+func (s *Server) validateTaskAssignee(w http.ResponseWriter, r *http.Request, squadID, assigneeAgentID string) bool {
+	agent, err := s.store.GetAgent(r.Context(), assigneeAgentID)
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	if agent.SquadID != squadID {
+		writeError(w, http.StatusBadRequest, "bad_request", "assignee_agent_id must belong to this squad")
+		return false
+	}
+	return true
+}
+
+// seedTaskThreadOnCreate files the opening thread message for a newly
+// created assigned task and syncs the assignee's pending-work status
+// (S-181; S-189 split out of createTask).
+func (s *Server) seedTaskThreadOnCreate(w http.ResponseWriter, r *http.Request, created *domain.Task, userID string) bool {
+	// S-181: seed the task thread so the page is not empty for tasks
+	// that actually ran — the creation itself is the opening message.
+	threadText := created.Title
+	if desc := strings.TrimSpace(created.Description); desc != "" {
+		threadText = created.Title + "\n\n" + desc
+	}
+	s.appendTaskThreadEvent(r.Context(), created, "user", userID, domain.MessageConsult, threadText)
+	if err := s.syncAgentStatusFromPendingWork(r.Context(), created.AssigneeAgentID); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
+		return false
+	}
+	return true
 }
 
 func (s *Server) listCurrentAgentTasks(w http.ResponseWriter, r *http.Request) {
@@ -3742,21 +4000,8 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 	// correlation_id; once the chain hits the budget the send is rejected
 	// and audited so a runaway agent loop fails loudly instead of looping.
 	correlationID := strings.TrimSpace(req.CorrelationID)
-	if correlationID != "" {
-		if !isUUID(correlationID) {
-			writeError(w, http.StatusBadRequest, "bad_request", "correlation_id must be a UUID")
-			return
-		}
-		chainLen, err := s.store.CountMessagesByCorrelation(r.Context(), correlationID)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		if chainLen >= maxCorrelationChainMessages {
-			s.recordAgentAudit(r, principal.Agent.ID, "message.chain_exceeded", "agent", target.ID, target.SquadID, json.RawMessage(fmt.Sprintf(`{"correlation_id":%q,"chain_length":%d}`, correlationID, chainLen)))
-			writeError(w, http.StatusConflict, "chain_exceeded", "correlation chain message budget exhausted")
-			return
-		}
+	if correlationID != "" && !s.checkCorrelationChainBudget(w, r, principal, target, correlationID) {
+		return
 	}
 	// Delegate and handoff messages materialize into a real task on the
 	// target squad's board: the task is the durable unit of work, the
@@ -3788,6 +4033,27 @@ func (s *Server) createCurrentAgentMessage(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusCreated, created)
+}
+
+// checkCorrelationChainBudget enforces the S-164 cap on correlated
+// conversation chains: a chain at/over budget is rejected and audited so
+// a runaway agent loop fails loudly instead of looping.
+func (s *Server) checkCorrelationChainBudget(w http.ResponseWriter, r *http.Request, principal *agentPrincipal, target *domain.Agent, correlationID string) bool {
+	if !isUUID(correlationID) {
+		writeError(w, http.StatusBadRequest, "bad_request", "correlation_id must be a UUID")
+		return false
+	}
+	chainLen, err := s.store.CountMessagesByCorrelation(r.Context(), correlationID)
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	if chainLen >= maxCorrelationChainMessages {
+		s.recordAgentAudit(r, principal.Agent.ID, "message.chain_exceeded", "agent", target.ID, target.SquadID, json.RawMessage(fmt.Sprintf(`{"correlation_id":%q,"chain_length":%d}`, correlationID, chainLen)))
+		writeError(w, http.StatusConflict, "chain_exceeded", "correlation chain message budget exhausted")
+		return false
+	}
+	return true
 }
 
 // materializeDelegatedTask creates the task a delegate/handoff message stands
@@ -4277,7 +4543,7 @@ func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	// TO DO, or resuming its own in-progress task. Backlog and every other
 	// column are rejected here with a machine-readable reason before the
 	// status update runs; pickup must go through the claim path, which
-	// only serves todo. A human moving the card out of Backlog is the
+	// only serves the TO DO column. A human moving the card out of Backlog is the
 	// instruction to start it. Missing/foreign tasks are still reported by
 	// updateCurrentAgentTaskStatus below.
 	if existing, err := s.store.GetTask(r.Context(), chi.URLParam(r, "taskID")); err == nil && !existing.Status.IsAgentPickupStatus() {
@@ -4313,7 +4579,7 @@ func (s *Server) appendCurrentAgentTaskThread(w http.ResponseWriter, r *http.Req
 		Message string `json:"message"`
 	}
 	if r.Body == nil || r.ContentLength == 0 {
-		writeError(w, http.StatusBadRequest, "missing_body", "message is required")
+		writeError(w, http.StatusBadRequest, "missing_body", msgMessageRequired)
 		return
 	}
 	if !decodeJSON(w, r, &req) {
@@ -4400,8 +4666,15 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 		return
 	}
 	subject, body := taskNotifySubjectBody(updated, principal.Agent.Name, string(req.Status), summary)
-	s.notifySquadOwnerRich(r.Context(), updated.SquadID, domain.InboxTaskCompleted, principal.Agent.ID, updated.ID,
-		fmt.Sprintf("Agent %s moved task %q to %s", principal.Agent.Name, updated.Title, req.Status), subject, body)
+	s.notifySquadOwnerRich(r.Context(), ownerNotification{
+		SquadID:     updated.SquadID,
+		Kind:        domain.InboxTaskCompleted,
+		FromAgentID: principal.Agent.ID,
+		TaskID:      updated.ID,
+		Message:     fmt.Sprintf("Agent %s moved task %q to %s", principal.Agent.Name, updated.Title, req.Status),
+		Subject:     subject,
+		Body:        body,
+	})
 	s.notifyDelegationResult(r.Context(), updated, principal.Agent, string(req.Status), summary)
 	// S-181: the agent's turn itself must appear in the task thread, not
 	// only in the owner's inbox. Empty summaries are surfaced explicitly
@@ -4434,17 +4707,17 @@ func (s *Server) persistCompletionMemory(w http.ResponseWriter, r *http.Request,
 	}
 	embedding, embeddingModel := s.embedMemoryText(r.Context(), summary)
 	if _, err := s.store.CreateAgentMemory(r.Context(), &domain.AgentMemory{
-		AgentID:      principal.Agent.ID,
-		SquadID:      updated.SquadID,
-		SourceTaskID: updated.ID,
-		Content:      summary,
-		RawContent:   rawSummary,
-		TrustLevel:   "raw_model_output",
-		Provenance:   "task_completion",
-		ReviewStatus: "pending_review",
-		Embedding:    embedding,
+		AgentID:        principal.Agent.ID,
+		SquadID:        updated.SquadID,
+		SourceTaskID:   updated.ID,
+		Content:        summary,
+		RawContent:     rawSummary,
+		TrustLevel:     "raw_model_output",
+		Provenance:     "task_completion",
+		ReviewStatus:   "pending_review",
+		Embedding:      embedding,
 		EmbeddingModel: embeddingModel,
-		Metadata:     metadata,
+		Metadata:       metadata,
 	}); err != nil {
 		auditMetadata, _ := json.Marshal(map[string]string{"error": err.Error(), "execution_id": executionID})
 		s.recordAgentAudit(r, principal.Agent.ID, "task.memory_persist_failed", "task", updated.ID, updated.SquadID, auditMetadata)
@@ -4565,8 +4838,15 @@ func (s *Server) blockCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 		blockNote = ": " + blockNote
 	}
 	subject, body := taskNotifySubjectBody(updated, principal.Agent.Name, string(domain.TaskBlocked), strings.TrimSpace(req.Summary))
-	s.notifySquadOwnerRich(r.Context(), updated.SquadID, domain.InboxActionRequired, principal.Agent.ID, updated.ID,
-		fmt.Sprintf("Agent %s blocked task %q%s", principal.Agent.Name, updated.Title, blockNote), subject, body)
+	s.notifySquadOwnerRich(r.Context(), ownerNotification{
+		SquadID:     updated.SquadID,
+		Kind:        domain.InboxActionRequired,
+		FromAgentID: principal.Agent.ID,
+		TaskID:      updated.ID,
+		Message:     fmt.Sprintf("Agent %s blocked task %q%s", principal.Agent.Name, updated.Title, blockNote),
+		Subject:     subject,
+		Body:        body,
+	})
 	s.notifyDelegationBlocked(r.Context(), updated, principal.Agent)
 	// S-193: a blocked task is also a bell notification — it awaits a
 	// human decision/answer, distinct from the inbox copy.
@@ -4598,7 +4878,7 @@ func (s *Server) currentAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		req.Status = principal.Agent.Status
 	}
 	if req.Status != domain.AgentIdle && req.Status != domain.AgentBusy && req.Status != domain.AgentError {
-		writeError(w, http.StatusBadRequest, "bad_request", "status is invalid")
+		writeError(w, http.StatusBadRequest, "bad_request", msgStatusInvalid)
 		return
 	}
 	if !s.heartbeatExecutionFence(w, r, principal, req.Status, req.ExecutionID, req.FencingToken) {
@@ -4763,7 +5043,7 @@ func (s *Server) createTaskMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(req.Message) == "" {
-		writeError(w, http.StatusBadRequest, "empty_message", "message is required")
+		writeError(w, http.StatusBadRequest, "empty_message", msgMessageRequired)
 		return
 	}
 	messageType := req.Type
@@ -4885,7 +5165,7 @@ func (s *Server) moveTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !req.Status.Valid() {
-		writeError(w, http.StatusBadRequest, "bad_request", "status is invalid")
+		writeError(w, http.StatusBadRequest, "bad_request", msgStatusInvalid)
 		return
 	}
 	previousAssignee := task.AssigneeAgentID

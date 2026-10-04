@@ -130,7 +130,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// mounts applied, pod actually ready) — never from "CR write succeeded".
 	ready, reason, message := r.evaluateAgentReadiness(ctx, &agent, deployment, namespace, replicas, workspace)
 
-	return r.updateAgentStatus(ctx, &agent, deployment, ready, reason, message, replicas, workspace)
+	return r.updateAgentStatus(ctx, &agent, deployment, agentStatusUpdate{
+		Ready:     ready,
+		Reason:    reason,
+		Message:   message,
+		Replicas:  replicas,
+		Workspace: workspace,
+	})
 }
 
 // reconcileDelete handles an Agent that is being deleted: it cleans up the
@@ -278,7 +284,18 @@ func agentEnv(agent *skquadv1.Agent) []corev1.EnvVar {
 // updateAgentStatus persists the derived readiness state and chooses the
 // next requeue behaviour. When the agent has a durable workspace it also
 // surfaces the PVC phase as a WorkspaceReady condition (S-135).
-func (r *AgentReconciler) updateAgentStatus(ctx context.Context, agent *skquadv1.Agent, deployment *appsv1.Deployment, ready bool, reason, message string, replicas int32, workspace *workspaceState) (ctrl.Result, error) {
+// agentStatusUpdate carries the derived readiness state for
+// updateAgentStatus (S-189: params struct replaces the 8-arg signature).
+type agentStatusUpdate struct {
+	Ready     bool
+	Reason    string
+	Message   string
+	Replicas  int32
+	Workspace *workspaceState
+}
+
+func (r *AgentReconciler) updateAgentStatus(ctx context.Context, agent *skquadv1.Agent, deployment *appsv1.Deployment, upd agentStatusUpdate) (ctrl.Result, error) {
+	ready, reason, message, replicas, workspace := upd.Ready, upd.Reason, upd.Message, upd.Replicas, upd.Workspace
 	agent.Status.ReadyDeployment = deployment.Name
 	agent.Status.Replicas = replicas
 	agent.Status.Ready = ready

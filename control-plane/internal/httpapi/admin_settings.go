@@ -17,6 +17,7 @@ package httpapi
 // operator only starts counting idleSince after the last activity.
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,8 +35,8 @@ const (
 type adminSettingsView struct {
 	IdleScaleToZeroMinutes int    `json:"idle_scale_to_zero_minutes"`
 	EmbedderRuntime        string `json:"embedder_runtime"`
-	UpdatedAt            string `json:"updated_at,omitempty"`
-	UpdatedBy            string `json:"updated_by,omitempty"`
+	UpdatedAt              string `json:"updated_at,omitempty"`
+	UpdatedBy              string `json:"updated_by,omitempty"`
 }
 
 // embedderRuntime reads the admin's embedder runtime choice
@@ -104,64 +105,102 @@ func (s *Server) putAdminSettings(w http.ResponseWriter, r *http.Request) {
 	userID := currentUser(r.Context()).ID
 
 	// Validate everything before touching any store.
-	runtime := ""
-	if req.EmbedderRuntime != nil {
-		runtime = strings.ToLower(strings.TrimSpace(*req.EmbedderRuntime))
-		switch runtime {
-		case "auto", "cuda", "vulkan", "cpu":
-		default:
-			writeError(w, http.StatusBadRequest, "bad_request",
-				"embedder_runtime must be one of: auto, cuda, vulkan, cpu")
-			return
-		}
-		if s.embedderConfig == nil {
-			writeError(w, http.StatusServiceUnavailable, "embedder_config_unavailable",
-				"embedder runtime override needs control-plane Kubernetes API access")
-			return
-		}
+	runtime, ok := s.validateEmbedderRuntime(w, req.EmbedderRuntime)
+	if !ok {
+		return
 	}
-	minutes := 0
-	if req.IdleScaleToZeroMinutes != nil {
-		minutes = *req.IdleScaleToZeroMinutes
-		if minutes < minIdleScaleToZeroMinutes || minutes > maxIdleScaleToZeroMinutes {
-			writeError(w, http.StatusBadRequest, "bad_request",
-				"idle_scale_to_zero_minutes must be between "+
-					strconv.Itoa(minIdleScaleToZeroMinutes)+" and "+strconv.Itoa(maxIdleScaleToZeroMinutes))
-			return
-		}
+	minutes, ok := validateIdleScaleMinutes(w, req.IdleScaleToZeroMinutes)
+	if !ok {
+		return
 	}
 
 	ctx := s.pendingUserAuditCtx(r, "settings.platform.update", "platform_settings", "", "", nil)
 
+	resp := map[string]any{}
 	// Embedder runtime: ConfigMap first (operator intent), DB second.
 	if runtime != "" {
-		if err := s.embedderConfig.SetEmbedderRuntime(ctx, runtime); err != nil {
-			writeError(w, http.StatusServiceUnavailable, "embedder_config_unavailable",
-				"could not write embedder runtime override: "+err.Error())
+		if !s.applyEmbedderRuntimeSetting(ctx, w, runtime, userID) {
 			return
 		}
-		if err := s.store.SetPlatformSetting(ctx, domain.PlatformSettingEmbedderRuntime, runtime, userID); err != nil {
-			writeStorageError(w, err)
-			return
-		}
-	}
-	resp := map[string]any{}
-	if runtime != "" {
 		resp["embedder_runtime"] = runtime
 	}
 	if minutes != 0 {
-		seconds := minutes * 60
-		if err := s.store.SetPlatformSetting(ctx, domain.PlatformSettingIdleScaleToZeroSeconds, strconv.Itoa(seconds), userID); err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		mirrored, err := s.store.EnqueueAllAgentUpserts(ctx)
-		if err != nil {
-			writeStorageError(w, err)
+		mirrored, ok := s.applyIdleScaleSetting(ctx, w, minutes, userID)
+		if !ok {
 			return
 		}
 		resp["idle_scale_to_zero_minutes"] = minutes
 		resp["mirrored_agents"] = mirrored
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// validateEmbedderRuntime normalises and validates the requested
+// embedder runtime, including the availability of the override writer
+// (S-189 split out of putAdminSettings).
+func (s *Server) validateEmbedderRuntime(w http.ResponseWriter, raw *string) (string, bool) {
+	if raw == nil {
+		return "", true
+	}
+	runtime := strings.ToLower(strings.TrimSpace(*raw))
+	switch runtime {
+	case "auto", "cuda", "vulkan", "cpu":
+	default:
+		writeError(w, http.StatusBadRequest, "bad_request",
+			"embedder_runtime must be one of: auto, cuda, vulkan, cpu")
+		return "", false
+	}
+	if s.embedderConfig == nil {
+		writeError(w, http.StatusServiceUnavailable, "embedder_config_unavailable",
+			"embedder runtime override needs control-plane Kubernetes API access")
+		return "", false
+	}
+	return runtime, true
+}
+
+// validateIdleScaleMinutes range-checks the requested idle timeout
+// (S-189 split). Returns 0 when the field is absent.
+func validateIdleScaleMinutes(w http.ResponseWriter, raw *int) (int, bool) {
+	if raw == nil {
+		return 0, true
+	}
+	minutes := *raw
+	if minutes < minIdleScaleToZeroMinutes || minutes > maxIdleScaleToZeroMinutes {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			"idle_scale_to_zero_minutes must be between "+
+				strconv.Itoa(minIdleScaleToZeroMinutes)+" and "+strconv.Itoa(maxIdleScaleToZeroMinutes))
+		return 0, false
+	}
+	return minutes, true
+}
+
+// applyEmbedderRuntimeSetting writes the operator ConfigMap override
+// first, then records the platform setting (S-189 split).
+func (s *Server) applyEmbedderRuntimeSetting(ctx context.Context, w http.ResponseWriter, runtime, userID string) bool {
+	if err := s.embedderConfig.SetEmbedderRuntime(ctx, runtime); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "embedder_config_unavailable",
+			"could not write embedder runtime override: "+err.Error())
+		return false
+	}
+	if err := s.store.SetPlatformSetting(ctx, domain.PlatformSettingEmbedderRuntime, runtime, userID); err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	return true
+}
+
+// applyIdleScaleSetting stores the idle timeout (seconds) and fans the
+// change out through the Kubernetes agent-mirror outbox (S-189 split).
+func (s *Server) applyIdleScaleSetting(ctx context.Context, w http.ResponseWriter, minutes int, userID string) (int, bool) {
+	seconds := minutes * 60
+	if err := s.store.SetPlatformSetting(ctx, domain.PlatformSettingIdleScaleToZeroSeconds, strconv.Itoa(seconds), userID); err != nil {
+		writeStorageError(w, err)
+		return 0, false
+	}
+	mirrored, err := s.store.EnqueueAllAgentUpserts(ctx)
+	if err != nil {
+		writeStorageError(w, err)
+		return 0, false
+	}
+	return mirrored, true
 }

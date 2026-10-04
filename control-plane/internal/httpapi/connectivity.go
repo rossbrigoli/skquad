@@ -208,7 +208,7 @@ func buildModelTestRequest(kind, baseURL, apiKey, model string) (*http.Request, 
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(hdrContentType, contentTypeJSON)
 		req.Header.Set("anthropic-version", "2023-06-01")
 		if apiKey != "" {
 			req.Header.Set("x-api-key", apiKey)
@@ -223,10 +223,10 @@ func buildModelTestRequest(kind, baseURL, apiKey, model string) (*http.Request, 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set(hdrContentType, contentTypeJSON)
+	req.Header.Set(hdrAccept, contentTypeJSON)
 	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set(hdrAuthorization, bearerAuthPrefix+apiKey)
 	}
 	return req, nil
 }

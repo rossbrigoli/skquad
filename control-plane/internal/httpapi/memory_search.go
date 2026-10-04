@@ -68,17 +68,9 @@ func (s *Server) searchMyAgentMemory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "q is required")
 		return
 	}
-	limit := defaultMemorySearchLimit
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 || parsed > memorySearchLimitCap {
-			writeError(w, http.StatusBadRequest, "bad_request", "limit must be between 1 and 20")
-			return
-		}
-		limit = parsed
-	}
-	if policyMax := policyInt(cfg.Policy, "maxResults"); policyMax > 0 && policyMax < limit {
-		limit = policyMax
+	limit, ok := resolveMemorySearchLimit(w, cfg, r.URL.Query().Get("limit"))
+	if !ok {
+		return
 	}
 
 	timeout := memorySearchTimeout
@@ -115,6 +107,25 @@ func (s *Server) searchMyAgentMemory(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"results": results, "model": s.cfg.MemoryEmbeddingModel})
+}
+
+// resolveMemorySearchLimit parses the ?limit= parameter and clamps it
+// to the tool policy's maxResults (S-189 split out of
+// searchMyAgentMemory).
+func resolveMemorySearchLimit(w http.ResponseWriter, cfg *domain.BuiltinToolConfig, raw string) (int, bool) {
+	limit := defaultMemorySearchLimit
+	if raw = strings.TrimSpace(raw); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > memorySearchLimitCap {
+			writeError(w, http.StatusBadRequest, "bad_request", "limit must be between 1 and 20")
+			return 0, false
+		}
+		limit = parsed
+	}
+	if policyMax := policyInt(cfg.Policy, "maxResults"); policyMax > 0 && policyMax < limit {
+		limit = policyMax
+	}
+	return limit, true
 }
 
 // isNotFound is a tiny helper so the disabled-check reads linearly

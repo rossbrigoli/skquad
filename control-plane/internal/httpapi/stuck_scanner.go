@@ -74,47 +74,56 @@ func ScanStuckTasksOnce(ctx context.Context, store Store, threshold time.Duratio
 	}
 	filed := 0
 	for _, task := range tasks {
-		// Dedupe: at most one task_stuck per task per threshold window,
-		// judged by the prior notification's created_at — no new column.
-		recent, err := store.HasRecentNotificationForTask(ctx, task.ID, domain.NotificationTaskStuck, cutoff)
-		if err != nil {
-			slog.Warn("stuck dedupe lookup failed", "error", err, "task_id", task.ID)
-			continue
+		if fileStuckTaskNotification(ctx, store, task, cutoff, threshold) {
+			filed++
 		}
-		if recent {
-			continue
-		}
-		squad, err := store.GetSquad(ctx, task.SquadID)
-		if err != nil || squad.OwnerID == "" {
-			continue
-		}
-		// S-199: honor the recipient's mute list (fail-open on lookup error).
-		if notificationMuted(ctx, store, squad.OwnerID, domain.NotificationTaskStuck) {
-			slog.Info("notification skipped: type muted by user preference",
-				"type", string(domain.NotificationTaskStuck), "user", squad.OwnerID)
-			continue
-		}
-		msg := fmt.Sprintf("Task %s has been in-progress for over %s with no thread activity or heartbeat progress.",
-			formatTaskRef(task), formatStuckThreshold(threshold))
-		_, err = store.CreateNotification(ctx, &domain.Notification{
-			UserID:   squad.OwnerID,
-			SquadID:  task.SquadID,
-			TaskID:   task.ID,
-			AgentID:  task.AssigneeAgentID,
-			Type:     domain.NotificationTaskStuck,
-			Severity: domain.NotificationWarning,
-			Message:  msg,
-		})
-		if err != nil {
-			// ErrNotFound ⇒ the owner/squad row is gone: nothing addressable.
-			if !errors.Is(err, storage.ErrNotFound) {
-				slog.Warn("file task_stuck notification", "error", err, "task_id", task.ID)
-			}
-			continue
-		}
-		filed++
 	}
 	return filed, nil
+}
+
+// fileStuckTaskNotification files one task_stuck notification for one
+// stale task, honoring the dedupe window and the recipient's mute list
+// (S-189 split out of ScanStuckTasksOnce). Returns true when filed.
+func fileStuckTaskNotification(ctx context.Context, store Store, task *domain.Task, cutoff time.Time, threshold time.Duration) bool {
+	// Dedupe: at most one task_stuck per task per threshold window,
+	// judged by the prior notification's created_at — no new column.
+	recent, err := store.HasRecentNotificationForTask(ctx, task.ID, domain.NotificationTaskStuck, cutoff)
+	if err != nil {
+		slog.Warn("stuck dedupe lookup failed", "error", err, "task_id", task.ID)
+		return false
+	}
+	if recent {
+		return false
+	}
+	squad, err := store.GetSquad(ctx, task.SquadID)
+	if err != nil || squad.OwnerID == "" {
+		return false
+	}
+	// S-199: honor the recipient's mute list (fail-open on lookup error).
+	if notificationMuted(ctx, store, squad.OwnerID, domain.NotificationTaskStuck) {
+		slog.Info("notification skipped: type muted by user preference",
+			"type", string(domain.NotificationTaskStuck), "user", squad.OwnerID)
+		return false
+	}
+	msg := fmt.Sprintf("Task %s has been in-progress for over %s with no thread activity or heartbeat progress.",
+		formatTaskRef(task), formatStuckThreshold(threshold))
+	_, err = store.CreateNotification(ctx, &domain.Notification{
+		UserID:   squad.OwnerID,
+		SquadID:  task.SquadID,
+		TaskID:   task.ID,
+		AgentID:  task.AssigneeAgentID,
+		Type:     domain.NotificationTaskStuck,
+		Severity: domain.NotificationWarning,
+		Message:  msg,
+	})
+	if err != nil {
+		// ErrNotFound ⇒ the owner/squad row is gone: nothing addressable.
+		if !errors.Is(err, storage.ErrNotFound) {
+			slog.Warn("file task_stuck notification", "error", err, "task_id", task.ID)
+		}
+		return false
+	}
+	return true
 }
 
 // formatStuckThreshold renders the threshold for the alert message in
