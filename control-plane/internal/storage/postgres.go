@@ -3084,7 +3084,7 @@ func (p *PostgresStore) CreateInboxMessage(ctx context.Context, msg *domain.Inbo
 	row := tx.QueryRow(ctx, `
 		INSERT INTO inbox_messages (squad_id, user_id, from_agent_id, task_id, kind, message, subject, body)
 		VALUES (NULLIF($1, '')::uuid, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7, $8)
-		RETURNING id::text, squad_id::text, user_id::text, coalesce(from_agent_id::text, ''),
+		RETURNING id::text, coalesce(squad_id::text, ''), user_id::text, coalesce(from_agent_id::text, ''),
 		          coalesce(task_id::text, ''), kind, message, subject, body, read_at, created_at
 	`, msg.SquadID, msg.UserID, msg.FromAgentID, msg.TaskID, kind, msg.Message, msg.Subject, msg.Body)
 	created, err := scanInboxMessage(row)
@@ -3141,7 +3141,7 @@ func (p *PostgresStore) MarkInboxMessageRead(ctx context.Context, userID string,
 		UPDATE inbox_messages
 		SET read_at = COALESCE(read_at, now())
 		WHERE id = $1 AND user_id = $2
-		RETURNING id::text, squad_id::text, user_id::text, coalesce(from_agent_id::text, ''),
+		RETURNING id::text, coalesce(squad_id::text, ''), user_id::text, coalesce(from_agent_id::text, ''),
 		          coalesce(task_id::text, ''), kind, message, subject, body, read_at, created_at
 	`, id, userID)
 	updated, err := scanInboxMessage(row)
