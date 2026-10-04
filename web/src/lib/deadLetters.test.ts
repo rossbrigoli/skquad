@@ -5,7 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   pruneDeadLetterSelection,
   runBulkAction,
-  selectAllDeadLetters,
+  allDeadLetterIds,
+  emptyDeadLetterSelection,
   summarizeBulkResults,
   toggleDeadLetterSelection,
 } from "./deadLetters";
@@ -30,17 +31,17 @@ describe("toggleDeadLetterSelection", () => {
   });
 });
 
-describe("selectAllDeadLetters", () => {
+describe("allDeadLetterIds / emptyDeadLetterSelection", () => {
   it("returns every id when true", () => {
-    expect([...selectAllDeadLetters(items, true)].sort()).toEqual(["a", "b", "c"]);
+    expect([...allDeadLetterIds(items)].sort()).toEqual(["a", "b", "c"]);
   });
 
   it("returns an empty set when false", () => {
-    expect(selectAllDeadLetters(items, false).size).toBe(0);
+    expect(emptyDeadLetterSelection().size).toBe(0);
   });
 
   it("empty list + true is still empty (select-all stays off)", () => {
-    expect(selectAllDeadLetters([], true).size).toBe(0);
+    expect(allDeadLetterIds([]).size).toBe(0);
   });
 });
 

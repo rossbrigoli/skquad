@@ -91,7 +91,7 @@ export default function AboutPage() {
             <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noopener noreferrer">
               Apache License, Version 2.0
             </a>
-            .
+            {"."}
           </p>
 
           <h2 className="about-versions-heading">Component versions</h2>

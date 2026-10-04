@@ -633,7 +633,7 @@ function AgentConfigPane({
             <input
               value={idleTimeout}
               onChange={(e) => {
-                setIdleTimeout(e.target.value.replace(/[^0-9]/g, ""));
+                setIdleTimeout(e.target.value.replace(/\D/g, ""));
                 setSavedNote("");
               }}
               inputMode="numeric"
@@ -1061,7 +1061,7 @@ function ChatThread({
                 type="button"
                 className="attachment-chip-remove"
                 aria-label={`Remove ${att.filename}`}
-                onClick={() => setPendingAttachments((prev) => prev.filter((a) => a.id !== att.id))}
+                onClick={() => setPendingAttachments((prev) => withoutAttachment(prev, att.id))}
               >
                 ×
               </button>
@@ -1274,6 +1274,12 @@ function LlmBindingFields({
       </span>
     </div>
   );
+}
+
+// S-189/S2004: helper keeps the attachment-chip remove handler under
+// the function-nesting depth limit.
+function withoutAttachment(list: UploadRef[], id: string): UploadRef[] {
+  return list.filter((a) => a.id !== id);
 }
 
 function GrantModal({

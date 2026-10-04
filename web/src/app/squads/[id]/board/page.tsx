@@ -290,14 +290,16 @@ function ColumnConfigModal({
       </p>
       {cols.map((col, i) => (
         <div key={col.status} className="field-row" style={{ alignItems: "center", marginBottom: "var(--space-2)" }}>
-          <label style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", fontSize: "var(--text-sm)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", fontSize: "var(--text-sm)" }}>
             <input
               type="checkbox"
               checked={col.visible}
+              aria-label={`Show ${col.label} column`}
               onChange={(e) => patchCol(col.status, { visible: e.target.checked })}
             />
             <input
               value={col.label}
+              aria-label={`Rename ${col.status} column`}
               onChange={(e) => patchCol(col.status, { label: e.target.value })}
               style={{
                 border: "1px solid var(--line-strong)",
@@ -307,7 +309,7 @@ function ColumnConfigModal({
                 width: "100%",
               }}
             />
-          </label>
+          </div>
           <div style={{ display: "flex", gap: "var(--space-1)", justifyContent: "flex-end" }}>
             <button
               type="button"

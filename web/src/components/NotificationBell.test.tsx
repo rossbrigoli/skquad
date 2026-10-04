@@ -30,12 +30,12 @@ describe("NotificationBell click-to-read (S-209 req 2)", () => {
 
   it("clicking the whole item marks it read (bubbling covers link + body)", () => {
     expect(source).toMatch(
-      /<li[\s\S]*?onClick=\{\(\) => \{\s*if \(isUnread\(n\.read_at\)\) void markRead\(n\.id\);/,
+      /<li[\s\S]*?onClick=\{\(\) => \{\s*if \(isUnread\(n\.read_at\)\) markRead\(n\.id\)\.catch\(\(\) => undefined\);/,
     );
   });
 
   it("the explicit Mark read button does not double-fire via bubbling", () => {
-    expect(source).toMatch(/e\.stopPropagation\(\);\s*\n\s*void markRead\(n\.id\);/);
+    expect(source).toMatch(/e\.stopPropagation\(\);\s*\n\s*markRead\(n\.id\)\.catch\(\(\) => undefined\);/);
   });
 });
 

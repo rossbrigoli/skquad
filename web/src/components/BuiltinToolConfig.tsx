@@ -285,6 +285,12 @@ export function ToolCard({
 
 // DeniedPatternsEditor: add/remove rows of regex strings.
 let patternSeq = 0;
+// S-189/S2004: shared removal helper keeps the row handlers under the
+// function-nesting depth limit.
+function removeAt<T>(list: readonly T[], idx: number): T[] {
+  return list.filter((_, i) => i !== idx);
+}
+
 export function DeniedPatternsEditor({
   rows,
   disabled,

@@ -24,7 +24,8 @@ import {
   emptyTemplateForm,
   formFromTemplate,
   pruneTemplateSelection,
-  selectAllTemplates,
+  allTemplateIds,
+  emptyTemplateSelection,
   toggleTemplateSelection,
   updatePromptTemplate,
   validateTemplateForm,
@@ -74,7 +75,7 @@ export function PromptTemplatesPanel({
             ref={headerCheckbox}
             type="checkbox"
             checked={allSelected}
-            onChange={(e) => setSelectedIds(selectAllTemplates(templates, e.target.checked))}
+            onChange={(e) => setSelectedIds(e.target.checked ? allTemplateIds(templates) : emptyTemplateSelection())}
             aria-label="Select all templates"
           />
           <span>Select all</span>

@@ -16,7 +16,8 @@ import { buildDeadLetterQuery, isConsultTimeout, type DeadLetterQuery, type Inbo
 import {
   pruneDeadLetterSelection,
   runBulkAction,
-  selectAllDeadLetters,
+  allDeadLetterIds,
+  emptyDeadLetterSelection,
   summarizeBulkResults,
   toggleDeadLetterSelection,
 } from "../lib/deadLetters";
@@ -243,7 +244,7 @@ export function DeadLettersPanel() {
               ref={headerCheckbox}
               type="checkbox"
               checked={allSelected}
-              onChange={(e) => setSelectedIds(selectAllDeadLetters(items ?? [], e.target.checked))}
+              onChange={(e) => setSelectedIds(e.target.checked ? allDeadLetterIds(items ?? []) : emptyDeadLetterSelection())}
               disabled={bulkBusy}
               aria-label="Select all dead letters"
             />

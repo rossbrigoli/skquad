@@ -94,12 +94,13 @@ function taskAttentionItems(
     const age = parseAge(task.updated_at);
     if (age !== null && now - age >= staleAfter) {
       const days = Math.floor((now - age) / 86_400_000);
+      const waited = days >= 1 ? `${days}d` : "over a day";
       out.push({
         id: `stale_review:${task.id}`,
         reason: "stale_review",
         title: task.title,
         href: taskHref,
-        meta: `waiting ${days >= 1 ? `${days}d` : "over a day"} for review`,
+        meta: `waiting ${waited} for review`,
         createdAt: task.updated_at,
       });
     }
@@ -137,8 +138,8 @@ function inboxAttentionItems(message: InboxMessage): AttentionItem[] {
   // one-line message for notifications created before the change.
   const subject = message.subject?.trim();
   const trimmedBody = message.body?.trim();
-  const title = subject ? subject : message.message;
-  const body = trimmedBody ? trimmedBody : undefined;
+  const title = subject || message.message;
+  const body = trimmedBody || undefined;
   if (message.kind === "action_required") {
     return [
       {

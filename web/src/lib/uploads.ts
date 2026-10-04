@@ -56,7 +56,7 @@ function refFromEntry(item: unknown): UploadRef | null {
 /** Lenient parse of `payload.attachments` (normalized by the control
  *  plane since S-194) into renderable references. Malformed entries are
  *  skipped, never thrown. */
-export function messageAttachments(msg: Message | { payload?: Record<string, unknown> | undefined }): UploadRef[] {
+export function messageAttachments(msg: Message | { payload?: Record<string, unknown> }): UploadRef[] {
   const raw = msg.payload?.attachments;
   if (!Array.isArray(raw)) return [];
   const out: UploadRef[] = [];

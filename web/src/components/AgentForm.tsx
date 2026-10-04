@@ -121,7 +121,7 @@ export function AgentFormModal({
             <span>Idle timeout (sec)</span>
             <input
               value={idleTimeout}
-              onChange={(e) => setIdleTimeout(e.target.value.replace(/[^0-9]/g, ""))}
+              onChange={(e) => setIdleTimeout(e.target.value.replace(/\D/g, ""))}
               inputMode="numeric"
               placeholder="Platform default (15 min)"
             />

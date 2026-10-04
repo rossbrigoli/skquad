@@ -35,7 +35,8 @@ export const buildInfo: BuildInfo = {
 export const versionLabel = `v${version}`;
 
 /** "0.1.100 (commit 4ae923c)" — what the About page shows. */
-export const buildLabel = `${version} (${commit === UNKNOWN ? "commit unknown" : `commit ${buildInfo.shortCommit}`})`;
+const commitPart = commit === UNKNOWN ? "commit unknown" : `commit ${buildInfo.shortCommit}`;
+export const buildLabel = `${version} (${commitPart})`;
 
 /** Display guard for API-supplied version strings: blank/whitespace → "unknown". */
 export function versionText(value: string | undefined): string {
