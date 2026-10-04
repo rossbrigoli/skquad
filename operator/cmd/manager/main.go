@@ -139,38 +139,7 @@ func main() {
 	// a fixed interval inside the manager (leader-elected: only the leader
 	// sweeps). Scoped by construction — labeled workspace PVCs inside
 	// squad namespaces only (see internal/controller/workspace_gc.go).
-	gc := &controller.OrphanPVCGC{
-		Client:   mgr.GetClient(),
-		Recorder: mgr.GetEventRecorderFor("skquad-workspace-gc"),
-	}
-	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-		interval := time.Duration(envIntOrDefault("SKQUAD_ORPHAN_PVC_SWEEP_INTERVAL_MINUTES", 15)) * time.Minute
-		sweep := func() {
-			report, err := gc.SweepOrphanWorkspacePVCs(ctx)
-			if err != nil {
-				ctrl.Log.Error(err, "orphan workspace PVC sweep failed")
-				return
-			}
-			if report.Scanned > 0 || report.Cleaned > 0 || report.Retained > 0 {
-				ctrl.Log.Info("orphan workspace PVC sweep complete",
-					"scanned", report.Scanned,
-					"cleaned", report.Cleaned,
-					"retained", report.Retained,
-					"skippedInUse", report.SkippedInUse)
-			}
-		}
-		sweep()
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-ticker.C:
-				sweep()
-			}
-		}
-	})); err != nil {
+	if err := mgr.Add(orphanPVCGCRunnable(mgr)); err != nil {
 		ctrl.Log.Error(err, "unable to add orphan workspace PVC GC runnable")
 		os.Exit(1)
 	}
@@ -182,10 +151,10 @@ func main() {
 	embedderReconciler := &controller.EmbedderGPUReconciler{
 		Client: mgr.GetClient(),
 		Cfg: controller.EmbedderGPUConfig{
-			Namespace:       envOrDefault("SKQUAD_EMBEDDER_NAMESPACE", envOrDefault("SKQUAD_NAMESPACE", "skquad")),
-			DeploymentName:  envOrDefault("SKQUAD_EMBEDDER_DEPLOYMENT", "skquad-embedder"),
-			Mode:            envOrDefault("SKQUAD_EMBEDDER_GPU_MODE", "auto"),
-			GPUNodeLabelKey:    envOrDefault("SKQUAD_GPU_NODE_LABEL_KEY", ""),
+			Namespace:        envOrDefault("SKQUAD_EMBEDDER_NAMESPACE", envOrDefault("SKQUAD_NAMESPACE", "skquad")),
+			DeploymentName:   envOrDefault("SKQUAD_EMBEDDER_DEPLOYMENT", "skquad-embedder"),
+			Mode:             envOrDefault("SKQUAD_EMBEDDER_GPU_MODE", "auto"),
+			GPUNodeLabelKey:  envOrDefault("SKQUAD_GPU_NODE_LABEL_KEY", ""),
 			GPUResourceNames: controller.ParseGPUResourceNames(envOrDefault("SKQUAD_GPU_RESOURCE_NAMES", controller.DefaultGPUResourceNames)),
 			// ADR-0013: runtime selection. The control-plane writes the
 			// platform-admin's choice into this ConfigMap; the operator
@@ -194,7 +163,7 @@ func main() {
 			RuntimeConfigMapName: envOrDefault("SKQUAD_EMBEDDER_RUNTIME_CONFIGMAP", "skquad-embedder-config"),
 			RuntimeConfigMapKey:  envOrDefault("SKQUAD_EMBEDDER_RUNTIME_KEY", "runtime"),
 			ImageByRuntime:       embedderImagesFromEnv(),
-			CUDARuntimeClass:   envOrDefault("SKQUAD_EMBEDDER_CUDA_RUNTIME_CLASS", "nvidia"),
+			CUDARuntimeClass:     envOrDefault("SKQUAD_EMBEDDER_CUDA_RUNTIME_CLASS", "nvidia"),
 		},
 	}
 	if err := mgr.Add(embedderReconciler); err != nil {
@@ -221,6 +190,43 @@ func main() {
 // envAPIServerServiceAccount overrides the ServiceAccount the Squad reconciler
 // grants to the API server inside squad namespaces.
 const envAPIServerServiceAccount = "SKQUAD_API_SERVER_SERVICE_ACCOUNT_NAME"
+
+// orphanPVCGCRunnable builds the S-139 manager runnable: one sweep at
+// startup, then a fixed-interval sweep until the context ends.
+func orphanPVCGCRunnable(mgr manager.Manager) manager.Runnable {
+	gc := &controller.OrphanPVCGC{
+		Client:   mgr.GetClient(),
+		Recorder: mgr.GetEventRecorderFor("skquad-workspace-gc"),
+	}
+	return manager.RunnableFunc(func(ctx context.Context) error {
+		interval := time.Duration(envIntOrDefault("SKQUAD_ORPHAN_PVC_SWEEP_INTERVAL_MINUTES", 15)) * time.Minute
+		sweep := func() {
+			report, err := gc.SweepOrphanWorkspacePVCs(ctx)
+			if err != nil {
+				ctrl.Log.Error(err, "orphan workspace PVC sweep failed")
+				return
+			}
+			if report.Scanned > 0 || report.Cleaned > 0 || report.Retained > 0 {
+				ctrl.Log.Info("orphan workspace PVC sweep complete",
+					"scanned", report.Scanned,
+					"cleaned", report.Cleaned,
+					"retained", report.Retained,
+					"skippedInUse", report.SkippedInUse)
+			}
+		}
+		sweep()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				sweep()
+			}
+		}
+	})
+}
 
 func envOrDefault(name string, fallback string) string {
 	if value := os.Getenv(name); value != "" {

@@ -568,24 +568,40 @@ func (r *AgentReconciler) ensureWorkspacePVC(ctx context.Context, agent *skquadv
 	if err == nil {
 		// Adopt as-is, but migrate the workspace-PVC marker label onto
 		// claims created before S-139 so the orphan GC can see them.
-		if pvc.Labels[LabelWorkspacePVC] != "true" {
-			patched := pvc.DeepCopy()
-			if patched.Labels == nil {
-				patched.Labels = map[string]string{}
-			}
-			patched.Labels[LabelWorkspacePVC] = "true"
-			if err := r.Update(ctx, patched); err != nil && !apierrors.IsConflict(err) {
-				return nil, err
-			}
+		if err := r.migrateWorkspacePVCMarker(ctx, &pvc); err != nil {
+			return nil, err
 		}
 		return &pvc, nil
 	}
 	if !apierrors.IsNotFound(err) {
 		return nil, err
 	}
-	pvc = corev1.PersistentVolumeClaim{
+	return r.createWorkspacePVC(ctx, agent, namespace, cfg)
+}
+
+// migrateWorkspacePVCMarker adds the workspace-PVC marker label onto
+// claims created before S-139 so the orphan GC can see them.
+func (r *AgentReconciler) migrateWorkspacePVCMarker(ctx context.Context, pvc *corev1.PersistentVolumeClaim) error {
+	if pvc.Labels[LabelWorkspacePVC] == "true" {
+		return nil
+	}
+	patched := pvc.DeepCopy()
+	if patched.Labels == nil {
+		patched.Labels = map[string]string{}
+	}
+	patched.Labels[LabelWorkspacePVC] = "true"
+	if err := r.Update(ctx, patched); err != nil && !apierrors.IsConflict(err) {
+		return err
+	}
+	return nil
+}
+
+// createWorkspacePVC creates a fresh workspace PVC; losing a create race
+// with another reconcile adopts the winner.
+func (r *AgentReconciler) createWorkspacePVC(ctx context.Context, agent *skquadv1.Agent, namespace string, cfg *skquadv1.AgentStorage) (*corev1.PersistentVolumeClaim, error) {
+	pvc := corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
+			Name:      workspacePVCName(agent),
 			Namespace: namespace,
 			Labels: func() map[string]string {
 				labels := agentLabels(agent)
@@ -614,7 +630,7 @@ func (r *AgentReconciler) ensureWorkspacePVC(ctx context.Context, agent *skquadv
 	if err := r.Create(ctx, &pvc); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			// Lost a create race with another reconcile; adopt the winner.
-			if getErr := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &pvc); getErr != nil {
+			if getErr := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: pvc.Name}, &pvc); getErr != nil {
 				return nil, getErr
 			}
 			return &pvc, nil
