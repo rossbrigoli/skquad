@@ -1302,18 +1302,23 @@ type meteringGroupKey struct {
 }
 
 // resolveMeteringProviderLocked mirrors the Postgres registry join
-// (S-230): the event's own provider_id wins when set; otherwise the
-// provider of the registered AI model whose model_name matches the
-// metered model is used. Empty when neither resolves (the
+// (S-230, corrected in S-238): the event's own provider_id wins when
+// set; otherwise the provider of the registered AI model whose
+// model_name matches the SERVED model (ModelUsed, falling back to the
+// requested Model) is used. Empty when neither resolves (the
 // "unknown provider" label path). Deterministic pick on provider_id
 // when a model_name exists under multiple providers.
 func (m *MemoryStore) resolveMeteringProviderLocked(event *domain.MeteringEvent) string {
 	if strings.TrimSpace(event.ProviderID) != "" {
 		return event.ProviderID
 	}
+	served := strings.TrimSpace(event.ModelUsed)
+	if served == "" {
+		served = event.Model
+	}
 	pick := ""
 	for _, model := range m.aiModels {
-		if model.ModelName != event.Model || model.ProviderID == "" {
+		if model.ModelName != served || model.ProviderID == "" {
 			continue
 		}
 		if pick == "" || model.ProviderID < pick {

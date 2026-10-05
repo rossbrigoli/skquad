@@ -1755,6 +1755,14 @@ func (p *PostgresStore) SumMetering(ctx context.Context, squadID, agentID string
 // this registry join every provider rollup on the dashboard came back
 // empty ("no usage"). The lookup is a scalar subquery so a model_name
 // registered under two providers can never multiply rows.
+//
+// S-238: the registry lookup keys on the SERVED model — model_used,
+// falling back to the requested model — not the requested model alone.
+// The gateway restamps model_used with the deployment that actually
+// served the turn (ADR-0010 Risk 3), so joining on m.model alone made
+// every fallback-served or alias-requested row miss the registry and
+// roll up under "unknown provider". This mirrors the ingest rule
+// (httpapi.ingestGatewayMetering) and migration 0044 exactly.
 func (p *PostgresStore) SumMeteringDaily(ctx context.Context, since time.Time, squadIDs []string) ([]domain.MeteringDailyRow, error) {
 	var sinceArg any
 	if !since.IsZero() {
@@ -1771,7 +1779,7 @@ func (p *PostgresStore) SumMeteringDaily(ctx context.Context, since time.Time, s
 			         nullif(m.provider_id::text, '')::uuid,
 			         (SELECT am.provider_id
 			          FROM ai_models am
-			          WHERE am.model_name = m.model
+			          WHERE am.model_name = coalesce(nullif(m.model_used, ''), m.model)
 			          ORDER BY am.provider_id
 			          LIMIT 1)
 			       ) AS provider_id
