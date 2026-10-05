@@ -215,6 +215,9 @@ func validateWebGrant(c, ce map[string]json.RawMessage) Violations {
 	if _, has := c["max_bytes"]; has {
 		v = append(v, numLE("constraints.max_bytes", intIn(c, "max_bytes"), intIn(ce, "max_bytes"))...)
 	}
+	if _, has := c["timeout_seconds"]; has {
+		v = append(v, numLE("constraints.timeout_seconds", intIn(c, "timeout_seconds"), intIn(ce, "timeout_seconds"))...)
+	}
 	if priv, has := boolIn(c, "allow_private_network"); has {
 		cePriv, _ := boolIn(ce, "allow_private_network")
 		if priv && !cePriv {

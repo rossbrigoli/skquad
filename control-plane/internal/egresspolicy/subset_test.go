@@ -107,6 +107,17 @@ func TestValidateGrant_WebAndGit(t *testing.T) {
 	if v := ValidateGrant("web", raw(`{"allow_private_network":true}`), webCeiling); len(v) == 0 || v[0].Code != "exceeds_ceiling" {
 		t.Fatalf("private network beyond ceiling must fail: %v", v)
 	}
+	// timeout_seconds: grant may tighten but not exceed the ceiling.
+	webCeilingTO := raw(`{"timeout_seconds":60}`)
+	if v := ValidateGrant("web", raw(`{"timeout_seconds":30}`), webCeilingTO); len(v) != 0 {
+		t.Fatalf("timeout tighten should pass: %v", v)
+	}
+	if v := ValidateGrant("web", raw(`{"timeout_seconds":90}`), webCeilingTO); len(v) == 0 || v[0].Code != "exceeds_ceiling" {
+		t.Fatalf("timeout beyond ceiling must fail: %v", v)
+	}
+	if v := ValidateGrant("web", raw(`{"timeout_seconds":30}`), webCeiling); len(v) == 0 || v[0].Code != "exceeds_ceiling" {
+		t.Fatalf("timeout set without ceiling must fail: %v", v)
+	}
 	gitCeiling := raw(`{"repos_allow":["org/repo1","org/*"],"allow_push":false}`)
 	if v := ValidateGrant("git", raw(`{"repos_allow":["org/repo1"]}`), gitCeiling); len(v) != 0 {
 		t.Fatalf("git subset should pass: %v", v)

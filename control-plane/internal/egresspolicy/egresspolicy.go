@@ -19,7 +19,8 @@
 // Wire shapes (snake_case, matching the design doc YAML):
 //
 //	web   config:  {deny_domains:[str], deny_cidrs:[str], rate_per_min:int,
-//	               max_bytes:int, allow_private_network:bool}
+//	               max_bytes:int, timeout_seconds:int(1..300),
+//	               allow_private_network:bool}
 //	web   ceiling: same shape as config
 //	rest  config:  {base_url:str(required), auth_kind:none|bearer|api_key_header|
 //	               basic|oauth2_client_credentials, header_name:str(api_key_header only)}

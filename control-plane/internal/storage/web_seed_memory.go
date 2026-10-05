@@ -23,8 +23,10 @@ const SystemWebUserID = "736b7175-6164-4000-8000-000000000001"
 const SystemWebResourceID = "736b7175-6164-4000-8000-000000000002"
 
 // SystemWebCeiling mirrors the BT-6 defaults: 256 KiB cap, no rate
-// limit, no private-network reach, empty denylists.
-const SystemWebCeiling = `{"deny_domains": [], "deny_cidrs": [], "max_bytes": 262144, "allow_private_network": false}`
+// limit, no private-network reach, empty denylists. timeout_seconds is
+// seeded explicitly so admins can raise the per-fetch ceiling (up to
+// 300) without grants exceeding it.
+const SystemWebCeiling = `{"deny_domains": [], "deny_cidrs": [], "max_bytes": 262144, "timeout_seconds": 30, "allow_private_network": false}`
 
 // SeedSystemWeb idempotently registers the system web resource and
 // grants it to all agents when the builtin web_fetch is enabled.

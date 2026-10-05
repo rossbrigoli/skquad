@@ -99,6 +99,38 @@ func TestEffectivePolicyBadCIDRFailsClosed(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestEffectivePolicyTimeoutConfigurable(t *testing.T) {
+	p, err := EffectivePolicy(nil, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, DefaultTimeout, p.Timeout, "unset everywhere → platform default")
+
+	p, err = EffectivePolicy(
+		raw(`{"timeout_seconds":10}`),
+		raw(`{"timeout_seconds":20}`),
+		raw(`{"timeout_seconds":5}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, 5*time.Second, p.Timeout, "min of layers that set it")
+
+	p, err = EffectivePolicy(raw(`{}`), raw(`{"timeout_seconds":90}`), raw(`{}`))
+	require.NoError(t, err)
+	require.Equal(t, 90*time.Second, p.Timeout, "ceiling can raise above the BT-6 default")
+}
+
+func TestDriverRespectsPolicyTimeout(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		_, _ = w.Write([]byte("slow"))
+	}))
+	defer upstream.Close()
+
+	g := grantFor(privateBoth, privateBoth, `{"timeout_seconds":1}`)
+	start := time.Now()
+	_, err := New().Handle(context.Background(), fetchReqG("a-timeout", `{"url":"`+upstream.URL+`"}`, g))
+	require.Error(t, err, "slow upstream must trip the 1s policy timeout")
+	require.Less(t, time.Since(start), 2*time.Second, "must abort at the policy timeout, not the default")
+}
+
 func raw(s string) json.RawMessage { return json.RawMessage(s) }
 
 // ── Happy paths (allow-private against local httptest) ────────────────────
@@ -221,7 +253,7 @@ func (s *stubResolver) LookupIPAddr(_ context.Context, _ string) ([]net.IPAddr, 
 
 func TestSecurityBlockedDestinations(t *testing.T) {
 	cases := map[string][]string{
-		"metadata":    {"169.254.169.254"},
+		"metadata":   {"169.254.169.254"},
 		"rfc1918":    {"10.0.0.5"},
 		"rfc1918b":   {"192.168.1.1"},
 		"cgnat":      {"100.64.0.1"},

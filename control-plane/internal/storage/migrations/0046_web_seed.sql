@@ -37,8 +37,8 @@ VALUES (
     'Platform-wide governed web fetch (migration from built-in BT-6). Denylist floor: empty; tighten via endpoint_config and per-grant constraints.',
     '', '', '{}', 'active',
     '736b7175-6164-4000-8000-000000000001',
-    '{"deny_domains": [], "deny_cidrs": [], "max_bytes": 262144, "allow_private_network": false}',
-    '{"deny_domains": [], "deny_cidrs": [], "max_bytes": 262144, "allow_private_network": false}',
+    '{"deny_domains": [], "deny_cidrs": [], "max_bytes": 262144, "timeout_seconds": 30, "allow_private_network": false}',
+    '{"deny_domains": [], "deny_cidrs": [], "max_bytes": 262144, "timeout_seconds": 30, "allow_private_network": false}',
     'medium',
     'public'
 )

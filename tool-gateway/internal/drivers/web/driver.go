@@ -42,10 +42,10 @@ import (
 const (
 	// DefaultMaxBytes mirrors BT-6 defaultFetchMaxBytes (256 KiB).
 	DefaultMaxBytes = 262144
-	// Timeout mirrors BT-6 defaultFetchTimeoutSeconds. The web policy
-	// wire shape (egresspolicy) has no timeout field, so the driver
-	// keeps the platform default fixed.
-	Timeout = 30 * time.Second
+	// DefaultTimeout mirrors BT-6 defaultFetchTimeoutSeconds. It applies
+	// only when no policy layer sets timeout_seconds; the effective
+	// timeout is configurable per resource/grant (see EffectivePolicy).
+	DefaultTimeout = 30 * time.Second
 	// MaxRedirects mirrors BT-6 fetchMaxRedirects.
 	MaxRedirects = 3
 	// UserAgent mirrors BT-6 fetchUserAgent for upstream parity.
@@ -56,6 +56,7 @@ const (
 type Policy struct {
 	RatePerMin   int // 0 = unlimited
 	MaxBytes     int
+	Timeout      time.Duration
 	AllowPrivate bool
 	DenyDomains  []string
 	DenyCIDRs    []*net.IPNet
@@ -64,11 +65,12 @@ type Policy struct {
 // webShape is the shared JSON shape of web config / ceiling / constraints
 // (control-plane/internal/egresspolicy package doc is the contract).
 type webShape struct {
-	DenyDomains  []string `json:"deny_domains"`
-	DenyCIDRs    []string `json:"deny_cidrs"`
-	RatePerMin   int      `json:"rate_per_min"`
-	MaxBytes     int      `json:"max_bytes"`
-	AllowPrivate bool     `json:"allow_private_network"`
+	DenyDomains    []string `json:"deny_domains"`
+	DenyCIDRs      []string `json:"deny_cidrs"`
+	RatePerMin     int      `json:"rate_per_min"`
+	MaxBytes       int      `json:"max_bytes"`
+	TimeoutSeconds int      `json:"timeout_seconds"`
+	AllowPrivate   bool     `json:"allow_private_network"`
 }
 
 func parseShape(raw json.RawMessage) (webShape, error) {
@@ -139,6 +141,20 @@ func EffectivePolicy(configRaw, ceilingRaw, constraintsRaw json.RawMessage) (*Po
 			p.MaxBytes = v
 		}
 	}
+
+	// Timeout: min of every layer that sets timeout_seconds; the
+	// platform default applies only when no layer sets one (so an
+	// admin ceiling can raise the timeout above the BT-6 default).
+	timeout := 0
+	for _, v := range []int{cfg.TimeoutSeconds, ce.TimeoutSeconds, con.TimeoutSeconds} {
+		if v > 0 && (timeout == 0 || v < timeout) {
+			timeout = v
+		}
+	}
+	if timeout == 0 {
+		timeout = int(DefaultTimeout / time.Second)
+	}
+	p.Timeout = time.Duration(timeout) * time.Second
 	rates := []int{}
 	for _, v := range []int{cfg.RatePerMin, ce.RatePerMin, con.RatePerMin} {
 		if v > 0 {
@@ -230,20 +246,21 @@ func (d *Driver) Handle(ctx context.Context, req *drivers.Request) (*drivers.Res
 	}
 
 	guard := &netguard.Guard{AllowPrivate: pol.AllowPrivate, DenyCIDRs: pol.DenyCIDRs}
-	dialer := netguard.Dialer{Guard: guard, Timeout: Timeout, Resolver: d.Resolver}
+	dialer := netguard.Dialer{Guard: guard, Timeout: pol.Timeout, Resolver: d.Resolver}
 	transport := &http.Transport{
-		DialContext:         dialer.DialContext,
-		TLSHandshakeTimeout: Timeout,
+		DialContext:           dialer.DialContext,
+		TLSHandshakeTimeout:   pol.Timeout,
+		ResponseHeaderTimeout: pol.Timeout,
 	}
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   Timeout,
+		Timeout:   pol.Timeout,
 		CheckRedirect: netguard.RedirectCheck(MaxRedirects, func(host string) bool {
 			return netguard.DomainDenied(host, pol.DenyDomains)
 		}),
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	ctx, cancel := context.WithTimeout(ctx, pol.Timeout)
 	defer cancel()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)

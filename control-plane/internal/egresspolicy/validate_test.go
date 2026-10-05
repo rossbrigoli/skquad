@@ -27,6 +27,9 @@ func TestValidateEndpointConfig_Web(t *testing.T) {
 		{"bad cidr", `{"deny_cidrs":["not-a-cidr"]}`, []string{"endpoint_config.deny_cidrs[0]/invalid_value"}},
 		{"zero rate", `{"rate_per_min":0}`, []string{"endpoint_config.rate_per_min/invalid_value"}},
 		{"negative max", `{"max_bytes":-5}`, []string{"endpoint_config.max_bytes/invalid_value"}},
+		{"timeout valid", `{"timeout_seconds":45}`, nil},
+		{"timeout zero", `{"timeout_seconds":0}`, []string{"endpoint_config.timeout_seconds/invalid_value"}},
+		{"timeout over cap", `{"timeout_seconds":301}`, []string{"endpoint_config.timeout_seconds/invalid_value"}},
 		{"wrong type", `{"deny_domains":"evil.com"}`, []string{"endpoint_config.deny_domains/invalid_type"}},
 		{"not object", `[1,2]`, []string{"endpoint_config/invalid_json"}},
 	}

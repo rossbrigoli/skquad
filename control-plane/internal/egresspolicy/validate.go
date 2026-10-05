@@ -147,13 +147,13 @@ func validCIDR(value string) bool {
 
 // Shape key lists (exported for docs/tests).
 var (
-	WebShapeKeys   = []string{"deny_domains", "deny_cidrs", "rate_per_min", "max_bytes", "allow_private_network"}
-	RestConfigKeys = []string{"base_url", "auth_kind", "header_name"}
+	WebShapeKeys    = []string{"deny_domains", "deny_cidrs", "rate_per_min", "max_bytes", "timeout_seconds", "allow_private_network"}
+	RestConfigKeys  = []string{"base_url", "auth_kind", "header_name"}
 	RestCeilingKeys = []string{"methods", "path_allow", "path_deny", "max_request_bytes", "max_response_bytes", "rate_per_min", "egress_class"}
-	MCPConfigKeys  = []string{"url", "auth_kind"}
-	MCPCeilingKeys = []string{"tools_allow", "tools_deny", "per_tool", "rate_per_min", "max_args_bytes"}
-	GitConfigKeys  = []string{"base_url"}
-	GitCeilingKeys = []string{"repos_allow", "allow_push", "rate_per_min"}
+	MCPConfigKeys   = []string{"url", "auth_kind"}
+	MCPCeilingKeys  = []string{"tools_allow", "tools_deny", "per_tool", "rate_per_min", "max_args_bytes"}
+	GitConfigKeys   = []string{"base_url"}
+	GitCeilingKeys  = []string{"repos_allow", "allow_push", "rate_per_min"}
 )
 
 // ValidateEndpointConfig validates a resource's endpoint_config for its
@@ -213,6 +213,11 @@ func validateWebShape(field string, obj map[string]json.RawMessage) Violations {
 	var rate, maxBytes int
 	v = append(v, positiveIntField(obj, "rate_per_min", field+".rate_per_min", &rate)...)
 	v = append(v, positiveIntField(obj, "max_bytes", field+".max_bytes", &maxBytes)...)
+	var timeoutSec int
+	v = append(v, positiveIntField(obj, "timeout_seconds", field+".timeout_seconds", &timeoutSec)...)
+	if timeoutSec > 300 {
+		v = append(v, Violation{Field: field + ".timeout_seconds", Code: "invalid_value", Message: "timeout_seconds must be <= 300"})
+	}
 	var allowPrivate bool
 	v = append(v, boolField(obj, "allow_private_network", field+".allow_private_network", &allowPrivate)...)
 	return sortByField(v)
