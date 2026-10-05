@@ -317,3 +317,49 @@ describe("admin user filter", () => {
     expect(screen.getByRole("checkbox", { name: "Select all visible messages" })).toBeInTheDocument();
   });
 });
+
+describe("envelope read-state icons (S-234)", () => {
+  function statusSvg(container: HTMLElement, subject: string): SVGSVGElement {
+    const row = screen.getByText(subject).closest(".inbox-row") as HTMLElement;
+    return row.querySelector(".inbox-status svg") as SVGSVGElement;
+  }
+
+  it("unread rows get the closed filled envelope, read rows the open envelope", async () => {
+    env.messages = [msg("u1"), msg("r1", { read_at: now() })];
+    const { container } = render(<InboxPage />);
+    await screen.findByText("Subject u1");
+
+    const unreadSvg = statusSvg(container, "Subject u1");
+    const readSvg = statusSvg(container, "Subject r1");
+    expect(unreadSvg).not.toBeNull();
+    expect(readSvg).not.toBeNull();
+
+    // Unread: closed envelope, filled with the even-odd flap crease.
+    expect(unreadSvg.getAttribute("fill")).toBe("currentColor");
+    expect(unreadSvg.querySelector("path")?.getAttribute("d")).toContain("M2 6a2 2 0 0 1 2-2h16");
+
+    // Read: OPEN envelope (flap raised), plain stroke outline.
+    expect(readSvg.getAttribute("fill")).toBe("none");
+    expect(readSvg.querySelector("path")?.getAttribute("d")).toContain("M21.2 8.4");
+
+    // The two markers are visually distinct glyphs.
+    expect(readSvg.innerHTML).not.toBe(unreadSvg.innerHTML);
+  });
+
+  it("bulk mark-read flips the row icon from closed to open", async () => {
+    env.messages = [msg("m1")];
+    const { container } = render(<InboxPage />);
+    await screen.findByText("Subject m1");
+    expect(statusSvg(container, "Subject m1").getAttribute("fill")).toBe("currentColor");
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "Select message: Subject m1" }));
+    await userEvent.click(screen.getByRole("button", { name: "Mark 1 selected as read" }));
+
+    await vi.waitFor(() => {
+      expect(statusSvg(container, "Subject m1").getAttribute("fill")).toBe("none");
+    });
+    expect(statusSvg(container, "Subject m1").querySelector("path")?.getAttribute("d")).toContain(
+      "M21.2 8.4",
+    );
+  });
+});
