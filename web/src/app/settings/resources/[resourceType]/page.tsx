@@ -14,6 +14,7 @@ import { notFound, useParams } from "next/navigation";
 import { AppShell } from "../../../../components/AppShell";
 import { AuthGate } from "../../../../components/AuthGate";
 import { ResourceRegistryPanel } from "../../../../components/ResourceRegistryPanel";
+import { RestResourcePanel } from "../../../../components/RestResourcePanel";
 import { useAuth } from "../../../../lib/auth";
 import { isPlatformAdmin } from "../../../../lib/aimodels";
 import { findResourceCategory } from "../../../../lib/resourceCategories";
@@ -26,6 +27,19 @@ export default function ResourceCategoryPage() {
   const category = findResourceCategory(raw);
   if (!category) {
     notFound();
+  }
+
+  // TG-4: the "apis" category is the BYO REST surface — a purpose-built
+  // registration form (write-only credentials + policy ceiling) instead
+  // of the generic registry panel.
+  if (category.key === "apis") {
+    return (
+      <AuthGate>
+        <AppShell>
+          <RestResourcePanel isAdmin={isAdmin} />
+        </AppShell>
+      </AuthGate>
+    );
   }
 
   return (

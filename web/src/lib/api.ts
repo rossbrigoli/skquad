@@ -187,6 +187,12 @@ export type RegistryResource = {
   status: string;
   registered_by?: string;
   created_at?: string;
+  // TG-2 typed egress fields (rest/web/mcp/git). Secret material is
+  // never present — credentials live in managed K8s Secrets (TG-4).
+  endpoint_config?: unknown;
+  policy_ceiling?: unknown;
+  risk_tier?: string;
+  egress_class?: string;
 };
 
 export type AgentPermission = {
@@ -196,6 +202,8 @@ export type AgentPermission = {
   resource_id: string;
   granted_by?: string;
   created_at?: string;
+  // TG-2: grant-level constraints (subset of the resource ceiling).
+  constraints?: unknown;
 };
 
 export type AccessGrant = {
