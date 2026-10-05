@@ -2719,7 +2719,11 @@ button.squad-tab.active {
 
 .inbox-row {
   /* S-189: merged later duplicate rules (S-201 flex layout + Req 2 separator).
-     Grid layout itself comes from the shared .inbox-columns/.inbox-row rule below. */
+     NOTE (S-237): this 6-column template is for the mail-client inbox rows in
+     app/inbox (checkbox | icon | sender | title | type | time). The agent
+     delivery panel's rows only have two children (.inbox-main + .inbox-side),
+     so they are re-scoped to a two-column template below — otherwise the
+     message content collapses into the 18px first column. */
   display: grid;
   grid-template-columns: 18px 22px 140px minmax(0, 1fr) auto 110px;
   gap: var(--space-2);
@@ -2738,6 +2742,14 @@ button.squad-tab.active {
 
 .inbox-row:hover {
   background: var(--surface-sunken);
+}
+
+/* S-237 fix: agent "Message delivery" panel rows contain just
+   .inbox-main (message content) + .inbox-side (time/replay). Give them a
+   two-column grid so the message fills the available horizontal space
+   instead of being squeezed into the mail-client's 18px first column. */
+.inbox-panel .inbox-row {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .inbox-pending {

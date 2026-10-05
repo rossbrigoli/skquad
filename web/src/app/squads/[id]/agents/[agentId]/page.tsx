@@ -1527,7 +1527,7 @@ function AgentSectionTabs({
         aria-current={tab === "inbox" ? "page" : undefined}
         onClick={() => onSelect("inbox")}
       >
-        Inbox
+        Message delivery
       </button>
     </nav>
   );

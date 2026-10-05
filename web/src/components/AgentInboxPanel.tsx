@@ -1,6 +1,6 @@
 "use client";
 
-// S-174: Agent Inbox tab — a read-only observability panel (not a mail
+// S-174: Agent "Message delivery" tab — a read-only observability panel (not a mail
 // client). Sections: pending (count + oldest waiting), retrying
 // (attempts / max / next retry), recently delivered, and dead letters
 // with their terminal reason. The agent's owner (or a platform admin)
@@ -138,10 +138,10 @@ export function AgentInboxPanel({ agentId }: { readonly agentId: string }) {
   }
 
   if (snapshot.error) {
-    return <p className="field-hint">Inbox unavailable: {snapshot.error}</p>;
+    return <p className="field-hint">Message delivery unavailable: {snapshot.error}</p>;
   }
   if (inboxIsEmpty(snapshot.data)) {
-    return <p className="field-hint">This agent&apos;s inbox is empty — nothing pending, retrying, delivered, or dead.</p>;
+    return <p className="field-hint">No messages to deliver — nothing pending, retrying, delivered, or dead.</p>;
   }
 
   const data = snapshot.data;
