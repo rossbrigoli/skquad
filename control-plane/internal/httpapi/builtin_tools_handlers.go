@@ -140,6 +140,24 @@ func (s *Server) patchBuiltinTool(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, builtinToolAdminViewOf(updated))
 }
 
+// DELETE /api/v1/admin/tools/{name} — built-in tools ship with the
+// platform and are permanently undeletable (S-232). The route exists so
+// a delete attempt gets an explicit, self-explanatory rejection instead
+// of a bare 405 from the router; unknown names 404 like every other
+// resource. There is deliberately no delete path for a built-in.
+func (s *Server) deleteBuiltinTool(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePlatformAdmin(w, r) {
+		return
+	}
+	name := chi.URLParam(r, "name")
+	if !domain.IsBuiltinToolName(name) {
+		writeError(w, http.StatusNotFound, "not_found", "unknown built-in tool: "+name)
+		return
+	}
+	writeError(w, http.StatusMethodNotAllowed, "builtin_undeletable",
+		"built-in tools cannot be deleted; disable "+name+" instead via PATCH /api/v1/admin/tools/"+name)
+}
+
 // --- Agent-facing config --------------------------------------------------
 
 // GET /api/v1/agents/me/tools — agent-credential auth (reuses the

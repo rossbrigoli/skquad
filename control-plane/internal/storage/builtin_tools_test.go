@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
 
 // BT-2 (ADR-0012): storage semantics for builtin_tools_config.
@@ -21,15 +23,17 @@ func TestMemoryStoreSeedsBuiltinTools(t *testing.T) {
 	// original three stay disabled-by-default (ADR-0012 §1). send_inbox
 	// (S-193) and notify_owner (platform-prompt awareness) ship ENABLED
 	// like send_message — bounded blast radius, own squad owner's inbox.
-	if len(tools) != 7 {
-		t.Fatalf("seeded tools = %d, want 7", len(tools))
+	// S-232 adds spawn_subagent so the runtime-provided subagent
+	// capability is visible (and toggleable) on the Settings Tools page.
+	if len(tools) != 8 {
+		t.Fatalf("seeded tools = %d, want 8", len(tools))
 	}
-	wantNames := []string{"exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner", "memory_search"}
+	wantNames := []string{"exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner", "memory_search", "spawn_subagent"}
 	for i, tool := range tools {
 		if tool.Name != wantNames[i] {
 			t.Fatalf("tool[%d] = %q, want %q", i, tool.Name, wantNames[i])
 		}
-		wantEnabled := tool.Name == "send_message" || tool.Name == "send_inbox" || tool.Name == "notify_owner" || tool.Name == "memory_search"
+		wantEnabled := domain.BuiltinToolDefaultEnabled(tool.Name)
 		if tool.Enabled != wantEnabled {
 			t.Fatalf("tool %s enabled = %v, want %v", tool.Name, tool.Enabled, wantEnabled)
 		}

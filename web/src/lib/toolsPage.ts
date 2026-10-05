@@ -33,6 +33,10 @@ export const BUILTIN_TOOL_DESCRIPTIONS: Record<BuiltinToolName, string> = {
   web_fetch: "Fetch a URL with a guarded GET-only HTTP client.",
   web_search: "Web search through control-plane-held provider keys.",
   send_message: "Agent-to-agent messaging queued by the control plane.",
+  send_inbox: "Deliver content a human asked you to send into your squad owner's inbox.",
+  notify_owner: "File an action_required message in your squad owner's inbox.",
+  memory_search: "Semantic recall over the agent's own long-term memory.",
+  spawn_subagent: "Spawn a nested subagent inheriting the parent's model, grants and prompt.",
 };
 
 // builtinToolItems normalises loaded built-in configs into tile items,

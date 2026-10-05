@@ -717,6 +717,8 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			// only, ADR-0012 §2).
 			r.Get("/admin/tools", s.listBuiltinToolsAdmin)
 			r.Patch("/admin/tools/{name}", s.patchBuiltinTool)
+			// S-232: explicit no-delete for built-ins (clear 405, not a hidden UI detail).
+			r.Delete("/admin/tools/{name}", s.deleteBuiltinTool)
 
 			// S-PROMPT WP2: prompt tier APIs (ADR-0011 §3).
 			r.Get("/settings/prompt", s.getOrgPrompt)

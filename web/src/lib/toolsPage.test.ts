@@ -52,8 +52,27 @@ describe("builtinToolItems", () => {
     expect(builtinToolItems([builtin("not_a_tool")])).toEqual([]);
   });
 
+  it("S-232 regression: keeps every built-in the backend seeds — none silently dropped", () => {
+    const all = [
+      "exec",
+      "web_fetch",
+      "web_search",
+      "send_message",
+      "send_inbox",
+      "notify_owner",
+      "memory_search",
+      "spawn_subagent",
+    ].map((n) => builtin(n));
+    const items = builtinToolItems(all);
+    expect(items.map((i) => i.name)).toEqual(all.map((t) => t.name));
+    for (const item of items) {
+      expect(item.kind).toBe("builtin");
+      expect(item.description.length).toBeGreaterThan(0);
+    }
+  });
+
   it("every built-in name has a non-empty description", () => {
-    for (const name of ["exec", "web_fetch", "web_search", "send_message"] as const) {
+    for (const name of ["exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner", "memory_search", "spawn_subagent"] as const) {
       expect(BUILTIN_TOOL_DESCRIPTIONS[name].length).toBeGreaterThan(0);
     }
   });

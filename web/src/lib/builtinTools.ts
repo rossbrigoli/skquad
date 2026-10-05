@@ -12,9 +12,29 @@
 
 import { ApiError } from "./api";
 
-export type BuiltinToolName = "exec" | "web_fetch" | "web_search" | "send_message";
+export type BuiltinToolName =
+  | "exec"
+  | "web_fetch"
+  | "web_search"
+  | "send_message"
+  | "send_inbox"
+  | "notify_owner"
+  | "memory_search"
+  | "spawn_subagent";
 
-export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = ["exec", "web_fetch", "web_search", "send_message"];
+// S-232: every built-in the control-plane catalog ships (domain.BuiltinToolNames)
+// must be listed here too — anything missing silently vanishes from the
+// Settings Tools page (that was the bug).
+export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = [
+  "exec",
+  "web_fetch",
+  "web_search",
+  "send_message",
+  "send_inbox",
+  "notify_owner",
+  "memory_search",
+  "spawn_subagent",
+];
 
 export const SEARCH_PROVIDERS: readonly string[] = ["duckduckgo", "brave", "perplexity"];
 
@@ -55,6 +75,10 @@ export const TOOL_DEFAULTS: Record<BuiltinToolName, { timeoutSeconds: number }> 
   web_fetch: { timeoutSeconds: 30 },
   web_search: { timeoutSeconds: 20 },
   send_message: { timeoutSeconds: 15 },
+  send_inbox: { timeoutSeconds: 15 },
+  notify_owner: { timeoutSeconds: 15 },
+  memory_search: { timeoutSeconds: 20 },
+  spawn_subagent: { timeoutSeconds: 15 },
 };
 
 const EXEC_DEFAULTS = { timeoutSeconds: 60, maxOutputBytes: 65536 };
@@ -114,6 +138,14 @@ export function formFromTool(tool: BuiltinTool): ToolFormValues {
   if (tool.name === "send_message") {
     base.maxMessageChars = num(policy.maxMessageChars, base.maxMessageChars);
   }
+  // S-232: send_inbox/notify_owner share the send_message policy keys;
+  // memory_search carries maxResults (top-k recall).
+  if (tool.name === "send_inbox" || tool.name === "notify_owner") {
+    base.maxMessageChars = num(policy.maxMessageChars, base.maxMessageChars);
+  }
+  if (tool.name === "memory_search") {
+    base.maxResults = num(policy.maxResults, base.maxResults);
+  }
   return base;
 }
 
@@ -136,11 +168,17 @@ export function buildToolPolicy(name: BuiltinToolName, form: ToolFormValues): Re
       allowPrivateNetwork: form.allowPrivateNetwork,
     };
   }
-  if (name === "send_message") {
-    return {
-      timeoutSeconds: timeout,
-      maxMessageChars: Number(form.maxMessageChars),
-    };
+  if (name === "send_message" || name === "send_inbox" || name === "notify_owner") {
+    return { timeoutSeconds: timeout, maxMessageChars: Number(form.maxMessageChars) };
+  }
+  if (name === "memory_search") {
+    return { timeoutSeconds: timeout, maxResults: Number(form.maxResults) };
+  }
+  if (name === "spawn_subagent") {
+    // S-232: no admin-tunable policy keys yet — the subagent inherits
+    // the parent runtime's limits. Sending "{}" keeps the PATCH valid
+    // against the server's empty allow-set for this tool.
+    return {};
   }
   return {
     timeoutSeconds: timeout,
@@ -186,8 +224,14 @@ export function validateToolForm(name: BuiltinToolName, form: ToolFormValues): s
   if (name === "web_fetch") {
     return checkPositiveInt(form.maxBytes, "maxBytes");
   }
-  if (name === "send_message") {
+  if (name === "send_message" || name === "send_inbox" || name === "notify_owner") {
     return checkPositiveInt(form.maxMessageChars, "maxMessageChars");
+  }
+  if (name === "memory_search") {
+    return checkPositiveInt(form.maxResults, "maxResults");
+  }
+  if (name === "spawn_subagent") {
+    return null;
   }
   const resultsErr = checkPositiveInt(form.maxResults, "maxResults");
   if (resultsErr) return resultsErr;

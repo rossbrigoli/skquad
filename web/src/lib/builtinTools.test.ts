@@ -45,12 +45,25 @@ describe("gating (platform_admin only)", () => {
     expect(isPlatformAdmin("")).toBe(false);
   });
 
-  it("knows exactly the four contract tool names", () => {
-    expect([...BUILTIN_TOOL_NAMES]).toEqual(["exec", "web_fetch", "web_search", "send_message"]);
+  it("knows exactly the eight contract tool names (S-232: every built-in must be listed)", () => {
+    expect([...BUILTIN_TOOL_NAMES]).toEqual([
+      "exec",
+      "web_fetch",
+      "web_search",
+      "send_message",
+      "send_inbox",
+      "notify_owner",
+      "memory_search",
+      "spawn_subagent",
+    ]);
     expect(isBuiltinToolName("exec")).toBe(true);
     expect(isBuiltinToolName("web_fetch")).toBe(true);
     expect(isBuiltinToolName("web_search")).toBe(true);
     expect(isBuiltinToolName("send_message")).toBe(true);
+    expect(isBuiltinToolName("send_inbox")).toBe(true);
+    expect(isBuiltinToolName("notify_owner")).toBe(true);
+    expect(isBuiltinToolName("memory_search")).toBe(true);
+    expect(isBuiltinToolName("spawn_subagent")).toBe(true);
     expect(isBuiltinToolName("something_else")).toBe(false);
   });
 });
@@ -98,12 +111,45 @@ describe("save payload shape (PATCH /admin/tools/{name})", () => {
     });
   });
 
+  // S-232: the newly-listed built-ins must PATCH with the policy keys the
+  // server's validation pins for each of them.
+  it("send_inbox / notify_owner: {timeoutSeconds,maxMessageChars} like send_message", () => {
+    for (const name of ["send_inbox", "notify_owner"] as const) {
+      const payload = buildToolPayload(
+        name,
+        form(name, { enabled: true, timeoutSeconds: "12", maxMessageChars: "4000" }),
+      );
+      expect(payload).toEqual({
+        enabled: true,
+        policy: { timeoutSeconds: 12, maxMessageChars: 4000 },
+      });
+    }
+  });
+
+  it("memory_search: {timeoutSeconds,maxResults}", () => {
+    const payload = buildToolPayload(
+      "memory_search",
+      form("memory_search", { enabled: true, timeoutSeconds: "8", maxResults: "5" }),
+    );
+    expect(payload).toEqual({ enabled: true, policy: { timeoutSeconds: 8, maxResults: 5 } });
+  });
+
+  it("spawn_subagent: empty policy object (no tunables yet)", () => {
+    const payload = buildToolPayload("spawn_subagent", form("spawn_subagent", { enabled: true }));
+    expect(payload).toEqual({ enabled: true, policy: {} });
+  });
+
   it("emits ONLY the keys pinned for each tool (no cross-tool leakage)", () => {
     const keys = (name: BuiltinToolName) =>
       Object.keys(buildToolPolicy(name, form(name))).sort((a, b) => a.localeCompare(b));
     expect(keys("exec")).toEqual(["deniedPatterns", "maxOutputBytes", "timeoutSeconds"]);
     expect(keys("web_fetch")).toEqual(["allowPrivateNetwork", "maxBytes", "timeoutSeconds"]);
     expect(keys("web_search")).toEqual(["maxResults", "provider", "timeoutSeconds"]);
+    expect(keys("send_message")).toEqual(["maxMessageChars", "timeoutSeconds"]);
+    expect(keys("send_inbox")).toEqual(["maxMessageChars", "timeoutSeconds"]);
+    expect(keys("notify_owner")).toEqual(["maxMessageChars", "timeoutSeconds"]);
+    expect(keys("memory_search")).toEqual(["maxResults", "timeoutSeconds"]);
+    expect(keys("spawn_subagent")).toEqual([]);
   });
 
   it("disabled tools still save with enabled:false (merge semantics)", () => {
