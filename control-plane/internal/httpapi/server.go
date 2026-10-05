@@ -27,6 +27,7 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/config"
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 	"github.com/rossbrigoli/skquad/control-plane/internal/embeddings"
+	"github.com/rossbrigoli/skquad/control-plane/internal/egresspolicy"
 	"github.com/rossbrigoli/skquad/control-plane/internal/kube"
 	"github.com/rossbrigoli/skquad/control-plane/internal/promptcompo"
 	"github.com/rossbrigoli/skquad/control-plane/internal/search"
@@ -499,6 +500,15 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/healthz", s.health)
 
+	// TG-2: internal policy read API for the tool gateway (design §5.1.5).
+	// No app-layer auth by contract (the TG-1 gateway client sends none) —
+	// reachability is enforced by cluster NetworkPolicy (internal-only).
+	// Never expose this path outside the cluster. ETag/If-None-Match per
+	// the gateway cache contract.
+	r.Route("/internal/v1", func(r chi.Router) {
+		r.Get("/policy", s.internalPolicy)
+	})
+
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/gateway/metering", s.ingestGatewayMetering)
 
@@ -961,7 +971,16 @@ func registryTypeFromRequest(w http.ResponseWriter, r *http.Request) (domain.Res
 	case "tools":
 		return domain.ResTool, true
 	case "apis":
-		return domain.ResAPI, true
+		// TG-2 type widening: 'api' is the legacy alias for 'rest'.
+		return domain.ResRest, true
+	case "rest":
+		return domain.ResRest, true
+	case "web":
+		return domain.ResWeb, true
+	case "mcp":
+		return domain.ResMCP, true
+	case "git":
+		return domain.ResGit, true
 	case "knowledge-bases":
 		return domain.ResKnowledgeBase, true
 	case "project-workspaces":
@@ -978,8 +997,11 @@ func registryTypeFromRequest(w http.ResponseWriter, r *http.Request) (domain.Res
 // itself stays until WP8 drops the DB CHECK constraint.
 func resourceTypeFromString(value string) (domain.ResourceType, bool) {
 	switch domain.ResourceType(value) {
-	case domain.ResSkill, domain.ResTool, domain.ResAPI, domain.ResKnowledgeBase, domain.ResProjectWorkspace:
-		return domain.ResourceType(value), true
+	case domain.ResSkill, domain.ResTool, domain.ResAPI, domain.ResWeb, domain.ResRest,
+		domain.ResMCP, domain.ResGit, domain.ResKnowledgeBase, domain.ResProjectWorkspace:
+		// TG-2: 'api' canonicalizes to 'rest' so grant paths operate on
+		// migrated rows transparently.
+		return domain.CanonicalResourceType(domain.ResourceType(value)), true
 	default:
 		return "", false
 	}
@@ -1377,11 +1399,16 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		Name        string          `json:"name"`
-		Description string          `json:"description"`
-		Endpoint    string          `json:"endpoint"`
-		AuthRef     string          `json:"auth_ref"`
-		Manifest    json.RawMessage `json:"manifest"`
+		Name           string          `json:"name"`
+		Description    string          `json:"description"`
+		Endpoint       string          `json:"endpoint"`
+		AuthRef        string          `json:"auth_ref"`
+		Manifest       json.RawMessage `json:"manifest"`
+		EndpointConfig json.RawMessage `json:"endpoint_config"`
+		PolicyCeiling  json.RawMessage `json:"policy_ceiling"`
+		RiskTier       string          `json:"risk_tier"`
+		EgressClass    string          `json:"egress_class"`
+		OwnerUserID    string          `json:"owner_user_id"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -1392,6 +1419,19 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 	if typ == domain.ResProjectWorkspace {
 		if msg, ok := validateGitWorkspace(req.Endpoint, req.AuthRef, req.Manifest); !ok {
 			writeError(w, http.StatusBadRequest, "bad_request", msg)
+			return
+		}
+	}
+	// TG-2: typed egress resources validate endpoint_config/policy_ceiling
+	// per type; unknown keys and bad values are rejected with structured
+	// violations before anything is written.
+	if v := validateTypedResourceFields(string(typ), req.EndpointConfig, req.PolicyCeiling, req.RiskTier, req.EgressClass); len(v) > 0 {
+		writeViolations(w, "invalid_resource_shape", "resource config/ceiling failed validation", v)
+		return
+	}
+	if req.OwnerUserID != "" {
+		if _, err := s.store.GetUser(r.Context(), req.OwnerUserID); err != nil {
+			writeStorageError(w, err)
 			return
 		}
 	}
@@ -1408,6 +1448,15 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 		Manifest:     req.Manifest,
 		Status:       domain.ResourceActive,
 		RegisteredBy: u.ID,
+		RiskTier:     req.RiskTier,
+		EgressClass:  req.EgressClass,
+		OwnerUserID:  req.OwnerUserID,
+	}
+	if len(req.EndpointConfig) > 0 {
+		resource.EndpointConfig = req.EndpointConfig
+	}
+	if len(req.PolicyCeiling) > 0 {
+		resource.PolicyCeiling = req.PolicyCeiling
 	}
 	created, err := s.store.CreateResource(s.pendingUserAuditCtx(r, "registry.resource.create", string(typ), "", "", nil), resource)
 	if err != nil {
@@ -1457,11 +1506,16 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		Name        *string          `json:"name"`
-		Description *string          `json:"description"`
-		Endpoint    *string          `json:"endpoint"`
-		AuthRef     *string          `json:"auth_ref"`
-		Manifest    *json.RawMessage `json:"manifest"`
+		Name           *string          `json:"name"`
+		Description    *string          `json:"description"`
+		Endpoint       *string          `json:"endpoint"`
+		AuthRef        *string          `json:"auth_ref"`
+		Manifest       *json.RawMessage `json:"manifest"`
+		EndpointConfig *json.RawMessage `json:"endpoint_config"`
+		PolicyCeiling  *json.RawMessage `json:"policy_ceiling"`
+		RiskTier       *string          `json:"risk_tier"`
+		EgressClass    *string          `json:"egress_class"`
+		OwnerUserID    *string          `json:"owner_user_id"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -1483,6 +1537,50 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.Manifest != nil {
 		resource.Manifest = *req.Manifest
+	}
+	// TG-2: validate any typed-field changes against the resource's type
+	// before writing. Ceiling changes are checked for shape here; the
+	// grant-change linter (inv.4, TG-8) adds risky-delta review later.
+	newConfig := resource.EndpointConfig
+	if req.EndpointConfig != nil {
+		newConfig = *req.EndpointConfig
+	}
+	newCeiling := resource.PolicyCeiling
+	if req.PolicyCeiling != nil {
+		newCeiling = *req.PolicyCeiling
+	}
+	riskTier := resource.RiskTier
+	if req.RiskTier != nil {
+		riskTier = *req.RiskTier
+	}
+	egressClass := resource.EgressClass
+	if req.EgressClass != nil {
+		egressClass = *req.EgressClass
+	}
+	if v := validateTypedResourceFields(string(resource.Type), newConfig, newCeiling, riskTier, egressClass); len(v) > 0 {
+		writeViolations(w, "invalid_resource_shape", "resource config/ceiling failed validation", v)
+		return
+	}
+	if req.EndpointConfig != nil {
+		resource.EndpointConfig = *req.EndpointConfig
+	}
+	if req.PolicyCeiling != nil {
+		resource.PolicyCeiling = *req.PolicyCeiling
+	}
+	if req.RiskTier != nil {
+		resource.RiskTier = *req.RiskTier
+	}
+	if req.EgressClass != nil {
+		resource.EgressClass = *req.EgressClass
+	}
+	if req.OwnerUserID != nil {
+		if *req.OwnerUserID != "" {
+			if _, err := s.store.GetUser(r.Context(), *req.OwnerUserID); err != nil {
+				writeStorageError(w, err)
+				return
+			}
+		}
+		resource.OwnerUserID = *req.OwnerUserID
 	}
 	updated, err := s.store.UpdateResource(s.pendingUserAuditCtx(r, "registry.resource.update", string(typ), resource.ID, "", nil), resource)
 	if err != nil {
@@ -3224,9 +3322,13 @@ func (s *Server) listAgentPermissions(w http.ResponseWriter, r *http.Request) {
 }
 
 // agentPermissionRequest is one grant entry in the setAgentPermissions body.
+// Constraints (TG-2) optionally narrow the resource's policy_ceiling for
+// this agent; they are validated against the ceiling (no-escalation
+// invariant) before anything is written.
 type agentPermissionRequest struct {
-	ResourceType string `json:"resource_type"`
-	ResourceID   string `json:"resource_id"`
+	ResourceType string          `json:"resource_type"`
+	ResourceID   string          `json:"resource_id"`
+	Constraints  json.RawMessage `json:"constraints"`
 }
 
 // buildAgentPermissions validates the requested grant entries and builds the
@@ -3258,6 +3360,21 @@ func (s *Server) buildAgentPermissions(ctx context.Context, w http.ResponseWrite
 			writeStorageError(w, err)
 			return nil, false
 		}
+		// TG-2 no-escalation invariant: grant constraints must be a
+		// subset of the resource's policy_ceiling. Reject with the full
+		// structured violation list before any write happens.
+		if len(item.Constraints) > 0 && string(item.Constraints) != "{}" {
+			resource, err := s.store.GetResource(ctx, typ, resourceID)
+			if err != nil {
+				writeStorageError(w, err)
+				return nil, false
+			}
+			if v := egresspolicy.ValidateGrant(string(resource.Type), item.Constraints, resource.PolicyCeiling); len(v) > 0 {
+				writeViolations(w, "grant_escalation",
+					"grant constraints exceed the resource policy ceiling (no-escalation invariant)", v)
+				return nil, false
+			}
+		}
 		key := string(typ) + ":" + resourceID
 		if seen[key] {
 			continue
@@ -3268,6 +3385,7 @@ func (s *Server) buildAgentPermissions(ctx context.Context, w http.ResponseWrite
 			ResourceType: typ,
 			ResourceID:   resourceID,
 			GrantedBy:    u.ID,
+			Constraints:  item.Constraints,
 		})
 	}
 	return perms, true
@@ -4390,6 +4508,13 @@ type agentRuntimeResource struct {
 	Description  string              `json:"description,omitempty"`
 	Endpoint     string              `json:"endpoint,omitempty"`
 	Manifest     json.RawMessage     `json:"manifest"`
+	// TG-2 typed egress fields (present only for web/rest/mcp/git).
+	// Config is emitted secret-stripped; Constraints are the grant's
+	// effective narrowing of the resource ceiling.
+	EndpointConfig json.RawMessage `json:"endpoint_config,omitempty"`
+	Constraints    json.RawMessage `json:"constraints,omitempty"`
+	RiskTier       string          `json:"risk_tier,omitempty"`
+	EgressClass    string          `json:"egress_class,omitempty"`
 }
 
 func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPermission) (agentRuntimeResource, bool, error) {
@@ -4423,14 +4548,24 @@ func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPer
 	if resource.Status != domain.ResourceActive {
 		return agentRuntimeResource{}, false, nil
 	}
-	return agentRuntimeResource{
+	rt := agentRuntimeResource{
 		ResourceType: resource.Type,
 		ResourceID:   resource.ID,
 		Name:         resource.Name,
 		Description:  resource.Description,
 		Endpoint:     resource.Endpoint,
 		Manifest:     defaultRawJSON(resource.Manifest, "{}"),
-	}, true, nil
+	}
+	// TG-2: typed resources surface their (secret-free) endpoint config
+	// and the grant's effective constraints so agents/runtimes can see
+	// what they may actually do with the resource.
+	if egresspolicy.IsTyped(string(resource.Type)) {
+		rt.EndpointConfig = safeConfigJSON(resource.EndpointConfig)
+		rt.Constraints = safeConfigJSON(perm.Constraints)
+		rt.RiskTier = resource.RiskTier
+		rt.EgressClass = resource.EgressClass
+	}
+	return rt, true, nil
 }
 
 // agentMayMessageTarget enforces cross-squad messaging permissions. Same-squad
