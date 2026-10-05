@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
+	"github.com/rossbrigoli/skquad/control-plane/internal/kube"
 	"github.com/rossbrigoli/skquad/control-plane/internal/storage"
 )
 
@@ -67,6 +68,16 @@ func (f *fakeResourceSecretStore) DeleteResourceSecret(_ context.Context, name s
 
 func (f *fakeResourceSecretStore) RefFor(secretName string) string {
 	return "k8s://skquad-system/" + secretName
+}
+
+func (f *fakeResourceSecretStore) set(name string, fields map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := make(map[string]string, len(fields))
+	for k, v := range fields {
+		cp[k] = v
+	}
+	f.secrets[name] = cp
 }
 
 func (f *fakeResourceSecretStore) get(name string) (map[string]string, bool) {
@@ -206,6 +217,143 @@ func TestInternalCredentialsAuthClassParityWithPolicy(t *testing.T) {
 	}
 	require.Equal(t, http.StatusNotFound, pol.Code) // unknown agent
 	require.Equal(t, http.StatusOK, cred.Code)
+}
+
+// ── TG-4c (S-259): per-agent resolution ────────────────────────────────
+
+func resolveCreds(t *testing.T, handler http.Handler, resourceID, agentID string) (int, struct {
+	ResourceID string            `json:"resource_id"`
+	Kind       string            `json:"kind"`
+	Fields     map[string]string `json:"fields"`
+	Scope      string            `json:"scope"`
+}) {
+	t.Helper()
+	url := "/internal/v1/credentials?resource=" + resourceID
+	if agentID != "" {
+		url += "&agent=" + agentID
+	}
+	rec := doRawNoAuth(t, handler, http.MethodGet, url, "")
+	var out struct {
+		ResourceID string            `json:"resource_id"`
+		Kind       string            `json:"kind"`
+		Fields     map[string]string `json:"fields"`
+		Scope      string            `json:"scope"`
+	}
+	if rec.Code == http.StatusOK {
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	}
+	return rec.Code, out
+}
+
+func TestInternalCredentialsPerAgentWinsOverDefault(t *testing.T) {
+	secrets := newFakeResourceSecretStore()
+	handler := newServer(testConfig(), storage.NewMemoryStore(), serverDeps{resourceSecrets: secrets})
+	res := createBYORestResource(t, handler, "pa-win-api")
+	agentA := "11111111-1111-4111-8111-111111111111"
+	secrets.set(kube.ResourceAgentSecretName(res.ID, agentA), map[string]string{"token": "fake-pat-agentA-DO-NOT-USE"})
+
+	code, out := resolveCreds(t, handler, res.ID, agentA)
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, "agent", out.Scope)
+	require.Equal(t, "fake-pat-agentA-DO-NOT-USE", out.Fields["token"])
+	require.NotContains(t, out.Fields["token"], byoFakeToken)
+
+	// Resource-only call keeps serving the default (backwards compat).
+	code, out = resolveCreds(t, handler, res.ID, "")
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, "resource", out.Scope)
+	require.Equal(t, byoFakeToken, out.Fields["token"])
+}
+
+func TestInternalCredentialsAgentFallsBackToDefault(t *testing.T) {
+	secrets := newFakeResourceSecretStore()
+	handler := newServer(testConfig(), storage.NewMemoryStore(), serverDeps{resourceSecrets: secrets})
+	res := createBYORestResource(t, handler, "pa-fallback-api")
+	unknownAgent := "22222222-2222-4222-8222-222222222222"
+
+	code, out := resolveCreds(t, handler, res.ID, unknownAgent)
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, "resource", out.Scope, "agent without its own credential must get the resource default")
+	require.Equal(t, byoFakeToken, out.Fields["token"])
+}
+
+func TestInternalCredentialsAgentWithoutDefaultStillServesOwn(t *testing.T) {
+	secrets := newFakeResourceSecretStore()
+	handler := newServer(testConfig(), storage.NewMemoryStore(), serverDeps{resourceSecrets: secrets})
+	// Resource with NO resource-level secret (no auth payload, no auth_ref).
+	var res domain.RegistryResource
+	doJSON(t, handler, http.MethodPost, registryBase+"rest",
+		map[string]any{
+			"name":            "no-default-api",
+			"endpoint_config": map[string]any{"base_url": "https://api.example.com/v2", "auth_kind": "bearer"},
+		}, http.StatusCreated, &res)
+	agent := "33333333-3333-4333-8333-333333333333"
+	secrets.set(kube.ResourceAgentSecretName(res.ID, agent), map[string]string{"token": "fake-pat-onlyagent-DO-NOT-USE"})
+
+	code, out := resolveCreds(t, handler, res.ID, agent)
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, "agent", out.Scope)
+
+	// Same resource, different agent, no default → 404 (neither exists).
+	code, _ = resolveCreds(t, handler, res.ID, "44444444-4444-4444-8444-444444444444")
+	require.Equal(t, http.StatusNotFound, code)
+	// Resource-only call on the ref-less resource also 404s (unchanged).
+	code, _ = resolveCreds(t, handler, res.ID, "")
+	require.Equal(t, http.StatusNotFound, code)
+}
+
+func TestInternalCredentialsTwoAgentIsolation(t *testing.T) {
+	secrets := newFakeResourceSecretStore()
+	handler := newServer(testConfig(), storage.NewMemoryStore(), serverDeps{resourceSecrets: secrets})
+	res := createBYORestResource(t, handler, "isolation-api")
+	agentA := "aaaaaaa1-0000-4000-8000-000000000001"
+	agentB := "aaaaaaa2-0000-4000-8000-000000000002"
+	secrets.set(kube.ResourceAgentSecretName(res.ID, agentA), map[string]string{"token": "fake-token-A-DO-NOT-USE"})
+	secrets.set(kube.ResourceAgentSecretName(res.ID, agentB), map[string]string{"token": "fake-token-B-DO-NOT-USE"})
+
+	_, a := resolveCreds(t, handler, res.ID, agentA)
+	_, b := resolveCreds(t, handler, res.ID, agentB)
+	require.Equal(t, "fake-token-A-DO-NOT-USE", a.Fields["token"], "agent A must resolve its OWN credential")
+	require.Equal(t, "fake-token-B-DO-NOT-USE", b.Fields["token"], "agent B must resolve its OWN credential")
+	require.NotContains(t, a.Fields["token"], "B")
+	require.NotContains(t, b.Fields["token"], "A")
+}
+
+func TestInternalCredentialsPerAgentAuditCarriesAgentNoValues(t *testing.T) {
+	store := storage.NewMemoryStore()
+	secrets := newFakeResourceSecretStore()
+	handler := newServer(testConfig(), store, serverDeps{resourceSecrets: secrets})
+	res := createBYORestResource(t, handler, "audit-pa-api")
+	agent := "55555555-5555-4555-8555-555555555555"
+	secretVal := "fake-audit-agent-DO-NOT-USE"
+	secrets.set(kube.ResourceAgentSecretName(res.ID, agent), map[string]string{"token": secretVal})
+
+	resolveCreds(t, handler, res.ID, agent)
+	resolveCreds(t, handler, res.ID, "66666666-6666-4666-8666-666666666666") // falls back to default
+
+	entries, err := store.ListAudit(context.Background(), "", 200)
+	require.NoError(t, err)
+	var servedAgent, servedResource int
+	for _, e := range entries {
+		if e.Action != "credentials.access" {
+			continue
+		}
+		raw, _ := json.Marshal(e)
+		require.NotContains(t, string(raw), secretVal, "credentials.access audit leaked a secret value")
+		require.NotContains(t, string(raw), byoFakeToken)
+		var md map[string]string
+		require.NoError(t, json.Unmarshal(e.Metadata, &md))
+		if md["outcome"] != "served" {
+			continue
+		}
+		if md["agent"] == agent {
+			servedAgent++
+		} else {
+			servedResource++
+		}
+	}
+	require.Equal(t, 1, servedAgent)
+	require.Equal(t, 1, servedResource, "fallback serve must be audited with the requesting agent")
 }
 
 // ── Registration custody ─────────────────────────────────────────────────

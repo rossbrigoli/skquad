@@ -299,3 +299,32 @@ func TestNewSecretStoreReadsTokenAndConfig(t *testing.T) {
 		t.Fatal("missing token file must error")
 	}
 }
+
+// TG-4c (S-259): per-agent Secret name derivation.
+func TestResourceAgentSecretName(t *testing.T) {
+	resID := "11111111-1111-4111-8111-111111111111"
+	agentID := "22222222-2222-4222-8222-222222222222"
+	got := ResourceAgentSecretName(resID, agentID)
+	want := ResourceSecretName(resID) + "-agent-" + agentID
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	// Distinct from the resource-level Secret name.
+	if got == ResourceSecretName(resID) {
+		t.Fatal("per-agent name must never equal the resource-level name")
+	}
+	// Two agents on the same resource get distinct names.
+	other := ResourceAgentSecretName(resID, "33333333-3333-4333-8333-333333333333")
+	if got == other {
+		t.Fatal("per-agent names must differ per agent")
+	}
+	// Agent id that sanitizes away yields "" (invalid input, never the
+	// resource-level Secret).
+	if n := ResourceAgentSecretName(resID, "!!!"); n != "" {
+		t.Fatalf("junk agent id must yield empty name, got %q", n)
+	}
+	// K8s name-length budget respected even with oversized ids.
+	if n := ResourceAgentSecretName(strings.Repeat("a", 300), strings.Repeat("b", 300)); len(n) > 253 {
+		t.Fatalf("name too long: %d", len(n))
+	}
+}

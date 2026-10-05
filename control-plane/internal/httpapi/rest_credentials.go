@@ -154,15 +154,24 @@ func (s *Server) clearResourceSecret(ctx context.Context, resource *domain.Regis
 	resource.AuthRef = ""
 }
 
-// internalCredentials — GET /internal/v1/credentials?resource=<id>
+// internalCredentials — GET /internal/v1/credentials?resource=<id>[&agent=<id>]
 //
-// The tool gateway's per-call secret resolution (TG-4). Serves exactly
-// the shape the gateway credentials client expects:
+// The tool gateway's per-call secret resolution (TG-4, per-agent
+// extension TG-4c / S-259). Serves exactly the shape the gateway
+// credentials client expects:
 //
-//	{"resource_id": "...", "kind": "...", "fields": {...}}
+//	{"resource_id": "...", "kind": "...", "fields": {...}, "scope": "agent|resource"}
 //
-// Unknown / wrong-type / deprecated / ref-less resources collapse to a
-// uniform 404 (no existence/type leakage beyond id knowledge).
+// Resolution order (S-259): when an agent is supplied, the agent's OWN
+// per-(resource,agent) Secret wins if present; otherwise the
+// resource-level default Secret (auth_ref) is served. A read error on
+// the per-agent Secret falls back to the resource default (the default
+// is a legitimate credential for this resource; a hard store failure
+// still 503s below). When no agent is supplied only the resource
+// default resolves — the backwards-compatible pre-TG-4c path.
+//
+// Unknown / wrong-type / deprecated resources collapse to a uniform
+// 404 (no existence/type leakage beyond id knowledge).
 // Responses are Cache-Control: no-store — the gateway resolves per
 // call so revocation is immediate.
 func (s *Server) internalCredentials(w http.ResponseWriter, r *http.Request) {
@@ -171,43 +180,77 @@ func (s *Server) internalCredentials(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "resource query parameter is required")
 		return
 	}
+	agentID := strings.TrimSpace(r.URL.Query().Get("agent"))
 	resource, err := s.store.GetResourceByID(r.Context(), resourceID)
-	if err != nil || resource.Type != domain.ResRest || resource.Status != domain.ResourceActive || resource.AuthRef == "" {
-		s.auditCredentialAccess(r, resourceID, "", "denied")
+	if err != nil || resource.Type != domain.ResRest || resource.Status != domain.ResourceActive {
+		s.auditCredentialAccess(r, resourceID, agentID, "", "denied")
 		writeError(w, http.StatusNotFound, "not_found", "no credential for resource")
 		return
 	}
 	kind := restAuthKindFromConfig(resource.EndpointConfig)
 	if kind == "none" {
-		s.auditCredentialAccess(r, resourceID, kind, "denied")
+		s.auditCredentialAccess(r, resourceID, agentID, kind, "denied")
 		writeError(w, http.StatusNotFound, "not_found", "no credential for resource")
 		return
 	}
 	if s.resourceSecrets == nil {
-		s.auditCredentialAccess(r, resourceID, kind, "unavailable")
+		s.auditCredentialAccess(r, resourceID, agentID, kind, "unavailable")
 		writeError(w, http.StatusServiceUnavailable, "credentials_unavailable", "secret store not configured")
+		return
+	}
+	// Per-agent credential first (TG-4c isolation guarantee): the
+	// fields served for (resource, agent) are that agent's own secret
+	// whenever one exists — never another agent's.
+	if agentID != "" {
+		if name := kube.ResourceAgentSecretName(resourceID, agentID); name != "" {
+			fields, err := s.resourceSecrets.GetResourceSecret(r.Context(), name)
+			if err == nil && len(fields) > 0 {
+				s.serveCredential(w, r, resourceID, agentID, kind, "agent", fields)
+				return
+			}
+			if err != nil {
+				// Per-agent read failed: fall back to the resource
+				// default. Log without values; a store-wide failure
+				// surfaces as 503 on the default read below.
+				log.Printf("credentials: per-agent secret %s unreadable, falling back to resource default: %v", name, err)
+			}
+		}
+	}
+	if resource.AuthRef == "" {
+		s.auditCredentialAccess(r, resourceID, agentID, kind, "denied")
+		writeError(w, http.StatusNotFound, "not_found", "no credential for resource")
 		return
 	}
 	name := resource.AuthRef[strings.LastIndex(resource.AuthRef, "/")+1:]
 	fields, err := s.resourceSecrets.GetResourceSecret(r.Context(), name)
 	if err != nil || len(fields) == 0 {
-		s.auditCredentialAccess(r, resourceID, kind, "unavailable")
+		s.auditCredentialAccess(r, resourceID, agentID, kind, "unavailable")
 		writeError(w, http.StatusServiceUnavailable, "credentials_unavailable", "credential could not be resolved")
 		return
 	}
-	s.auditCredentialAccess(r, resourceID, kind, "served")
+	s.serveCredential(w, r, resourceID, agentID, kind, "resource", fields)
+}
+
+// serveCredential writes a resolved credential response and audits
+// the serve. Values go to the response body only — never the audit.
+func (s *Server) serveCredential(w http.ResponseWriter, r *http.Request, resourceID, agentID, kind, scope string, fields map[string]string) {
+	s.auditCredentialAccess(r, resourceID, agentID, kind, "served")
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"resource_id": resource.ID,
+		"resource_id": resourceID,
 		"kind":        kind,
 		"fields":      fields,
+		"scope":       scope,
 	})
 }
 
 // auditCredentialAccess records one credentials-API access with NO
-// secret values — resource id, auth kind and outcome only.
-func (s *Server) auditCredentialAccess(r *http.Request, resourceID, kind, outcome string) {
-	metadata, _ := json.Marshal(map[string]string{"kind": kind, "outcome": outcome})
+// secret values — resource id, agent id, auth kind, resolution scope
+// and outcome only.
+func (s *Server) auditCredentialAccess(r *http.Request, resourceID, agentID, kind, outcome string) {
+	metadata, _ := json.Marshal(map[string]string{
+		"kind": kind, "outcome": outcome, "agent": agentID,
+	})
 	entry := &domain.AuditEntry{
 		ActorType:    "system",
 		ActorID:      "tool-gateway",

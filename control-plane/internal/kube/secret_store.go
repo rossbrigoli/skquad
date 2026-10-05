@@ -70,6 +70,36 @@ func ResourceSecretName(resourceID string) string {
 	return managedSecretName("skquad-rest-", resourceID)
 }
 
+// ResourceAgentSecretName derives the managed Secret name for ONE
+// agent's per-agent credential on a BYO REST resource (TG-4c, S-259).
+//
+// Design choice (S-259): per-(resource, agent) Secret rather than
+// per-agent keys inside the resource Secret. The existing
+// ResourceSecretStore interface (Ensure/Get/Delete by name) supports
+// it unchanged, K8s resourceVersion conflict detection stays scoped to
+// one credential (rotating agent A never contends with agent B), and
+// deleting one agent's credential can't touch anyone else's material.
+//
+// The name is <resource-secret-name>-agent-<sanitized agent id>: the
+// "-agent-" marker keeps per-agent names disjoint from any
+// resource-level name (resource ids are UUIDs, so a resource can never
+// itself be named "<uuid>-agent-<uuid>"). Returns "" when agentID
+// sanitizes away to nothing — callers must treat that as invalid input
+// rather than silently resolving to the resource-level Secret.
+func ResourceAgentSecretName(resourceID, agentID string) string {
+	suffix := strings.Trim(managedSecretName("agent-", agentID), "-")
+	if suffix == "" || suffix == "agent" {
+		return ""
+	}
+	name := ResourceSecretName(resourceID) + "-" + suffix
+	if len(name) > 253 {
+		// Defensive: real ids are UUIDs (~85 chars total). Truncation
+		// can only collide for absurdly long resource ids.
+		name = strings.TrimRight(name[:253], "-")
+	}
+	return name
+}
+
 func managedSecretName(prefix, id string) string {
 	var b strings.Builder
 	b.WriteString(prefix)
