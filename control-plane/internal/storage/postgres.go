@@ -1031,7 +1031,7 @@ func (p *PostgresStore) AgentMayMessageSquad(ctx context.Context, agentID, squad
 	return allowed, mapPgErr(err)
 }
 
-func (p *PostgresStore) CreateLLMProvider(ctx context.Context, provider *domain.LLMProvider) (*domain.LLMProvider, error) {
+func (p *PostgresStore) CreateAIProvider(ctx context.Context, provider *domain.AIProvider) (*domain.AIProvider, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return nil, mapPgErr(err)
@@ -1043,7 +1043,7 @@ func (p *PostgresStore) CreateLLMProvider(ctx context.Context, provider *domain.
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at, api_key_mask
 	`, provider.Name, provider.Kind, provider.BaseURL, provider.APIKeyRef, defaultResourceStatus(provider.Status), provider.RegisteredBy, provider.APIKeyMask)
-	created, err := scanLLMProvider(txRow)
+	created, err := scanAIProvider(txRow)
 	if err != nil {
 		return nil, err
 	}
@@ -1056,16 +1056,16 @@ func (p *PostgresStore) CreateLLMProvider(ctx context.Context, provider *domain.
 	return created, nil
 }
 
-func (p *PostgresStore) GetLLMProvider(ctx context.Context, id string) (*domain.LLMProvider, error) {
+func (p *PostgresStore) GetAIProvider(ctx context.Context, id string) (*domain.AIProvider, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at, api_key_mask
 		FROM providers
 		WHERE id = $1
 	`, id)
-	return scanLLMProvider(row)
+	return scanAIProvider(row)
 }
 
-func (p *PostgresStore) UpdateLLMProvider(ctx context.Context, provider *domain.LLMProvider) (*domain.LLMProvider, error) {
+func (p *PostgresStore) UpdateAIProvider(ctx context.Context, provider *domain.AIProvider) (*domain.AIProvider, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return nil, mapPgErr(err)
@@ -1083,7 +1083,7 @@ func (p *PostgresStore) UpdateLLMProvider(ctx context.Context, provider *domain.
 		WHERE id = $1
 		RETURNING id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at, api_key_mask
 	`, provider.ID, provider.Name, provider.Kind, provider.BaseURL, provider.APIKeyRef, defaultResourceStatus(provider.Status), provider.APIKeyMask)
-	created, err := scanLLMProvider(txRow)
+	created, err := scanAIProvider(txRow)
 	if err != nil {
 		return nil, err
 	}
@@ -1096,7 +1096,7 @@ func (p *PostgresStore) UpdateLLMProvider(ctx context.Context, provider *domain.
 	return created, nil
 }
 
-func (p *PostgresStore) DeprecateLLMProvider(ctx context.Context, id string) error {
+func (p *PostgresStore) DeprecateAIProvider(ctx context.Context, id string) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return mapPgErr(err)
@@ -1120,10 +1120,10 @@ func (p *PostgresStore) DeprecateLLMProvider(ctx context.Context, id string) err
 	return mapPgErr(tx.Commit(ctx))
 }
 
-// DeleteLLMProvider hard-deletes the provider and revokes every grant that
+// DeleteAIProvider hard-deletes the provider and revokes every grant that
 // references it in the same transaction (S-103). It is RESTRICTed while
 // any ai_models still reference the provider's credential (ADR-0010 D2).
-func (p *PostgresStore) DeleteLLMProvider(ctx context.Context, id string) error {
+func (p *PostgresStore) DeleteAIProvider(ctx context.Context, id string) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return mapPgErr(err)
@@ -1139,7 +1139,7 @@ func (p *PostgresStore) DeleteLLMProvider(ctx context.Context, id string) error 
 	}
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM agent_permissions WHERE resource_type = $1 AND resource_id = $2`,
-		domain.ResLLMProvider, id,
+		domain.ResAIProvider, id,
 	); err != nil {
 		return mapPgErr(err)
 	}
@@ -1156,7 +1156,7 @@ func (p *PostgresStore) DeleteLLMProvider(ctx context.Context, id string) error 
 	return mapPgErr(tx.Commit(ctx))
 }
 
-func (p *PostgresStore) ListLLMProviders(ctx context.Context) ([]*domain.LLMProvider, error) {
+func (p *PostgresStore) ListAIProviders(ctx context.Context) ([]*domain.AIProvider, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, name, kind, base_url, api_key_ref, status, registered_by::text, created_at, api_key_mask
 		FROM providers
@@ -1167,9 +1167,9 @@ func (p *PostgresStore) ListLLMProviders(ctx context.Context) ([]*domain.LLMProv
 	}
 	defer rows.Close()
 
-	providers := make([]*domain.LLMProvider, 0)
+	providers := make([]*domain.AIProvider, 0)
 	for rows.Next() {
-		provider, err := scanLLMProvider(rows)
+		provider, err := scanAIProvider(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -2544,7 +2544,7 @@ func (p *PostgresStore) SearchAgentMemory(ctx context.Context, agentID string, s
 
 // ListMemoriesNeedingEmbedding (S-212 backfill) returns rows whose
 // embedding_model differs from the current model — including rows
-// without any embedding (embedding_model = ''). Ordered by created_at
+// without any embedding (embedding_model = ”). Ordered by created_at
 // so the oldest memories are embedded first.
 func (p *PostgresStore) ListMemoriesNeedingEmbedding(ctx context.Context, currentModel string, limit int) ([]*domain.AgentMemory, error) {
 	if limit <= 0 {
@@ -3627,8 +3627,8 @@ func scanGrant(row scanner) (*domain.AccessGrant, error) {
 	return &g, nil
 }
 
-func scanLLMProvider(row scanner) (*domain.LLMProvider, error) {
-	var p domain.LLMProvider
+func scanAIProvider(row scanner) (*domain.AIProvider, error) {
+	var p domain.AIProvider
 	if err := row.Scan(
 		&p.ID,
 		&p.Name,

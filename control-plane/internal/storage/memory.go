@@ -38,7 +38,7 @@ type MemoryStore struct {
 	boards          map[string]*domain.Board
 	boardsBySquad   map[string]string
 	grants          map[string]*domain.AccessGrant
-	llmProviders    map[string]*domain.LLMProvider
+	aiProviders     map[string]*domain.AIProvider
 	aiModels        map[string]*domain.AIModel
 	userModelGrants map[string]*domain.UserModelGrant
 	grantPair       map[string]string // userID|modelID -> grant id
@@ -109,7 +109,7 @@ func NewMemoryStore() *MemoryStore {
 		boards:              map[string]*domain.Board{},
 		boardsBySquad:       map[string]string{},
 		grants:              map[string]*domain.AccessGrant{},
-		llmProviders:        map[string]*domain.LLMProvider{},
+		aiProviders:         map[string]*domain.AIProvider{},
 		aiModels:            map[string]*domain.AIModel{},
 		userModelGrants:     map[string]*domain.UserModelGrant{},
 		grantPair:           map[string]string{},
@@ -732,59 +732,59 @@ func (m *MemoryStore) AgentMayMessageSquad(_ context.Context, agentID, squadID s
 	return false, nil
 }
 
-func (m *MemoryStore) CreateLLMProvider(ctx context.Context, p *domain.LLMProvider) (*domain.LLMProvider, error) {
+func (m *MemoryStore) CreateAIProvider(ctx context.Context, p *domain.AIProvider) (*domain.AIProvider, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, existing := range m.llmProviders {
+	for _, existing := range m.aiProviders {
 		if strings.EqualFold(existing.Name, p.Name) {
 			return nil, ErrConflict
 		}
 	}
-	created := cloneLLMProvider(p)
+	created := cloneAIProvider(p)
 	created.ID = uuid.NewString()
 	if created.Status == "" {
 		created.Status = domain.ResourceActive
 	}
 	created.CreatedAt = time.Now().UTC()
-	m.llmProviders[created.ID] = created
+	m.aiProviders[created.ID] = created
 	m.drainPendingAuditsLocked(ctx, created.ID)
-	return cloneLLMProvider(created), nil
+	return cloneAIProvider(created), nil
 }
 
-func (m *MemoryStore) GetLLMProvider(_ context.Context, id string) (*domain.LLMProvider, error) {
+func (m *MemoryStore) GetAIProvider(_ context.Context, id string) (*domain.AIProvider, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	provider, ok := m.llmProviders[id]
+	provider, ok := m.aiProviders[id]
 	if !ok {
 		return nil, ErrNotFound
 	}
-	return cloneLLMProvider(provider), nil
+	return cloneAIProvider(provider), nil
 }
 
-func (m *MemoryStore) UpdateLLMProvider(ctx context.Context, p *domain.LLMProvider) (*domain.LLMProvider, error) {
+func (m *MemoryStore) UpdateAIProvider(ctx context.Context, p *domain.AIProvider) (*domain.AIProvider, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	existing, ok := m.llmProviders[p.ID]
+	existing, ok := m.aiProviders[p.ID]
 	if !ok {
 		return nil, ErrNotFound
 	}
-	for _, other := range m.llmProviders {
+	for _, other := range m.aiProviders {
 		if other.ID != p.ID && strings.EqualFold(other.Name, p.Name) {
 			return nil, ErrConflict
 		}
 	}
-	updated := cloneLLMProvider(p)
+	updated := cloneAIProvider(p)
 	updated.RegisteredBy = existing.RegisteredBy
 	updated.CreatedAt = existing.CreatedAt
-	m.llmProviders[p.ID] = updated
+	m.aiProviders[p.ID] = updated
 	m.drainPendingAuditsLocked(ctx, updated.ID)
-	return cloneLLMProvider(updated), nil
+	return cloneAIProvider(updated), nil
 }
 
-func (m *MemoryStore) DeprecateLLMProvider(ctx context.Context, id string) error {
+func (m *MemoryStore) DeprecateAIProvider(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	provider, ok := m.llmProviders[id]
+	provider, ok := m.aiProviders[id]
 	if !ok {
 		return ErrNotFound
 	}
@@ -793,13 +793,13 @@ func (m *MemoryStore) DeprecateLLMProvider(ctx context.Context, id string) error
 	return nil
 }
 
-// DeleteLLMProvider hard-deletes the provider and revokes dangling grants (S-103).
+// DeleteAIProvider hard-deletes the provider and revokes dangling grants (S-103).
 // It is RESTRICTed while any ai_models still reference the provider's
 // credential (ADR-0010 D2), mirroring the Postgres FK ON DELETE RESTRICT.
-func (m *MemoryStore) DeleteLLMProvider(ctx context.Context, id string) error {
+func (m *MemoryStore) DeleteAIProvider(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.llmProviders[id]; !ok {
+	if _, ok := m.aiProviders[id]; !ok {
 		return ErrNotFound
 	}
 	for _, model := range m.aiModels {
@@ -807,9 +807,9 @@ func (m *MemoryStore) DeleteLLMProvider(ctx context.Context, id string) error {
 			return fmt.Errorf("%w: provider still has registered AI model %q", ErrConflict, model.DisplayName)
 		}
 	}
-	delete(m.llmProviders, id)
+	delete(m.aiProviders, id)
 	for key, perm := range m.permissions {
-		if perm.ResourceType == domain.ResLLMProvider && perm.ResourceID == id {
+		if perm.ResourceType == domain.ResAIProvider && perm.ResourceID == id {
 			delete(m.permissions, key)
 		}
 	}
@@ -817,14 +817,14 @@ func (m *MemoryStore) DeleteLLMProvider(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *MemoryStore) ListLLMProviders(_ context.Context) ([]*domain.LLMProvider, error) {
+func (m *MemoryStore) ListAIProviders(_ context.Context) ([]*domain.AIProvider, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]*domain.LLMProvider, 0, len(m.llmProviders))
-	for _, provider := range m.llmProviders {
-		out = append(out, cloneLLMProvider(provider))
+	out := make([]*domain.AIProvider, 0, len(m.aiProviders))
+	for _, provider := range m.aiProviders {
+		out = append(out, cloneAIProvider(provider))
 	}
-	slices.SortFunc(out, func(a, b *domain.LLMProvider) int {
+	slices.SortFunc(out, func(a, b *domain.AIProvider) int {
 		return strings.Compare(a.Name, b.Name)
 	})
 	return out, nil
@@ -836,7 +836,7 @@ func (m *MemoryStore) ListLLMProviders(_ context.Context) ([]*domain.LLMProvider
 func (m *MemoryStore) CreateAIModel(ctx context.Context, model *domain.AIModel) (*domain.AIModel, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.llmProviders[model.ProviderID]; !ok {
+	if _, ok := m.aiProviders[model.ProviderID]; !ok {
 		return nil, ErrNotFound
 	}
 	for _, existing := range m.aiModels {
@@ -890,7 +890,7 @@ func (m *MemoryStore) UpdateAIModel(ctx context.Context, model *domain.AIModel) 
 	if !ok {
 		return nil, ErrNotFound
 	}
-	if _, ok := m.llmProviders[model.ProviderID]; !ok {
+	if _, ok := m.aiProviders[model.ProviderID]; !ok {
 		return nil, ErrNotFound
 	}
 	for _, other := range m.aiModels {
@@ -1331,7 +1331,7 @@ func (m *MemoryStore) newMeteringRowLocked(key meteringGroupKey, event *domain.M
 	if agent, ok := m.agents[event.AgentID]; ok {
 		row.AgentName = agent.Name
 	}
-	if provider, ok := m.llmProviders[event.ProviderID]; ok {
+	if provider, ok := m.aiProviders[event.ProviderID]; ok {
 		row.ProviderName = provider.Name
 	}
 	return row
@@ -3225,7 +3225,7 @@ func cloneGrant(g *domain.AccessGrant) *domain.AccessGrant {
 	return &v
 }
 
-func cloneLLMProvider(p *domain.LLMProvider) *domain.LLMProvider {
+func cloneAIProvider(p *domain.AIProvider) *domain.AIProvider {
 	if p == nil {
 		return nil
 	}

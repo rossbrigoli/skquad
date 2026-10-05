@@ -137,7 +137,7 @@ beforeEach(() => {
   env.apiPatch = vi.fn().mockResolvedValue({});
   env.apiPut = vi.fn().mockResolvedValue({});
   env.apiDelete = vi.fn().mockResolvedValue(undefined);
-  setApi("/registry/llm-providers", [provider]);
+  setApi("/registry/ai-providers", [provider]);
   setApi("/ai-models", [model]);
   setApi("/users", [adminUser, memberUser]);
   setApi("/ai-models?status=active", [model]);
@@ -153,14 +153,14 @@ describe("SettingsPage member (non-admin) surface", () => {
     render(<SettingsPage />);
     expect(screen.getByText("Settings")).toBeInTheDocument();
     expect(screen.getByText(/signed in as/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "LLM providers" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "AI providers" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Notifications" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "AI Models" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Access" })).not.toBeInTheDocument();
   });
 
   it("renders the read-only provider list with status chips", () => {
-    setApi("/registry/llm-providers", [provider, deprecatedProvider]);
+    setApi("/registry/ai-providers", [provider, deprecatedProvider]);
     render(<SettingsPage />);
     expect(screen.getByText("openai-prod")).toBeInTheDocument();
     expect(screen.getByText("openai · https://api.openai.com/v1")).toBeInTheDocument();
@@ -171,11 +171,11 @@ describe("SettingsPage member (non-admin) surface", () => {
   });
 
   it("empty + error states for the member provider list", () => {
-    setApi("/registry/llm-providers", []);
+    setApi("/registry/ai-providers", []);
     const { unmount } = render(<SettingsPage />);
-    expect(screen.getByText("No LLM providers registered")).toBeInTheDocument();
+    expect(screen.getByText("No AI providers registered")).toBeInTheDocument();
     unmount();
-    setApi("/registry/llm-providers", null, { error: "registry down" });
+    setApi("/registry/ai-providers", null, { error: "registry down" });
     render(<SettingsPage />);
     expect(screen.getByText("registry down")).toBeInTheDocument();
   });
@@ -239,14 +239,14 @@ describe("ModelHierarchyTab rendering", () => {
   });
 
   it("empty hierarchy shows the onboarding EmptyState", () => {
-    setApi("/registry/llm-providers", []);
+    setApi("/registry/ai-providers", []);
     setApi("/ai-models", []);
     render(<SettingsPage />);
     expect(screen.getByText("No AI models registered")).toBeInTheDocument();
   });
 
   it("surfaces provider and model fetch errors", () => {
-    setApi("/registry/llm-providers", null, { error: "prov boom" });
+    setApi("/registry/ai-providers", null, { error: "prov boom" });
     setApi("/ai-models", null, { error: "model boom" });
     render(<SettingsPage />);
     expect(screen.getByText("prov boom")).toBeInTheDocument();
@@ -309,7 +309,7 @@ describe("Model deprecate + delete flows", () => {
     render(<SettingsPage />);
     const header = screen.getByText("openai-prod").closest(".provider-header-row") as HTMLElement;
     await user.click(header.querySelector("button.btn-danger") as HTMLElement);
-    expect(env.apiPost).toHaveBeenCalledWith("/registry/llm-providers/p1/deprecate", "tok", {});
+    expect(env.apiPost).toHaveBeenCalledWith("/registry/ai-providers/p1/deprecate", "tok", {});
   });
 });
 
@@ -319,7 +319,7 @@ describe("ProviderModal (register + edit + connection test)", () => {
     env.apiPost.mockResolvedValue({ ok: true, reason: "ok", latency_ms: 42, detail: "" });
     render(<SettingsPage />);
     await user.click(screen.getByRole("button", { name: "+ Register provider" }));
-    const dialog = await screen.findByRole("dialog", { name: "Register LLM provider" });
+    const dialog = await screen.findByRole("dialog", { name: "Register AI provider" });
     const submit = screen.getByRole("button", { name: "Register" }) as HTMLButtonElement;
     expect(submit).toBeDisabled();
     await user.type(within(dialog).getByLabelText(/Name/), "new-ai");
@@ -329,7 +329,7 @@ describe("ProviderModal (register + edit + connection test)", () => {
     expect(await screen.findByText(/42 ms/)).toBeInTheDocument();
     await user.click(submit);
     await waitFor(() =>
-      expect(env.apiPost).toHaveBeenCalledWith("/registry/llm-providers", "tok", {
+      expect(env.apiPost).toHaveBeenCalledWith("/registry/ai-providers", "tok", {
         name: "new-ai",
         kind: "openai",
         base_url: "https://new.ai/v1",
@@ -353,7 +353,7 @@ describe("ProviderModal (register + edit + connection test)", () => {
     await user.type(keyInput, "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() =>
-      expect(env.apiPatch).toHaveBeenCalledWith("/registry/llm-providers/p1", "tok", {
+      expect(env.apiPatch).toHaveBeenCalledWith("/registry/ai-providers/p1", "tok", {
         name: "renamed",
         kind: "openai",
         base_url: "https://api.openai.com/v1",
@@ -367,12 +367,12 @@ describe("ProviderModal (register + edit + connection test)", () => {
     env.apiPost.mockRejectedValue(new Error("dup name"));
     render(<SettingsPage />);
     await user.click(screen.getByRole("button", { name: "+ Register provider" }));
-    const dialog = await screen.findByRole("dialog", { name: "Register LLM provider" });
+    const dialog = await screen.findByRole("dialog", { name: "Register AI provider" });
     await user.type(within(dialog).getByLabelText(/Name/), "x");
     await user.type(within(dialog).getByLabelText(/Base URL/), "https://x");
     await user.click(screen.getByRole("button", { name: "Register" }));
     expect(await screen.findByText("dup name")).toBeInTheDocument();
-    expect(screen.getByRole("dialog", { name: "Register LLM provider" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Register AI provider" })).toBeInTheDocument();
   });
 });
 
@@ -387,7 +387,7 @@ describe("AIModelModal register flow", () => {
     await user.click(screen.getByRole("button", { name: "+ Register model" }));
     const dialog = await screen.findByRole("dialog", { name: "Register AI model" });
     await user.selectOptions(within(dialog).getByLabelText(/Provider \(credential holder\)/), "p1");
-    await waitFor(() => expect(env.apiGet).toHaveBeenCalledWith("/registry/llm-providers/p1/models", "tok"));
+    await waitFor(() => expect(env.apiGet).toHaveBeenCalledWith("/registry/ai-providers/p1/models", "tok"));
     const datalist = await screen.findByRole("listbox", { hidden: true });
     expect(datalist).toBeInTheDocument();
     expect(within(datalist).getAllByRole("option", { hidden: true }).map((o) => o.getAttribute("value"))).toEqual([

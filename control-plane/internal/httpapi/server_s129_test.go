@@ -36,7 +36,7 @@ func setupS129Agent(t *testing.T, handler http.Handler) (squad domain.Squad, age
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{"name": "S129 Squad " + suffix}, http.StatusCreated, &squad)
 	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{"name": "Mary " + suffix}, http.StatusCreated, &agent)
-	var provider domain.LLMProvider
+	var provider domain.AIProvider
 	doJSON(t, handler, http.MethodPost, pathProviders, map[string]any{
 		"name":        "S129 Provider " + suffix,
 		"kind":        openaiCompatible,

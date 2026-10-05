@@ -153,9 +153,9 @@ export type AppNotification = {
   created_at: string;
 };
 
-export type ResourceType = "llm_provider" | "skill" | "tool" | "api" | "knowledge_base" | "project_workspace";
+export type ResourceType = "ai_provider" | "skill" | "tool" | "api" | "knowledge_base" | "project_workspace";
 
-export type LLMProvider = {
+export type AIProvider = {
   id: string;
   name: string;
   kind: string;

@@ -44,8 +44,8 @@ func meterNow(t *testing.T, store *storage.MemoryStore, squad domain.Squad, agen
 
 func registerProvider(t *testing.T, handler http.Handler, bearer, name, url string) string {
 	t.Helper()
-	var provider domain.LLMProvider
-	doJSONAuth(t, handler, bearer, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	var provider domain.AIProvider
+	doJSONAuth(t, handler, bearer, http.MethodPost, "/api/v1/registry/ai-providers", map[string]any{
 		"name": name, "kind": "openai", "base_url": url,
 	}, http.StatusCreated, &provider)
 	return provider.ID

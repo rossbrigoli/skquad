@@ -1,5 +1,5 @@
 // S-180 tests: pre-save Test endpoints.
-//   POST /api/v1/registry/llm-providers/test  (connection check via model list)
+//   POST /api/v1/registry/ai-providers/test  (connection check via model list)
 //   POST /api/v1/ai-models/test               (PONG round-trip)
 // Covers success, upstream 401, timeout, unreachable, admin gating,
 // edit-form stored-key fallback, the anthropic Messages path, PONG
@@ -19,7 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const pathProviderTest = "/api/v1/registry/llm-providers/test"
+const pathProviderTest = "/api/v1/registry/ai-providers/test"
 const pathAIModelTest = "/api/v1/ai-models/test"
 
 // createProviderWithKind registers a provider with an explicit kind and
@@ -29,7 +29,7 @@ func createProviderWithKind(t *testing.T, handler http.Handler, name, kind, base
 	var provider struct {
 		ID string `json:"id"`
 	}
-	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/registry/ai-providers", map[string]any{
 		"name":        name,
 		"kind":        kind,
 		"base_url":    baseURL,

@@ -40,7 +40,7 @@ const (
 	// Route path templates reused across chi route registrations (S-126:
 	// S1192 duplicated literal). Kept as constants so the three HTTP verbs
 	// for each resource share a single source of truth.
-	routeLLMProvider      = "/registry/llm-providers/{providerID}"
+	routeAIProvider       = "/registry/ai-providers/{providerID}"
 	routeAIModel          = "/ai-models/{modelID}"
 	routeRegistryResource = "/registry/{registryType}/{resourceID}"
 
@@ -662,18 +662,18 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Get("/admin/budgets/users/{userID}", s.getUserBudgetAdmin)
 			r.Put("/admin/budgets/users/{userID}", s.putUserBudgetAdmin)
 
-			r.Post("/registry/llm-providers", s.createLLMProvider)
-			r.Get("/registry/llm-providers", s.listLLMProviders)
-			r.Get(routeLLMProvider, s.getLLMProvider)
-			r.Patch(routeLLMProvider, s.updateLLMProvider)
-			r.Post("/registry/llm-providers/{providerID}/deprecate", s.deprecateLLMProvider)
-			r.Delete(routeLLMProvider, s.deleteLLMProvider)
+			r.Post("/registry/ai-providers", s.createAIProvider)
+			r.Get("/registry/ai-providers", s.listAIProviders)
+			r.Get(routeAIProvider, s.getAIProvider)
+			r.Patch(routeAIProvider, s.updateAIProvider)
+			r.Post("/registry/ai-providers/{providerID}/deprecate", s.deprecateAIProvider)
+			r.Delete(routeAIProvider, s.deleteAIProvider)
 			// S-125: live model list from the provider (OpenAI-compatible
 			// passthrough) for the register-model dropdown.
-			r.Get("/registry/llm-providers/{providerID}/models", s.listLLMProviderModels)
-			r.Get("/registry/llm-providers/{providerID}/model-metadata", s.getLLMProviderModelMetadata)
+			r.Get("/registry/ai-providers/{providerID}/models", s.listAIProviderModels)
+			r.Get("/registry/ai-providers/{providerID}/model-metadata", s.getAIProviderModelMetadata)
 			// S-180: pre-save Test buttons (provider connection + model round-trip).
-			r.Post("/registry/llm-providers/test", s.testProviderConnection)
+			r.Post("/registry/ai-providers/test", s.testProviderConnection)
 
 			r.Get("/ai-models", s.listAIModels)
 			r.Post("/ai-models", s.createAIModel)
@@ -973,7 +973,7 @@ func registryTypeFromRequest(w http.ResponseWriter, r *http.Request) (domain.Res
 }
 
 // resourceTypeFromString maps a grant request to a GRANTABLE resource type.
-// llm_provider is deliberately absent (ADR-0010 / S-107): model access is
+// ai_provider is deliberately absent (ADR-0010 / S-107): model access is
 // granted to users via AI Models, not to agents via providers. The constant
 // itself stays until WP8 drops the DB CHECK constraint.
 func resourceTypeFromString(value string) (domain.ResourceType, bool) {
@@ -1057,7 +1057,7 @@ func (s *Server) getVersions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) createLLMProvider(w http.ResponseWriter, r *http.Request) {
+func (s *Server) createAIProvider(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
 	}
@@ -1091,16 +1091,16 @@ func (s *Server) createLLMProvider(w http.ResponseWriter, r *http.Request) {
 		key = strings.TrimSpace(req.LegacyAPIKeyRef)
 	}
 	u := currentUser(r.Context())
-	provider := &domain.LLMProvider{
+	provider := &domain.AIProvider{
 		Name:         strings.TrimSpace(req.Name),
 		Kind:         strings.TrimSpace(req.Kind),
 		BaseURL:      strings.TrimSpace(req.BaseURL),
 		Status:       domain.ResourceActive,
 		RegisteredBy: u.ID,
 	}
-	ctx := s.pendingUserAuditCtx(r, "registry.llm_provider.create", string(domain.ResLLMProvider), "", "", nil)
+	ctx := s.pendingUserAuditCtx(r, "registry.ai_provider.create", string(domain.ResAIProvider), "", "", nil)
 	key = s.devFallbackProviderKey(provider, key)
-	created, err := s.store.CreateLLMProvider(ctx, provider)
+	created, err := s.store.CreateAIProvider(ctx, provider)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -1117,9 +1117,9 @@ func (s *Server) createLLMProvider(w http.ResponseWriter, r *http.Request) {
 
 // devFallbackProviderKey keeps out-of-cluster dev working: with no K8s
 // Secret store configured the pasted key is stored literally (S-189
-// split out of createLLMProvider). Returns the key that still needs
+// split out of createAIProvider). Returns the key that still needs
 // Secret-store persistence ("" when fully handled here).
-func (s *Server) devFallbackProviderKey(provider *domain.LLMProvider, key string) string {
+func (s *Server) devFallbackProviderKey(provider *domain.AIProvider, key string) string {
 	if key == "" || s.providerKeys != nil {
 		return key
 	}
@@ -1135,17 +1135,17 @@ func (s *Server) devFallbackProviderKey(provider *domain.LLMProvider, key string
 // persistProviderKeyCreate stores the provider key in the managed Secret
 // store right after row creation, rolling the row back if the Secret
 // write fails (never leave a provider row whose key failed to land).
-func (s *Server) persistProviderKeyCreate(w http.ResponseWriter, ctx context.Context, created *domain.LLMProvider, key string) (*domain.LLMProvider, bool) {
+func (s *Server) persistProviderKeyCreate(w http.ResponseWriter, ctx context.Context, created *domain.AIProvider, key string) (*domain.AIProvider, bool) {
 	if err := s.setProviderKey(ctx, created, key); err != nil {
 		// Compensate: never leave a provider row whose key failed to
 		// land in the Secret store.
-		if delErr := s.store.DeleteLLMProvider(ctx, created.ID); delErr != nil {
+		if delErr := s.store.DeleteAIProvider(ctx, created.ID); delErr != nil {
 			log.Printf("provider %s: rollback after secret failure: %v", created.ID, delErr)
 		}
 		writeError(w, http.StatusBadGateway, "provider_key_store_failed", "could not store the provider key as a Kubernetes Secret")
 		return nil, false
 	}
-	updated, err := s.store.UpdateLLMProvider(ctx, created)
+	updated, err := s.store.UpdateAIProvider(ctx, created)
 	if err != nil {
 		writeStorageError(w, err)
 		return nil, false
@@ -1153,8 +1153,8 @@ func (s *Server) persistProviderKeyCreate(w http.ResponseWriter, ctx context.Con
 	return updated, true
 }
 
-func (s *Server) listLLMProviders(w http.ResponseWriter, r *http.Request) {
-	providers, err := s.store.ListLLMProviders(r.Context())
+func (s *Server) listAIProviders(w http.ResponseWriter, r *http.Request) {
+	providers, err := s.store.ListAIProviders(r.Context())
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -1162,8 +1162,8 @@ func (s *Server) listLLMProviders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, providerJSONList(providers))
 }
 
-func (s *Server) getLLMProvider(w http.ResponseWriter, r *http.Request) {
-	provider, err := s.store.GetLLMProvider(r.Context(), chi.URLParam(r, "providerID"))
+func (s *Server) getAIProvider(w http.ResponseWriter, r *http.Request) {
+	provider, err := s.store.GetAIProvider(r.Context(), chi.URLParam(r, "providerID"))
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -1171,16 +1171,16 @@ func (s *Server) getLLMProvider(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, providerJSON(provider))
 }
 
-func (s *Server) updateLLMProvider(w http.ResponseWriter, r *http.Request) {
+func (s *Server) updateAIProvider(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
 	}
-	provider, err := s.store.GetLLMProvider(r.Context(), chi.URLParam(r, "providerID"))
+	provider, err := s.store.GetAIProvider(r.Context(), chi.URLParam(r, "providerID"))
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
-	var req updateLLMProviderRequest
+	var req updateAIProviderRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
@@ -1190,7 +1190,7 @@ func (s *Server) updateLLMProvider(w http.ResponseWriter, r *http.Request) {
 	if !s.applyProviderKeyUpdate(w, r, provider, &req) {
 		return
 	}
-	updated, err := s.store.UpdateLLMProvider(s.pendingUserAuditCtx(r, "registry.llm_provider.update", string(domain.ResLLMProvider), provider.ID, "", nil), provider)
+	updated, err := s.store.UpdateAIProvider(s.pendingUserAuditCtx(r, "registry.ai_provider.update", string(domain.ResAIProvider), provider.ID, "", nil), provider)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -1198,8 +1198,8 @@ func (s *Server) updateLLMProvider(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, providerJSON(updated))
 }
 
-// updateLLMProviderRequest is the JSON body for PUT /registry/llm-providers/{id}.
-type updateLLMProviderRequest struct {
+// updateAIProviderRequest is the JSON body for PUT /registry/ai-providers/{id}.
+type updateAIProviderRequest struct {
 	Name    *string `json:"name"`
 	Kind    *string `json:"kind"`
 	BaseURL *string `json:"base_url"`
@@ -1219,8 +1219,8 @@ type updateLLMProviderRequest struct {
 }
 
 // applyProviderFieldUpdates validates and stages the optional scalar
-// fields of a provider update (S-189 split out of updateLLMProvider).
-func applyProviderFieldUpdates(w http.ResponseWriter, provider *domain.LLMProvider, req *updateLLMProviderRequest) bool {
+// fields of a provider update (S-189 split out of updateAIProvider).
+func applyProviderFieldUpdates(w http.ResponseWriter, provider *domain.AIProvider, req *updateAIProviderRequest) bool {
 	if req.Name != nil {
 		if !validateName(w, *req.Name) {
 			return false
@@ -1245,7 +1245,7 @@ func applyProviderFieldUpdates(w http.ResponseWriter, provider *domain.LLMProvid
 // applyProviderKeyUpdate handles the S-155 key semantics on update:
 // omitted keeps the stored key, non-empty replaces it, empty clears the
 // key and deletes the managed Secret.
-func (s *Server) applyProviderKeyUpdate(w http.ResponseWriter, r *http.Request, provider *domain.LLMProvider, req *updateLLMProviderRequest) bool {
+func (s *Server) applyProviderKeyUpdate(w http.ResponseWriter, r *http.Request, provider *domain.AIProvider, req *updateAIProviderRequest) bool {
 	if req.APIKey == nil && req.LegacyAPIKeyRef == nil {
 		return true
 	}
@@ -1271,25 +1271,25 @@ func (s *Server) applyProviderKeyUpdate(w http.ResponseWriter, r *http.Request, 
 	return true
 }
 
-func (s *Server) deprecateLLMProvider(w http.ResponseWriter, r *http.Request) {
+func (s *Server) deprecateAIProvider(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
 	}
 	providerID := chi.URLParam(r, "providerID")
-	if err := s.store.DeprecateLLMProvider(s.pendingUserAuditCtx(r, "registry.llm_provider.deprecate", string(domain.ResLLMProvider), providerID, "", nil), providerID); err != nil {
+	if err := s.store.DeprecateAIProvider(s.pendingUserAuditCtx(r, "registry.ai_provider.deprecate", string(domain.ResAIProvider), providerID, "", nil), providerID); err != nil {
 		writeStorageError(w, err)
 		return
 	}
 	// Best-effort: converge the virtual keys of every agent granted this
 	// provider so deprecation does not leave models reachable. The
 	// reconcile endpoint repairs anything this misses.
-	s.syncAgentsWithLLMProvider(r.Context(), providerID)
+	s.syncAgentsWithAIProvider(r.Context(), providerID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// syncAgentsWithLLMProvider re-converges gateway keys for all agents holding a
-// permission on the given LLM provider. Returns an action summary.
-func (s *Server) syncAgentsWithLLMProvider(ctx context.Context, providerID string) map[string]any {
+// syncAgentsWithAIProvider re-converges gateway keys for all agents holding a
+// permission on the given AI provider. Returns an action summary.
+func (s *Server) syncAgentsWithAIProvider(ctx context.Context, providerID string) map[string]any {
 	counts := map[string]int{"checked": 0, "errors": 0}
 	agents, err := s.store.ListAllAgents(ctx)
 	if err != nil {
@@ -1319,10 +1319,10 @@ func (s *Server) syncAgentsWithLLMProvider(ctx context.Context, providerID strin
 }
 
 // permissionsGrantProvider reports whether any permission grants the given
-// LLM provider resource.
+// AI provider resource.
 func permissionsGrantProvider(perms []*domain.AgentPermission, providerID string) bool {
 	for _, perm := range perms {
-		if perm.ResourceType == domain.ResLLMProvider && perm.ResourceID == providerID {
+		if perm.ResourceType == domain.ResAIProvider && perm.ResourceID == providerID {
 			return true
 		}
 	}
@@ -1535,17 +1535,17 @@ func (s *Server) resourceUsage(ctx context.Context, typ domain.ResourceType, res
 	return usage, nil
 }
 
-// deleteLLMProvider hard-deletes a provider (S-103). While any agent still
+// deleteAIProvider hard-deletes a provider (S-103). While any agent still
 // holds a grant on it, the delete is refused with 409 + the usage list so
 // the UI can warn; force=true deletes and revokes those grants.
-func (s *Server) deleteLLMProvider(w http.ResponseWriter, r *http.Request) {
+func (s *Server) deleteAIProvider(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
 	}
 	providerID := chi.URLParam(r, "providerID")
 	force := r.URL.Query().Get("force") == "true"
 	if !force {
-		usage, err := s.resourceUsage(r.Context(), domain.ResLLMProvider, providerID)
+		usage, err := s.resourceUsage(r.Context(), domain.ResAIProvider, providerID)
 		if err != nil {
 			writeStorageError(w, err)
 			return
@@ -1559,7 +1559,7 @@ func (s *Server) deleteLLMProvider(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.store.DeleteLLMProvider(s.pendingUserAuditCtx(r, "registry.llm_provider.delete", string(domain.ResLLMProvider), providerID, "", nil), providerID); err != nil {
+	if err := s.store.DeleteAIProvider(s.pendingUserAuditCtx(r, "registry.ai_provider.delete", string(domain.ResAIProvider), providerID, "", nil), providerID); err != nil {
 		writeStorageError(w, err)
 		return
 	}
@@ -1571,12 +1571,12 @@ func (s *Server) deleteLLMProvider(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Best-effort convergence of gateway keys after the provider is gone.
-	s.syncAgentsWithLLMProvider(r.Context(), providerID)
+	s.syncAgentsWithAIProvider(r.Context(), providerID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // deleteRegistryResource hard-deletes a registry resource (S-103) with the
-// same in-use warning semantics as deleteLLMProvider.
+// same in-use warning semantics as deleteAIProvider.
 func (s *Server) deleteRegistryResource(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
@@ -3236,12 +3236,12 @@ func (s *Server) buildAgentPermissions(ctx context.Context, w http.ResponseWrite
 	perms := make([]domain.AgentPermission, 0, len(req))
 	seen := map[string]bool{}
 	for _, item := range req {
-		// ADR-0010 / S-107: the old door is closed. llm_provider grants are
+		// ADR-0010 / S-107: the old door is closed. ai_provider grants are
 		// replaced by user-level AI Model grants; give the operator an
 		// actionable error instead of a generic invalid-type rejection.
-		if strings.TrimSpace(item.ResourceType) == string(domain.ResLLMProvider) {
+		if strings.TrimSpace(item.ResourceType) == string(domain.ResAIProvider) {
 			writeError(w, http.StatusBadRequest, "provider_not_grantable",
-				"llm_provider is no longer grantable to agents; grant AI Models to the user instead (Settings \u2192 AI Models)")
+				"ai_provider is no longer grantable to agents; grant AI Models to the user instead (Settings \u2192 AI Models)")
 			return nil, false
 		}
 		typ, ok := resourceTypeFromString(item.ResourceType)
@@ -4362,8 +4362,8 @@ type agentRuntimeResource struct {
 }
 
 func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPermission) (agentRuntimeResource, bool, error) {
-	if perm.ResourceType == domain.ResLLMProvider {
-		provider, err := s.store.GetLLMProvider(ctx, perm.ResourceID)
+	if perm.ResourceType == domain.ResAIProvider {
+		provider, err := s.store.GetAIProvider(ctx, perm.ResourceID)
 		if err != nil {
 			return agentRuntimeResource{}, false, err
 		}

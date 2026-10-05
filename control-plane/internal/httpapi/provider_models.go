@@ -145,16 +145,16 @@ func parseProviderModelIDs(body []byte) ([]string, error) {
 	return models, nil
 }
 
-// listLLMProviderModels handles GET /api/v1/registry/llm-providers/{providerID}/models.
+// listAIProviderModels handles GET /api/v1/registry/ai-providers/{providerID}/models.
 // Admin-only (it exercises the provider credential). Maps upstream
 // failures onto clear error codes: provider_auth (401/403 upstream),
 // provider_timeout, provider_error. The UI falls back to free-text input
 // on any failure so registration is never blocked.
-func (s *Server) listLLMProviderModels(w http.ResponseWriter, r *http.Request) {
+func (s *Server) listAIProviderModels(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
 	}
-	provider, err := s.store.GetLLMProvider(r.Context(), chi.URLParam(r, "providerID"))
+	provider, err := s.store.GetAIProvider(r.Context(), chi.URLParam(r, "providerID"))
 	if err != nil {
 		writeStorageError(w, err)
 		return

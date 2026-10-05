@@ -197,7 +197,7 @@ func TestBreakGlassLoginIssuesWorkingAdminToken(t *testing.T) {
 	}
 
 	// And it can actually perform an admin-only mutation, which is the whole point.
-	dep := bgPost(t, handler, "/api/v1/registry/llm-providers", map[string]any{
+	dep := bgPost(t, handler, "/api/v1/registry/ai-providers", map[string]any{
 		"name":        "bg-provider",
 		"kind":        "openai",
 		"base_url":    "https://api.example.com/v1",

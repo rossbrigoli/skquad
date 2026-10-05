@@ -64,7 +64,7 @@ func rawProviderPost(t *testing.T, handler http.Handler, body map[string]any) (i
 	t.Helper()
 	payload, err := json.Marshal(body)
 	require.NoError(t, err)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/registry/llm-providers", bytes.NewReader(payload))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/registry/ai-providers", bytes.NewReader(payload))
 	req.Header.Set(headerContentType, jsonContentType)
 	req.Header.Set("Authorization", authAdmin)
 	rec := httptest.NewRecorder()
@@ -80,7 +80,7 @@ func rawProviderPatch(t *testing.T, handler http.Handler, id string, body map[st
 	t.Helper()
 	payload, err := json.Marshal(body)
 	require.NoError(t, err)
-	req := httptest.NewRequest(http.MethodPatch, "/api/v1/registry/llm-providers/"+id, bytes.NewReader(payload))
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/registry/ai-providers/"+id, bytes.NewReader(payload))
 	req.Header.Set(headerContentType, jsonContentType)
 	req.Header.Set("Authorization", authAdmin)
 	rec := httptest.NewRecorder()
@@ -173,7 +173,7 @@ func TestProviderKeyListNeverLeaks(t *testing.T) {
 		"name": "s", "kind": "openai", "base_url": "https://x.test/v1", "api_key": "sk-" + "top" + "secret",
 	})
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/registry/llm-providers", nil))
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/registry/ai-providers", nil))
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.NotContains(t, rec.Body.String(), "topsecret")
 	require.NotContains(t, rec.Body.String(), "api_key_ref")
@@ -187,7 +187,7 @@ func TestProviderKeyDeleteRemovesSecret(t *testing.T) {
 		"name": "d", "kind": "openai", "base_url": "https://x.test/v1", "api_key": "sk-" + "del" + "ete-12345",
 	})
 	id := p["id"].(string)
-	req := httptest.NewRequest(http.MethodDelete, "/api/v1/registry/llm-providers/"+id, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/registry/ai-providers/"+id, nil)
 	req.Header.Set("Authorization", authAdmin)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -203,7 +203,7 @@ func TestProviderKeyCreateRollbackOnSecretFailure(t *testing.T) {
 	})
 	require.Equal(t, http.StatusBadGateway, code)
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/registry/llm-providers", nil))
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/registry/ai-providers", nil))
 	require.NotContains(t, rec.Body.String(), "boom")
 }
 
@@ -212,11 +212,11 @@ func TestMigrateLegacyProviderKeys(t *testing.T) {
 	keys := newFakeKeyStore()
 	ctx := context.Background()
 
-	lit, err := store.CreateLLMProvider(ctx, &domain.LLMProvider{
+	lit, err := store.CreateAIProvider(ctx, &domain.AIProvider{
 		Name: "lit", Kind: "openai", BaseURL: "https://x.test/v1", APIKeyRef: "sk-literal-abcdef",
 	})
 	require.NoError(t, err)
-	_, err = store.CreateLLMProvider(ctx, &domain.LLMProvider{
+	_, err = store.CreateAIProvider(ctx, &domain.AIProvider{
 		Name: "keyless", Kind: "ollama", BaseURL: "http://x.test/v1",
 	})
 	require.NoError(t, err)
@@ -225,7 +225,7 @@ func TestMigrateLegacyProviderKeys(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, wrapped)
 
-	got, err := store.GetLLMProvider(ctx, lit.ID)
+	got, err := store.GetAIProvider(ctx, lit.ID)
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(got.APIKeyRef, "k8s://"))
 	require.Equal(t, "•••••bcdef", got.APIKeyMask)

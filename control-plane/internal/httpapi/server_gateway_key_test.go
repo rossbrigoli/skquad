@@ -1,7 +1,7 @@
 // WP3 tests: binding-derived virtual-key allow-lists, precise provisioning
 // errors, the agent binding PATCH API, and bidirectional key convergence
 // (ADR-0010 D4/D5/D6/D7). These replace the WP-era grant-union tests:
-// no key provisioning path may derive models from llm_provider grants.
+// no key provisioning path may derive models from ai_provider grants.
 
 package httpapi
 

@@ -642,7 +642,7 @@ const (
 type ResourceType string
 
 const (
-	ResLLMProvider      ResourceType = "llm_provider"
+	ResAIProvider       ResourceType = "ai_provider"
 	ResSkill            ResourceType = "skill"
 	ResTool             ResourceType = "tool"
 	ResAPI              ResourceType = "api"
@@ -650,8 +650,8 @@ const (
 	ResProjectWorkspace ResourceType = "project_workspace"
 )
 
-// LLMProvider is a model endpoint registered in the registry (BYOM).
-type LLMProvider struct {
+// AIProvider is a model endpoint registered in the registry (BYOM).
+type AIProvider struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Kind      string `json:"kind"` // openai, anthropic, ollama, ...

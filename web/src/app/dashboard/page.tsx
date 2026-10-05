@@ -8,7 +8,7 @@
 // S-190 adds GET /dashboard/usage: MTD cost tiles (plus platform-wide
 // cost/users/agents for admins), daily stacked-bar histograms per squad
 // and per agent with a tokens/cost toggle, and month-to-date cost + token
-// counts per provider and per model in the LLM Providers section.
+// counts per provider and per model in the AI Providers section.
 
 import { useState } from "react";
 import Link from "next/link";
@@ -150,7 +150,7 @@ function ProvidersSection({
 }) {
   return (
     <>
-      <h2 className="section-title">LLM Providers</h2>
+      <h2 className="section-title">AI Providers</h2>
       {(providers?.length ?? 0) === 0 ? (
         <EmptyState title="No providers registered" hint="Register providers in Settings → AI Models." />
       ) : (

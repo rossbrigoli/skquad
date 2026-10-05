@@ -17,7 +17,7 @@ import {
   apiPost,
   apiPut,
   ApiError,
-  type LLMProvider,
+  type AIProvider,
 } from "../../lib/api";
 import {
   buildAIModelPayload,
@@ -189,20 +189,20 @@ function PromptTemplatesTab() {
 
 function ProvidersTab({ isAdmin }: { readonly isAdmin: boolean }) {
   const { token } = useAuth();
-  const providers = useApi<LLMProvider[]>("/registry/llm-providers", 60000);
-  const [editing, setEditing] = useState<LLMProvider | null>(null);
+  const providers = useApi<AIProvider[]>("/registry/ai-providers", 60000);
+  const [editing, setEditing] = useState<AIProvider | null>(null);
   const [creating, setCreating] = useState(false);
   const items = providers.data || [];
 
   async function deprecateProvider(providerID: string) {
-    await apiPost(`/registry/llm-providers/${providerID}/deprecate`, token, {});
+    await apiPost(`/registry/ai-providers/${providerID}/deprecate`, token, {});
     providers.refresh();
   }
 
   return (
     <section>
       <div className="section-head">
-        <h2>LLM providers</h2>
+        <h2>AI providers</h2>
         {isAdmin ? (
           <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
             + Register provider
@@ -211,7 +211,7 @@ function ProvidersTab({ isAdmin }: { readonly isAdmin: boolean }) {
       </div>
       {providers.error ? <div className="notice error">{providers.error}</div> : null}
       {items.length === 0 && !providers.loading ? (
-        <EmptyState title="No LLM providers registered" hint="Agents fall back to the platform default until a provider exists." />
+        <EmptyState title="No AI providers registered" hint="Agents fall back to the platform default until a provider exists." />
       ) : (
         <div className="entity-list">
           {items.map((p) => (
@@ -240,7 +240,7 @@ function ProvidersTab({ isAdmin }: { readonly isAdmin: boolean }) {
                 ) : null}
                 {isAdmin ? (
                   <DeleteResourceButton
-                    path={`/registry/llm-providers/${p.id}`}
+                    path={`/registry/ai-providers/${p.id}`}
                     name={p.name}
                     onDeleted={() => {
                       providers.refresh();
@@ -270,7 +270,7 @@ function ProvidersTab({ isAdmin }: { readonly isAdmin: boolean }) {
   );
 }
 
-// S-128 — merged admin tab: the LLM Providers > AI Models hierarchy on
+// S-128 — merged admin tab: the AI Providers > AI Models hierarchy on
 // one screen. Providers render as credential-holder group headers (name,
 // kind, base_url, default model) with their registered models nested
 // underneath. All pricing lives on the model rows only — provider rows
@@ -286,14 +286,14 @@ function ProviderGroupHeader({
   onEdit,
   onDeleted,
 }: {
-  readonly provider: LLMProvider;
+  readonly provider: AIProvider;
   readonly onEdit: () => void;
   readonly onDeleted: () => void;
 }) {
   const { token } = useAuth();
 
   async function deprecateProvider() {
-    await apiPost(`/registry/llm-providers/${provider.id}/deprecate`, token, {});
+    await apiPost(`/registry/ai-providers/${provider.id}/deprecate`, token, {});
     onDeleted();
   }
 
@@ -320,7 +320,7 @@ function ProviderGroupHeader({
           </button>
         ) : null}
         <DeleteResourceButton
-          path={`/registry/llm-providers/${provider.id}`}
+          path={`/registry/ai-providers/${provider.id}`}
           name={provider.name}
           onDeleted={onDeleted}
         />
@@ -331,9 +331,9 @@ function ProviderGroupHeader({
 
 function ModelHierarchyTab() {
   const { token } = useAuth();
-  const providers = useApi<LLMProvider[]>("/registry/llm-providers", 60000);
+  const providers = useApi<AIProvider[]>("/registry/ai-providers", 60000);
   const models = useApi<AIModel[]>("/ai-models", 60000);
-  const [editingProvider, setEditingProvider] = useState<LLMProvider | null>(null);
+  const [editingProvider, setEditingProvider] = useState<AIProvider | null>(null);
   const [creatingProvider, setCreatingProvider] = useState(false);
   const [editingModel, setEditingModel] = useState<AIModel | null>(null);
   const [creatingModel, setCreatingModel] = useState(false);
@@ -546,7 +546,7 @@ function AIModelModal({
   onSaved,
 }: {
   readonly model: AIModel | null;
-  readonly providers: LLMProvider[];
+  readonly providers: AIProvider[];
   readonly onClose: () => void;
   readonly onSaved: () => void;
 }) {
@@ -584,7 +584,7 @@ function AIModelModal({
     setMetaMessage("");
     try {
       const body = await apiGet<unknown>(
-        `/registry/llm-providers/${providerId}/model-metadata?model=${encodeURIComponent(modelName)}`,
+        `/registry/ai-providers/${providerId}/model-metadata?model=${encodeURIComponent(modelName)}`,
         token,
       );
       const meta = parseProviderModelMetadata(body);
@@ -635,7 +635,7 @@ function AIModelModal({
     setProviderModels([]);
     const loadProviderModels = async () => {
       try {
-        const body = await apiGet<unknown>(`/registry/llm-providers/${providerId}/models`, token);
+        const body = await apiGet<unknown>(`/registry/ai-providers/${providerId}/models`, token);
         if (!active) return;
         setProviderModels(parseProviderModels(body));
       } catch (err) {
@@ -1135,7 +1135,7 @@ function ProviderModal({
   onClose,
   onSaved,
 }: {
-  readonly provider: LLMProvider | null;
+  readonly provider: AIProvider | null;
   readonly onClose: () => void;
   readonly onSaved: () => void;
 }) {
@@ -1168,7 +1168,7 @@ function ProviderModal({
     setTestResult(null);
     try {
       const payload = buildProviderTestPayload({ base_url: baseUrl, api_key: apiKey, providerId: provider?.id, kind });
-      const raw = await apiPost<unknown>("/registry/llm-providers/test", token, payload, { timeoutMs: TEST_TIMEOUT_MS });
+      const raw = await apiPost<unknown>("/registry/ai-providers/test", token, payload, { timeoutMs: TEST_TIMEOUT_MS });
       setTestResult(parseTestResult(raw));
     } catch (err) {
       setTestResult(failureResult(err, "test request failed"));
@@ -1178,7 +1178,7 @@ function ProviderModal({
   }
 
   return (
-    <Modal title={provider ? `Edit provider “${provider.name}”` : "Register LLM provider"} onClose={onClose}>
+    <Modal title={provider ? `Edit provider “${provider.name}”` : "Register AI provider"} onClose={onClose}>
       <ModalForm
         busy={busy}
         error={error}
@@ -1217,9 +1217,9 @@ function ProviderModal({
               body.api_key = apiKey.trim();
             }
             if (provider) {
-              await apiPatch(`/registry/llm-providers/${provider.id}`, token, body);
+              await apiPatch(`/registry/ai-providers/${provider.id}`, token, body);
             } else {
-              await apiPost("/registry/llm-providers", token, body);
+              await apiPost("/registry/ai-providers", token, body);
             }
             onSaved();
           } catch (err) {
@@ -1308,7 +1308,7 @@ function SettingsTabs({
       {isAdmin ? (
         <TabButton active={activeTab === "ai-models"} label="AI Models" onClick={() => onSelect("ai-models")} />
       ) : (
-        <TabButton active={activeTab === "providers"} label="LLM providers" onClick={() => onSelect("providers")} />
+        <TabButton active={activeTab === "providers"} label="AI providers" onClick={() => onSelect("providers")} />
       )}
       {/* S-204 follow-up: navigates to the real Resources index. */}
       <TabButton active={false} label="Resources" onClick={onOpenResources} />

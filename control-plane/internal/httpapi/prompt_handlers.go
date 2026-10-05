@@ -396,7 +396,7 @@ func (s *Server) applyModelFacts(ctx context.Context, agent *domain.Agent, f *pr
 	f.ModelDisplay = display
 	f.ModelName = model.ModelName
 	f.ModelProvider = "unknown"
-	if provider, err := s.store.GetLLMProvider(ctx, model.ProviderID); err == nil && provider != nil {
+	if provider, err := s.store.GetAIProvider(ctx, model.ProviderID); err == nil && provider != nil {
 		f.ModelProvider = provider.Name
 	}
 	if model.ContextWindow > 0 {

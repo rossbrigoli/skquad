@@ -20,7 +20,7 @@ const (
 
 // WP1 (ADR-0010, S-106): ai_models + user_model_grants + agent binding.
 
-func seedAIModelFixture(t *testing.T, store Store) (*domain.User, *domain.Squad, *domain.LLMProvider, *domain.AIModel) {
+func seedAIModelFixture(t *testing.T, store Store) (*domain.User, *domain.Squad, *domain.AIProvider, *domain.AIModel) {
 	t.Helper()
 	ctx := context.Background()
 	tag := uuid.NewString()[:8]
@@ -42,7 +42,7 @@ func seedAIModelFixture(t *testing.T, store Store) (*domain.User, *domain.Squad,
 	if err != nil {
 		t.Fatalf("create squad: %v", err)
 	}
-	provider, err := store.CreateLLMProvider(ctx, &domain.LLMProvider{
+	provider, err := store.CreateAIProvider(ctx, &domain.AIProvider{
 		Name:         "prov-" + tag,
 		Kind:         "openai",
 		BaseURL:      "https://api.example.test",
@@ -187,7 +187,7 @@ func TestMemoryAIModelUniqueProviderModelName(t *testing.T) {
 	}
 
 	// Same model_name under a different provider must be allowed.
-	other, err := store.CreateLLMProvider(ctx, &domain.LLMProvider{
+	other, err := store.CreateAIProvider(ctx, &domain.AIProvider{
 		Name: "prov-other-" + model.ModelName, Kind: "anthropic",
 		BaseURL: "https://other.example.test", APIKeyRef: "k8s:secret/other",
 	})
@@ -206,18 +206,18 @@ func TestMemoryProviderDeleteRestrictedByAIModels(t *testing.T) {
 	ctx := context.Background()
 	_, _, provider, model := seedAIModelFixture(t, store)
 
-	err := store.DeleteLLMProvider(ctx, provider.ID)
+	err := store.DeleteAIProvider(ctx, provider.ID)
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("provider delete with referencing models err = %v, want ErrConflict", err)
 	}
-	if _, err := store.GetLLMProvider(ctx, provider.ID); err != nil {
+	if _, err := store.GetAIProvider(ctx, provider.ID); err != nil {
 		t.Fatalf("provider vanished despite RESTRICT: %v", err)
 	}
 
 	if err := store.DeleteAIModel(ctx, model.ID); err != nil {
 		t.Fatalf(deleteModelErrFmt, err)
 	}
-	if err := store.DeleteLLMProvider(ctx, provider.ID); err != nil {
+	if err := store.DeleteAIProvider(ctx, provider.ID); err != nil {
 		t.Fatalf("provider delete after models removed: %v", err)
 	}
 }
@@ -554,13 +554,13 @@ func TestPostgresProviderDeleteRestrictedByAIModels(t *testing.T) {
 	user, _, provider, model := seedAIModelFixture(t, store)
 	t.Cleanup(pgcleanup(t, store, user, provider, model))
 
-	if err := store.DeleteLLMProvider(ctx, provider.ID); !errors.Is(err, ErrConflict) {
+	if err := store.DeleteAIProvider(ctx, provider.ID); !errors.Is(err, ErrConflict) {
 		t.Fatalf("provider delete restricted err = %v, want ErrConflict", err)
 	}
 	if err := store.DeleteAIModel(ctx, model.ID); err != nil {
 		t.Fatalf(deleteModelErrFmt, err)
 	}
-	if err := store.DeleteLLMProvider(ctx, provider.ID); err != nil {
+	if err := store.DeleteAIProvider(ctx, provider.ID); err != nil {
 		t.Fatalf("provider delete after model removed: %v", err)
 	}
 }
@@ -721,7 +721,7 @@ func pgDelete(t *testing.T, store *PostgresStore, ctx context.Context, query str
 }
 
 // pgcleanup removes the fixture rows (grants, model, provider, squad, user).
-func pgcleanup(t *testing.T, store *PostgresStore, user *domain.User, provider *domain.LLMProvider, model *domain.AIModel) func() {
+func pgcleanup(t *testing.T, store *PostgresStore, user *domain.User, provider *domain.AIProvider, model *domain.AIModel) func() {
 	return func() {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

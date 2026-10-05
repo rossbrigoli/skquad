@@ -92,7 +92,7 @@ func TestProcessOutboxOnceDerivesWorkspaceSecrets(t *testing.T) {
 		{ResourceType: domain.ResProjectWorkspace, ResourceID: nonGitWS.ID, GrantedBy: user.ID},
 		{ResourceType: domain.ResProjectWorkspace, ResourceID: badRefWS.ID, GrantedBy: user.ID},
 		{ResourceType: domain.ResProjectWorkspace, ResourceID: "deleted-resource-id", GrantedBy: user.ID},
-		{ResourceType: domain.ResLLMProvider, ResourceID: gitWS.ID, GrantedBy: user.ID},
+		{ResourceType: domain.ResAIProvider, ResourceID: gitWS.ID, GrantedBy: user.ID},
 	}); err != nil {
 		t.Fatal(err)
 	}

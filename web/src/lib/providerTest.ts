@@ -1,9 +1,9 @@
-// S-180 — pre-save "Test" button logic for the LLM provider and AI
+// S-180 — pre-save "Test" button logic for the AI provider and AI
 // model forms. Kept out of the React components so the payload shapes
 // and result formatting are unit-testable (repo "logic layer" pattern).
 //
 // Contracts (control-plane connectivity.go):
-//   POST /registry/llm-providers/test  {base_url, api_key?, provider_id?}
+//   POST /registry/ai-providers/test  {base_url, api_key?, provider_id?}
 //   POST /ai-models/test               {provider_id, model_name}
 // Both answer 200 {ok, reason, latency_ms, detail} once the probe ran;
 // the API key is never echoed back by the server, and nothing here

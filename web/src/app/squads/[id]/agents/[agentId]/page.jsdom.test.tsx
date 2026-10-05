@@ -299,7 +299,7 @@ describe("title + tabs", () => {
     ];
     env.perms = [
       { id: "g1", agent_id: "ag1", resource_type: "skill", resource_id: "sk1", created_at: new Date().toISOString() },
-      { id: "g2", agent_id: "ag1", resource_type: "llm_provider", resource_id: "legacy", created_at: new Date().toISOString() },
+      { id: "g2", agent_id: "ag1", resource_type: "ai_provider", resource_id: "legacy", created_at: new Date().toISOString() },
     ];
     env.chat = [chatMsg("c1", "agent", "hi", { payload: { message: "hi", context_tokens: 12345 } })];
     render(<AgentProfilePage />);
@@ -307,7 +307,7 @@ describe("title + tabs", () => {
     // Agent status chip (busy → Running); the live task chip shares the label.
     expect(screen.getAllByText("Running").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText(/^implementer\s·/)).toBeInTheDocument();
-    // llm_provider grants are hidden from the grants count.
+    // ai_provider grants are hidden from the grants count.
     expect(chip("Grants")).toHaveTextContent("1");
     expect(chip("Current lease")).toHaveTextContent("1 task");
     expect(chip("Current lease").className).toContain("attention");

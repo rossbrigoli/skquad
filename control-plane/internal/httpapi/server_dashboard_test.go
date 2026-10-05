@@ -72,10 +72,10 @@ func TestDashboardAdminSeesAllWithAggregates(t *testing.T) {
 		AgentID: agentA.ID, SquadID: squadA.ID, InputTokens: 1000, OutputTokens: 200, Cost: 0.012, Currency: "USD", Timestamp: time.Now(),
 	}))
 
-	doJSONNoBody(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	doJSONNoBody(t, handler, http.MethodPost, "/api/v1/registry/ai-providers", map[string]any{
 		"name": "Live Provider", "kind": "openai", "base_url": live.URL,
 	}, http.StatusCreated)
-	doJSONNoBody(t, handler, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	doJSONNoBody(t, handler, http.MethodPost, "/api/v1/registry/ai-providers", map[string]any{
 		"name": deadProviderName, "kind": "openai", "base_url": deadURL,
 	}, http.StatusCreated)
 	doJSONNoBody(t, handler, http.MethodPost, "/api/v1/registry/skills", map[string]any{
