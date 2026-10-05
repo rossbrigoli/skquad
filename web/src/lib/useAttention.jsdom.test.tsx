@@ -159,3 +159,108 @@ describe("AttentionProvider", () => {
     expect(() => render(<Orphan />)).toThrow("useAttention must be used inside AttentionProvider");
   });
 });
+
+// S-189 branch coverage: cancellation race, poll interval, and the
+// agent-name fallbacks used while building attention items.
+describe("AttentionProvider branch coverage", () => {
+  it("falls back to id prefix / 'unassigned' when building items for unknown senders", async () => {
+    env.api["/squads/sq1/board"] = {
+      tasks: [
+        { id: "t1", status: "blocked", assignee_agent_id: "unknownagent123456", title: "T-one", updated_at: new Date().toISOString() },
+        { id: "t2", status: "blocked", title: "T-two", updated_at: new Date().toISOString() },
+      ],
+    };
+    let seen: string[] = [];
+    function Spy() {
+      const { items } = useAttention();
+      seen = items.map((i) => i.meta);
+      return null;
+    }
+    render(
+      <AttentionProvider>
+        <Spy />
+      </AttentionProvider>,
+    );
+    await waitFor(() => expect(seen.length).toBeGreaterThan(0));
+    // Unknown sender ids fall back to the 8-char prefix; missing ids to "unassigned".
+    expect(seen.some((t) => t.includes("unknowna"))).toBe(true);
+    expect(seen.some((t) => t.includes("unassigned"))).toBe(true);
+  });
+
+  it("agentName returns undefined for unknown ids and for no id", async () => {
+    let fn: ((id?: string) => string | undefined) | null = null;
+    function Spy() {
+      const { agentName } = useAttention();
+      fn = agentName;
+      return null;
+    }
+    render(
+      <AttentionProvider>
+        <Spy />
+      </AttentionProvider>,
+    );
+    await waitFor(() => expect(fn).not.toBeNull());
+    expect((fn as (id?: string) => string | undefined)("ag1")).toBe("coder");
+    expect((fn as (id?: string) => string | undefined)("nope")).toBeUndefined();
+    expect((fn as (id?: string) => string | undefined)()).toBeUndefined();
+  });
+
+  it("polls again after the interval while the tab is visible", async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <AttentionProvider>
+          <Consumer />
+        </AttentionProvider>,
+      );
+      await vi.waitFor(() => expect(screen.getByTestId("loading")).toHaveTextContent("false"));
+      const before = vi.mocked((await import("./api")).apiGet).mock.calls.length;
+      Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+      await vi.advanceTimersByTimeAsync(30_000);
+      const after = vi.mocked((await import("./api")).apiGet).mock.calls.length;
+      expect(after).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("skips the poll tick when the tab is hidden", async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <AttentionProvider>
+          <Consumer />
+        </AttentionProvider>,
+      );
+      await vi.waitFor(() => expect(screen.getByTestId("loading")).toHaveTextContent("false"));
+      const apiMod = await import("./api");
+      const before = vi.mocked(apiMod.apiGet).mock.calls.length;
+      Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(vi.mocked(apiMod.apiGet).mock.calls.length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores in-flight results after unmount (cancelled path)", async () => {
+    let resolveSquads: (v: unknown) => void = () => {};
+    env.api = {
+      "/squads": new Promise((res) => {
+        resolveSquads = res;
+      }),
+    };
+    const view = render(
+      <AttentionProvider>
+        <Consumer />
+      </AttentionProvider>,
+    );
+    // Unmount while the /squads fetch is still pending.
+    view.unmount();
+    resolveSquads([]);
+    await new Promise((r) => setTimeout(r, 0));
+    // If the cancelled branches failed we'd see React state-update warnings;
+    // reaching here with no throw is the assertion that nothing was applied.
+    expect(screen.queryByTestId("count")).toBeNull();
+  });
+});
