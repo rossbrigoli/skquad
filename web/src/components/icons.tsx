@@ -170,3 +170,11 @@ export function IconAbout({ size }: IconProps) {
     </svg>
   );
 }
+
+export function IconCloud({ size }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <path d="M17.5 19a4.5 4.5 0 1 0-.42-8.98 6 6 0 1 0-11.06 3.05A3.5 3.5 0 0 0 7 19.5h10.5z" />
+    </svg>
+  );
+}

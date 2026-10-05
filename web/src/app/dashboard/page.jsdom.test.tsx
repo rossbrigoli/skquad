@@ -15,8 +15,8 @@ const env = vi.hoisted(() => ({
 }));
 
 vi.mock("next/link", () => ({
-  default: ({ href, children }: { href: string; children: React.ReactNode }) => (
-    <a href={href}>{children}</a>
+  default: ({ href, className, children }: { href: string; className?: string; children: React.ReactNode }) => (
+    <a href={href} className={className}>{children}</a>
   ),
 }));
 
@@ -59,7 +59,7 @@ const memberDashboard = {
       owner_name: "Ross",
       task_counts: { todo: 2, "in-progress": 1, done: 5 },
       agents: [
-        { id: "ag1", squad_id: "sq1", name: "coder", status: "running", cost: { cost: 1, currency: "USD", tokens: 10 } },
+        { id: "ag1", squad_id: "sq1", name: "coder", status: "busy", cost: { cost: 1, currency: "USD", tokens: 10 } },
         { id: "ag2", squad_id: "sq1", name: "broken", status: "error" },
       ],
     },
@@ -77,8 +77,27 @@ const usagePayload = {
   currency: "USD",
   squad_mtd_cost: 2.5,
   days: ["2026-10-01", "2026-10-02"],
-  by_squad: [{ id: "sq1", name: "Alpha", daily: [100, 200], daily_cost: [0.5, 1.5] }],
-  by_agent: [{ id: "ag1", name: "coder", daily: [100, 200], daily_cost: [0.5, 1.5] }],
+  by_squad: [
+    {
+      id: "sq1",
+      name: "Alpha",
+      points: [
+        { day: "2026-10-01", input_tokens: 80, output_tokens: 20, tokens: 100, cost: 0.5 },
+        { day: "2026-10-02", input_tokens: 150, output_tokens: 50, tokens: 200, cost: 1.5 },
+      ],
+    },
+  ],
+  by_agent: [
+    {
+      id: "ag1",
+      name: "coder",
+      squad_id: "sq1",
+      points: [
+        { day: "2026-10-01", input_tokens: 80, output_tokens: 20, tokens: 100, cost: 0.75 },
+        { day: "2026-10-02", input_tokens: 150, output_tokens: 50, tokens: 200, cost: 0.25 },
+      ],
+    },
+  ],
   providers: [
     {
       provider_id: "p1",
@@ -166,23 +185,48 @@ describe("DashboardPage chart toggles", () => {
 });
 
 describe("DashboardPage sections", () => {
-  it("renders squad rows with counts, owner, agents and costs", () => {
+  it("S-230: renders squad blocks with tiles, running chip and 30-day cost", () => {
     render(<DashboardPage />);
     const squadLink = screen.getByRole("link", { name: "Alpha" });
     expect(squadLink).toHaveAttribute("href", "/squads/sq1");
-    expect(squadLink.closest(".entity-row")).toHaveTextContent("2 todo · 1 in progress");
-    expect(squadLink.closest(".entity-row")).toHaveTextContent("owner: Ross");
-    expect(screen.getByRole("link", { name: "coder" })).toHaveAttribute("href", "/squads/sq1/agents/ag1");
+    const block = squadLink.closest(".squad-block") as HTMLElement;
+    expect(block).toHaveTextContent("2 todo · 1 in progress");
+    expect(block).toHaveTextContent("owner: Ross");
+    // S-230 req 3: a running (busy) agent puts a running chip next to the name.
+    expect(block.querySelector(".chip.chip-running")).not.toBeNull();
+    // S-230 req 1: squad block shows the rolling 30-day cost (0.5 + 1.5).
+    expect(block.querySelector(".squad-block-cost")).toHaveTextContent("USD 2.0000");
+    // Agents render as the shared overview tiles with per-agent 30-day cost.
+    const agentTile = screen.getByRole("link", { name: /coder/ });
+    expect(agentTile).toHaveAttribute("href", "/squads/sq1/agents/ag1");
+    expect(agentTile).toHaveClass("agent-tile", "agent-tile--running");
+    expect(agentTile.querySelector(".agent-tile-cost")).toHaveTextContent("last 30 days USD 1.0000");
+    // S-230 req 2: failed agent tile carries the red-outline modifier.
+    expect(screen.getByRole("link", { name: /broken/ })).toHaveClass("agent-tile--failed");
   });
 
-  it("renders provider rows with liveness chip and MTD usage", () => {
+  it("S-230: no running chip when no agent is running", () => {
+    env.dashboard = {
+      ...memberDashboard,
+      squads: [{ ...(memberDashboard.squads as Record<string, unknown>[])[0], agents: [{ id: "ag3", squad_id: "sq1", name: "sleeper", status: "idle" }] }],
+    };
     render(<DashboardPage />);
-    const row = screen.getByText("OpenAI").closest(".entity-row") as HTMLElement;
-    expect(row).toHaveTextContent("MTD");
-    expect(row).toHaveTextContent("9K tokens");
-    const errRow = screen.getByText("Local").closest(".entity-row") as HTMLElement;
-    expect(errRow).toHaveTextContent("timeout");
-    expect(errRow).toHaveTextContent("no usage this month");
+    const block = screen.getByRole("link", { name: "Alpha" }).closest(".squad-block") as HTMLElement;
+    expect(block.querySelector(".chip.chip-running")).toBeNull();
+  });
+
+  it("S-230: renders provider tiles with green ONLINE indicator and 30-day cost", () => {
+    render(<DashboardPage />);
+    const tile = screen.getByText("OpenAI").closest(".provider-tile") as HTMLElement;
+    expect(tile).toHaveClass("provider-tile--online");
+    expect(tile).toHaveTextContent("ONLINE");
+    expect(tile).toHaveTextContent("last 30 days USD 3.5000 · 9K tokens");
+    expect(tile).toHaveTextContent("gpt-x");
+    const offlineTile = screen.getByText("Local").closest(".provider-tile") as HTMLElement;
+    expect(offlineTile).not.toHaveClass("provider-tile--online");
+    expect(offlineTile).toHaveTextContent("OFFLINE");
+    expect(offlineTile).toHaveTextContent("timeout");
+    expect(offlineTile).toHaveTextContent("no usage in the last 30 days");
   });
 
   it("renders resource rows with type spacing", () => {
@@ -215,7 +259,7 @@ describe("DashboardPage sections", () => {
     expect(screen.getByRole("switch", { name: "Chart metric: cost" })).toHaveAttribute("aria-checked", "true");
   });
 
-  it("squad rows without owner/agents/cost degrade gracefully", () => {
+  it("squad blocks without owner/agents/cost degrade gracefully", () => {
     env.dashboard = {
       scope: "member",
       squads: [{ id: "sq9", name: "Sparse" }],
@@ -223,11 +267,11 @@ describe("DashboardPage sections", () => {
       resources: [],
     };
     render(<DashboardPage />);
-    const row = screen.getByRole("link", { name: "Sparse" }).closest(".entity-row") as HTMLElement;
-    expect(row).toHaveTextContent("no agents in this squad");
-    expect(row).toHaveTextContent("0 todo");
-    const prow = screen.getByText("Bare").closest(".entity-row") as HTMLElement;
-    expect(prow).toHaveTextContent("no usage this month");
+    const block = screen.getByRole("link", { name: "Sparse" }).closest(".squad-block") as HTMLElement;
+    expect(block).toHaveTextContent("no agents in this squad");
+    expect(block).toHaveTextContent("0 todo");
+    const tile = screen.getByText("Bare").closest(".provider-tile") as HTMLElement;
+    expect(tile).toHaveTextContent("no usage in the last 30 days");
     // No error agents → healthy sub-label.
     expect(screen.getByText("all healthy")).toBeInTheDocument();
   });

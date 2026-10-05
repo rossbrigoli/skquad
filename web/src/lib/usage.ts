@@ -175,3 +175,27 @@ export function providerUsageMap(providers: ProviderUsage[] | undefined): Map<st
   for (const p of providers ?? []) map.set(p.provider_id, p);
   return map;
 }
+
+// S-230: rolling-window cost lookups. The usage payload already covers
+// the last 30 days, so summing a series' points gives the rolling cost
+// for that squad/agent — used by the dashboard squad tiles.
+export function sumSeriesCost(series: UsageSeries | undefined): number {
+  if (!series) return 0;
+  return (series.points ?? []).reduce((acc, p) => acc + (p.cost ?? 0), 0);
+}
+
+function totalCostMap(series: UsageSeries[] | undefined): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const s of series ?? []) map.set(s.id, sumSeriesCost(s));
+  return map;
+}
+
+// costBySquad maps squad_id → total cost over the usage window (30 days).
+export function costBySquad(usage: DashboardUsagePayload | null | undefined): Map<string, number> {
+  return totalCostMap(usage?.by_squad);
+}
+
+// costByAgent maps agent_id → total cost over the usage window (30 days).
+export function costByAgent(usage: DashboardUsagePayload | null | undefined): Map<string, number> {
+  return totalCostMap(usage?.by_agent);
+}

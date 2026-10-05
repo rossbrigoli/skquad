@@ -100,7 +100,7 @@ func TestDashboardUsageAdminSeesSeriesMTDAndPlatform(t *testing.T) {
 		require.Zero(t, p.Tokens)
 	}
 
-	// Provider/model MTD rollup: X has two models, Y has one.
+	// Provider/model rolling-30-day rollup: X has two models, Y has one.
 	require.Len(t, payload.Providers, 2)
 	provByName := map[string]ProviderUsage{}
 	for _, p := range payload.Providers {
@@ -114,7 +114,7 @@ func TestDashboardUsageAdminSeesSeriesMTDAndPlatform(t *testing.T) {
 	require.InDelta(t, 0.25, x.Models[0].Cost, 1e-9)
 	require.Equal(t, "gpt-x", x.Models[1].Model)
 	require.Equal(t, 120, x.Models[1].Tokens)
-	require.InDelta(t, 0.75, x.Cost, 1e-9) // 0.5 (gpt-x) + 0.25 (gpt-mini), MTD only
+	require.InDelta(t, 0.75, x.Cost, 1e-9) // 0.5 (gpt-x) + 0.25 (gpt-mini), 30-day window
 	require.Len(t, provByName["Prov Y"].Models, 1)
 
 	// Admin-only platform block.
@@ -123,6 +123,48 @@ func TestDashboardUsageAdminSeesSeriesMTDAndPlatform(t *testing.T) {
 	require.InDelta(t, 1.75, payload.Platform.MTDCost, 1e-9)
 	require.GreaterOrEqual(t, payload.Platform.Users, 1)
 	require.Equal(t, 2, payload.Platform.Agents)
+}
+
+func TestDashboardUsageProviderRollupLast30Days(t *testing.T) {
+	t.Parallel()
+
+	// S-230 regression: the gateway callback often carries NO provider_id.
+	// The rollup must resolve the provider through the registered AI model
+	// (model_name → ai_models.provider_id) and aggregate over the rolling
+	// 30-day window — not the calendar month — so provider tiles show
+	// real cost instead of "no usage".
+	store := storage.NewMemoryStore()
+	handler := New(testConfig(), store)
+
+	squad, agent := dashboardFixture(t, handler, "", "Rollup Squad", []string{"todo"}, 0, 0)
+	prov := registerProvider(t, handler, "", "Rollup Provider", "http://rollup.invalid")
+
+	var model struct{ ID string }
+	doJSONAuth(t, handler, "", http.MethodPost, "/api/v1/ai-models", map[string]any{
+		"provider_id": prov, "model_name": "gpt-registered", "context_window": 128000,
+		"pricing": validPricing(),
+	}, http.StatusCreated, &model)
+	require.NotEmpty(t, model.ID)
+
+	// Empty provider_id on the events: only the registry join can attribute them.
+	meterNow(t, store, squad, agent, "", "gpt-registered", 10*24*time.Hour, 1000, 500, 0.4)
+	meterNow(t, store, squad, agent, "", "gpt-registered", time.Hour, 2000, 1000, 0.6)
+	// Outside the rolling 30-day window: must NOT be counted.
+	meterNow(t, store, squad, agent, "", "gpt-registered", 40*24*time.Hour, 9999, 9999, 99.0)
+
+	var payload DashboardUsagePayload
+	doJSON(t, handler, http.MethodGet, pathDashboardUsage, nil, http.StatusOK, &payload)
+
+	require.Len(t, payload.Providers, 1)
+	provUsage := payload.Providers[0]
+	require.Equal(t, prov, provUsage.ProviderID)
+	require.Equal(t, "Rollup Provider", provUsage.ProviderName)
+	// Rolling 30 days = 0.4 + 0.6, never the 99.0 outside the window.
+	require.InDelta(t, 1.0, provUsage.Cost, 1e-9)
+	require.Equal(t, 4500, provUsage.Tokens)
+	require.Len(t, provUsage.Models, 1)
+	require.Equal(t, "gpt-registered", provUsage.Models[0].Model)
+	require.InDelta(t, 1.0, provUsage.Models[0].Cost, 1e-9)
 }
 
 func TestDashboardUsageDaysParam(t *testing.T) {

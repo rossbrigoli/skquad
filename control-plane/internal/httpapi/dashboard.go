@@ -321,14 +321,17 @@ type UsageSeries struct {
 	Points    []UsagePoint `json:"points"`
 }
 
-// ProviderModelUsage is one model's month-to-date usage under a provider.
+// ProviderModelUsage is one model's last-30-days usage under a provider
+// (S-230: rolling window, not calendar month).
 type ProviderModelUsage struct {
 	Model  string  `json:"model"`
 	Tokens int     `json:"tokens"`
 	Cost   float64 `json:"cost"`
 }
 
-// ProviderUsage is a provider's month-to-date rollup plus per-model rows.
+// ProviderUsage is a provider's last-30-days rollup plus per-model rows
+// (S-230: the dashboard shows rolling 30-day cost, never calendar MTD,
+// so the figure never blanks out at the start of a month).
 type ProviderUsage struct {
 	ProviderID   string               `json:"provider_id"`
 	ProviderName string               `json:"provider_name"`
@@ -460,7 +463,7 @@ func getOrCreateSeriesAcc(acc map[string]*usageSeriesAcc, id string, meta UsageS
 	return a
 }
 
-// accumulateProviderModel folds one daily row into the month-to-date
+// accumulateProviderModel folds one daily row into the rolling-window
 // provider and provider/model rollups.
 func accumulateProviderModel(provAcc map[string]*ProviderUsage, modelAcc map[string]map[string]*ProviderModelUsage, row domain.MeteringDailyRow) {
 	prov := provAcc[row.ProviderID]
@@ -497,8 +500,8 @@ type usageSeriesAcc struct {
 }
 
 // buildUsageSeries folds daily rows into squad series, agent series and
-// the provider/model MTD rollup. Series are sorted by name so chart
-// colors stay stable between polls.
+// the provider/model rolling-30-day rollup. Series are sorted by name so
+// chart colors stay stable between polls.
 func buildUsageSeries(payload *DashboardUsagePayload, rows []domain.MeteringDailyRow) {
 	squadAcc := map[string]*usageSeriesAcc{}
 	agentAcc := map[string]*usageSeriesAcc{}
@@ -521,10 +524,10 @@ func buildUsageSeries(payload *DashboardUsagePayload, rows []domain.MeteringDail
 		})
 		accumulateUsagePoint(agent, row)
 
-		// Provider/model rollup is month-to-date only.
-		if row.Day < payload.MTDStart {
-			continue
-		}
+		// S-230: the provider/model rollup covers the FULL rolling window
+		// (last 30 days), not the calendar month. The old MTD-only filter
+		// made every provider tile read "no usage this month" whenever the
+		// current calendar month had no spend yet.
 		accumulateProviderModel(provAcc, modelAcc, row)
 	}
 

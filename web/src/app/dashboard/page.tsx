@@ -18,24 +18,25 @@ import { BarChart } from "../../components/BarChart";
 import { EmptyState } from "../../components/EmptyState";
 import { MetricTile } from "../../components/MetricTile";
 import { StatusChip } from "../../components/StatusChip";
+import { AgentTile } from "../../components/AgentTiles";
+import { ProviderTilesGrid } from "../../components/ProviderTiles";
 import { useApi } from "../../lib/useApi";
-import { formatCompact, formatCost, formatMoney, formatMoneyCents, formatTokens } from "../../lib/format";
+import { formatCompact, formatMoney, formatMoneyCents } from "../../lib/format";
 import { agentStatus } from "../../lib/status";
 import {
   buildStackedChart,
+  costByAgent,
+  costBySquad,
   providerUsageMap,
   type ChartMode,
   type ChartSource,
   type DashboardUsagePayload,
-  type ProviderUsage,
 } from "../../lib/usage";
 import {
   dashboardTotals,
-  providerChip,
   resourceChip,
   taskCount,
   type DashboardPayload,
-  type DashboardProvider,
   type DashboardResource,
   type DashboardSquad,
   type DashboardTotals,
@@ -109,7 +110,7 @@ export default function DashboardPage() {
               <BarChart model={usageChart} formatValue={formatValue} />
             </div>
 
-            <SquadsSection squads={data?.squads} />
+            <SquadsSection squads={data?.squads} usage={usage} currency={currency} />
 
             <ProvidersSection providers={data?.providers} providerUsage={providerUsage} currency={currency} />
 
@@ -122,23 +123,83 @@ export default function DashboardPage() {
 }
 
 // S-189/S3776: the three list sections extracted from DashboardPage.
-function SquadsSection({ squads }: { readonly squads?: DashboardSquad[] }) {
+// S-230: the Squads section renders each squad as a block whose agents
+// are the SAME tiles used on the squad Overview screen (S-211), now with
+// the rolling 30-day cost on every tile. The squad header carries a
+// "running" chip whenever at least one of its agents is running.
+function SquadsSection({
+  squads,
+  usage,
+  currency,
+}: {
+  readonly squads?: DashboardSquad[];
+  readonly usage: DashboardUsagePayload | null;
+  readonly currency: string;
+}) {
+  const squadCost = costBySquad(usage);
+  const agentCost = costByAgent(usage);
   return (
     <>
       <h2 className="section-title">Squads</h2>
       {(squads?.length ?? 0) === 0 ? (
         <EmptyState title="No squads yet" hint="Create a squad to see it here with its task counts and costs." />
       ) : (
-        <div className="entity-list">
-          {squads!.map((squad) => (
-            <SquadRow key={squad.id} squad={squad} />
-          ))}
-        </div>
+        squads!.map((squad) => (
+          <SquadBlock key={squad.id} squad={squad} squadCost30d={squadCost.get(squad.id) ?? 0} agentCost={agentCost} currency={currency} />
+        ))
       )}
     </>
   );
 }
 
+function SquadBlock({
+  squad,
+  squadCost30d,
+  agentCost,
+  currency,
+}: {
+  readonly squad: DashboardSquad;
+  readonly squadCost30d: number;
+  readonly agentCost: ReadonlyMap<string, number>;
+  readonly currency: string;
+}) {
+  const anyRunning = (squad.agents ?? []).some((agent) => agentStatusOf(agent) === "running");
+  return (
+    <section className="squad-block">
+      <div className="squad-block-header">
+        <Link href={`/squads/${squad.id}`} className="entity-title">
+          {squad.name}
+        </Link>
+        {anyRunning ? <StatusChip status="running" /> : null}
+        <span className="squad-block-cost mono">{formatMoney(squadCost30d, currency)} · last 30 days</span>
+      </div>
+      <div className="entity-meta">
+        {taskCount(squad, "todo")} todo · {taskCount(squad, "in-progress")} in progress
+        {squad.owner_name ? ` · owner: ${squad.owner_name}` : ""}
+      </div>
+      {(squad.agents?.length ?? 0) > 0 ? (
+        <div className="agent-tile-grid" style={{ marginTop: "var(--space-2)" }}>
+          {squad.agents!.map((agent) => (
+            <AgentTile
+              key={agent.id}
+              agent={{ id: agent.id, squad_id: agent.squad_id, name: agent.name, role: agent.role, status: agent.status }}
+              href={`/squads/${squad.id}/agents/${agent.id}`}
+              costLabel={`last 30 days ${formatMoney(agentCost.get(agent.id) ?? 0, currency)}`}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="entity-meta" style={{ marginTop: "var(--space-2)" }}>
+          no agents in this squad
+        </div>
+      )}
+    </section>
+  );
+}
+
+// S-230: providers render as tiles (same anatomy as the agent tiles)
+// with a green ONLINE indicator and the aggregated last-30-days cost
+// across all of the provider's AI models.
 function ProvidersSection({
   providers,
   providerUsage,
@@ -154,16 +215,7 @@ function ProvidersSection({
       {(providers?.length ?? 0) === 0 ? (
         <EmptyState title="No providers registered" hint="Register providers in Settings → AI Models." />
       ) : (
-        <div className="entity-list">
-          {providers!.map((provider) => (
-            <ProviderRow
-              key={provider.id}
-              provider={provider}
-              usageRow={providerUsage.get(provider.id)}
-              currency={currency}
-            />
-          ))}
-        </div>
+        <ProviderTilesGrid providers={providers!} usageMap={providerUsage} currency={currency} />
       )}
     </>
   );
@@ -222,97 +274,6 @@ function MetricGrid({
           <MetricTile label="Users" value={usage.platform.users} sub="in the platform" />
           <MetricTile label="Agents" value={usage.platform.agents} sub="across all squads" />
         </>
-      ) : null}
-    </div>
-  );
-}
-
-// SquadRow renders one squad card with its task counts, cost and agents.
-function SquadRow({ squad }: { readonly squad: DashboardSquad }) {
-  return (
-    <div className="entity-row" style={{ flexDirection: "column", alignItems: "stretch" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <Link href={`/squads/${squad.id}`} className="entity-title" style={{ display: "block" }}>
-          {squad.name}
-        </Link>
-        <strong>{formatCost(squad.cost ?? null)}</strong>
-      </div>
-      <div className="entity-meta" style={{ marginTop: "var(--space-1)" }}>
-        {taskCount(squad, "todo")} todo · {taskCount(squad, "in-progress")} in progress
-        {squad.owner_name ? ` · owner: ${squad.owner_name}` : ""}
-        {" · "}
-        {formatTokens(squad.cost ?? null)}
-      </div>
-      {(squad.agents?.length ?? 0) > 0 ? (
-        <div style={{ marginTop: "var(--space-2)", borderTop: "1px solid var(--line)", paddingTop: "var(--space-2)" }}>
-          {squad.agents!.map((agent) => (
-            <div
-              key={agent.id}
-              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "var(--text-sm)", padding: "2px 0" }}
-            >
-              <Link href={`/squads/${squad.id}/agents/${agent.id}`} style={{ color: "var(--ink)" }}>
-                {agent.name}
-              </Link>
-              <span style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                <StatusChip status={agentStatusOf(agent)} />
-                <span className="mono">{formatCost(agent.cost ?? null)}</span>
-              </span>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="entity-meta" style={{ marginTop: "var(--space-2)" }}>
-          no agents in this squad
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ProviderRow renders one provider with its MTD usage and per-model rows.
-function ProviderRow({
-  provider,
-  usageRow,
-  currency,
-}: {
-  readonly provider: DashboardProvider;
-  readonly usageRow: ProviderUsage | undefined;
-  readonly currency: string;
-}) {
-  const chip = providerChip(provider);
-  return (
-    <div className="entity-row" style={{ flexDirection: "column", alignItems: "stretch" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <div className="entity-main">
-          <span className="entity-title">{provider.name}</span>
-          <span className="entity-meta">
-            {provider.kind}
-            {provider.latency_ms ? ` · ${provider.latency_ms} ms` : ""}
-            {provider.error ? ` · ${provider.error}` : ""}
-          </span>
-        </div>
-        <div className="entity-side" style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-          {usageRow ? (
-            <span className="mono">
-              MTD {formatMoney(usageRow.cost, currency)} · {formatCompact(usageRow.tokens)} tokens
-            </span>
-          ) : (
-            <span className="entity-meta">no usage this month</span>
-          )}
-          <span className={chip.className}>{chip.label}</span>
-        </div>
-      </div>
-      {(usageRow?.models?.length ?? 0) > 0 ? (
-        <div className="provider-models">
-          {usageRow!.models.map((model) => (
-            <div key={model.model} className="provider-model">
-              <span className="mono">{model.model}</span>
-              <span className="mono">
-                {formatMoney(model.cost, currency)} · {formatCompact(model.tokens)} tokens
-              </span>
-            </div>
-          ))}
-        </div>
       ) : null}
     </div>
   );

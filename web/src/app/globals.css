@@ -3556,7 +3556,8 @@ button.squad-tab.active {
   gap: var(--space-3);
 }
 
-.agent-tile {
+.agent-tile,
+.provider-tile {
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -3571,7 +3572,8 @@ button.squad-tab.active {
     background var(--motion-fast) var(--ease-out);
 }
 
-.agent-tile:hover {
+.agent-tile:hover,
+.provider-tile:hover {
   border-color: var(--accent);
   background: var(--surface-sunken);
 }
@@ -3653,6 +3655,79 @@ button.squad-tab.active {
     animation: none;
     box-shadow: 0 0 0 2px var(--status-running-bg);
   }
+}
+
+/* S-230: cost line on agent tiles (rolling 30-day cost on the dashboard). */
+.agent-tile-cost {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+/* S-230: AI provider tiles. Same anatomy as the agent tiles above
+   (shared base classes), plus a green ONLINE indicator and the
+   per-model usage rows wrapping under the tile header. */
+.provider-tile {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+}
+
+.provider-tile .agent-tile-status {
+  align-self: center;
+}
+
+.provider-online,
+.provider-offline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.provider-online {
+  color: var(--status-done);
+}
+
+.provider-offline {
+  color: var(--status-idle);
+}
+
+.provider-online-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px var(--status-done-bg);
+}
+
+.provider-offline .provider-online-dot {
+  box-shadow: 0 0 0 3px var(--status-idle-bg);
+}
+
+.provider-tile-models {
+  flex: 1 1 100%;
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-2);
+}
+
+/* S-230: squad block on the dashboard — header with name, running chip
+   and rolling 30-day cost; agent tiles underneath. */
+.squad-block {
+  margin-bottom: var(--space-4);
+}
+
+.squad-block-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.squad-block-cost {
+  margin-left: auto;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
 }
 
 /* S-204 follow-up: Resources index page (/settings/resources). */

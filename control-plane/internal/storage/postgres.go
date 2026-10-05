@@ -1747,6 +1747,14 @@ func (p *PostgresStore) SumMetering(ctx context.Context, squadID, agentID string
 // squadIDs is an explicit allowlist; empty means all squads (see
 // MeteringStore). Names come from LEFT JOINs so deleted rows degrade to
 // empty labels rather than dropping history.
+//
+// S-230: the provider id is RESOLVED per row — the reported
+// metering.provider_id wins when present, otherwise the provider of the
+// registered AI model whose model_name matches the metered model. The
+// gateway does not always stamp provider_id on its callback, so without
+// this registry join every provider rollup on the dashboard came back
+// empty ("no usage"). The lookup is a scalar subquery so a model_name
+// registered under two providers can never multiply rows.
 func (p *PostgresStore) SumMeteringDaily(ctx context.Context, since time.Time, squadIDs []string) ([]domain.MeteringDailyRow, error) {
 	var sinceArg any
 	if !since.IsZero() {
@@ -1756,21 +1764,34 @@ func (p *PostgresStore) SumMeteringDaily(ctx context.Context, since time.Time, s
 	squadArg := "{" + strings.Join(squadIDs, ",") + "}"
 
 	rows, err := p.pool.Query(ctx, `
-		SELECT to_char(m.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD'),
-		       m.squad_id::text, coalesce(s.name, ''),
-		       m.agent_id::text, coalesce(a.name, ''),
-		       coalesce(m.provider_id::text, ''), coalesce(p.name, ''),
-		       m.model,
-		       sum(m.input_tokens)::integer,
-		       sum(m.output_tokens)::integer,
-		       coalesce(sum(m.cost), 0)::double precision,
-		       coalesce(max(m.currency), 'USD')
-		FROM metering m
-		LEFT JOIN squads s ON s.id = m.squad_id
-		LEFT JOIN agents a ON a.id = m.agent_id
-		LEFT JOIN providers p ON p.id = m.provider_id
-		WHERE ($1::timestamptz IS NULL OR m.timestamp >= $1::timestamptz)
-		  AND (cardinality($2::uuid[]) = 0 OR m.squad_id = ANY($2::uuid[]))
+		WITH resolved AS (
+			SELECT m.timestamp, m.squad_id, m.agent_id, m.model,
+			       m.input_tokens, m.output_tokens, m.cost, m.currency,
+			       coalesce(
+			         nullif(m.provider_id::text, '')::uuid,
+			         (SELECT am.provider_id
+			          FROM ai_models am
+			          WHERE am.model_name = m.model
+			          ORDER BY am.provider_id
+			          LIMIT 1)
+			       ) AS provider_id
+			FROM metering m
+		)
+		SELECT to_char(r.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD'),
+		       r.squad_id::text, coalesce(s.name, ''),
+		       r.agent_id::text, coalesce(a.name, ''),
+		       coalesce(r.provider_id::text, ''), coalesce(p.name, ''),
+		       r.model,
+		       sum(r.input_tokens)::integer,
+		       sum(r.output_tokens)::integer,
+		       coalesce(sum(r.cost), 0)::double precision,
+		       coalesce(max(r.currency), 'USD')
+		FROM resolved r
+		LEFT JOIN squads s ON s.id = r.squad_id
+		LEFT JOIN agents a ON a.id = r.agent_id
+		LEFT JOIN providers p ON p.id = r.provider_id
+		WHERE ($1::timestamptz IS NULL OR r.timestamp >= $1::timestamptz)
+		  AND (cardinality($2::uuid[]) = 0 OR r.squad_id = ANY($2::uuid[]))
 		GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
 		ORDER BY 1, 3, 5, 7, 8
 	`, sinceArg, squadArg)
