@@ -3669,7 +3669,22 @@ func (s *Server) listSquadAudit(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
+	// S-235: resolve actor display names so the timeline shows
+	// "agent Bob" / "Ross" instead of GUIDs.
+	decorateAuditEntries(entries, s.resolveActorDisplays(r.Context(), auditActorRefs(entries)))
 	writeJSON(w, http.StatusOK, entries)
+}
+
+// auditActorRefs collects the user/agent actor references from audit
+// entries (system actors are skipped — they have no name to resolve).
+func auditActorRefs(entries []*domain.AuditEntry) []actorRef {
+	refs := make([]actorRef, 0, len(entries))
+	for _, entry := range entries {
+		if entry.ActorType == "user" || entry.ActorType == "agent" {
+			refs = append(refs, actorRef{kind: entry.ActorType, id: entry.ActorID})
+		}
+	}
+	return refs
 }
 
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
@@ -5047,6 +5062,13 @@ func (s *Server) listTaskMessages(w http.ResponseWriter, r *http.Request) {
 			filtered = append(filtered, msg)
 		}
 	}
+	// S-235: resolve sender display names (current agent name / user
+	// first name) so the thread never renders raw GUIDs.
+	refs := make([]actorRef, 0, len(filtered))
+	for _, msg := range filtered {
+		refs = append(refs, actorRef{kind: msg.FromType, id: msg.FromID})
+	}
+	decorateMessages(filtered, s.resolveActorDisplays(r.Context(), refs))
 	writeJSON(w, http.StatusOK, filtered)
 }
 

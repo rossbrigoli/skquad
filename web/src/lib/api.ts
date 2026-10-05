@@ -93,6 +93,10 @@ export type Message = {
   id: string;
   from_type: string;
   from_id: string;
+  // S-235: sender display name resolved server-side at read time
+  // (current agent name / user first name, email local-part fallback).
+  // Absent when unresolvable — clients fall back (see actorDisplay).
+  from_display?: string;
   to_agent_id: string;
   squad_id: string;
   type: string;
@@ -215,6 +219,9 @@ export type AuditEntry = {
   id: string;
   actor_type: string;
   actor_id: string;
+  // S-235: actor display name resolved server-side at read time.
+  // Absent for system actors and unresolvable ids.
+  actor_display?: string;
   action: string;
   resource_type: string;
   resource_id: string;

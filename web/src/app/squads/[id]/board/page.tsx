@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useState, type DragEvent } from "react";
+import { useState, useRef, type DragEvent } from "react";
 import { AuthGate } from "../../../../components/AuthGate";
 import { AppShell } from "../../../../components/AppShell";
 import { EmptyState } from "../../../../components/EmptyState";
@@ -10,7 +10,8 @@ import { Modal, ModalForm } from "../../../../components/Modal";
 import { StatusChip } from "../../../../components/StatusChip";
 import { useApi } from "../../../../lib/useApi";
 import { useAuth } from "../../../../lib/auth";
-import { apiPatch, apiPost, type Agent, type BoardPayload, type Squad, type Task, type TaskStatus } from "../../../../lib/api";
+import { apiPatch, apiPost, apiUploadImage, type Agent, type BoardPayload, type Squad, type Task, type TaskStatus } from "../../../../lib/api";
+import { validateImageFile } from "../../../../lib/uploads";
 import { formatRelativeTime, leaseState } from "../../../../lib/format";
 import { formatTaskRef } from "../../../../lib/taskRef";
 import { taskStatus } from "../../../../lib/status";
@@ -224,7 +225,13 @@ export default function SquadBoardPage() {
   );
 }
 
-function TaskCreateModal({
+// S-235: exported for component tests. The create dialog gained an
+// "Attach image" control (reuses the S-194 upload flow: upload into
+// the squad, then post to the new task's thread with the attachment
+// reference — so it requires an assignee, since thread messages need a
+// recipient) and the `wider` sizing (+50%, matching the New Squad /
+// New Agent dialogs).
+export function TaskCreateModal({
   columnLabel,
   agents,
   squadId,
@@ -246,9 +253,11 @@ function TaskCreateModal({
   const [assignee, setAssignee] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   return (
-    <Modal title={`New task → ${columnLabel}`} onClose={onClose}>
+    <Modal title={`New task → ${columnLabel}`} onClose={onClose} wider>
       <ModalForm
         busy={busy}
         error={error}
@@ -259,7 +268,7 @@ function TaskCreateModal({
           setBusy(true);
           setError("");
           try {
-            await apiPost<Task>(`/squads/${squadId}/board/tasks`, token, {
+            const created = await apiPost<Task>(`/squads/${squadId}/board/tasks`, token, {
               title: title.trim(),
               description: description.trim(),
               assignee_agent_id: assignee,
@@ -268,6 +277,15 @@ function TaskCreateModal({
               // could win in between.
               status: targetStatus,
             });
+            // S-235: an attached image rides a thread message on the
+            // freshly created task (same flow as the task page's attach).
+            if (file && created?.id) {
+              const up = await apiUploadImage("/uploads", token, file, `?squad_id=${encodeURIComponent(squadId)}`);
+              await apiPost(`/tasks/${created.id}/messages`, token, {
+                message: `📎 Screenshot attached: ${up.filename}`,
+                attachments: [up.id],
+              });
+            }
             onCreated();
           } catch (err) {
             setError(err instanceof Error ? err.message : "create failed");
@@ -295,6 +313,44 @@ function TaskCreateModal({
           </select>
           {agents.length === 0 ? <span className="field-hint">No agents in this squad yet.</span> : null}
         </label>
+        {/* S-235: attach an image at creation time. Thread messages need
+            a recipient, so the control unlocks with an assignee. */}
+        <div className="field">
+          <span>Attachment</span>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const picked = e.target.files?.[0] ?? null;
+              e.target.value = "";
+              if (!picked) return;
+              const invalid = validateImageFile(picked);
+              if (invalid) {
+                setError(invalid);
+                return;
+              }
+              setError("");
+              setFile(picked);
+            }}
+          />
+          <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={assignee === ""}
+              onClick={() => fileInputRef.current?.click()}
+              title={assignee === "" ? "Assign an agent first — attachments ride a thread message" : "Attach an image (png/jpg/gif/webp, ≤5 MB)"}
+            >
+              📎 Attach image
+            </button>
+            {file ? <span className="field-hint">{file.name}</span> : null}
+          </div>
+          {assignee === "" ? (
+            <span className="field-hint">Assign an agent to attach an image (attachments are delivered with the task).</span>
+          ) : null}
+        </div>
       </ModalForm>
     </Modal>
   );
