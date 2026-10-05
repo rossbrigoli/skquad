@@ -61,11 +61,11 @@ func seriesCost(series []UsageSeries, id string) float64 {
 	return -1
 }
 
-// seedBudgetProvider seeds an LLM provider directly in the store and
+// seedBudgetProvider seeds an AI provider directly in the store and
 // returns its id so metering rows resolve a real provider name.
 func seedBudgetProvider(t *testing.T, store *storage.MemoryStore, name string) string {
 	t.Helper()
-	p, err := store.CreateLLMProvider(context.Background(), &domain.LLMProvider{
+	p, err := store.CreateAIProvider(context.Background(), &domain.AIProvider{
 		Name: name, Kind: "openai", BaseURL: "https://" + name + ".skquad.test",
 		APIKeyRef: "secret/" + name, Status: domain.ResourceActive, RegisteredBy: "test",
 	})

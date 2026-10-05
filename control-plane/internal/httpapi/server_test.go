@@ -341,12 +341,12 @@ func TestRegistryRequiresPlatformAdminForWrites(t *testing.T) {
 	require.Equal(t, "forbidden", body["error"]["code"])
 }
 
-func TestRegistryLLMProviderAndGenericResourceFlow(t *testing.T) {
+func TestRegistryAIProviderAndGenericResourceFlow(t *testing.T) {
 	t.Parallel()
 
 	handler := New(testConfig(), storage.NewMemoryStore())
 
-	var provider domain.LLMProvider
+	var provider domain.AIProvider
 	doJSON(t, handler, http.MethodPost, pathProviders, map[string]any{
 		"name":          "Local Llama",
 		"kind":          openaiCompatible,
@@ -361,11 +361,11 @@ func TestRegistryLLMProviderAndGenericResourceFlow(t *testing.T) {
 	// providers; the decoder ignores them.
 	require.Equal(t, localLLMBaseURL, provider.BaseURL)
 
-	var providers []domain.LLMProvider
+	var providers []domain.AIProvider
 	doJSON(t, handler, http.MethodGet, pathProviders, nil, http.StatusOK, &providers)
 	require.Len(t, providers, 1)
 
-	var updatedProvider domain.LLMProvider
+	var updatedProvider domain.AIProvider
 	doJSON(t, handler, http.MethodPatch, pathProvidersPrefix+provider.ID, map[string]any{
 		"base_url": "http://localhost:8124/v1",
 	}, http.StatusOK, &updatedProvider)
@@ -556,7 +556,7 @@ func TestGatewayMeteringSnapshotsRatesAndComputesCost(t *testing.T) {
 		"name": "Snapshot Agent",
 	}, http.StatusCreated, &agent)
 
-	provider, err := store.CreateLLMProvider(context.Background(), &domain.LLMProvider{
+	provider, err := store.CreateAIProvider(context.Background(), &domain.AIProvider{
 		Name:         "snapshot-provider",
 		Kind:         "openai",
 		BaseURL:      "https://api.example.test",
@@ -853,7 +853,7 @@ func TestAgentIdentityProvisionsLiteLLMVirtualKey(t *testing.T) {
 		"name": "Gateway Agent",
 	}, http.StatusCreated, &agent)
 
-	var provider domain.LLMProvider
+	var provider domain.AIProvider
 	doJSON(t, handler, http.MethodPost, pathProviders, map[string]any{
 		"name":        "Local Llama",
 		"kind":        "openai",
@@ -862,7 +862,7 @@ func TestAgentIdentityProvisionsLiteLLMVirtualKey(t *testing.T) {
 	}, http.StatusCreated, &provider)
 
 	// WP3: the virtual key is compiled from the agent's model binding
-	// (ADR-0010 D5), not from llm_provider grants. Register AI models,
+	// (ADR-0010 D5), not from ai_provider grants. Register AI models,
 	// grant them to the squad owner, and bind primary+fallback.
 	modelDefault := createTestAIModel(t, handler, provider.ID, "openai/local-default")
 	modelFast := createTestAIModel(t, handler, provider.ID, localFastModel)
@@ -903,7 +903,7 @@ func TestAgentPermissionsSetAndList(t *testing.T) {
 		"name": "Permissioned Agent",
 	}, http.StatusCreated, &agent)
 
-	var provider domain.LLMProvider
+	var provider domain.AIProvider
 	doJSON(t, handler, http.MethodPost, pathProviders, map[string]any{
 		"name":     "Permission Provider",
 		"kind":     openaiCompatible,
@@ -969,7 +969,7 @@ func TestAgentRuntimeResourcesReturnsGrantedActiveResources(t *testing.T) {
 	doJSON(t, handler, http.MethodPost, pathAgentsPrefix+agent.ID+pathIdentity, nil, http.StatusCreated, &identity)
 	credential := crWriter.credentialTokens[identity.CredentialRef]
 
-	var provider domain.LLMProvider
+	var provider domain.AIProvider
 	doJSON(t, handler, http.MethodPost, pathProviders, map[string]any{
 		"name":        "Gateway Model",
 		"kind":        openaiCompatible,
@@ -1001,12 +1001,12 @@ func TestAgentRuntimeResourcesReturnsGrantedActiveResources(t *testing.T) {
 	}, http.StatusOK, &perms)
 	require.Len(t, perms, 2)
 
-	// The llm_provider grant type is closed at the API (ADR-0010 / S-107);
+	// The ai_provider grant type is closed at the API (ADR-0010 / S-107);
 	// seed the legacy grant directly — the runtime resource listing for
 	// existing provider grants is still exercised until WP3 replaces it.
 	require.NoError(t, store.GrantAgentPermission(context.Background(), &domain.AgentPermission{
 		AgentID:      agent.ID,
-		ResourceType: domain.ResLLMProvider,
+		ResourceType: domain.ResAIProvider,
 		ResourceID:   provider.ID,
 		GrantedBy:    "test",
 	}))
@@ -1015,7 +1015,7 @@ func TestAgentRuntimeResourcesReturnsGrantedActiveResources(t *testing.T) {
 	doAgentJSON(t, handler, agent.ID, credential, http.MethodGet, "/api/v1/agents/me/resources", nil, http.StatusOK, &resources)
 
 	require.Len(t, resources, 2)
-	require.Equal(t, string(domain.ResLLMProvider), resources[0]["resource_type"])
+	require.Equal(t, string(domain.ResAIProvider), resources[0]["resource_type"])
 	require.Equal(t, provider.ID, resources[0]["resource_id"])
 	require.Equal(t, "http://llm-gateway/v1", resources[0]["endpoint"])
 	require.NotContains(t, resources[0], "api_key_ref")
@@ -1900,12 +1900,12 @@ func TestUserChatCreatesAgentMessage(t *testing.T) {
 
 func testConfig() *config.Config {
 	return &config.Config{
-		Addr:               ":0",
-		AuthMode:           config.AuthDev,
-		DevEmail:           "dev@skquad.local",
-		DevName:            "Dev Admin",
-		DefaultIdleTimeout: 5 * time.Minute,
-		ConsultTimeout:     15 * time.Minute,
+		Addr:                 ":0",
+		AuthMode:             config.AuthDev,
+		DevEmail:             "dev@skquad.local",
+		DevName:              "Dev Admin",
+		DefaultIdleTimeout:   5 * time.Minute,
+		ConsultTimeout:       15 * time.Minute,
 		ConsultSweepInterval: 60 * time.Second,
 	}
 }
@@ -2281,7 +2281,7 @@ func TestDeleteRegistryResourceInUseWarnsThenForceDeletes(t *testing.T) {
 	}
 }
 
-func TestDeleteLLMProviderInUseWarnsThenForceDeletes(t *testing.T) {
+func TestDeleteAIProviderInUseWarnsThenForceDeletes(t *testing.T) {
 	store := storage.NewMemoryStore()
 	handler := New(testConfig(), store)
 
@@ -2292,18 +2292,18 @@ func TestDeleteLLMProviderInUseWarnsThenForceDeletes(t *testing.T) {
 		"name": "llm-worker",
 		"role": "worker",
 	}, http.StatusCreated, &agent)
-	var provider domain.LLMProvider
+	var provider domain.AIProvider
 	doJSON(t, handler, http.MethodPost, pathProviders, map[string]any{
 		"name":     "delete-me-llm",
 		"kind":     "openai",
 		"base_url": "http://example.invalid",
 	}, http.StatusCreated, &provider)
 
-	// The llm_provider grant type is closed at the API (ADR-0010 / S-107);
+	// The ai_provider grant type is closed at the API (ADR-0010 / S-107);
 	// seed the legacy grant directly to exercise the S-103 delete warning.
 	require.NoError(t, store.GrantAgentPermission(context.Background(), &domain.AgentPermission{
 		AgentID:      agent.ID,
-		ResourceType: domain.ResLLMProvider,
+		ResourceType: domain.ResAIProvider,
 		ResourceID:   provider.ID,
 		GrantedBy:    "test",
 	}))
@@ -2332,5 +2332,5 @@ func TestDeleteLLMProviderInUseWarnsThenForceDeletes(t *testing.T) {
 func TestDeleteRegistryResourceNotFound(t *testing.T) {
 	handler := New(testConfig(), storage.NewMemoryStore())
 	doJSONNoBody(t, handler, http.MethodDelete, "/api/v1/registry/skills/11111111-1111-1111-1111-111111111111", nil, http.StatusNotFound)
-	doJSONNoBody(t, handler, http.MethodDelete, "/api/v1/registry/llm-providers/11111111-1111-1111-1111-111111111111", nil, http.StatusNotFound)
+	doJSONNoBody(t, handler, http.MethodDelete, "/api/v1/registry/ai-providers/11111111-1111-1111-1111-111111111111", nil, http.StatusNotFound)
 }

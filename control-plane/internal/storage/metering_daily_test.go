@@ -12,7 +12,7 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
 
-func seedDailyMeteringFixture(t *testing.T, store Store) (*domain.Squad, *domain.Squad, *domain.Agent, *domain.Agent, *domain.LLMProvider, *domain.LLMProvider) {
+func seedDailyMeteringFixture(t *testing.T, store Store) (*domain.Squad, *domain.Squad, *domain.Agent, *domain.Agent, *domain.AIProvider, *domain.AIProvider) {
 	t.Helper()
 	ctx := context.Background()
 	user, err := store.UpsertUser(ctx, &domain.User{
@@ -30,15 +30,15 @@ func seedDailyMeteringFixture(t *testing.T, store Store) (*domain.Squad, *domain
 	agentB, err := store.CreateAgent(ctx, &domain.Agent{SquadID: squadB.ID, Name: "agent-beta", Role: "coder", Permissions: []byte("[]"), IdleTimeoutSec: 300})
 	require.NoError(t, err)
 
-	provX, err := store.CreateLLMProvider(ctx, &domain.LLMProvider{Name: "prov-x", Kind: "openai", BaseURL: "http://x.test"})
+	provX, err := store.CreateAIProvider(ctx, &domain.AIProvider{Name: "prov-x", Kind: "openai", BaseURL: "http://x.test"})
 	require.NoError(t, err)
-	provY, err := store.CreateLLMProvider(ctx, &domain.LLMProvider{Name: "prov-y", Kind: "anthropic", BaseURL: "http://y.test"})
+	provY, err := store.CreateAIProvider(ctx, &domain.AIProvider{Name: "prov-y", Kind: "anthropic", BaseURL: "http://y.test"})
 	require.NoError(t, err)
 
 	return squadA, squadB, agentA, agentB, provX, provY
 }
 
-func recordDaily(t *testing.T, store Store, agent *domain.Agent, squad *domain.Squad, provider *domain.LLMProvider, model string, day time.Time, in, out int, cost float64) {
+func recordDaily(t *testing.T, store Store, agent *domain.Agent, squad *domain.Squad, provider *domain.AIProvider, model string, day time.Time, in, out int, cost float64) {
 	t.Helper()
 	require.NoError(t, store.RecordMetering(context.Background(), &domain.MeteringEvent{
 		AgentID: agent.ID, SquadID: squad.ID, ProviderID: provider.ID, Model: model,

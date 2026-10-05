@@ -6,7 +6,7 @@
 // React components so the contract shape is unit-testable in the node
 // environment, matching this repo's "logic layer" test philosophy.
 
-import { ApiError, type LLMProvider } from "./api";
+import { ApiError, type AIProvider } from "./api";
 
 // --- Types mirroring control-plane JSON (domain.AIModel, model_cascade.go) ---
 
@@ -273,7 +273,7 @@ export type AIModelRow = {
 // S-128 — hierarchy grouping for the merged Settings → AI Models tab:
 // providers are credential-holder groups, models nest underneath.
 export type ProviderModelGroup = {
-  provider: LLMProvider;
+  provider: AIProvider;
   models: AIModel[];
 };
 
@@ -282,7 +282,7 @@ export type ProviderModelGroup = {
 // (data drift — the FK should prevent this, but the UI must not hide
 // them) come back as `orphans` for a separate "Unassigned" section.
 export function groupModelsByProvider(
-  providers: LLMProvider[],
+  providers: AIProvider[],
   models: AIModel[],
 ): { groups: ProviderModelGroup[]; orphans: AIModel[] } {
   const providerIds = new Set(providers.map((p) => p.id));
@@ -364,7 +364,7 @@ export type ProviderModelList = {
 };
 
 // parseProviderModels defensively extracts the model-name list from the
-// control-plane passthrough (GET /registry/llm-providers/{id}/models).
+// control-plane passthrough (GET /registry/ai-providers/{id}/models).
 // Anything malformed degrades to an empty list — the UI then shows the
 // free-text fallback rather than a broken dropdown.
 export function parseProviderModels(body: unknown): string[] {
@@ -405,7 +405,7 @@ export function modelFieldMode(providerSelected: boolean, loading: boolean, erro
 // --- S-208: provider model metadata prefill --------------------------
 
 // ProviderModelMetadata is the normalised "Fetch from provider" result
-// (GET /registry/llm-providers/{id}/model-metadata). Zero/absent
+// (GET /registry/ai-providers/{id}/model-metadata). Zero/absent
 // fields mean the provider did not expose the value — the UI shows a
 // "not available from provider" hint and never fabricates.
 export type ProviderModelMetadata = {

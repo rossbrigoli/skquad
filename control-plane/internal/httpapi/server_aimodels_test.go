@@ -1,5 +1,5 @@
 // WP2 tests: AI Model CRUD, user-level model grants, /models/me, and the
-// closed llm_provider grant path (ADR-0010 / S-107).
+// closed ai_provider grant path (ADR-0010 / S-107).
 
 package httpapi
 
@@ -53,10 +53,10 @@ func validPricing() map[string]any {
 	}
 }
 
-func createTestProvider(t *testing.T, handler http.Handler, name string) domain.LLMProvider {
+func createTestProvider(t *testing.T, handler http.Handler, name string) domain.AIProvider {
 	t.Helper()
-	var provider domain.LLMProvider
-	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	var provider domain.AIProvider
+	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/registry/ai-providers", map[string]any{
 		"name":     name,
 		"kind":     "openai",
 		"base_url": "http://" + name + ".invalid/v1",
@@ -363,7 +363,7 @@ func TestMyModelsOnlyGrantedAndActive(t *testing.T) {
 	require.Empty(t, mine)
 }
 
-func TestLLMProviderNoLongerGrantableToAgents(t *testing.T) {
+func TestAIProviderNoLongerGrantableToAgents(t *testing.T) {
 	t.Parallel()
 	handler, store := newAIModelHarness(t)
 	provider := createTestProvider(t, handler, "closed-door-prov")
@@ -375,7 +375,7 @@ func TestLLMProviderNoLongerGrantableToAgents(t *testing.T) {
 
 	var body map[string]map[string]string
 	doJSONAuth(t, handler, authAlice, http.MethodPut, pathAgentsPrefix+agent.ID+pathPermissions, []map[string]string{
-		{"resource_type": "llm_provider", "resource_id": provider.ID},
+		{"resource_type": "ai_provider", "resource_id": provider.ID},
 	}, http.StatusBadRequest, &body)
 	require.Equal(t, "provider_not_grantable", body["error"]["code"])
 	require.Contains(t, body["error"]["message"], "AI Models")

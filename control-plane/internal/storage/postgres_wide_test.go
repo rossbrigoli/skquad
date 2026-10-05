@@ -107,7 +107,7 @@ func TestPostgresWideRegistryPermissionsMeteringWakeAndTemplates(t *testing.T) {
 		t.Fatalf("talk grant should allow ping")
 	}
 
-	provider, err := store.CreateLLMProvider(ctx, &domain.LLMProvider{
+	provider, err := store.CreateAIProvider(ctx, &domain.AIProvider{
 		Name:         "wide-provider-" + tag,
 		Kind:         "openai",
 		BaseURL:      "https://models.example.test",
@@ -121,17 +121,17 @@ func TestPostgresWideRegistryPermissionsMeteringWakeAndTemplates(t *testing.T) {
 	}
 	provider.Name = "wide-provider-updated-" + tag
 	provider.APIKeyMask = "sk-...wide"
-	updatedProvider, err := store.UpdateLLMProvider(ctx, provider)
+	updatedProvider, err := store.UpdateAIProvider(ctx, provider)
 	if err != nil {
 		t.Fatalf("update provider: %v", err)
 	}
 	if updatedProvider.Name != provider.Name || updatedProvider.APIKeyMask != "sk-...wide" {
 		t.Fatalf("updated provider mismatch: %+v", updatedProvider)
 	}
-	if err := store.DeprecateLLMProvider(ctx, provider.ID); err != nil {
+	if err := store.DeprecateAIProvider(ctx, provider.ID); err != nil {
 		t.Fatalf("deprecate provider: %v", err)
 	}
-	providers, err := store.ListLLMProviders(ctx)
+	providers, err := store.ListAIProviders(ctx)
 	if err != nil {
 		t.Fatalf("list providers: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestPostgresWideRegistryPermissionsMeteringWakeAndTemplates(t *testing.T) {
 	if err := store.DeleteResource(ctx, domain.ResProjectWorkspace, resource.ID); err != nil {
 		t.Fatalf("delete resource: %v", err)
 	}
-	if err := store.DeleteLLMProvider(ctx, provider.ID); err != nil {
+	if err := store.DeleteAIProvider(ctx, provider.ID); err != nil {
 		t.Fatalf("delete provider: %v", err)
 	}
 }
@@ -642,7 +642,7 @@ func hasAgent(agents []*domain.Agent, id string) bool {
 	return false
 }
 
-func hasProvider(providers []*domain.LLMProvider, id string) bool {
+func hasProvider(providers []*domain.AIProvider, id string) bool {
 	for _, p := range providers {
 		if p.ID == id {
 			return true

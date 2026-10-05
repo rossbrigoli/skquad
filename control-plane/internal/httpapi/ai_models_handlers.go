@@ -1,7 +1,7 @@
 // AI Model CRUD + user-level model grant handlers (ADR-0010, S-107).
 //
 // AI Models are the grantable unit (D1); grants follow users (D3). All
-// admin surfaces here mirror the existing LLM-provider registry handler
+// admin surfaces here mirror the existing AI-provider registry handler
 // patterns (auth helpers, audit-ctx, error envelopes). Revoke/deprecate/
 // delete cascades converge virtual keys via model_cascade.go (WP4, D9).
 
@@ -104,8 +104,8 @@ func validateContextWindow(value int) (string, bool) {
 // point at an already-registered provider. The provider record is
 // returned so S-GWREG gateway provisioning can resolve kind/base_url/key
 // without a second lookup.
-func (s *Server) ensureAIModelProviderExists(w http.ResponseWriter, r *http.Request, providerID string) (*domain.LLMProvider, bool) {
-	provider, err := s.store.GetLLMProvider(r.Context(), providerID)
+func (s *Server) ensureAIModelProviderExists(w http.ResponseWriter, r *http.Request, providerID string) (*domain.AIProvider, bool) {
+	provider, err := s.store.GetAIProvider(r.Context(), providerID)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			writeError(w, http.StatusBadRequest, "bad_request", "provider_id must reference an existing provider")
@@ -241,7 +241,7 @@ func (s *Server) createAIModel(w http.ResponseWriter, r *http.Request) {
 // model being registered. It returns the deployment id ("" when the
 // LLM gateway is not configured — dev mode). On provisioning failure
 // it writes the 502 and returns ok=false.
-func (s *Server) provisionGatewayForNewModel(w http.ResponseWriter, r *http.Request, provider *domain.LLMProvider, modelName string, supportsVision bool) (deploymentID string, ok bool) {
+func (s *Server) provisionGatewayForNewModel(w http.ResponseWriter, r *http.Request, provider *domain.AIProvider, modelName string, supportsVision bool) (deploymentID string, ok bool) {
 	if !s.gatewayModelsEnabled() {
 		log.Printf("aimodel: LLM gateway not configured — skipping gateway deployment for %q (dev mode; model will NOT be routable until registered in the gateway)", modelName)
 		return "", true

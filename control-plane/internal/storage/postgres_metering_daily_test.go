@@ -1,7 +1,7 @@
 package storage
 
 // S-195 regression: SumMeteringDaily must run against the real Postgres
-// schema. The original implementation joined `llm_providers`, but the
+// schema. The original implementation joined `ai_providers`, but the
 // actual table is `providers` — the memory-store-only tests never caught
 // it and the live dashboard failed with "unexpected storage error".
 // These tests exercise the exact SQL path via SKQUAD_TEST_DATABASE_URL.
@@ -19,7 +19,7 @@ func TestPostgresSumMeteringDailyJoinsRealSchema(t *testing.T) {
 	f := newPGFixture(t, store)
 	ctx := context.Background()
 
-	provider, err := store.CreateLLMProvider(ctx, &domain.LLMProvider{
+	provider, err := store.CreateAIProvider(ctx, &domain.AIProvider{
 		Name:         "metering-prov-" + time.Now().UTC().Format("150405.000000"),
 		Kind:         "openai",
 		BaseURL:      "https://provider.skquad.test",

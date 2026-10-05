@@ -35,7 +35,7 @@ import (
 var dashboardProbeTimeout = 2 * time.Second
 
 // dashboardResourceTypes are the generic registry types surfaced in the
-// resources overview. llm_provider is excluded — it has its own section.
+// resources overview. ai_provider is excluded — it has its own section.
 var dashboardResourceTypes = []domain.ResourceType{
 	domain.ResSkill,
 	domain.ResTool,
@@ -130,7 +130,7 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 		payload.Squads = append(payload.Squads, entry)
 	}
 
-	providers, err := s.store.ListLLMProviders(r.Context())
+	providers, err := s.store.ListAIProviders(r.Context())
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -616,7 +616,7 @@ func (s *Server) platformUsage(ctx context.Context, mtdStart time.Time) (*Platfo
 // providers get an HTTP GET with a short timeout; any HTTP response counts
 // as online. Inactive (deprecated) providers are reported offline without a
 // probe.
-func (s *Server) probeProviders(r *http.Request, providers []*domain.LLMProvider) []DashboardProvider {
+func (s *Server) probeProviders(r *http.Request, providers []*domain.AIProvider) []DashboardProvider {
 	out := make([]DashboardProvider, len(providers))
 	var wg sync.WaitGroup
 	for i, p := range providers {

@@ -3,7 +3,7 @@
 // Two admin-only endpoints that exercise credentials WITHOUT persisting
 // anything, so an admin can verify a token before saving:
 //
-//	POST /api/v1/registry/llm-providers/test  {base_url, api_key?, provider_id?}
+//	POST /api/v1/registry/ai-providers/test  {base_url, api_key?, provider_id?}
 //	POST /api/v1/ai-models/test               {provider_id, model_name}
 //
 // The provider test reuses the S-125 model-list call (GET {base}/models)
@@ -86,7 +86,7 @@ func classifyProviderTestError(err error) (reason, detail string) {
 	}
 }
 
-// testProviderConnection handles POST /registry/llm-providers/test.
+// testProviderConnection handles POST /registry/ai-providers/test.
 // Tests an UNSAVED provider: base_url + api_key come straight from the
 // form. On the edit form an empty api_key with a provider_id falls back
 // to the stored (Secret-backed) key so "leave blank to keep" is testable.
@@ -113,7 +113,7 @@ func (s *Server) testProviderConnection(w http.ResponseWriter, r *http.Request) 
 	// Edit-form fallback: use the stored provider's base URL / key for
 	// whatever the form left blank.
 	if providerID := strings.TrimSpace(req.ProviderID); providerID != "" {
-		provider, err := s.store.GetLLMProvider(r.Context(), providerID)
+		provider, err := s.store.GetAIProvider(r.Context(), providerID)
 		if err != nil {
 			writeStorageError(w, err)
 			return
@@ -324,7 +324,7 @@ func (s *Server) testModelRoundTrip(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "provider_id and model_name are required")
 		return
 	}
-	provider, err := s.store.GetLLMProvider(r.Context(), providerID)
+	provider, err := s.store.GetAIProvider(r.Context(), providerID)
 	if err != nil {
 		writeStorageError(w, err)
 		return

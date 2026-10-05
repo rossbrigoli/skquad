@@ -92,7 +92,7 @@ func TestGetMyModelBoundVision(t *testing.T) {
 	f := newDelegationFixture(t)
 	ctx := context.Background()
 
-	provider, err := f.store.CreateLLMProvider(ctx, &domain.LLMProvider{
+	provider, err := f.store.CreateAIProvider(ctx, &domain.AIProvider{
 		Name: "dm-prov", Kind: "openai", BaseURL: "http://dm.invalid", APIKeyRef: "k",
 		Status: domain.ResourceActive,
 	})

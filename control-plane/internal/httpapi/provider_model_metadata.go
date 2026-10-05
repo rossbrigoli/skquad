@@ -303,11 +303,11 @@ func providerBaseEndpoint(baseURL, stripSuffix string) (string, error) {
 	return trimmed, nil
 }
 
-// getLLMProviderModelMetadata handles
-// GET /api/v1/registry/llm-providers/{providerID}/model-metadata?model=NAME.
+// getAIProviderModelMetadata handles
+// GET /api/v1/registry/ai-providers/{providerID}/model-metadata?model=NAME.
 // Admin-only (it exercises the provider credential). Error mapping and
-// the "UI never blocked" contract match listLLMProviderModels.
-func (s *Server) getLLMProviderModelMetadata(w http.ResponseWriter, r *http.Request) {
+// the "UI never blocked" contract match listAIProviderModels.
+func (s *Server) getAIProviderModelMetadata(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
 	}
@@ -316,7 +316,7 @@ func (s *Server) getLLMProviderModelMetadata(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "bad_request", "model query parameter is required")
 		return
 	}
-	provider, err := s.store.GetLLMProvider(r.Context(), chi.URLParam(r, "providerID"))
+	provider, err := s.store.GetAIProvider(r.Context(), chi.URLParam(r, "providerID"))
 	if err != nil {
 		writeStorageError(w, err)
 		return

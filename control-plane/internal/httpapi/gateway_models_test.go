@@ -73,9 +73,9 @@ func newGWRegHarness(t *testing.T, gw *recordingGateway) (http.Handler, *storage
 
 // createKeyedProvider registers a provider with a (fake) API key so the
 // resolved litellm_params.api_key is observable.
-func createKeyedProvider(t *testing.T, handler http.Handler, name string) domain.LLMProvider {
+func createKeyedProvider(t *testing.T, handler http.Handler, name string) domain.AIProvider {
 	t.Helper()
-	var provider domain.LLMProvider
+	var provider domain.AIProvider
 	doJSONAuth(t, handler, authAdmin, http.MethodPost, pathProviders, map[string]any{
 		"name":     name,
 		"kind":     "openai",
@@ -186,7 +186,7 @@ func TestCreateAIModelUnknownProviderKindFailsLoud(t *testing.T) {
 	t.Parallel()
 	gw := &recordingGateway{}
 	handler, store, _ := newGWRegHarness(t, gw)
-	var provider domain.LLMProvider
+	var provider domain.AIProvider
 	doJSONAuth(t, handler, authAdmin, http.MethodPost, pathProviders, map[string]any{
 		"name":     "gwreg-weird",
 		"kind":     "quantum",

@@ -1,4 +1,4 @@
-// S-208 tests: GET /registry/llm-providers/{id}/model-metadata — the
+// S-208 tests: GET /registry/ai-providers/{id}/model-metadata — the
 // admin passthrough powering the Model Edit dialog's "Fetch from
 // provider" prefill. Covers OpenRouter-style OpenAI-compatible metadata,
 // vanilla OpenAI "nothing available", ollama native /api/show parsing

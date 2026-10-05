@@ -1,4 +1,4 @@
-// S-132: known LLM provider API kinds. The `value` is the provider name
+// S-132: known AI provider API kinds. The `value` is the provider name
 // the LiteLLM gateway understands (custom_llm_provider); the `label` is
 // the human-facing API name shown in the dropdown. Editing a provider whose
 // stored kind is not in the curated list keeps it selectable as "(current)"

@@ -162,7 +162,7 @@ function GrantedResourcesSection({
                   className="btn btn-sm btn-danger"
                   onClick={() =>
                     onRevoke(
-                      // Rebuild from grants (llm_provider rows excluded): the
+                      // Rebuild from grants (ai_provider rows excluded): the
                       // backend rejects them on PUT, so replaying legacy rows
                       // would break every revoke.
                       grants
@@ -364,10 +364,10 @@ export default function AgentProfilePage() {
   const live = tasks.filter((t) => leaseState(t) === "running");
   const stalled = tasks.filter((t) => leaseState(t) === "stalled");
   const agentActivity = (audit.data || []).filter((e) => e.resource_id === agentId);
-  // WP2 (ADR-0010) made llm_provider grants legacy: they are no longer
+  // WP2 (ADR-0010) made ai_provider grants legacy: they are no longer
   // grantable and the LLM tab supersedes them, so hide any surviving
-  // llm_provider rows from the permissions surface (WP8 drops the type).
-  const resourceGrants = (perms.data || []).filter((p) => p.resource_type !== "llm_provider");
+  // ai_provider rows from the permissions surface (WP8 drops the type).
+  const resourceGrants = (perms.data || []).filter((p) => p.resource_type !== "ai_provider");
   // S-169 item 12: the context-window stat moved from under the chat box
   // up into the compact chip row.
   const contextTokens = useMemo(() => chatContextTokens(chat.data || []), [chat.data]);

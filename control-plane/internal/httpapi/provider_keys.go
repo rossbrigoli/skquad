@@ -48,7 +48,7 @@ func maskProviderKey(key string) string {
 
 // providerJSON is the S-155 wire shape: api_key_ref and the key itself
 // are never serialized. api_key_masked carries the stored tail.
-func providerJSON(p *domain.LLMProvider) map[string]any {
+func providerJSON(p *domain.AIProvider) map[string]any {
 	return map[string]any{
 		"id":             p.ID,
 		"name":           p.Name,
@@ -62,7 +62,7 @@ func providerJSON(p *domain.LLMProvider) map[string]any {
 	}
 }
 
-func providerJSONList(providers []*domain.LLMProvider) []map[string]any {
+func providerJSONList(providers []*domain.AIProvider) []map[string]any {
 	out := make([]map[string]any, 0, len(providers))
 	for _, p := range providers {
 		out = append(out, providerJSON(p))
@@ -75,7 +75,7 @@ func providerJSONList(providers []*domain.LLMProvider) []map[string]any {
 // non-empty ref is returned as-is for out-of-cluster dev only — the
 // startup migration wraps every in-cluster literal, so production
 // never hits that branch.
-func (s *Server) resolveProviderKey(ctx context.Context, provider *domain.LLMProvider) (string, error) {
+func (s *Server) resolveProviderKey(ctx context.Context, provider *domain.AIProvider) (string, error) {
 	ref := strings.TrimSpace(provider.APIKeyRef)
 	if ref == "" {
 		return "", nil
@@ -92,7 +92,7 @@ func (s *Server) resolveProviderKey(ctx context.Context, provider *domain.LLMPro
 
 // setProviderKey stores a pasted key in the managed Secret and updates
 // the provider's ref+mask in place (caller persists the provider).
-func (s *Server) setProviderKey(ctx context.Context, provider *domain.LLMProvider, key string) error {
+func (s *Server) setProviderKey(ctx context.Context, provider *domain.AIProvider, key string) error {
 	if s.providerKeys == nil {
 		return fmt.Errorf("kubernetes secret storage is not configured")
 	}
@@ -106,7 +106,7 @@ func (s *Server) setProviderKey(ctx context.Context, provider *domain.LLMProvide
 }
 
 // clearProviderKey removes the managed Secret and blanks ref+mask.
-func (s *Server) clearProviderKey(ctx context.Context, provider *domain.LLMProvider) {
+func (s *Server) clearProviderKey(ctx context.Context, provider *domain.AIProvider) {
 	if s.providerKeys == nil || !kube.IsManagedRef(provider.APIKeyRef) {
 		provider.APIKeyRef = ""
 		provider.APIKeyMask = ""
@@ -130,7 +130,7 @@ func MigrateLegacyProviderKeys(ctx context.Context, store Store, keys ProviderKe
 	if keys == nil {
 		return 0, nil
 	}
-	providers, err := store.ListLLMProviders(ctx)
+	providers, err := store.ListAIProviders(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -146,7 +146,7 @@ func MigrateLegacyProviderKeys(ctx context.Context, store Store, keys ProviderKe
 		}
 		p.APIKeyRef = keys.RefFor(providerSecretName(p.ID))
 		p.APIKeyMask = maskProviderKey(ref)
-		if _, err := store.UpdateLLMProvider(ctx, p); err != nil {
+		if _, err := store.UpdateAIProvider(ctx, p); err != nil {
 			log.Printf("provider key migration: persist %s: %v", p.ID, err)
 			continue
 		}

@@ -86,7 +86,7 @@ func TestRenderEnabledToolsUnknownName(t *testing.T) {
 func seedModel(t *testing.T, store *storage.MemoryStore, providerName, display, model string, ctxWin int, supportsTools bool) *domain.AIModel {
 	t.Helper()
 	ctx := context.Background()
-	prov, err := store.CreateLLMProvider(ctx, &domain.LLMProvider{Name: providerName, Kind: "openai", BaseURL: "https://example.invalid"})
+	prov, err := store.CreateAIProvider(ctx, &domain.AIProvider{Name: providerName, Kind: "openai", BaseURL: "https://example.invalid"})
 	require.NoError(t, err)
 	m, err := store.CreateAIModel(ctx, &domain.AIModel{
 		ProviderID:    prov.ID,

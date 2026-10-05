@@ -102,7 +102,7 @@ func newGatewayReloader(cfg *config.Config) (*kube.GatewayReloader, error) {
 // API key into the litellm registration shape. The key is resolved
 // through the S-155 Secret store and never logged. supportsVision (S-200)
 // is carried into the deployment model_info.
-func (s *Server) buildGatewayModelSpec(ctx context.Context, provider *domain.LLMProvider, modelName string, supportsVision bool) (GatewayModelSpec, error) {
+func (s *Server) buildGatewayModelSpec(ctx context.Context, provider *domain.AIProvider, modelName string, supportsVision bool) (GatewayModelSpec, error) {
 	prefix, ok := litellmModelPrefix(provider.Kind)
 	if !ok {
 		return GatewayModelSpec{}, fmt.Errorf("provider kind %q has no LiteLLM model prefix mapping", provider.Kind)
@@ -139,7 +139,7 @@ func (s *Server) findGatewayDeployment(ctx context.Context, modelName string) (s
 // modelName) and returns its id. The caller triggers the reload only
 // after the registry write succeeds, so a request causes at most one
 // rollout restart on the happy path.
-func (s *Server) provisionGatewayModel(ctx context.Context, provider *domain.LLMProvider, modelName string, supportsVision bool) (string, error) {
+func (s *Server) provisionGatewayModel(ctx context.Context, provider *domain.AIProvider, modelName string, supportsVision bool) (string, error) {
 	spec, err := s.buildGatewayModelSpec(ctx, provider, modelName, supportsVision)
 	if err != nil {
 		return "", err
@@ -157,7 +157,7 @@ func (s *Server) provisionGatewayModel(ctx context.Context, provider *domain.LLM
 //     the old deployment cannot be deleted, the new one is removed
 //     again so no shadow deployment survives.
 //   - old deployment missing (drift): plain create.
-func (s *Server) updateGatewayModelDeployment(ctx context.Context, oldModelName string, provider *domain.LLMProvider, newModelName string, supportsVision bool) error {
+func (s *Server) updateGatewayModelDeployment(ctx context.Context, oldModelName string, provider *domain.AIProvider, newModelName string, supportsVision bool) error {
 	spec, err := s.buildGatewayModelSpec(ctx, provider, newModelName, supportsVision)
 	if err != nil {
 		return err
@@ -226,10 +226,10 @@ func writeGatewayProvisionFailure(w http.ResponseWriter, op string, err error) {
 
 // gatewayModelReconcileReport is the drift-reconcile response shape.
 type gatewayModelReconcileReport struct {
-	Registered     []string                `json:"registered"`
-	AlreadyPresent []string                `json:"already_present"`
-	Failed         []gatewayModelFailure   `json:"failed"`
-	Extras         []gatewayModelExtra     `json:"extras"`
+	Registered     []string              `json:"registered"`
+	AlreadyPresent []string              `json:"already_present"`
+	Failed         []gatewayModelFailure `json:"failed"`
+	Extras         []gatewayModelExtra   `json:"extras"`
 }
 
 type gatewayModelFailure struct {
@@ -304,10 +304,10 @@ func (s *Server) reconcileGatewayModels(w http.ResponseWriter, r *http.Request) 
 // providerForAIModel resolves the model's provider for registration.
 // A missing provider surfaces as a per-model registration error — it
 // must never abort the whole reconcile pass.
-func (s *Server) providerForAIModel(r *http.Request, model *domain.AIModel) *domain.LLMProvider {
-	provider, err := s.store.GetLLMProvider(r.Context(), model.ProviderID)
+func (s *Server) providerForAIModel(r *http.Request, model *domain.AIModel) *domain.AIProvider {
+	provider, err := s.store.GetAIProvider(r.Context(), model.ProviderID)
 	if err != nil {
-		return &domain.LLMProvider{ID: model.ProviderID, Kind: "__missing_provider__"}
+		return &domain.AIProvider{ID: model.ProviderID, Kind: "__missing_provider__"}
 	}
 	return provider
 }

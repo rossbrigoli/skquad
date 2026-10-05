@@ -328,7 +328,7 @@ func TestRegistryResourceListingAndUnknownType(t *testing.T) {
 	require.Equal(t, "not_found", body["error"]["code"])
 }
 
-func TestGetAndDeprecateLLMProvider(t *testing.T) {
+func TestGetAndDeprecateAIProvider(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig()
@@ -340,14 +340,14 @@ func TestGetAndDeprecateLLMProvider(t *testing.T) {
 	})
 	promoteAdmin(t, store, handler, authAdmin)
 
-	var provider domain.LLMProvider
-	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	var provider domain.AIProvider
+	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/registry/ai-providers", map[string]any{
 		"name":     "OpenAI",
 		"kind":     "openai",
 		"base_url": "https://api.openai.com/v1",
 	}, http.StatusCreated, &provider)
 
-	var fetched domain.LLMProvider
+	var fetched domain.AIProvider
 	doJSONAuth(t, handler, authAdmin, http.MethodGet, pathProvidersPrefix+provider.ID, nil, http.StatusOK, &fetched)
 	require.Equal(t, provider.ID, fetched.ID)
 	require.Equal(t, domain.ResourceActive, fetched.Status)
@@ -356,7 +356,7 @@ func TestGetAndDeprecateLLMProvider(t *testing.T) {
 	doJSONAuth(t, handler, authUser, http.MethodGet, pathProvidersPrefix+provider.ID, nil, http.StatusOK, &fetched)
 
 	var missing map[string]map[string]string
-	doJSONAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/registry/llm-providers/nope", nil, http.StatusNotFound, &missing)
+	doJSONAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/registry/ai-providers/nope", nil, http.StatusNotFound, &missing)
 	require.Equal(t, "not_found", missing["error"]["code"])
 
 	var denied map[string]map[string]string
@@ -372,7 +372,7 @@ func TestGetAndDeprecateLLMProvider(t *testing.T) {
 	doJSONAuth(t, handler, authAdmin, http.MethodGet, pathProvidersPrefix+provider.ID, nil, http.StatusOK, &fetched)
 	require.Equal(t, domain.ResourceDeprecated, fetched.Status)
 
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/registry/llm-providers/does-not-exist/deprecate", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/registry/ai-providers/does-not-exist/deprecate", nil)
 	req.Header.Set("Authorization", authAdmin)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -380,7 +380,7 @@ func TestGetAndDeprecateLLMProvider(t *testing.T) {
 
 	var audit []domain.AuditEntry
 	doJSONAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/audit", nil, http.StatusOK, &audit)
-	require.Contains(t, auditActions(audit), "registry.llm_provider.deprecate")
+	require.Contains(t, auditActions(audit), "registry.ai_provider.deprecate")
 }
 
 func TestAgentStartsAssignedTaskAndBlocksUnassignedOnes(t *testing.T) {

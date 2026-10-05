@@ -328,14 +328,14 @@ type WorkNotificationStore interface {
 	WaitForAgentWork(ctx context.Context, agentID string, timeout time.Duration) (bool, error)
 }
 
-// RegistryStore persists registry resources (LLM providers + generic resources).
+// RegistryStore persists registry resources (AI providers + generic resources).
 type RegistryStore interface {
-	CreateLLMProvider(ctx context.Context, p *domain.LLMProvider) (*domain.LLMProvider, error)
-	GetLLMProvider(ctx context.Context, id string) (*domain.LLMProvider, error)
-	UpdateLLMProvider(ctx context.Context, p *domain.LLMProvider) (*domain.LLMProvider, error)
-	DeprecateLLMProvider(ctx context.Context, id string) error
-	DeleteLLMProvider(ctx context.Context, id string) error
-	ListLLMProviders(ctx context.Context) ([]*domain.LLMProvider, error)
+	CreateAIProvider(ctx context.Context, p *domain.AIProvider) (*domain.AIProvider, error)
+	GetAIProvider(ctx context.Context, id string) (*domain.AIProvider, error)
+	UpdateAIProvider(ctx context.Context, p *domain.AIProvider) (*domain.AIProvider, error)
+	DeprecateAIProvider(ctx context.Context, id string) error
+	DeleteAIProvider(ctx context.Context, id string) error
+	ListAIProviders(ctx context.Context) ([]*domain.AIProvider, error)
 
 	CreateResource(ctx context.Context, r *domain.RegistryResource) (*domain.RegistryResource, error)
 	GetResource(ctx context.Context, typ domain.ResourceType, id string) (*domain.RegistryResource, error)

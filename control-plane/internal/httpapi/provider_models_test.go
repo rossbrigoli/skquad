@@ -1,4 +1,4 @@
-// S-125 tests: GET /registry/llm-providers/{id}/models — the admin
+// S-125 tests: GET /registry/ai-providers/{id}/models — the admin
 // passthrough that powers the register-model dropdown. Covers success,
 // upstream auth rejection, upstream timeout, non-admin rejection, and
 // unknown-provider 404.
@@ -19,7 +19,7 @@ func createProviderWithBase(t *testing.T, handler http.Handler, name, baseURL, a
 	var provider struct {
 		ID string `json:"id"`
 	}
-	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/registry/llm-providers", map[string]any{
+	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/registry/ai-providers", map[string]any{
 		"name":        name,
 		"kind":        "openai",
 		"base_url":    baseURL,
@@ -108,7 +108,7 @@ func TestListProviderModelsRequiresAdmin(t *testing.T) {
 
 func TestListProviderModelsUnknownProvider(t *testing.T) {
 	handler, _ := newAIModelHarness(t)
-	rec := doRawAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/registry/llm-providers/does-not-exist/models")
+	rec := doRawAuth(t, handler, authAdmin, http.MethodGet, "/api/v1/registry/ai-providers/does-not-exist/models")
 	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 }
 
