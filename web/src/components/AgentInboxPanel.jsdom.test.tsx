@@ -87,13 +87,13 @@ describe("AgentInboxPanel states", () => {
   it("shows the unavailable notice on error", () => {
     state.error = "503 upstream";
     render(<AgentInboxPanel agentId="ag-1" />);
-    expect(screen.getByText("Inbox unavailable: 503 upstream")).toBeInTheDocument();
+    expect(screen.getByText("Message delivery unavailable: 503 upstream")).toBeInTheDocument();
   });
 
   it("shows the empty copy when the snapshot has nothing", () => {
     render(<AgentInboxPanel agentId="ag-1" />);
     expect(
-      screen.getByText(/inbox is empty — nothing pending, retrying, delivered, or dead/),
+      screen.getByText(/No messages to deliver — nothing pending, retrying, delivered, or dead/),
     ).toBeInTheDocument();
   });
 
@@ -136,6 +136,26 @@ describe("AgentInboxPanel states", () => {
     expect(screen.getByText("consult timeout")).toBeInTheDocument();
     expect(screen.getByText(/thread corr-777/)).toBeInTheDocument();
     expect(screen.getByText("Oldest waiting since", { exact: false })).toBeInTheDocument();
+  });
+
+  // S-237 regression: the delivery panel's rows must stay inside the
+  // `.inbox-panel` scope (which re-scopes .inbox-row to the two-column
+  // grid) and keep exactly two direct children (.inbox-main + .inbox-side).
+  // Merging them back into the mail-client's 6-column grid collapsed the
+  // message content into the 18px first column (~3 chars per line).
+  it("keeps delivery rows in the two-column panel scope with two children", () => {
+    state.snapshot = snapshot({
+      pending_count: 1,
+      pending: [msg({ id: "p1", payload: { message: "wide rows please" } })],
+    });
+    render(<AgentInboxPanel agentId="ag-1" />);
+    const rows = document.querySelectorAll(".inbox-row");
+    expect(rows.length).toBe(1);
+    const row = rows[0];
+    expect(row.closest(".inbox-panel")).not.toBeNull();
+    expect(row.children.length).toBe(2);
+    expect(row.querySelector(".inbox-main")).not.toBeNull();
+    expect(row.querySelector(".inbox-side")).not.toBeNull();
   });
 
   it("shows the placeholder excerpt when there is no message body", () => {

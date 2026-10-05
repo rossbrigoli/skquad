@@ -331,9 +331,9 @@ describe("title + tabs", () => {
     expect(screen.getByText("Agent not found")).toBeInTheDocument();
   });
 
-  it("switches to the inbox tab and mounts the delivery panel", async () => {
+  it("switches to the message delivery tab and mounts the delivery panel", async () => {
     render(<AgentProfilePage />);
-    await userEvent.click(screen.getByRole("button", { name: "Inbox" }));
+    await userEvent.click(screen.getByRole("button", { name: "Message delivery" }));
     expect(screen.getByTestId("agent-inbox")).toHaveTextContent("agent-inbox:ag1");
     expect(screen.queryByText(/Talk to coder/)).not.toBeInTheDocument();
   });
