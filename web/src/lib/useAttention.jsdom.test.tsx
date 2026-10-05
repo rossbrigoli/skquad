@@ -200,9 +200,9 @@ describe("AttentionProvider branch coverage", () => {
       </AttentionProvider>,
     );
     await waitFor(() => expect(fn).not.toBeNull());
-    expect((fn as (id?: string) => string | undefined)("ag1")).toBe("coder");
-    expect((fn as (id?: string) => string | undefined)("nope")).toBeUndefined();
-    expect((fn as (id?: string) => string | undefined)()).toBeUndefined();
+    expect((fn as unknown as (id?: string) => string | undefined)("ag1")).toBe("coder");
+    expect((fn as unknown as (id?: string) => string | undefined)("nope")).toBeUndefined();
+    expect((fn as unknown as (id?: string) => string | undefined)()).toBeUndefined();
   });
 
   it("polls again after the interval while the tab is visible", async () => {
