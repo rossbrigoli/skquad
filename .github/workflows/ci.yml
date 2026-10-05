@@ -30,6 +30,28 @@ jobs:
       - name: version.json is loadable
         run: python3 -c "import json,pathlib; d=json.loads(pathlib.Path('version.json').read_text()); print('baseline', d['major'], d['minor'], d['buildBase'], d['runBase'])"
 
+  # S-189: unit tests for the CI helper scripts themselves (scripts/*.py).
+  # The Cobertura report is prefixed so its paths resolve on the (different-
+  # host) SonarQube scanner, then published for the security-sonar analysis.
+  scripts:
+    name: Scripts (python helpers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install test tooling
+        run: python -m pip install --upgrade pip pytest pytest-cov
+      - name: Unit tests with coverage (gate ≥90%)
+        run: |
+          python -m pytest tests/scripts -q --cov=scripts --cov-report=xml:scripts/coverage.xml --cov-fail-under=90
+          python3 scripts/testreport-to-sonar.py cobertura-prefix scripts/coverage.xml --prefix scripts
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-scripts
+          path: scripts/coverage.xml
+
   control-plane:
     name: Control plane
     runs-on: ubuntu-latest
@@ -423,6 +445,7 @@ jobs:
       - agent-runtime
       - llm-gateway
       - web
+      - scripts
     runs-on: [self-hosted, skquad]
     timeout-minutes: 45
     env:
@@ -469,6 +492,10 @@ jobs:
         with:
           name: coverage-web
           path: web/coverage
+      - uses: actions/download-artifact@v7
+        with:
+          name: coverage-scripts
+          path: scripts
       - uses: actions/download-artifact@v7
         with:
           name: tests-control-plane
