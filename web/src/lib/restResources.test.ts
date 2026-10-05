@@ -6,6 +6,7 @@ import {
   buildRestResourcePayload,
   emptyRestForm,
   foldRestConstraints,
+  grantConstraintsLabel,
   restCeilingSummary,
   splitList,
   validateRestForm,
@@ -144,5 +145,12 @@ describe("restCeilingSummary / splitList", () => {
 
   it("splitList trims and drops empties", () => {
     expect(splitList(" a ,, b\nc ")).toEqual(["a", "b", "c"]);
+  });
+
+  it("grantConstraintsLabel summarizes narrowing, empty when none", () => {
+    expect(grantConstraintsLabel({ methods: ["GET"], rate_per_min: 10 })).toBe("methods: GET · ≤ 10/min");
+    expect(grantConstraintsLabel({})).toBe("");
+    expect(grantConstraintsLabel(undefined)).toBe("");
+    expect(grantConstraintsLabel({ path_allow: ["/issues/**"] })).toBe("allow: /issues/**");
   });
 });

@@ -210,9 +210,27 @@ function intersect(a: string[] | undefined, b: string[]): string[] {
   return b.filter((v) => set.has(v));
 }
 
+// grantConstraintsLabel renders a compact read-only summary of a grant's
+// narrowing constraints (unset fields mean "no narrowing", unlike a
+// ceiling's default-deny). Empty string when nothing is narrowed.
+export function grantConstraintsLabel(constraints: unknown): string {
+  const c =
+    constraints && typeof constraints === "object" && !Array.isArray(constraints)
+      ? (constraints as Record<string, unknown>)
+      : {};
+  const bits: string[] = [];
+  if (Array.isArray(c.methods) && c.methods.length > 0) bits.push(`methods: ${c.methods.join(", ")}`);
+  if (Array.isArray(c.path_allow) && c.path_allow.length > 0) bits.push(`allow: ${c.path_allow.join(", ")}`);
+  if (Array.isArray(c.path_deny) && c.path_deny.length > 0) bits.push(`deny: ${c.path_deny.join(", ")}`);
+  if (typeof c.rate_per_min === "number" && c.rate_per_min > 0) bits.push(`≤ ${c.rate_per_min}/min`);
+  if (typeof c.max_request_bytes === "number") bits.push(`req ≤ ${Math.round(c.max_request_bytes / 1024)} KiB`);
+  if (typeof c.max_response_bytes === "number") bits.push(`resp ≤ ${Math.round(c.max_response_bytes / 1024)} KiB`);
+  return bits.join(" · ");
+}
+
 // restCeilingSummary renders a one-line human summary of a ceiling for
 // read-only panels.
-export function restCeilingSummary(ceiling: RestCeiling | undefined): string {
+export function restCeilingSummary(ceiling: RestCeiling | RestEffectiveConstraints | undefined): string {
   const c = ceiling ?? {};
   const bits: string[] = [];
   bits.push(`methods: ${(c.methods ?? []).join(", ") || "none (default-deny)"}`);
