@@ -16,7 +16,9 @@ import (
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/audit"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/boundary"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/config"
+	"github.com/rossbrigoli/skquad/tool-gateway/internal/credentials"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/drivers"
+	restdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/rest"
 	webdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/web"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/httpapi"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/policy"
@@ -29,6 +31,7 @@ func main() {
 	}
 
 	policyClient := policy.NewClient(cfg.CPBaseURL, cfg.PolicyTTL, cfg.PolicyTimeout)
+	credsClient := credentials.NewClient(cfg.CPBaseURL, cfg.PolicyTimeout)
 
 	var auditSink audit.Emitter
 	switch cfg.AuditSink {
@@ -50,6 +53,7 @@ func main() {
 		Drivers: map[string]drivers.Driver{
 			"echo": drivers.Echo{},
 			"web":  webdriver.New(),
+			"rest": restdriver.New(credsClient),
 		},
 	})
 
