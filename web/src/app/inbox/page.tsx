@@ -35,7 +35,8 @@ import { AppShell } from "../../components/AppShell";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { EmptyState } from "../../components/EmptyState";
 import { IconEnvelopeRead, IconEnvelopeUnread } from "../../components/icons";
-import { apiDelete, apiGet, type ApiUser, type InboxMessage } from "../../lib/api";
+import { apiDelete, apiGet, apiGetWithTotal, type ApiUser, type InboxMessage } from "../../lib/api";
+import { DEFAULT_PAGE_SIZE, Pager, pageCount } from "../../components/Pager";
 import { useAuth } from "../../lib/auth";
 import { useAttention } from "../../lib/useAttention";
 import { formatRelativeTime } from "../../lib/format";
@@ -94,22 +95,33 @@ export default function InboxPage() {
   const [pendingBulkDelete, setPendingBulkDelete] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // S-239: server-side paging — 1-based page, page size (default 25)
+  // and the total messages matching the current filter (X-Total-Count).
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [total, setTotal] = useState(0);
 
   const effectiveUserId = effectiveUserIdFor(filter);
 
   const load = useCallback(async () => {
     if (!authed) return;
     try {
-      const query = buildScopedListQuery({ unread: unreadOnly, userId: effectiveUserId, limit: 200 });
-      const next = await apiGet<InboxMessage[]>(`/inbox${query}`, token);
-      setMessages(asArray<InboxMessage>(next));
+      const query = buildScopedListQuery({
+        unread: unreadOnly,
+        userId: effectiveUserId,
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
+      });
+      const { items, total: totalCount } = await apiGetWithTotal<InboxMessage[]>(`/inbox${query}`, token);
+      setMessages(asArray<InboxMessage>(items));
+      setTotal(totalCount);
       setError("");
     } catch (err) {
       setError(errMessage(err, "inbox fetch failed"));
     } finally {
       setLoading(false);
     }
-  }, [authed, token, unreadOnly, effectiveUserId]);
+  }, [authed, token, unreadOnly, effectiveUserId, page, pageSize]);
 
   useEffect(() => {
     load().catch(() => undefined);
@@ -136,16 +148,39 @@ export default function InboxPage() {
   const allVisibleSelected = allVisibleInSelection(visibleIds, selectedIds);
 
   // S-207: any filter change resets the selection so bulk actions can
-  // never touch rows the user can no longer see.
+  // never touch rows the user can no longer see. S-239: filters also
+  // jump back to the first page.
   const changeUnreadOnly = useCallback((value: boolean) => {
     setUnreadOnly(value);
     setSelectedIds(new Set());
+    setPage(1);
   }, []);
   const changeUserFilter = useCallback((value: UserFilter) => {
     setFilter(value);
     setSelectedIds(new Set());
     setSelectedId(null);
+    setPage(1);
   }, []);
+
+  // S-239: changing the page size restarts from page 1 (and clears the
+  // selection, same rule as filters).
+  const changePageSize = useCallback((size: number) => {
+    setPageSize(size);
+    setSelectedIds(new Set());
+    setPage(1);
+  }, []);
+
+  // S-239: after removing messages, shrink the known total and step
+  // back a page if the current one fell off the end.
+  const accountRemoval = useCallback(
+    (removed: number) => {
+      const nextTotal = Math.max(0, total - removed);
+      setTotal(nextTotal);
+      const pages = pageCount(nextTotal, pageSize);
+      if (page > pages) setPage(pages);
+    },
+    [total, page, pageSize],
+  );
 
   const markRead = useCallback(
     async (message: InboxMessage) => {
@@ -178,6 +213,7 @@ export default function InboxPage() {
     try {
       await apiDelete(`/inbox/${pendingDelete.id}`, token);
       setMessages((prev) => prev.filter((m) => m.id !== pendingDelete.id));
+      accountRemoval(1);
       setSelectedIds((prev) => {
         const next = new Set(prev);
         next.delete(pendingDelete.id);
@@ -189,7 +225,7 @@ export default function InboxPage() {
     } finally {
       setPendingDelete(null);
     }
-  }, [pendingDelete, token, selectedId]);
+  }, [pendingDelete, token, selectedId, accountRemoval]);
 
   // S-207 bulk: mark every selected unread message read. The provider's
   // markRead keeps the nav badge in sync per message; there is no bulk
@@ -217,20 +253,24 @@ export default function InboxPage() {
   // S-207 bulk: delete the selected messages (confirm-gated).
   const doBulkDelete = useCallback(async () => {
     const ids = [...selectedIds];
+    let removed = 0;
     try {
       for (const id of ids) {
         await apiDelete(`/inbox/${id}`, token);
+        removed += 1;
       }
       setMessages((prev) => prev.filter((m) => !selectedIds.has(m.id)));
+      accountRemoval(removed);
       if (selectedId !== null && selectedIds.has(selectedId)) setSelectedId(null);
       setError("");
     } catch (err) {
       setError(errMessage(err, "bulk delete failed"));
+      if (removed > 0) accountRemoval(removed);
     } finally {
       setSelectedIds(new Set());
       setPendingBulkDelete(false);
     }
-  }, [selectedIds, token, selectedId]);
+  }, [selectedIds, token, selectedId, accountRemoval]);
 
   // S-189/S2004: hoisted row-toggle so the list JSX stays under the
   // function-nesting limit.
@@ -367,7 +407,19 @@ export default function InboxPage() {
             onDelete={(m) => setPendingDelete(m)}
           />
         ) : (
-          renderList()
+          <>
+            {renderList()}
+            {/* S-239: pager below the list (list view only). */}
+            {total > 0 ? (
+              <Pager
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                onPageChange={setPage}
+                onPageSizeChange={changePageSize}
+              />
+            ) : null}
+          </>
         )}
         {pendingDelete ? (
           <ConfirmDialog

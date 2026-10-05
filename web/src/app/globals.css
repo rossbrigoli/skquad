@@ -3339,6 +3339,49 @@ button.squad-tab.active {
   min-width: 140px;
 }
 
+/* S-239: shared list pager (inbox and future list pages). */
+.pager {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line, rgba(128, 128, 128, 0.2));
+}
+
+.pager-summary {
+  font-size: var(--text-sm, 13px);
+  color: var(--ink-muted);
+}
+
+.pager-controls {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.pager-size {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm, 13px);
+  color: var(--ink-muted);
+}
+
+.pager-size select {
+  min-width: 80px;
+}
+
+.pager-page {
+  font-size: var(--text-sm, 13px);
+  color: var(--ink-muted);
+  min-width: 96px;
+  text-align: center;
+}
+
 /* S-201: Gmail-style sender column in the inbox list. */
 .inbox-sender {
   width: 140px;

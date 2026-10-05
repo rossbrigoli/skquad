@@ -2895,6 +2895,47 @@ func (m *MemoryStore) ListInboxMessages(_ context.Context, userID string, unread
 	return out, nil
 }
 
+// ListInboxPage (S-239) returns one newest-first page plus the total
+// count of matching messages so the inbox pager can render without a
+// second query.
+func (m *MemoryStore) ListInboxPage(_ context.Context, userID string, unreadOnly bool, limit, offset int) ([]*domain.InboxMessage, int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	all := []*domain.InboxMessage{}
+	for _, msg := range m.inbox {
+		if msg.UserID != userID {
+			continue
+		}
+		if unreadOnly && msg.ReadAt != nil {
+			continue
+		}
+		all = append(all, msg)
+	}
+	slices.SortFunc(all, func(a, b *domain.InboxMessage) int {
+		return b.CreatedAt.Compare(a.CreatedAt)
+	})
+	total := len(all)
+	if offset > total {
+		offset = total
+	}
+	out := all[offset:]
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	copies := make([]*domain.InboxMessage, 0, len(out))
+	for _, msg := range out {
+		copyMsg := *msg
+		copies = append(copies, &copyMsg)
+	}
+	return copies, total, nil
+}
+
 func (m *MemoryStore) MarkInboxMessageRead(ctx context.Context, userID string, id string) (*domain.InboxMessage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

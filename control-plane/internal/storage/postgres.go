@@ -3159,6 +3159,54 @@ func (p *PostgresStore) ListInboxMessages(ctx context.Context, userID string, un
 	return out, nil
 }
 
+// ListInboxPage (S-239) returns one newest-first page plus the total
+// count of matching messages via a window COUNT, so the inbox pager can
+// render without a second query.
+func (p *PostgresStore) ListInboxPage(ctx context.Context, userID string, unreadOnly bool, limit, offset int) ([]*domain.InboxMessage, int, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT id::text, coalesce(squad_id::text, ''), user_id::text, coalesce(from_agent_id::text, ''),
+		       coalesce(task_id::text, ''), kind, message, subject, body, read_at, created_at,
+		       COUNT(*) OVER() AS total_count
+		FROM inbox_messages
+		WHERE user_id = $1 AND (NOT $2::boolean OR read_at IS NULL)
+		ORDER BY created_at DESC
+		LIMIT $3 OFFSET $4
+	`, userID, unreadOnly, limit, offset)
+	if err != nil {
+		return nil, 0, mapPgErr(err)
+	}
+	defer rows.Close()
+	out := []*domain.InboxMessage{}
+	total := 0
+	for rows.Next() {
+		var msg domain.InboxMessage
+		var readAt sql.NullTime
+		var count int64
+		if err := rows.Scan(
+			&msg.ID, &msg.SquadID, &msg.UserID, &msg.FromAgentID, &msg.TaskID,
+			&msg.Kind, &msg.Message, &msg.Subject, &msg.Body, &readAt, &msg.CreatedAt, &count,
+		); err != nil {
+			return nil, 0, mapPgErr(err)
+		}
+		if readAt.Valid {
+			t := readAt.Time
+			msg.ReadAt = &t
+		}
+		total = int(count)
+		out = append(out, &msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, mapPgErr(err)
+	}
+	return out, total, nil
+}
+
 func (p *PostgresStore) MarkInboxMessageRead(ctx context.Context, userID string, id string) (*domain.InboxMessage, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {

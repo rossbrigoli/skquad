@@ -263,6 +263,41 @@ export async function apiGet<T>(path: string, token: string): Promise<T> {
   return apiRequest<T>(path, token, { method: "GET" });
 }
 
+// S-239: GET for paged listings — returns the parsed body plus the
+// server's X-Total-Count header (total items matching the filter,
+// independent of the current page). total is 0 when the header is
+// absent (older servers), so callers degrade gracefully.
+export async function apiGetWithTotal<T>(
+  path: string,
+  token: string,
+): Promise<{ items: T; total: number }> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (token.trim() !== "") {
+    headers.Authorization = `Bearer ${token.trim()}`;
+  }
+  const response = await fetch(`${apiBaseUrl()}${path}`, {
+    method: "GET",
+    headers,
+    credentials: "same-origin",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    let message = response.statusText;
+    let body: unknown = undefined;
+    try {
+      body = await response.json();
+      const parsed = body as { error?: { message?: unknown }; message?: unknown } | null;
+      message = extractErrorMessage(parsed) || message;
+    } catch {
+      // Keep the HTTP status text when the body is not JSON.
+    }
+    throw new ApiError(response.status, message, body);
+  }
+  const total = Number.parseInt(response.headers.get("X-Total-Count") ?? "0", 10);
+  const items = response.status === 204 ? (undefined as T) : ((await response.json()) as T);
+  return { items, total: Number.isFinite(total) ? total : 0 };
+}
+
 export async function apiPost<T>(path: string, token: string, body: unknown, opts?: { timeoutMs?: number }): Promise<T> {
   return apiRequest<T>(path, token, { method: "POST", body, timeoutMs: opts?.timeoutMs });
 }

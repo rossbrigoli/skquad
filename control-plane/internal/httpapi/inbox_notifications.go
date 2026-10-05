@@ -87,7 +87,24 @@ func (s *Server) listInbox(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	messages, err := s.store.ListInboxMessages(r.Context(), userID, unreadOnly, limit)
+	// S-239: paging offset (0-based). The total matching count rides on
+	// the X-Total-Count response header so the bare-array response shape
+	// stays backward compatible.
+	offset := 0
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 || n > 100000 {
+			writeError(w, http.StatusBadRequest, "bad_request", "offset must be between 0 and 100000")
+			return
+		}
+		offset = n
+	}
+	messages, total, err := s.store.ListInboxPage(r.Context(), userID, unreadOnly, limit, offset)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	w.Header().Set("X-Total-Count", strconv.Itoa(total))
 	if err != nil {
 		writeStorageError(w, err)
 		return
