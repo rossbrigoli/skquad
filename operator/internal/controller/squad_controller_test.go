@@ -175,8 +175,8 @@ func verifySquadEgressPolicies(t *testing.T, k8sClient client.Client, squad *skq
 	if got := requirement.Key; got != "app.kubernetes.io/component" {
 		t.Fatalf("platform egress selector key = %q, want app.kubernetes.io/component", got)
 	}
-	if !containsString(requirement.Values, "api-server") || !containsString(requirement.Values, "llm-gateway") {
-		t.Fatalf("platform egress selector values = %#v, want api-server and llm-gateway", requirement.Values)
+	if !containsString(requirement.Values, "api-server") || !containsString(requirement.Values, "llm-gateway") || !containsString(requirement.Values, "tool-gateway") {
+		t.Fatalf("platform egress selector values = %#v, want api-server, llm-gateway and tool-gateway", requirement.Values)
 	}
 	if got := platformPolicy.Spec.Egress[0].Ports[0].Port.StrVal; got != "http" {
 		t.Fatalf("platform egress port = %q, want http", got)
