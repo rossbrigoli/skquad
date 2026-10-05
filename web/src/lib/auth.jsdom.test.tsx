@@ -251,3 +251,63 @@ describe("useAuth guard", () => {
     );
   });
 });
+
+// S-189 branch coverage: unmount-while-in-flight exercises the cancelled
+// guards in both bootstrap paths (state must not be applied post-unmount).
+describe("TokenProvider — cancellation", () => {
+  it("ignores /auth/me resolution after unmount (token mode)", async () => {
+    window.localStorage.setItem(TOKEN_KEY, "saved-token");
+    let resolveMe: (v: ReturnType<typeof json>) => void = () => {};
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/auth/config")) return json({ mode: "token" });
+      if (url.includes("/auth/me")) return new Promise((res) => { resolveMe = res; });
+      return json({}, false);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { unmount, result } = renderHook(() => useAuth(), { wrapper });
+    // Unmount while /auth/me is still pending.
+    unmount();
+    resolveMe(json({ id: "u1", name: "late", email: "late@x" }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(result.current.user).toBeNull();
+  });
+
+  it("ignores /auth/session resolution after unmount (OIDC mode)", async () => {
+    let resolveSession: (v: ReturnType<typeof json>) => void = () => {};
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/auth/config")) return json({ mode: "oidc" });
+      if (url.includes("/auth/session")) return new Promise((res) => { resolveSession = res; });
+      if (url.includes("/auth/me")) return json({ id: "oidc-late", name: "late", email: "l@x" });
+      return json({}, false);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { unmount, result } = renderHook(() => useAuth(), { wrapper });
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+    unmount();
+    resolveSession(json({ ok: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(result.current.user).toBeNull();
+  });
+
+  it("ignores session errors arriving after unmount", async () => {
+    let rejectSession: (e: Error) => void = () => {};
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/auth/config")) return json({ mode: "oidc" });
+      if (url.includes("/auth/session")) return new Promise((_res, rej) => { rejectSession = rej; });
+      return json({}, false);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { unmount, result } = renderHook(() => useAuth(), { wrapper });
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+    unmount();
+    rejectSession(new Error("late network failure"));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(result.current.error).toBe("");
+  });
+});

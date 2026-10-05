@@ -3,11 +3,13 @@ import {
   ApiError,
   apiBaseUrl,
   apiDelete,
+  apiDeleteWithBody,
   apiGet,
   apiGetBlob,
   apiPatch,
   apiPost,
   apiPut,
+  apiUploadImage,
   setApiBaseOverride,
 } from "./api";
 
@@ -172,5 +174,86 @@ describe("apiGetBlob", () => {
   it("falls back to status text when the error body is not JSON", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("boom", { status: 500, statusText: "Server Error" }));
     await expect(apiGetBlob("/uploads/abc", "tok")).rejects.toThrow("Server Error");
+  });
+});
+
+// S-189 branch coverage: apiDeleteWithBody, apiUploadImage, and the
+// top-level `message` fallback in extractErrorMessage.
+describe("apiDeleteWithBody", () => {
+  it("sends DELETE with a JSON body and trimmed bearer token", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ deleted: 2 }));
+
+    const out = await apiDeleteWithBody<{ deleted: number }>("/cards/bulk", " tok ", { ids: ["a", "b"] });
+
+    expect(out).toEqual({ deleted: 2 });
+    const call = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(call[0]).toBe("/api/v1/cards/bulk");
+    expect(call[1].method).toBe("DELETE");
+    expect(call[1].headers).toMatchObject({ "Content-Type": "application/json", Authorization: "Bearer tok" });
+    expect(JSON.parse(String(call[1].body))).toEqual({ ids: ["a", "b"] });
+  });
+
+  it("omits Authorization when token is empty", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ ok: true }));
+    await apiDeleteWithBody("/x", "", {});
+    const headers = (fetchMock.mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
+  });
+});
+
+describe("apiUploadImage", () => {
+  const file = () => new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+
+  it("posts multipart form with bearer token and returns the upload ref", async () => {
+    const ref = { id: "up1", url: "/uploads/up1", content_type: "image/png", size: 3 };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(ref));
+
+    const out = await apiUploadImage("/uploads", " tok ", file(), "?owner=1");
+
+    expect(out).toEqual(ref);
+    const call = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(call[0]).toBe("/api/v1/uploads?owner=1");
+    expect(call[1].method).toBe("POST");
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers.Accept).toBe("application/json");
+    expect(headers.Authorization).toBe("Bearer tok");
+    expect(headers["Content-Type"]).toBeUndefined();
+    const form = call[1].body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    expect((form.get("file") as File).name).toBe("shot.png");
+  });
+
+  it("omits Authorization when token is empty (OIDC cookie mode)", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ id: "u" }));
+    await apiUploadImage("/uploads", "", file());
+    const headers = (fetchMock.mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
+  });
+
+  it("surfaces the parsed error message on failure", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: { code: "too_large", message: "image exceeds limit" } }, { status: 413, statusText: "Payload Too Large" }),
+    );
+    await expect(apiUploadImage("/uploads", "tok", file())).rejects.toMatchObject({
+      status: 413,
+      message: "image exceeds limit",
+    } satisfies Partial<ApiError>);
+  });
+
+  it("falls back to status text when the error body is not JSON", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 502, statusText: "Bad Gateway" }));
+    await expect(apiUploadImage("/uploads", "tok", file())).rejects.toThrow("Bad Gateway");
+  });
+});
+
+describe("extractErrorMessage fallbacks", () => {
+  it("uses a top-level string message when error.message is absent", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ message: "top-level boom" }, { status: 400, statusText: "Bad Request" }));
+    await expect(apiGet("/x", "")).rejects.toThrow("top-level boom");
+  });
+
+  it("falls back to status text when neither message field is a string", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ error: { code: 42 } }, { status: 422, statusText: "Unprocessable" }));
+    await expect(apiGet("/x", "")).rejects.toThrow("Unprocessable");
   });
 });

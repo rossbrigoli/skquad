@@ -136,3 +136,12 @@ describe("toolTileHref", () => {
     expect(toolTileHref("a b/c")).toBe("/settings/resources/tools/a%20b%2Fc");
   });
 });
+
+// S-189 branch coverage: empty-string fallback when a registry row has
+// neither description nor endpoint.
+describe("registryToolItem empty fallback", () => {
+  it("falls back to empty string when description and endpoint are absent", () => {
+    const item = registryToolItem(registryTool({ description: undefined, endpoint: undefined }));
+    expect(item.description).toBe("");
+  });
+});
