@@ -61,10 +61,20 @@ func NewSecretStore(cfg *config.Config) (*SecretStore, error) {
 // ProviderSecretName derives the managed Secret name for a provider id.
 // Provider ids are UUIDs (DNS-1123 safe); we still sanitize defensively.
 func ProviderSecretName(providerID string) string {
+	return managedSecretName("skquad-provider-key-", providerID)
+}
+
+// ResourceSecretName derives the managed Secret name for a BYO REST
+// resource id (TG-4). Same sanitization posture as provider keys.
+func ResourceSecretName(resourceID string) string {
+	return managedSecretName("skquad-rest-", resourceID)
+}
+
+func managedSecretName(prefix, id string) string {
 	var b strings.Builder
-	b.WriteString("skquad-provider-key-")
+	b.WriteString(prefix)
 	lastDash := false
-	for _, r := range strings.ToLower(strings.TrimSpace(providerID)) {
+	for _, r := range strings.ToLower(strings.TrimSpace(id)) {
 		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-'
 		if !ok {
 			continue
@@ -143,6 +153,70 @@ func (s *SecretStore) GetProviderKey(ctx context.Context, name string) (string, 
 
 // DeleteProviderKey removes the Secret; a missing Secret is not an error.
 func (s *SecretStore) DeleteProviderKey(ctx context.Context, name string) error {
+	return s.deleteSecret(ctx, name)
+}
+
+// EnsureResourceSecret creates or replaces a multi-field managed Secret
+// for a BYO REST resource credential (TG-4). Fields are written as
+// stringData; update carries the live resourceVersion so concurrent
+// writers conflict loudly instead of silently clobbering.
+func (s *SecretStore) EnsureResourceSecret(ctx context.Context, name string, fields map[string]string) error {
+	existing, code, err := s.getRaw(ctx, name)
+	if err != nil {
+		return err
+	}
+	secret := map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": s.namespace,
+			"labels":    map[string]string{managedByLabel: controlPlaneName},
+		},
+		"type":       "Opaque",
+		"stringData": fields,
+	}
+	if code == http.StatusNotFound {
+		return s.send(ctx, http.MethodPost, apiPathNamespaces+s.namespace+"/secrets", secret, "create resource secret")
+	}
+	if meta, ok := existing["metadata"].(map[string]any); ok {
+		if rv, ok := meta["resourceVersion"].(string); ok && rv != "" {
+			secret["metadata"].(map[string]any)["resourceVersion"] = rv
+		}
+	}
+	return s.send(ctx, http.MethodPut, apiPathNamespaces+s.namespace+apiPathSecrets+name, secret, "update resource secret")
+}
+
+// GetResourceSecret returns every decoded string value of a managed
+// resource Secret. Values are sensitive: callers must never log them.
+func (s *SecretStore) GetResourceSecret(ctx context.Context, name string) (map[string]string, error) {
+	secret, code, err := s.getRaw(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if code == http.StatusNotFound {
+		return nil, fmt.Errorf("secretstore: secret %s not found", name)
+	}
+	data, _ := secret["data"].(map[string]any)
+	out := make(map[string]string, len(data))
+	for k, v := range data {
+		raw, _ := v.(string)
+		decoded, err := base64.StdEncoding.DecodeString(raw)
+		if err != nil {
+			return nil, fmt.Errorf("secretstore: decode %s/%s: %w", name, k, err)
+		}
+		out[k] = string(decoded)
+	}
+	return out, nil
+}
+
+// DeleteResourceSecret removes a managed resource Secret; a missing
+// Secret is not an error.
+func (s *SecretStore) DeleteResourceSecret(ctx context.Context, name string) error {
+	return s.deleteSecret(ctx, name)
+}
+
+func (s *SecretStore) deleteSecret(ctx context.Context, name string) error {
 	req, err := s.request(ctx, http.MethodDelete, apiPathNamespaces+s.namespace+apiPathSecrets+name, nil)
 	if err != nil {
 		return err

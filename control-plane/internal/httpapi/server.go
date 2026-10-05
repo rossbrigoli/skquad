@@ -26,8 +26,8 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/breakglass"
 	"github.com/rossbrigoli/skquad/control-plane/internal/config"
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
-	"github.com/rossbrigoli/skquad/control-plane/internal/embeddings"
 	"github.com/rossbrigoli/skquad/control-plane/internal/egresspolicy"
+	"github.com/rossbrigoli/skquad/control-plane/internal/embeddings"
 	"github.com/rossbrigoli/skquad/control-plane/internal/kube"
 	"github.com/rossbrigoli/skquad/control-plane/internal/promptcompo"
 	"github.com/rossbrigoli/skquad/control-plane/internal/search"
@@ -151,6 +151,12 @@ type Server struct {
 	// nil elsewhere (dev without a cluster). Creating/updating a provider
 	// with a key while nil returns 503 rather than storing plaintext.
 	providerKeys ProviderKeyStore
+	// resourceSecrets is the TG-4 Secret backend for BYO REST resource
+	// credentials (same custody pattern as S-155 provider keys). Built
+	// at startup when K8s connection config is present; nil elsewhere
+	// (dev without a cluster) — BYO registration then answers 503
+	// rather than storing plaintext secrets.
+	resourceSecrets ResourceSecretStore
 	// podRestarter is the S-162 restart path: deletes agent pods by
 	// label through the K8s API. Built at startup when K8s connection
 	// config is present; nil elsewhere (dev). Restart while nil → 503.
@@ -306,6 +312,7 @@ type serverDeps struct {
 	crWriter           CRWriter
 	searchProviders    map[string]search.Provider
 	providerKeys       ProviderKeyStore
+	resourceSecrets    ResourceSecretStore
 	restarter          PodRestarter
 	gwReloader         GatewayReloader
 	injectedEmbeddings EmbeddingsClient
@@ -343,6 +350,21 @@ func resolveProviderKeys(cfg *config.Config, explicit ProviderKeyStore) Provider
 		return nil
 	}
 	return keys
+}
+
+// resolveResourceSecrets returns the explicit resource-secret store
+// when given, otherwise builds one from in-cluster K8s config (TG-4,
+// same posture as resolveProviderKeys).
+func resolveResourceSecrets(cfg *config.Config, explicit ResourceSecretStore) ResourceSecretStore {
+	if explicit != nil || cfg == nil || !cfg.K8sEnabled || cfg.K8sAPIBase == "" || cfg.K8sTokenFile == "" {
+		return explicit
+	}
+	store, err := kube.NewSecretStore(cfg)
+	if err != nil {
+		log.Printf("resource secret store unavailable (BYO REST credentials disabled): %v", err)
+		return nil
+	}
+	return store
 }
 
 // resolvePodRestarter returns the explicit restarter when given, otherwise
@@ -457,6 +479,10 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 	// otherwise build from in-cluster K8s config. Absent config is fine
 	// (dev); handlers surface the gap when a key is actually pasted.
 	s.providerKeys = resolveProviderKeys(cfg, deps.providerKeys)
+	// TG-4: BYO REST resource-secret store. Explicit argument wins
+	// (tests); otherwise build from in-cluster K8s config. Absent
+	// config is fine (dev); handlers surface the gap.
+	s.resourceSecrets = resolveResourceSecrets(cfg, deps.resourceSecrets)
 	// S-162: pod restarter for the Restart Agent button. Explicit
 	// argument wins (tests); otherwise build from in-cluster K8s config.
 	s.podRestarter = resolvePodRestarter(cfg, deps.restarter)
@@ -507,6 +533,10 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 	// the gateway cache contract.
 	r.Route("/internal/v1", func(r chi.Router) {
 		r.Get("/policy", s.internalPolicy)
+		// TG-4: per-call BYO credential resolution for the tool gateway.
+		// Same trust class as /policy: internal-only via NetworkPolicy,
+		// no app-layer auth. Never expose outside the cluster.
+		r.Get("/credentials", s.internalCredentials)
 	})
 
 	r.Route("/api/v1", func(r chi.Router) {
@@ -1403,6 +1433,7 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 		Description    string          `json:"description"`
 		Endpoint       string          `json:"endpoint"`
 		AuthRef        string          `json:"auth_ref"`
+		Auth           json.RawMessage `json:"auth"`
 		Manifest       json.RawMessage `json:"manifest"`
 		EndpointConfig json.RawMessage `json:"endpoint_config"`
 		PolicyCeiling  json.RawMessage `json:"policy_ceiling"`
@@ -1427,6 +1458,27 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 	// violations before anything is written.
 	if v := validateTypedResourceFields(string(typ), req.EndpointConfig, req.PolicyCeiling, req.RiskTier, req.EgressClass); len(v) > 0 {
 		writeViolations(w, "invalid_resource_shape", "resource config/ceiling failed validation", v)
+		return
+	}
+	// TG-4: BYO REST credentials — validate the write-only auth payload
+	// against the declared auth_kind before anything is written. The
+	// secret itself lands in a managed K8s Secret after the row exists
+	// (name derived from the row id); the response never carries it.
+	var restAuth map[string]string
+	if typ == domain.ResRest {
+		kind := restAuthKindFromConfig(req.EndpointConfig)
+		fields, v := parseRestAuth(kind, req.Auth)
+		if len(v) > 0 {
+			writeViolations(w, "invalid_auth_payload", "auth payload failed validation", v)
+			return
+		}
+		if len(fields) > 0 && s.resourceSecrets == nil {
+			writeError(w, http.StatusServiceUnavailable, "secret_store_unavailable", "BYO credentials require Kubernetes secret storage")
+			return
+		}
+		restAuth = fields
+	} else if !isEmptyJSONObject(req.Auth) {
+		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest resources")
 		return
 	}
 	if req.OwnerUserID != "" {
@@ -1462,6 +1514,23 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		writeStorageError(w, err)
 		return
+	}
+	if len(restAuth) > 0 {
+		if err := s.setResourceSecret(r.Context(), created, restAuth); err != nil {
+			// Compensate: never leave a resource row whose secret failed
+			// to land in the Secret store (same posture as provider keys).
+			if delErr := s.store.DeleteResource(r.Context(), created.Type, created.ID); delErr != nil {
+				log.Printf("rest resource %s: rollback after secret failure: %v", created.ID, delErr)
+			}
+			writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the resource credential as a Kubernetes Secret")
+			return
+		}
+		updated, err := s.store.UpdateResource(r.Context(), created)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		created = updated
 	}
 	writeJSON(w, http.StatusCreated, created)
 }
@@ -1510,6 +1579,7 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 		Description    *string          `json:"description"`
 		Endpoint       *string          `json:"endpoint"`
 		AuthRef        *string          `json:"auth_ref"`
+		Auth           *json.RawMessage `json:"auth"`
 		Manifest       *json.RawMessage `json:"manifest"`
 		EndpointConfig *json.RawMessage `json:"endpoint_config"`
 		PolicyCeiling  *json.RawMessage `json:"policy_ceiling"`
@@ -1581,6 +1651,39 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		resource.OwnerUserID = *req.OwnerUserID
+	}
+	// TG-4: BYO REST credential rotation. `auth` (write-only) replaces
+	// the managed Secret contents; rotating to auth_kind=none drops the
+	// managed Secret and blanks the ref. Values never echo back.
+	if req.Auth != nil && resource.Type != domain.ResRest {
+		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest resources")
+		return
+	}
+	if resource.Type == domain.ResRest && req.Auth != nil {
+		kind := restAuthKindFromConfig(newConfig)
+		if kind == "none" {
+			if !isEmptyJSONObject(*req.Auth) {
+				writeViolations(w, "invalid_auth_payload", "auth payload is not allowed with auth_kind=none", nil)
+				return
+			}
+			s.clearResourceSecret(r.Context(), resource)
+		} else {
+			fields, v := parseRestAuth(kind, *req.Auth)
+			if len(v) > 0 {
+				writeViolations(w, "invalid_auth_payload", "auth payload failed validation", v)
+				return
+			}
+			if len(fields) > 0 {
+				if s.resourceSecrets == nil {
+					writeError(w, http.StatusServiceUnavailable, "secret_store_unavailable", "BYO credentials require Kubernetes secret storage")
+					return
+				}
+				if err := s.setResourceSecret(r.Context(), resource, fields); err != nil {
+					writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the resource credential as a Kubernetes Secret")
+					return
+				}
+			}
+		}
 	}
 	updated, err := s.store.UpdateResource(s.pendingUserAuditCtx(r, "registry.resource.update", string(typ), resource.ID, "", nil), resource)
 	if err != nil {
@@ -1699,6 +1802,11 @@ func (s *Server) deleteRegistryResource(w http.ResponseWriter, r *http.Request) 
 			})
 			return
 		}
+	}
+	// TG-4: drop the managed BYO Secret (if any) so a deleted rest
+	// resource never leaves orphaned credential material behind.
+	if res, err := s.store.GetResource(r.Context(), typ, resourceID); err == nil && res.Type == domain.ResRest && res.AuthRef != "" {
+		s.clearResourceSecret(r.Context(), res)
 	}
 	if err := s.store.DeleteResource(s.pendingUserAuditCtx(r, "registry.resource.delete", string(typ), resourceID, "", nil), typ, resourceID); err != nil {
 		writeStorageError(w, err)

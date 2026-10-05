@@ -343,6 +343,9 @@ type RegistryStore interface {
 
 	CreateResource(ctx context.Context, r *domain.RegistryResource) (*domain.RegistryResource, error)
 	GetResource(ctx context.Context, typ domain.ResourceType, id string) (*domain.RegistryResource, error)
+	// GetResourceByID resolves a registry resource by id alone (TG-4: the
+	// gateway credentials API addresses resources by id, not type+id).
+	GetResourceByID(ctx context.Context, id string) (*domain.RegistryResource, error)
 	UpdateResource(ctx context.Context, r *domain.RegistryResource) (*domain.RegistryResource, error)
 	DeprecateResource(ctx context.Context, typ domain.ResourceType, id string) error
 	// DeleteResource hard-deletes a registry resource and revokes every agent

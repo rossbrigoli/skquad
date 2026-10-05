@@ -1055,6 +1055,16 @@ func (m *MemoryStore) GetResource(_ context.Context, typ domain.ResourceType, id
 	return cloneResource(resource), nil
 }
 
+func (m *MemoryStore) GetResourceByID(_ context.Context, id string) (*domain.RegistryResource, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	resource, ok := m.resources[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return cloneResource(resource), nil
+}
+
 func (m *MemoryStore) UpdateResource(ctx context.Context, r *domain.RegistryResource) (*domain.RegistryResource, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

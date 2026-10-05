@@ -1475,6 +1475,15 @@ func (p *PostgresStore) GetResource(ctx context.Context, typ domain.ResourceType
 	return scanResource(row)
 }
 
+func (p *PostgresStore) GetResourceByID(ctx context.Context, id string) (*domain.RegistryResource, error) {
+	row := p.pool.QueryRow(ctx, `
+		SELECT `+resourceColumns+`
+		FROM registry_resources
+		WHERE id = $1
+	`, id)
+	return scanResource(row)
+}
+
 func (p *PostgresStore) UpdateResource(ctx context.Context, resource *domain.RegistryResource) (*domain.RegistryResource, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
