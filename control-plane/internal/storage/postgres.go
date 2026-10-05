@@ -819,7 +819,7 @@ func (p *PostgresStore) CreateAgentIdentity(ctx context.Context, i *domain.Agent
 	row := tx.QueryRow(ctx, `
 		INSERT INTO agent_identities (agent_id, credential_ref, credential_hash, virtual_key_ref, created_by)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status
+		RETURNING id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status, generation
 	`, i.AgentID, i.CredentialRef, i.CredentialHash, nullableText(i.VirtualKeyRef), i.CreatedBy)
 	created, err := scanAgentIdentity(row)
 	if err != nil {
@@ -853,7 +853,7 @@ func (p *PostgresStore) CreateAgentIdentity(ctx context.Context, i *domain.Agent
 
 func (p *PostgresStore) GetAgentIdentity(ctx context.Context, agentID string) (*domain.AgentIdentity, error) {
 	row := p.pool.QueryRow(ctx, `
-		SELECT id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status
+		SELECT id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status, generation
 		FROM agent_identities
 		WHERE agent_id = $1
 	`, agentID)
@@ -874,9 +874,10 @@ func (p *PostgresStore) RotateAgentIdentity(ctx context.Context, agentID string,
 		    virtual_key_ref = $4,
 		    gateway_key_token = '',
 		    gateway_key_status = 'none',
-		    rotated_at = now()
+		    rotated_at = now(),
+		    generation = generation + 1
 		WHERE agent_id = $1
-		RETURNING id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status
+		RETURNING id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status, generation
 	`, agentID, credentialRef, credentialHash, nullableText(virtualKeyRef))
 	identity, err := scanAgentIdentity(row)
 	if err != nil {
@@ -1445,11 +1446,13 @@ func (p *PostgresStore) CreateResource(ctx context.Context, resource *domain.Reg
 
 	txRow := tx.QueryRow(ctx, `
 		INSERT INTO registry_resources (
-			type, name, description, endpoint, auth_ref, manifest, status, registered_by
+			type, name, description, endpoint, auth_ref, manifest, status, registered_by,
+			endpoint_config, policy_ceiling, risk_tier, egress_class, owner_user_id
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id::text, type, name, description, endpoint, auth_ref, manifest, status, registered_by::text, created_at
-	`, resource.Type, resource.Name, resource.Description, resource.Endpoint, resource.AuthRef, defaultJSON(resource.Manifest, "{}"), defaultResourceStatus(resource.Status), resource.RegisteredBy)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING `+resourceColumns+`
+	`, domain.CanonicalResourceType(resource.Type), resource.Name, resource.Description, resource.Endpoint, resource.AuthRef, defaultJSON(resource.Manifest, "{}"), defaultResourceStatus(resource.Status), resource.RegisteredBy,
+		defaultJSON(resource.EndpointConfig, "{}"), defaultJSON(resource.PolicyCeiling, "{}"), defaultRiskTier(resource.RiskTier), defaultEgressClass(resource.EgressClass), nullableText(resource.OwnerUserID))
 	created, err := scanResource(txRow)
 	if err != nil {
 		return nil, err
@@ -1465,10 +1468,10 @@ func (p *PostgresStore) CreateResource(ctx context.Context, resource *domain.Reg
 
 func (p *PostgresStore) GetResource(ctx context.Context, typ domain.ResourceType, id string) (*domain.RegistryResource, error) {
 	row := p.pool.QueryRow(ctx, `
-		SELECT id::text, type, name, description, endpoint, auth_ref, manifest, status, registered_by::text, created_at
+		SELECT `+resourceColumns+`
 		FROM registry_resources
 		WHERE type = $1 AND id = $2
-	`, typ, id)
+	`, domain.CanonicalResourceType(typ), id)
 	return scanResource(row)
 }
 
@@ -1486,10 +1489,16 @@ func (p *PostgresStore) UpdateResource(ctx context.Context, resource *domain.Reg
 		    endpoint = $5,
 		    auth_ref = $6,
 		    manifest = $7,
-		    status = $8
+		    status = $8,
+		    endpoint_config = $9,
+		    policy_ceiling = $10,
+		    risk_tier = $11,
+		    egress_class = $12,
+		    owner_user_id = $13
 		WHERE type = $1 AND id = $2
-		RETURNING id::text, type, name, description, endpoint, auth_ref, manifest, status, registered_by::text, created_at
-	`, resource.Type, resource.ID, resource.Name, resource.Description, resource.Endpoint, resource.AuthRef, defaultJSON(resource.Manifest, "{}"), defaultResourceStatus(resource.Status))
+		RETURNING `+resourceColumns+`
+	`, domain.CanonicalResourceType(resource.Type), resource.ID, resource.Name, resource.Description, resource.Endpoint, resource.AuthRef, defaultJSON(resource.Manifest, "{}"), defaultResourceStatus(resource.Status),
+		defaultJSON(resource.EndpointConfig, "{}"), defaultJSON(resource.PolicyCeiling, "{}"), defaultRiskTier(resource.RiskTier), defaultEgressClass(resource.EgressClass), nullableText(resource.OwnerUserID))
 	created, err := scanResource(txRow)
 	if err != nil {
 		return nil, err
@@ -1538,11 +1547,11 @@ func (p *PostgresStore) DeleteResource(ctx context.Context, typ domain.ResourceT
 
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM agent_permissions WHERE resource_type = $1 AND resource_id = $2`,
-		typ, id,
+		domain.CanonicalResourceType(typ), id,
 	); err != nil {
 		return mapPgErr(err)
 	}
-	tag, err := tx.Exec(ctx, `DELETE FROM registry_resources WHERE type = $1 AND id = $2`, typ, id)
+	tag, err := tx.Exec(ctx, `DELETE FROM registry_resources WHERE type = $1 AND id = $2`, domain.CanonicalResourceType(typ), id)
 	if err != nil {
 		return mapPgErr(err)
 	}
@@ -1557,11 +1566,11 @@ func (p *PostgresStore) DeleteResource(ctx context.Context, typ domain.ResourceT
 
 func (p *PostgresStore) ListResources(ctx context.Context, typ domain.ResourceType) ([]*domain.RegistryResource, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT id::text, type, name, description, endpoint, auth_ref, manifest, status, registered_by::text, created_at
+		SELECT `+resourceColumns+`
 		FROM registry_resources
 		WHERE type = $1
 		ORDER BY name
-	`, typ)
+	`, domain.CanonicalResourceType(typ))
 	if err != nil {
 		return nil, mapPgErr(err)
 	}
@@ -1580,10 +1589,10 @@ func (p *PostgresStore) ListResources(ctx context.Context, typ domain.ResourceTy
 
 func (p *PostgresStore) GrantAgentPermission(ctx context.Context, perm *domain.AgentPermission) error {
 	_, err := p.pool.Exec(ctx, `
-		INSERT INTO agent_permissions (agent_id, resource_type, resource_id, granted_by)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO agent_permissions (agent_id, resource_type, resource_id, granted_by, constraints)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (agent_id, resource_type, resource_id) DO NOTHING
-	`, perm.AgentID, perm.ResourceType, perm.ResourceID, perm.GrantedBy)
+	`, perm.AgentID, domain.CanonicalResourceType(perm.ResourceType), perm.ResourceID, perm.GrantedBy, defaultJSON(perm.Constraints, "{}"))
 	return mapPgErr(err)
 }
 
@@ -1591,13 +1600,13 @@ func (p *PostgresStore) RevokeAgentPermission(ctx context.Context, agentID strin
 	_, err := p.pool.Exec(ctx, `
 		DELETE FROM agent_permissions
 		WHERE agent_id = $1 AND resource_type = $2 AND resource_id = $3
-	`, agentID, typ, resourceID)
+	`, agentID, domain.CanonicalResourceType(typ), resourceID)
 	return mapPgErr(err)
 }
 
 func (p *PostgresStore) ListAgentPermissions(ctx context.Context, agentID string) ([]*domain.AgentPermission, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT id::text, agent_id::text, resource_type, resource_id::text, granted_by::text, created_at
+		SELECT `+agentPermissionColumns+`
 		FROM agent_permissions
 		WHERE agent_id = $1
 		ORDER BY resource_type, resource_id
@@ -1622,11 +1631,11 @@ func (p *PostgresStore) ListAgentPermissions(ctx context.Context, agentID string
 // resource — the usage check behind delete warnings (S-103).
 func (p *PostgresStore) ListPermissionsByResource(ctx context.Context, typ domain.ResourceType, resourceID string) ([]*domain.AgentPermission, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT id::text, agent_id::text, resource_type, resource_id::text, granted_by::text, created_at
+		SELECT `+agentPermissionColumns+`
 		FROM agent_permissions
 		WHERE resource_type = $1 AND resource_id = $2
 		ORDER BY agent_id
-	`, typ, resourceID)
+	`, domain.CanonicalResourceType(typ), resourceID)
 	if err != nil {
 		return nil, mapPgErr(err)
 	}
@@ -1659,10 +1668,10 @@ func (p *PostgresStore) SetAgentPermissions(ctx context.Context, agentID string,
 	}
 	for _, perm := range perms {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO agent_permissions (agent_id, resource_type, resource_id, granted_by)
-			VALUES ($1, $2, $3, $4)
+			INSERT INTO agent_permissions (agent_id, resource_type, resource_id, granted_by, constraints)
+			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (agent_id, resource_type, resource_id) DO NOTHING
-		`, agentID, perm.ResourceType, perm.ResourceID, perm.GrantedBy); err != nil {
+		`, agentID, domain.CanonicalResourceType(perm.ResourceType), perm.ResourceID, perm.GrantedBy, defaultJSON(perm.Constraints, "{}")); err != nil {
 			return mapPgErr(err)
 		}
 	}
@@ -3634,11 +3643,15 @@ func scanAgentIdentity(row scanner) (*domain.AgentIdentity, error) {
 		&rotatedAt,
 		&i.GatewayKeyToken,
 		&i.GatewayKeyStatus,
+		&i.Generation,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}
 	if rotatedAt.Valid {
 		i.RotatedAt = rotatedAt.Time
+	}
+	if i.Generation < 1 {
+		i.Generation = 1
 	}
 	return &i, nil
 }
@@ -3775,11 +3788,27 @@ func scanResource(row scanner) (*domain.RegistryResource, error) {
 		&r.Status,
 		&r.RegisteredBy,
 		&r.CreatedAt,
+		&r.EndpointConfig,
+		&r.PolicyCeiling,
+		&r.RiskTier,
+		&r.EgressClass,
+		&r.OwnerUserID,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}
+	// TG-2: canonicalize the legacy 'api' type to 'rest' on read so
+	// existing consumers transparently see the migrated rows.
+	r.Type = domain.CanonicalResourceType(r.Type)
 	return &r, nil
 }
+
+// resourceColumns is the shared SELECT list for registry_resources reads
+// (TG-2 adds the governed egress columns).
+const resourceColumns = `
+		id::text, type, name, description, endpoint, auth_ref, manifest, status,
+		registered_by::text, created_at,
+		coalesce(endpoint_config, '{}'::jsonb), coalesce(policy_ceiling, '{}'::jsonb),
+		risk_tier, egress_class, coalesce(owner_user_id::text, '')`
 
 func scanAgentPermission(row scanner) (*domain.AgentPermission, error) {
 	var p domain.AgentPermission
@@ -3790,11 +3819,17 @@ func scanAgentPermission(row scanner) (*domain.AgentPermission, error) {
 		&p.ResourceID,
 		&p.GrantedBy,
 		&p.CreatedAt,
+		&p.Constraints,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}
+	p.ResourceType = domain.CanonicalResourceType(p.ResourceType)
 	return &p, nil
 }
+
+const agentPermissionColumns = `
+		id::text, agent_id::text, resource_type, resource_id::text, granted_by::text, created_at,
+		coalesce(constraints, '{}'::jsonb)`
 
 func scanTask(row scanner) (*domain.Task, error) {
 	var t domain.Task
@@ -4085,6 +4120,20 @@ func defaultResourceStatus(status domain.ResourceStatus) domain.ResourceStatus {
 		return domain.ResourceActive
 	}
 	return status
+}
+
+func defaultRiskTier(tier string) string {
+	if tier == "" {
+		return "low"
+	}
+	return tier
+}
+
+func defaultEgressClass(class string) string {
+	if class == "" {
+		return "public"
+	}
+	return class
 }
 
 func nullableText(value string) *string {
