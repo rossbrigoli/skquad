@@ -1271,7 +1271,7 @@ func (m *MemoryStore) SumMeteringDaily(_ context.Context, since time.Time, squad
 			day:        event.Timestamp.UTC().Format("2006-01-02"),
 			squadID:    event.SquadID,
 			agentID:    event.AgentID,
-			providerID: event.ProviderID,
+			providerID: m.resolveMeteringProviderLocked(event),
 			model:      event.Model,
 		}
 		row, ok := agg[key]
@@ -1299,6 +1299,28 @@ func (m *MemoryStore) SumMeteringDaily(_ context.Context, since time.Time, squad
 // (S-189: hoisted to package scope for the extracted helpers).
 type meteringGroupKey struct {
 	day, squadID, agentID, providerID, model string
+}
+
+// resolveMeteringProviderLocked mirrors the Postgres registry join
+// (S-230): the event's own provider_id wins when set; otherwise the
+// provider of the registered AI model whose model_name matches the
+// metered model is used. Empty when neither resolves (the
+// "unknown provider" label path). Deterministic pick on provider_id
+// when a model_name exists under multiple providers.
+func (m *MemoryStore) resolveMeteringProviderLocked(event *domain.MeteringEvent) string {
+	if strings.TrimSpace(event.ProviderID) != "" {
+		return event.ProviderID
+	}
+	pick := ""
+	for _, model := range m.aiModels {
+		if model.ModelName != event.Model || model.ProviderID == "" {
+			continue
+		}
+		if pick == "" || model.ProviderID < pick {
+			pick = model.ProviderID
+		}
+	}
+	return pick
 }
 
 // meteringEventInWindow applies the since-window and squad-allowlist
@@ -1331,7 +1353,9 @@ func (m *MemoryStore) newMeteringRowLocked(key meteringGroupKey, event *domain.M
 	if agent, ok := m.agents[event.AgentID]; ok {
 		row.AgentName = agent.Name
 	}
-	if provider, ok := m.aiProviders[event.ProviderID]; ok {
+	// S-230: look up by the RESOLVED provider id from the group key
+	// (event id or registry-model join), not the raw event field.
+	if provider, ok := m.aiProviders[key.providerID]; ok {
 		row.ProviderName = provider.Name
 	}
 	return row

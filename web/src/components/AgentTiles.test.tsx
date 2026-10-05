@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AgentTilesGrid, agentTileClass } from "./AgentTiles";
+import { AgentTile, AgentTilesGrid, agentTileClass } from "./AgentTiles";
 import type { Agent } from "../lib/api";
 
 const agents: Agent[] = [
@@ -59,6 +59,16 @@ function tileClassFor(markup: string, agentId: string): string {
   it("idle agent tile has no halo/failed modifier", () => {
     const cls = tileClassFor(html, "a3");
     expect(cls).toBe("agent-tile");
+  });
+
+  it("S-230: costLabel renders a cost line; omitted means no cost element", () => {
+    const withCost = renderToStaticMarkup(
+      createElement(AgentTile, { agent: agents[0], href: "/squads/s1/agents/a1", costLabel: "last 30 days USD 1.2500" }),
+    );
+    expect(withCost).toContain('class="agent-tile-cost mono"');
+    expect(withCost).toContain("last 30 days USD 1.2500");
+    const withoutCost = renderToStaticMarkup(createElement(AgentTile, { agent: agents[0], href: "/squads/s1/agents/a1" }));
+    expect(withoutCost).not.toContain("agent-tile-cost");
   });
 
   it("each tile shows the robot icon, name, role and status chip", () => {

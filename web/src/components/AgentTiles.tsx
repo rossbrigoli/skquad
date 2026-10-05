@@ -24,9 +24,13 @@ export function agentTileClass(status: StatusKey): string {
 export function AgentTile({
   agent,
   href,
+  costLabel,
 }: {
   readonly agent: Agent;
   readonly href: string;
+  // S-230: optional cost line (e.g. the agent's rolling 30-day cost on
+  // the dashboard's squad tiles). Omitted on the squad Overview screen.
+  readonly costLabel?: string;
 }) {
   const status = agentStatus(agent);
   return (
@@ -37,6 +41,7 @@ export function AgentTile({
       <span className="agent-tile-body">
         <span className="agent-tile-name">{agent.name}</span>
         <span className="agent-tile-role">{agent.role ? agent.role : "no role set"}</span>
+        {costLabel ? <span className="agent-tile-cost mono">{costLabel}</span> : null}
       </span>
       <span className="agent-tile-status">
         <StatusChip status={status} />
