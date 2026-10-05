@@ -66,6 +66,13 @@ export default defineConfig({
         // S-189 batch 3: settings page (tab dispatch, AI model hierarchy,
         // provider/model modals, access/grants editing) via jsdom suite.
         "src/app/settings/page.tsx",
+        // S-189 batch 3: agent profile, inbox, prompt-template and
+        // platform/tool settings surfaces (jsdom behaviour tests).
+        "src/app/squads/[id]/agents/[agentId]/page.tsx",
+        "src/app/inbox/page.tsx",
+        "src/components/PromptTemplatesPanel.tsx",
+        "src/components/PlatformSettingsTab.tsx",
+        "src/app/settings/resources/tools/[toolId]/page.tsx",
       ],
       exclude: [
         "src/**/*.test.ts",
