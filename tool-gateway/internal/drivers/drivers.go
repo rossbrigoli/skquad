@@ -10,18 +10,46 @@ import (
 	"errors"
 
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/auth"
+	"github.com/rossbrigoli/skquad/tool-gateway/internal/policy"
 )
 
 // ErrDenied wraps driver-level policy denials with a client-safe message.
 var ErrDenied = errors.New("denied")
 
+// DeniedError is a policy denial carrying a stable reason code
+// (e.g. "domain_denied", "rate_limited", "ssrf_blocked"). The reason
+// must never contain internal host/IP detail — it is surfaced to the
+// calling agent. errors.Is(err, ErrDenied) matches.
+type DeniedError struct {
+	Reason string
+}
+
+func (e *DeniedError) Error() string { return "denied: " + e.Reason }
+func (e *DeniedError) Is(target error) bool {
+	if target == ErrDenied {
+		return true
+	}
+	var d *DeniedError
+	if errors.As(target, &d) {
+		return d.Reason == e.Reason
+	}
+	return false
+}
+
+// Denied builds a client-safe policy denial.
+func Denied(reason string) *DeniedError { return &DeniedError{Reason: reason} }
+
 // Request is the dispatched call handed to a driver after authn and
 // policy lookup succeeded.
 type Request struct {
 	Agent     *auth.AgentPrincipal
-	Resource  string // logical resource name ("echo" for the TG-1 driver)
-	Operation string // e.g. "echo"
+	Resource  string // logical resource name ("echo" for TG-1; resource id for typed drivers)
+	Operation string // e.g. "echo", "fetch"
 	Payload   []byte // raw request body
+	// Grant is the effective policy grant the dispatch was authorized
+	// against (typed drivers enforce ceiling/constraints/config from it).
+	// Echo and other pipeline-proving drivers ignore it.
+	Grant *policy.Grant
 }
 
 // Response is what a driver returns on success.

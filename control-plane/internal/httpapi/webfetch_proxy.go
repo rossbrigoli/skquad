@@ -7,7 +7,9 @@
 // the control plane performs the guarded fetch and returns the body.
 //
 // Security (same contract the runtime previously enforced locally):
-//   - SSRF guard at DIAL time via net.Dialer.Control: every resolved
+//   - SSRF guard at DIAL time via the SHARED netguard library
+//     (github.com/rossbrigoli/skquad/shared/netguard — TG-3 single
+//     source of truth, also consumed by tool-gateway): every resolved
 //     destination IP is checked (loopback, RFC1918, CGNAT 100.64/10,
 //     link-local incl. cloud metadata, multicast, reserved, IPv6 ULA)
 //     unless the policy sets allowPrivateNetwork=true. Dial-time checks
@@ -18,23 +20,30 @@
 //   - Response body capped at maxBytes (default 256 KiB); truncated flag
 //     tells the runtime.
 //   - Timeout from policy (default 30s), enforced via context.
+//
+// TG-3 façade: when cfg.WebFetchViaGateway && cfg.ToolGatewayURL are
+// set, the request is forwarded to the gateway's /v1/web/fetch with the
+// agent's credential headers passed through and the gateway's response
+// re-emitted under the exact same contract. Gateway failures surface as
+// the same 502-class tool errors the legacy path produces.
 
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/rossbrigoli/skquad/shared/netguard"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 	"github.com/rossbrigoli/skquad/control-plane/internal/storage"
@@ -49,35 +58,10 @@ const (
 
 // blockedDestAddr reports whether a dial destination address must be
 // rejected by the SSRF guard. address is host:port as passed to
-// Dialer.Control.
+// Dialer.Control. TG-3: the table lives in the shared netguard library;
+// this is a thin delegation kept for the existing test surface.
 func blockedDestAddr(address string) bool {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return true // malformed address: fail closed
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return true // Control should see resolved IPs; fail closed
-	}
-	switch {
-	case ip.IsLoopback(), ip.IsPrivate(), ip.IsLinkLocalUnicast(),
-		ip.IsLinkLocalMulticast(), ip.IsInterfaceLocalMulticast(),
-		ip.IsMulticast(), ip.IsUnspecified():
-		return true
-	}
-	if !ip.IsGlobalUnicast() {
-		return true
-	}
-	if ip.To4() != nil {
-		if _, cgnat, err := net.ParseCIDR("100.64.0.0/10"); err == nil && cgnat.Contains(ip) {
-			return true
-		}
-	} else {
-		if _, ula, err := net.ParseCIDR("fc00::/7"); err == nil && ula.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return netguard.BlockedHostPort(address)
 }
 
 // fetchPolicy is the validated read of the web_fetch policy row.
@@ -113,36 +97,22 @@ func webFetchPolicyOf(cfg *domain.BuiltinToolConfig) fetchPolicy {
 }
 
 // guardedHTTPClient builds a client whose every outbound connection passes
-// the SSRF dial guard (unless allowPrivate) and whose redirects are capped
-// and re-validated (Control fires per hop).
+// the shared netguard SSRF guard (unless allowPrivate) and whose
+// redirects are capped and re-validated (Control fires per hop).
 func guardedHTTPClient(p fetchPolicy) *http.Client {
+	guard := &netguard.Guard{AllowPrivate: p.allowPrivateNetwork}
 	dialer := &net.Dialer{Timeout: time.Duration(p.timeoutSeconds) * time.Second}
 	// Control runs AFTER DNS resolution, immediately before connect, and
 	// sees the actual resolved IP:port — the canonical Go SSRF hook.
 	// (Checking in DialContext sees only the pre-resolution hostname.)
-	if !p.allowPrivateNetwork {
-		dialer.Control = func(network, address string, c syscall.RawConn) error {
-			if blockedDestAddr(address) {
-				return fmt.Errorf("ssrf_guard: blocked dial to %s", address)
-			}
-			return nil
-		}
-	}
+	dialer.Control = guard.ControlHook()
 	transport := &http.Transport{
 		DialContext: dialer.DialContext,
 	}
 	return &http.Client{
 		Transport: transport,
 		Timeout:   time.Duration(p.timeoutSeconds) * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) > fetchMaxRedirects {
-				return http.ErrUseLastResponse
-			}
-			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-				return fmt.Errorf("redirect to unsupported scheme %q", req.URL.Scheme)
-			}
-			return nil
-		},
+		CheckRedirect: netguard.RedirectCheck(fetchMaxRedirects, nil),
 	}
 }
 
@@ -179,6 +149,13 @@ func (s *Server) agentWebFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p := webFetchPolicyOf(cfg)
+
+	// TG-3 façade: forward to the governed tool gateway when wired.
+	// The runtime sees the exact same contract either way.
+	if s.cfg != nil && s.cfg.WebFetchViaGateway && s.cfg.ToolGatewayURL != "" {
+		s.webFetchViaGateway(w, r, p, target)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(p.timeoutSeconds)*time.Second)
 	defer cancel()
@@ -227,5 +204,85 @@ func (s *Server) agentWebFetch(w http.ResponseWriter, r *http.Request) {
 		"contentType": resp.Header.Get("Content-Type"),
 		"bodyB64":     base64.StdEncoding.EncodeToString(body),
 		"truncated":   truncated,
+	})
+}
+
+// webFetchViaGateway forwards a validated web_fetch to the tool gateway
+// (POST {gateway}/v1/web/fetch), passing through the agent's credential
+// headers so the gateway authenticates the same agent and enforces the
+// grant-side policy. The gateway's success body is re-emitted under the
+// exact legacy contract (url/status/contentType/bodyB64/truncated — any
+// additive gateway fields are dropped). Any gateway failure surfaces as
+// the same 502 fetch_failed the legacy path produces, so the runtime
+// needs zero changes.
+func (s *Server) webFetchViaGateway(w http.ResponseWriter, r *http.Request, p fetchPolicy, target string) {
+	principal := currentAgent(r.Context())
+	body, err := json.Marshal(map[string]string{"url": target})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to encode gateway request")
+		return
+	}
+	gwURL := s.cfg.ToolGatewayURL + "/v1/web/fetch"
+
+	// Gateway gets the fetch timeout plus slack for its own policy/authn
+	// round-trips; the CP never waits longer than that.
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(p.timeoutSeconds+15)*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gwURL, bytes.NewReader(body))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to build gateway request")
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if v := r.Header.Get("X-Skquad-Agent-ID"); v != "" {
+		req.Header.Set("X-Skquad-Agent-ID", v)
+	}
+	if v := r.Header.Get("Authorization"); v != "" {
+		req.Header.Set("Authorization", v)
+	}
+
+	client := &http.Client{Timeout: time.Duration(p.timeoutSeconds+15) * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("web_fetch gateway error agent=%s url=%q: %v", principal.Agent.ID, target, err)
+		writeError(w, http.StatusBadGateway, "fetch_failed", "fetch failed (blocked by network policy or unreachable target)")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// Surface every gateway failure (401/403/429/5xx) as the CP's
+		// own 502-class tool error during rollout; the runtime treats
+		// tool errors uniformly.
+		log.Printf("web_fetch gateway status=%d agent=%s url=%q", resp.StatusCode, principal.Agent.ID, target)
+		writeError(w, http.StatusBadGateway, "fetch_failed", "fetch failed (blocked by network policy or unreachable target)")
+		return
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(p.maxBytes)*2+4096))
+	if err != nil {
+		log.Printf("web_fetch gateway read error agent=%s url=%q: %v", principal.Agent.ID, target, err)
+		writeError(w, http.StatusBadGateway, "fetch_failed", "failed reading gateway response")
+		return
+	}
+	var gw struct {
+		URL         string `json:"url"`
+		Status      int    `json:"status"`
+		ContentType string `json:"contentType"`
+		BodyB64     string `json:"bodyB64"`
+		Truncated   bool   `json:"truncated"`
+	}
+	if err := json.Unmarshal(raw, &gw); err != nil || gw.BodyB64 == "" && gw.Status == 0 {
+		log.Printf("web_fetch gateway bad response agent=%s url=%q: %v", principal.Agent.ID, target, err)
+		writeError(w, http.StatusBadGateway, "fetch_failed", "malformed gateway response")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"url":         gw.URL,
+		"status":      gw.Status,
+		"contentType": gw.ContentType,
+		"bodyB64":     gw.BodyB64,
+		"truncated":   gw.Truncated,
 	})
 }

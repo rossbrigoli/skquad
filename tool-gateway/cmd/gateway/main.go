@@ -17,6 +17,7 @@ import (
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/boundary"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/config"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/drivers"
+	webdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/web"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/httpapi"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/policy"
 )
@@ -48,6 +49,7 @@ func main() {
 		Enabled:      enabled,
 		Drivers: map[string]drivers.Driver{
 			"echo": drivers.Echo{},
+			"web":  webdriver.New(),
 		},
 	})
 

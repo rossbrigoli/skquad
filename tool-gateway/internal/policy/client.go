@@ -24,13 +24,18 @@ import (
 // (CP unreachable/error and no fresh cache entry). Callers must DENY.
 var ErrPolicyUnavailable = errors.New("policy_unavailable")
 
-// Grant is a single effective grant surfaced by the CP policy API.
-// TG-1 only needs the shape to round-trip; drivers (TG-3+) enforce on it.
+// Grant is a single effective grant surfaced by the CP policy API
+// (TG-2 wire shape: control-plane/internal/httpapi policyGrant). Typed
+// drivers (web/rest/mcp/git) enforce on Config (resource floor),
+// Ceiling and Constraints.
 type Grant struct {
 	ResourceID   string          `json:"resource_id"`
 	ResourceType string          `json:"resource_type"`
+	Config       json.RawMessage `json:"config,omitempty"`
 	Constraints  json.RawMessage `json:"constraints,omitempty"`
 	Ceiling      json.RawMessage `json:"ceiling,omitempty"`
+	RiskTier     string          `json:"risk_tier,omitempty"`
+	EgressClass  string          `json:"egress_class,omitempty"`
 }
 
 // Snapshot is the CP's answer for one agent: identity material needed to

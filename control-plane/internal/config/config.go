@@ -77,6 +77,15 @@ type Config struct {
 	// picks up DB-persisted models on pod restart (docs/llm-gateway.md).
 	LLMGatewayDeployment string // SKQUAD_LLM_GATEWAY_DEPLOYMENT, default skquad-llm-gateway
 
+	// TG-3: governed egress gateway façade. When WebFetchViaGateway is
+	// true AND ToolGatewayURL is set, POST /api/v1/tools/web_fetch is
+	// forwarded to the tool gateway (/v1/web/fetch) with the agent's
+	// credential headers passed through; the runtime contract is
+	// unchanged. Empty ToolGatewayURL (default) keeps the legacy CP-side
+	// fetch path — a safe rollback for deployments without a gateway.
+	ToolGatewayURL     string // SKQUAD_TOOL_GATEWAY_URL, e.g. http://tool-gateway.skquad-system.svc.cluster.local:8080
+	WebFetchViaGateway bool   // SKQUAD_WEBFETCH_VIA_GATEWAY, default true
+
 	// Built-in web_search providers (BT-2, ADR-0012 §3). SECRETS: they
 	// must come from a SealedSecret on the control-plane deployment and
 	// never cross to the agent runtime. Empty key = provider unavailable
@@ -156,6 +165,8 @@ func Load() (*Config, error) {
 		LiteLLMMasterKey:        os.Getenv("SKQUAD_LITELLM_MASTER_KEY"),
 		GatewayCallbackToken:    os.Getenv("SKQUAD_GATEWAY_CALLBACK_TOKEN"),
 		LLMGatewayDeployment:    envOr("SKQUAD_LLM_GATEWAY_DEPLOYMENT", "skquad-llm-gateway"),
+		ToolGatewayURL:          strings.TrimRight(strings.TrimSpace(os.Getenv("SKQUAD_TOOL_GATEWAY_URL")), "/"),
+		WebFetchViaGateway:      envBool("SKQUAD_WEBFETCH_VIA_GATEWAY", true),
 		SearchBraveAPIKey:       strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_BRAVE_API_KEY")),
 		SearchPerplexityAPIKey:  strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_PERPLEXITY_API_KEY")),
 		MemoryEmbeddingsEnabled: envBool("SKQUAD_MEMORY_EMBEDDINGS_ENABLED", false),
