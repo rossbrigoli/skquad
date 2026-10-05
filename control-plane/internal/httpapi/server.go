@@ -4623,6 +4623,11 @@ type agentRuntimeResource struct {
 	Constraints    json.RawMessage `json:"constraints,omitempty"`
 	RiskTier       string          `json:"risk_tier,omitempty"`
 	EgressClass    string          `json:"egress_class,omitempty"`
+	// Tools is the fetch-at-wake tool surface (TG-4): the typed tools
+	// this grant unlocks for the runtime. Present only when the grant
+	// enables one (rest → rest_call); absent otherwise, so an ungranted
+	// agent never sees the tool name at all.
+	Tools json.RawMessage `json:"tools,omitempty"`
 }
 
 func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPermission) (agentRuntimeResource, bool, error) {
@@ -4672,6 +4677,11 @@ func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPer
 		rt.Constraints = safeConfigJSON(perm.Constraints)
 		rt.RiskTier = resource.RiskTier
 		rt.EgressClass = resource.EgressClass
+	}
+	// TG-4: rest grants publish the rest_call tool schema (effective
+	// ceiling ∧ grant). Non-rest typed resources gain no tools in v1.
+	if resource.Type == domain.ResRest {
+		rt.Tools = restCallToolSchema(resource.Name, resource.ID, resource.PolicyCeiling, perm.Constraints)
 	}
 	return rt, true, nil
 }
