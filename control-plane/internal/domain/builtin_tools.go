@@ -19,17 +19,18 @@ import (
 )
 
 const (
-	BuiltinToolExec         = "exec"
-	BuiltinToolWebFetch     = "web_fetch"
-	BuiltinToolWebSearch    = "web_search"
-	BuiltinToolSendMessage  = "send_message"
-	BuiltinToolSendInbox    = "send_inbox"
-	BuiltinToolNotifyOwner  = "notify_owner"
-	BuiltinToolMemorySearch = "memory_search"
+	BuiltinToolExec          = "exec"
+	BuiltinToolWebFetch      = "web_fetch"
+	BuiltinToolWebSearch     = "web_search"
+	BuiltinToolSendMessage   = "send_message"
+	BuiltinToolSendInbox     = "send_inbox"
+	BuiltinToolNotifyOwner   = "notify_owner"
+	BuiltinToolMemorySearch  = "memory_search"
+	BuiltinToolSpawnSubagent = "spawn_subagent"
 )
 
 // BuiltinToolNames lists the built-in tools in canonical order.
-var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch}
+var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent}
 
 // BuiltinToolDefaultEnabled reports whether a built-in ships enabled when
 // seeded. The original three are security-sensitive and ship disabled
@@ -46,8 +47,12 @@ var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToo
 // recall is read-only, hard-scoped to the calling agent's own
 // agent_memory rows, excludes rejected memories, and additionally
 // no-ops server-side unless SKQUAD_MEMORY_EMBEDDINGS_ENABLED=true.
+// spawn_subagent ships enabled to match its S-232 seed (migration 0042):
+// the subagent inherits the parent's model, grants and composed prompt,
+// so it can never reach beyond what the parent agent itself could; the
+// runtime additionally gates the capability on SKQUAD_SUBAGENTS_ENABLED.
 func BuiltinToolDefaultEnabled(name string) bool {
-	return name == BuiltinToolSendMessage || name == BuiltinToolSendInbox || name == BuiltinToolNotifyOwner || name == BuiltinToolMemorySearch
+	return name == BuiltinToolSendMessage || name == BuiltinToolSendInbox || name == BuiltinToolNotifyOwner || name == BuiltinToolMemorySearch || name == BuiltinToolSpawnSubagent
 }
 
 // SearchProviderNames lists the accepted web_search policy providers.
@@ -138,6 +143,12 @@ func ValidateBuiltinPolicy(name string, policy json.RawMessage) []string {
 			"timeoutSeconds": requirePositiveInt,
 			"maxResults":     requirePositiveInt,
 		}
+	case BuiltinToolSpawnSubagent:
+		// S-232: the subagent loop inherits the parent's runtime limits
+		// (max steps, compaction, budget), so there are no admin-tunable
+		// policy keys yet. The empty allow-set means only "{}" validates;
+		// any key is rejected so a future key can be pinned deliberately.
+		allowed = map[string]func(string, json.RawMessage) []string{}
 	default:
 		return []string{fmt.Sprintf("unknown built-in tool %q", name)}
 	}

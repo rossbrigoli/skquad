@@ -110,15 +110,54 @@ func TestAdminToolsListShowsSeededTools(t *testing.T) {
 	// S-164 added send_message as a fourth builtin, seeded ENABLED; the
 	// original three stay disabled-by-default (ADR-0012 §1). notify_owner
 	// (platform-prompt awareness) ships ENABLED like send_message.
-	require.Len(t, resp.Tools, 7)
-	names := make([]string, 0, 7)
+	// S-232 adds spawn_subagent (runtime-provided capability, seeded
+	// ENABLED) so EVERY tool — including the ones the owner called out as
+	// missing — shows up on the Settings Tools page.
+	require.Len(t, resp.Tools, 8)
+	names := make([]string, 0, 8)
 	for _, tool := range resp.Tools {
 		names = append(names, tool.Name)
-		require.Equal(t, tool.Name == "send_message" || tool.Name == "send_inbox" || tool.Name == "notify_owner" || tool.Name == "memory_search", tool.Enabled, "tool %s enabled-by-default mismatch", tool.Name)
+		require.Equal(t, domain.BuiltinToolDefaultEnabled(tool.Name), tool.Enabled, "tool %s enabled-by-default mismatch", tool.Name)
 		require.JSONEq(t, "{}", string(tool.Policy))
 		require.NotEmpty(t, tool.UpdatedAt)
 	}
-	require.Equal(t, []string{"exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner", "memory_search"}, names)
+	require.Equal(t, []string{"exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner", "memory_search", "spawn_subagent"}, names)
+}
+
+// S-232: built-in tools are permanently undeletable — the API rejects
+// DELETE with a clear 405 for every built-in name, unknown names 404,
+// and non-admins stay 403 (checked before the name).
+func TestAdminDeleteBuiltinToolRejected(t *testing.T) {
+	t.Parallel()
+	handler, _ := toolsHandler(t, nil)
+
+	for _, name := range domain.BuiltinToolNames {
+		var resp map[string]map[string]string
+		doJSON(t, handler, http.MethodDelete, pathAdminTools+"/"+name, nil, http.StatusMethodNotAllowed, &resp)
+		require.Equal(t, "builtin_undeletable", resp["error"]["code"], "delete %s must be rejected", name)
+	}
+
+	var resp map[string]map[string]string
+	doJSON(t, handler, http.MethodDelete, pathAdminTools+"/not_a_tool", nil, http.StatusNotFound, &resp)
+	require.Equal(t, "not_found", resp["error"]["code"])
+}
+
+func TestAdminDeleteBuiltinToolRBAC(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.AuthMode = config.AuthOIDC
+	cfg.OIDCAdminGroups = []string{platformAdminGroup}
+	handler := NewWithDependencies(cfg, storage.NewMemoryStore(), headerOIDC{
+		authAdmin: {Email: adminEmail, Name: "Admin", Groups: []string{platformAdminGroup}},
+		authAlice: {Email: aliceEmail, Name: "Alice"},
+	}, &fakeCRWriter{}, nil)
+
+	var denied map[string]map[string]string
+	doJSONAuth(t, handler, authAlice, http.MethodDelete, pathAdminTools+"/exec", nil, http.StatusForbidden, &denied)
+	require.Equal(t, "forbidden", denied["error"]["code"])
+	// Admin gets the explicit builtin-undeletable rejection, not a 403.
+	doJSONAuth(t, handler, authAdmin, http.MethodDelete, pathAdminTools+"/exec", nil, http.StatusMethodNotAllowed, &denied)
+	require.Equal(t, "builtin_undeletable", denied["error"]["code"])
 }
 
 func TestAdminToolsRBAC(t *testing.T) {
@@ -141,7 +180,7 @@ func TestAdminToolsRBAC(t *testing.T) {
 		Tools []builtinToolAdminView `json:"tools"`
 	}
 	doJSONAuth(t, handler, authAdmin, http.MethodGet, pathAdminTools, nil, http.StatusOK, &ok)
-	require.Len(t, ok.Tools, 7)
+	require.Len(t, ok.Tools, 8)
 }
 
 func TestAdminPatchMergeSemantics(t *testing.T) {
@@ -205,7 +244,7 @@ func TestAdminPatchPolicyValidation(t *testing.T) {
 	var tools struct{ Tools []builtinToolAdminView }
 	doJSON(t, handler, http.MethodGet, pathAdminTools, nil, http.StatusOK, &tools)
 	for _, tool := range tools.Tools {
-		require.Equal(t, tool.Name == "send_message" || tool.Name == "send_inbox" || tool.Name == "notify_owner" || tool.Name == "memory_search", tool.Enabled, "tool %s enabled changed by rejected write", tool.Name)
+		require.Equal(t, domain.BuiltinToolDefaultEnabled(tool.Name), tool.Enabled, "tool %s enabled changed by rejected write", tool.Name)
 		require.JSONEq(t, "{}", string(tool.Policy))
 	}
 }
@@ -262,11 +301,12 @@ func TestAgentToolsETagRound(t *testing.T) {
 		Tools []builtinToolAgentView `json:"tools"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Len(t, resp.Tools, 7)
+	require.Len(t, resp.Tools, 8)
 	for _, tool := range resp.Tools {
 		// S-164: send_message is enabled by default; notify_owner too
-		// (platform-prompt awareness); memory_search (S-212) as well.
-		require.Equal(t, tool.Name == "send_message" || tool.Name == "send_inbox" || tool.Name == "notify_owner" || tool.Name == "memory_search", tool.Enabled, "tool %s enabled mismatch", tool.Name)
+		// (platform-prompt awareness); memory_search (S-212) as well;
+		// spawn_subagent (S-232) ships enabled like its migration seed.
+		require.Equal(t, domain.BuiltinToolDefaultEnabled(tool.Name), tool.Enabled, "tool %s enabled mismatch", tool.Name)
 	}
 
 	// Same ETag → 304, empty body.
@@ -288,14 +328,11 @@ func TestAgentToolsETagRound(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(rec3.Body.Bytes(), &resp3))
 	for _, tool := range resp3.Tools {
-		// web_search was just enabled; send_message, send_inbox and
-		// notify_owner are enabled by default (S-164 / S-193 /
-		// platform-prompt awareness).
-		wantEnabled := tool.Name == domain.BuiltinToolWebSearch ||
-			tool.Name == domain.BuiltinToolSendMessage ||
-			tool.Name == domain.BuiltinToolSendInbox ||
-			tool.Name == domain.BuiltinToolNotifyOwner ||
-			tool.Name == domain.BuiltinToolMemorySearch
+		// web_search was just enabled; send_message, send_inbox,
+		// notify_owner, memory_search and spawn_subagent are enabled by
+		// default (S-164 / S-193 / platform-prompt awareness / S-212 /
+		// S-232).
+		wantEnabled := tool.Name == domain.BuiltinToolWebSearch || domain.BuiltinToolDefaultEnabled(tool.Name)
 		require.Equal(t, wantEnabled, tool.Enabled, "tool %s enabled mismatch", tool.Name)
 	}
 }

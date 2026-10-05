@@ -1065,6 +1065,12 @@ _BUILTIN_REGISTRY: dict[str, type] = {
     "memory_search": MemorySearchTool,
 }
 
+# Built-ins that are listed in the platform catalog (S-232) for admin
+# visibility but instantiated elsewhere — spawn_subagent is wired by
+# skquad_runtime.subagents, so build_builtin_tools must skip it silently
+# instead of warning "unknown tool name" on every wake.
+_BUILTIN_WIRED_ELSEWHERE: frozenset[str] = frozenset({"spawn_subagent"})
+
 
 def compose_builtin_and_plugins(builtins: list, plugins: list) -> list:
     """Merge built-in tools with loaded plugins: built-ins win name collisions.
@@ -1096,6 +1102,10 @@ def build_builtin_tools(fetched_config: dict, context: BuiltinToolContext) -> li
     for entry in (fetched_config or {}).get("tools", []):
         name = str(entry.get("name", ""))
         if not entry.get("enabled"):
+            continue
+        if name in _BUILTIN_WIRED_ELSEWHERE:
+            # S-232: listed in the platform catalog for admin visibility,
+            # but provided by the subagents module — not this registry.
             continue
         tool_cls = _BUILTIN_REGISTRY.get(name)
         if tool_cls is None:

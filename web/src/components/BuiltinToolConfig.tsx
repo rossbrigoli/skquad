@@ -34,6 +34,10 @@ const TOOL_LABELS: Record<BuiltinToolName, string> = {
   web_fetch: "web_fetch — fetch a URL",
   web_search: "web_search — web search",
   send_message: "send_message — agent-to-agent messaging",
+  send_inbox: "send_inbox — deliver to the squad owner's inbox",
+  notify_owner: "notify_owner — action_required inbox ping",
+  memory_search: "memory_search — long-term memory recall",
+  spawn_subagent: "spawn_subagent — nested subagent delegation",
 };
 
 const TOOL_HINTS: Record<BuiltinToolName, string> = {
@@ -41,6 +45,11 @@ const TOOL_HINTS: Record<BuiltinToolName, string> = {
   web_fetch: "GET only, ≤3 redirects with an SSRF re-check per hop. Private-network targets stay blocked unless explicitly allowed.",
   web_search: "Provider API keys live only in the control plane; agents call the search proxy and never see credentials.",
   send_message: "Queued through the control plane: same-squad always allowed, cross-squad needs an access grant. Reply threads are capped at 12 messages per correlation chain (S-164).",
+  // S-232: the four built-ins that were missing from this page.
+  send_inbox: "Delivers content a human asked you to send as an agent_message into your own squad owner's inbox. Capped body; no cross-squad reach.",
+  notify_owner: "Files an action_required InboxMessage with your squad owner — no auto-action, one capped row per call.",
+  memory_search: "Semantic recall over the agent's own agent_memory rows only (read-only, excludes rejected memories). No-ops unless memory embeddings are enabled platform-wide.",
+  spawn_subagent: "Runs a nested agent loop inheriting this agent's model, grants, config and composed prompt from an empty context. The subagent cannot spawn further subagents. The runtime additionally requires subagents to be enabled (SKQUAD_SUBAGENTS_ENABLED).",
 };
 
 // BuiltinToolConfig is the admin config surface for ONE built-in tool,
@@ -168,16 +177,18 @@ export function ToolCard({
       </p>
 
       <div className="field-row">
-        <label className="field">
-          <span>Timeout (seconds)</span>
-          <input
-            type="number"
-            min={1}
-            value={form.timeoutSeconds}
-            disabled={busy}
-            onChange={(e) => setField("timeoutSeconds", e.target.value)}
-          />
-        </label>
+        {tool.name !== "spawn_subagent" ? (
+          <label className="field">
+            <span>Timeout (seconds)</span>
+            <input
+              type="number"
+              min={1}
+              value={form.timeoutSeconds}
+              disabled={busy}
+              onChange={(e) => setField("timeoutSeconds", e.target.value)}
+            />
+          </label>
+        ) : null}
         {tool.name === "exec" ? (
           <label className="field">
             <span>Max output (bytes)</span>
@@ -202,7 +213,7 @@ export function ToolCard({
             />
           </label>
         ) : null}
-        {tool.name === "send_message" ? (
+        {tool.name === "send_message" || tool.name === "send_inbox" || tool.name === "notify_owner" ? (
           <label className="field">
             <span>Max message chars</span>
             <input
@@ -211,6 +222,18 @@ export function ToolCard({
               value={form.maxMessageChars}
               disabled={busy}
               onChange={(e) => setField("maxMessageChars", e.target.value)}
+            />
+          </label>
+        ) : null}
+        {tool.name === "memory_search" ? (
+          <label className="field">
+            <span>Max results</span>
+            <input
+              type="number"
+              min={1}
+              value={form.maxResults}
+              disabled={busy}
+              onChange={(e) => setField("maxResults", e.target.value)}
             />
           </label>
         ) : null}

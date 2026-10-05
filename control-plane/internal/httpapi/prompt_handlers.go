@@ -346,6 +346,9 @@ var enabledToolDescriptions = map[string]string{
 	domain.BuiltinToolSendMessage: "send a message to a squad-mate agent (cross-squad needs an access grant; humans are NOT reachable via send_message)",
 	domain.BuiltinToolSendInbox:   "deliver content a HUMAN asked you to send to your squad owner's inbox (kind: agent_message; use when told \"send this to my inbox\" / \"notify me\"); to deliver FILES (report, image, audio, video, text), pass attachments: a list of file paths inside your workspace — max 8 files, 25 MB each, executable binaries rejected",
 	domain.BuiltinToolNotifyOwner: "drop an action_required message directly into your squad owner's inbox",
+	// S-232: the runtime wires spawn_subagent itself (S-160/S-163); the
+	// inventory line keeps the recursion bound explicit for the model.
+	domain.BuiltinToolSpawnSubagent: "spawn a nested subagent that inherits your model, grants and system prompt but starts from an empty context; the subagent cannot spawn further subagents",
 }
 
 // renderEnabledTools turns builtin tool configs into the "- name — desc"
