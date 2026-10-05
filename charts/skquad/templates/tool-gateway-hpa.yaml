@@ -1,0 +1,35 @@
+{{- if and .Values.toolGateway.enabled .Values.toolGateway.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "skquad.toolGatewayName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tool-gateway
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "skquad.toolGatewayName" . }}
+  minReplicas: {{ .Values.toolGateway.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.toolGateway.autoscaling.maxReplicas }}
+  metrics:
+    # RPS-based scaling (design §5.2: "HPA on RPS"). Requires a metrics
+    # adapter exposing the pod custom metric "requests_per_second"
+    # (e.g. prometheus-adapter). Kept first so it dominates when present.
+    - type: Pods
+      pods:
+        metric:
+          name: requests_per_second
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.toolGateway.autoscaling.targetRPS }}
+    # CPU fallback so the HPA still works before the RPS adapter is wired.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.toolGateway.autoscaling.targetCPUUtilization }}
+{{- end }}

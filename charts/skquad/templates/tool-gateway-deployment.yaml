@@ -1,0 +1,90 @@
+{{- if .Values.toolGateway.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "skquad.toolGatewayName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tool-gateway
+spec:
+  {{- if not .Values.toolGateway.autoscaling.enabled }}
+  replicas: {{ .Values.replicas.toolGateway }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: tool-gateway
+  template:
+    metadata:
+      labels:
+        {{- include "skquad.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: tool-gateway
+    spec:
+      # The gateway never calls the Kubernetes API (TG-1) — no SA token.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: tool-gateway
+          image: {{ include "skquad.toolGatewayImage" . | quote }}
+          imagePullPolicy: {{ .Values.toolGateway.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.toolGateway.port }}
+              protocol: TCP
+          env:
+            - name: SKQUAD_TOOL_GATEWAY_ADDR
+              value: {{ printf ":%d" (int .Values.toolGateway.port) | quote }}
+            - name: SKQUAD_TOOL_GATEWAY_ENABLED
+              value: {{ .Values.toolGateway.enabledRuntime | quote }}
+            - name: SKQUAD_CP_BASE_URL
+              value: {{ default (printf "http://%s.%s.svc.cluster.local:8080" (include "skquad.apiServerName" .) .Release.Namespace) .Values.toolGateway.controlPlaneUrl | quote }}
+            - name: SKQUAD_TOOL_GATEWAY_POLICY_TTL
+              value: {{ .Values.toolGateway.policyTtl | quote }}
+            - name: SKQUAD_TOOL_GATEWAY_POLICY_TIMEOUT
+              value: {{ .Values.toolGateway.policyTimeout | quote }}
+            - name: SKQUAD_TOOL_GATEWAY_PROBE_GAP
+              value: {{ .Values.toolGateway.probeGap | quote }}
+            - name: SKQUAD_TOOL_GATEWAY_BOUNDARY_VERIFIER
+              value: {{ .Values.toolGateway.boundaryVerifier | quote }}
+            - name: SKQUAD_TOOL_GATEWAY_AUDIT_SINK
+              value: "stdout"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          # Liveness: process up. Readiness: FAIL-CLOSED launch gate —
+          # /readyz returns 503 until the CP policy path is proven
+          # reachable AND the boundary verifier confirms the fence
+          # (design §5.2). The pod receives no traffic until then.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          resources:
+            {{- toYaml .Values.toolGateway.resources | nindent 12 }}
+      {{- with .Values.toolGateway.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.toolGateway.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

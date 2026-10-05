@@ -1,0 +1,102 @@
+{{- if .Values.toolGateway.enabled }}
+# TG-1 NetworkPolicy topology for the Tool Gateway (design §5.4).
+#
+# Egress posture: the gateway is the ONLY component with general internet
+# egress, but cluster-internal ranges are excluded from that blanket allow
+# and re-opened only for CP, kube DNS, and the (future) Browser Service.
+# NetworkPolicy is allow-only, so "deny all cluster-internal except X" is
+# expressed as: public 0.0.0.0/0 minus cluster CIDRs, plus explicit peers.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-tool-gateway-egress" (include "skquad.fullname" .) | trunc 63 | trimSuffix "-" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tool-gateway
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: tool-gateway
+  policyTypes:
+    - Egress
+  egress:
+    # kube DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Control plane internal API (policy reads)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "skquad.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api-server
+      ports:
+        - protocol: TCP
+          port: http
+    # Browser Service placeholder (TG-6, quarantine namespace).
+    # Rule is inert until the service exists.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.toolGateway.browserService.namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: {{ .Values.toolGateway.browserService.componentLabel }}
+      ports:
+        - protocol: TCP
+          port: http
+    # Public internet: 80,443 everywhere EXCEPT the cluster's own
+    # pod/service CIDRs (configured via toolGateway.clusterCIDRs — adjust
+    # to the actual cluster CIDRs; k3s defaults shipped).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            {{- range .Values.toolGateway.clusterCIDRs }}
+            except:
+              - {{ . }}
+            {{- end }}
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+---
+# Ingress to the gateway: only agent-namespace pods (label-managed by the
+# squad operator's platform-egress policy on the agent side) plus the CP.
+# We restrict ingress to same-cluster sources; semantic auth is at L7.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-tool-gateway-ingress" (include "skquad.fullname" .) | trunc 63 | trimSuffix "-" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tool-gateway
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: tool-gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    # Any in-cluster source may reach the gateway's HTTP port; the gateway
+    # itself enforces agent-credential authn. Restricting by agent-pod
+    # labels here is impossible because squad namespaces are dynamic — the
+    # agent-side allow (operator platform-egress policy) is the enforced
+    # half of the pair.
+    - ports:
+        - protocol: TCP
+          port: http
+{{- end }}
