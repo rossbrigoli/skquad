@@ -9,6 +9,7 @@ import { ConfirmDialog } from "../../../../../components/ConfirmDialog";
 import { Modal, ModalForm } from "../../../../../components/Modal";
 import { AppShell } from "../../../../../components/AppShell";
 import { AttachmentThumbs } from "../../../../../components/AttachmentThumbs";
+import { Collapsible } from "../../../../../components/Collapsible";
 import { EmptyState } from "../../../../../components/EmptyState";
 import { StatusChip } from "../../../../../components/StatusChip";
 import { useApi } from "../../../../../lib/useApi";
@@ -16,6 +17,7 @@ import { useAuth } from "../../../../../lib/auth";
 import { apiDelete, apiPatch, apiPost, apiUploadImage, type Agent, type AuditEntry, type Message, type Task } from "../../../../../lib/api";
 import { messageAttachments, validateImageFile } from "../../../../../lib/uploads";
 import { formatRelativeTime, leaseState, messageText } from "../../../../../lib/format";
+import { threadActorLabel, timelineActorLabel } from "../../../../../lib/actorDisplay";
 import { formatTaskRef } from "../../../../../lib/taskRef";
 import { taskResultInfo } from "../../../../../lib/taskResult";
 import { taskStatus } from "../../../../../lib/status";
@@ -168,17 +170,44 @@ export default function TaskDetailPage() {
             </button>
           </div>
         </div>
-        <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)" }}>
-          {assignee ? (
-            <>
-              assigned to <strong>{assignee.name}</strong>
-            </>
-          ) : (
-            "unassigned"
-          )}{" "}
-          · updated {formatRelativeTime(current.updated_at)}
-  {leaseSuffix(leaseState(current))}
+        {/* S-235: back-to-board moved to the top, just under the title, so
+            it's reachable without scrolling to the bottom of a long page. */}
+        <p style={{ margin: "var(--space-2) 0 0" }}>
+          <Link href={`/squads/${squadId}/board`} style={{ color: "var(--accent)" }}>
+            ← Back to board
+          </Link>
         </p>
+        {/* S-235: lease/assignee meta row doubles as the home for the
+            agent-chat button (was buried at the bottom of the thread). */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "var(--space-3)",
+            marginTop: "var(--space-1)",
+          }}
+        >
+          <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)", margin: 0 }}>
+            {assignee ? (
+              <>
+                assigned to <strong>{assignee.name}</strong>
+              </>
+            ) : (
+              "unassigned"
+            )}{" "}
+            · updated {formatRelativeTime(current.updated_at)}
+            {leaseSuffix(leaseState(current))}
+          </p>
+          {assignee ? (
+            <Link
+              href={`/squads/${squadId}/agents/${assignee.id}`}
+              className="btn btn-sm btn-primary"
+            >
+              Talk to {assignee.name}
+            </Link>
+          ) : null}
+        </div>
         {current.description ? (
           <p style={{ whiteSpace: "pre-wrap", marginTop: "var(--space-3)" }}>{current.description}</p>
         ) : null}
@@ -229,28 +258,22 @@ export default function TaskDetailPage() {
         <TaskThreadSection
           current={current}
           messages={messages}
-          assigneeName={assignee?.name}
-          squadId={squadId}
           attachBusy={attachBusy}
           attachInputRef={attachInputRef}
           onAttach={(file) => void attachImage(file)}
         />
 
-        <section style={{ marginTop: "var(--space-5)" }}>
-          <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>Status timeline</h2>
+        {/* S-235: status timeline is collapsible (expanded by default;
+            session-persisted via the shared Collapsible pattern). */}
+        <Collapsible id={`task-timeline-${taskId}`} initialOpen title="Status timeline">
           <ActivityFeed
             squadId={squadId}
             entries={timeline}
+            nameFor={(entry) => timelineActorLabel(entry)}
             emptyTitle="No recorded changes yet"
             emptyHint="Status moves, assignments and messages on this task appear here."
           />
-        </section>
-
-        <p style={{ marginTop: "var(--space-5)" }}>
-          <Link href={`/squads/${squadId}/board`} style={{ color: "var(--accent)" }}>
-            ← Back to board
-          </Link>
-        </p>
+        </Collapsible>
 
         {editing ? (
           <Modal title="Edit task" onClose={() => setEditing(false)}>
@@ -330,55 +353,58 @@ function TaskEditForm({
 }
 
 // S-189/S3776: thread section extracted from TaskDetailPage so the page
-// component stays under the cognitive-complexity ceiling. Render output is
-// identical to the previous inline JSX.
+// component stays under the cognitive-complexity ceiling.
+// S-235: the section is collapsible (expanded by default, session
+// persisted). The attach control moved into the body because the
+// Collapsible header is itself a toggle button (no nested buttons).
 function TaskThreadSection({
   current,
   messages,
-  assigneeName,
-  squadId,
   attachBusy,
   attachInputRef,
   onAttach,
 }: {
   readonly current: Task;
   readonly messages: Message[];
-  readonly assigneeName: string | undefined;
-  readonly squadId: string;
   readonly attachBusy: boolean;
   readonly attachInputRef: React.RefObject<HTMLInputElement | null>;
   readonly onAttach: (file: File) => void;
 }) {
   return (
-    <section style={{ marginTop: "var(--space-5)" }}>
-      <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-        Thread <span className="chip chip-idle">{messages.length}</span>
-        {/* S-194: attach a defect screenshot straight to the thread. */}
-        {current.assignee_agent_id ? (
-          <>
-            <input
-              ref={attachInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/gif,image/webp"
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (file) onAttach(file);
-              }}
-            />
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={attachBusy}
-              onClick={() => attachInputRef.current?.click()}
-              title={attachBusy ? "Uploading…" : "Attach an image (png/jpg/gif/webp, ≤5 MB)"}
-            >
-              {attachBusy ? "Uploading…" : "📎 Attach image"}
-            </button>
-          </>
-        ) : null}
-      </h2>
+    <Collapsible
+      id={`task-thread-${current.id}`}
+      initialOpen
+      title={
+        <span style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+          Thread <span className="chip chip-idle">{messages.length}</span>
+        </span>
+      }
+    >
+      {/* S-194: attach a defect screenshot straight to the thread. */}
+      {current.assignee_agent_id ? (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "var(--space-3)" }}>
+          <input
+            ref={attachInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) onAttach(file);
+            }}
+          />
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={attachBusy}
+            onClick={() => attachInputRef.current?.click()}
+            title={attachBusy ? "Uploading…" : "Attach an image (png/jpg/gif/webp, ≤5 MB)"}
+          >
+            {attachBusy ? "Uploading…" : "📎 Attach image"}
+          </button>
+        </div>
+      ) : null}
       {messages.length === 0 ? (
         <EmptyState
           title={current.assignee_agent_id ? "No task messages yet" : "Assign an agent to start a thread"}
@@ -391,20 +417,7 @@ function TaskThreadSection({
           ))}
         </div>
       )}
-      {current.assignee_agent_id ? (
-        // S-184: the inline composer is gone — conversation happens in
-        // the assigned agent's chat screen, which keeps one continuous
-        // thread per agent. This button jumps there.
-        <div style={{ marginTop: "var(--space-3)" }}>
-          <Link
-            href={`/squads/${squadId}/agents/${current.assignee_agent_id}`}
-            className="btn btn-primary"
-          >
-            Agent Chat{assigneeName ? ` — ${assigneeName}` : ""}
-          </Link>
-        </div>
-      ) : null}
-    </section>
+    </Collapsible>
   );
 }
 
@@ -417,7 +430,7 @@ function TaskMessageRow({ message }: { readonly message: Message }) {
       <div className="entity-main">
         <span className="entity-title">{messageText(message)}</span>
         <span className="entity-meta">
-          {message.from_type === "user" ? "you" : `agent ${message.from_id.slice(0, 8)}`} ·{" "}
+          {threadActorLabel(message)} ·{" "}
           {formatRelativeTime(message.created_at)}
           {statusNote}
         </span>
