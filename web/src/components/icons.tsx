@@ -40,10 +40,11 @@ export function IconInbox({ size }: IconProps) {
   );
 }
 
-// S-207: Gmail/Outlook-style read-state markers for inbox rows.
+// S-207/S-234: Gmail/Outlook-style read-state markers for inbox rows.
 // Unread = closed, filled envelope (the flap crease is punched out of
 // the fill with an even-odd rule so it reads on any theme). Read =
-// the same envelope as a plain outline.
+// the OPEN envelope (flap raised), plain outline on the same 24px
+// stroke grid as the rest of the icon set.
 export function IconEnvelopeUnread({ size }: IconProps) {
   return (
     <svg {...base(size)} fill="currentColor" stroke="none">
@@ -59,8 +60,8 @@ export function IconEnvelopeUnread({ size }: IconProps) {
 export function IconEnvelopeRead({ size }: IconProps) {
   return (
     <svg {...base(size)}>
-      <rect x="2" y="4" width="20" height="16" rx="2" />
-      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+      <path d="M21.2 8.4c.5.38.8.97.8 1.6v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V10a2 2 0 0 1 .8-1.6l8-6a2 2 0 0 1 2.4 0l8 6Z" />
+      <path d="m22 10-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 10" />
     </svg>
   );
 }
