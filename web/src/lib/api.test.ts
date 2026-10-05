@@ -6,6 +6,7 @@ import {
   apiDeleteWithBody,
   apiGet,
   apiGetBlob,
+  apiGetWithTotal,
   apiPatch,
   apiPost,
   apiPut,
@@ -198,6 +199,67 @@ describe("apiDeleteWithBody", () => {
     await apiDeleteWithBody("/x", "", {});
     const headers = (fetchMock.mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>;
     expect(headers.Authorization).toBeUndefined();
+  });
+});
+
+describe("apiGetWithTotal", () => {
+  it("returns items plus the X-Total-Count header", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse([1, 2], { headers: { "Content-Type": "application/json", "X-Total-Count": "42" } }),
+      );
+
+    const out = await apiGetWithTotal<number[]>("/inbox?limit=2", "tok");
+
+    expect(out).toEqual({ items: [1, 2], total: 42 });
+    const call = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(call[0]).toBe("/api/v1/inbox?limit=2");
+    expect(call[1].method).toBe("GET");
+    expect(call[1].headers).toMatchObject({ Authorization: "Bearer tok" });
+  });
+
+  it("omits Authorization when the token is blank", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]));
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.spyOn>;
+    const out = await apiGetWithTotal<unknown[]>("/inbox", "   ");
+    expect(out.total).toBe(0);
+    const headers = (fetchMock.mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
+  });
+
+  it("degrades to total 0 when the header is missing or garbage", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]));
+    expect((await apiGetWithTotal<unknown[]>("/inbox", "tok")).total).toBe(0);
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse([], { headers: { "Content-Type": "application/json", "X-Total-Count": "nope" } }),
+    );
+    expect((await apiGetWithTotal<unknown[]>("/inbox", "tok")).total).toBe(0);
+  });
+
+  it("treats 204 as no items", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    const out = await apiGetWithTotal<unknown[] | undefined>("/inbox", "tok");
+    expect(out.items).toBeUndefined();
+    expect(out.total).toBe(0);
+  });
+
+  it("throws ApiError with the parsed message on failure", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: { message: "limit must be between 1 and 200" } }, { status: 400, statusText: "Bad Request" }),
+    );
+    await expect(apiGetWithTotal<unknown[]>("/inbox?limit=9999", "tok")).rejects.toThrow(
+      "limit must be between 1 and 200",
+    );
+  });
+
+  it("falls back to status text when the error body is not JSON", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("gateway sad", { status: 502, statusText: "Bad Gateway" }),
+    );
+    await expect(apiGetWithTotal<unknown[]>("/inbox", "tok")).rejects.toThrow(ApiError);
+    await expect(apiGetWithTotal<unknown[]>("/inbox", "tok")).rejects.toThrow("Bad Gateway");
   });
 });
 
