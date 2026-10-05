@@ -53,16 +53,31 @@ vi.mock("../../lib/useAttention", () => ({
 vi.mock("../../lib/api", () => ({
   apiGet: async (path: string) => {
     env.getCalls.push(path);
-    if (path.startsWith("/inbox")) {
-      if (env.inboxError) throw env.inboxError;
-      return env.messages;
-    }
     if (path === "/users") return env.users;
     return [];
+  },
+  // S-239: the inbox list now goes through apiGetWithTotal so the pager
+  // can see the server's X-Total-Count. The mock mirrors the transport:
+  // it honours limit/offset over the seeded messages and reports the
+  // full seeded count as the total.
+  apiGetWithTotal: async (path: string) => {
+    env.getCalls.push(path);
+    if (path.startsWith("/inbox")) {
+      if (env.inboxError) throw env.inboxError;
+      const params = new URLSearchParams(path.split("?")[1] ?? "");
+      const limit = Number.parseInt(params.get("limit") ?? "100", 10);
+      const offset = Number.parseInt(params.get("offset") ?? "0", 10);
+      return { items: env.messages.slice(offset, offset + limit), total: env.messages.length };
+    }
+    return { items: [], total: 0 };
   },
   apiDelete: async (path: string) => {
     if (env.deleteError) throw env.deleteError;
     env.deleteCalls.push(path);
+    // S-239: deletes really remove the seeded rows so later refetches
+    // report an honest X-Total-Count.
+    const deletedId = path.split("/").pop();
+    env.messages = env.messages.filter((m) => (m as { id: string }).id !== deletedId);
   },
 }));
 
@@ -143,9 +158,9 @@ describe("list rendering", () => {
     env.messages = [msg("m1")];
     render(<InboxPage />);
     await screen.findByRole("heading", { name: "Inbox — 1 new" });
-    expect(env.getCalls).toContain("/inbox?limit=200");
+    expect(env.getCalls).toContain("/inbox?limit=25");
     await userEvent.selectOptions(screen.getByLabelText("Show"), "Unread only");
-    await vi.waitFor(() => expect(env.getCalls).toContain("/inbox?unread=true&limit=200"));
+    await vi.waitFor(() => expect(env.getCalls).toContain("/inbox?unread=true&limit=25"));
   });
 });
 
@@ -312,9 +327,99 @@ describe("admin user filter", () => {
     expect(within(userSelect).getByRole("option", { name: "Other Human" })).toBeInTheDocument();
     expect(within(userSelect).queryByRole("option", { name: "Me" })).not.toBeInTheDocument();
     await userEvent.selectOptions(userSelect, "u2");
-    await vi.waitFor(() => expect(env.getCalls).toContain("/inbox?user_id=u2&limit=200"));
+    await vi.waitFor(() => expect(env.getCalls).toContain("/inbox?user_id=u2&limit=25"));
     // Switching users also exits any open reading view back to the list.
     expect(screen.getByRole("checkbox", { name: "Select all visible messages" })).toBeInTheDocument();
+  });
+});
+
+describe("paging (S-239)", () => {
+  function manyMsgs(n: number): InboxMessage[] {
+    return Array.from({ length: n }, (_, i) => msg(`m${i}`));
+  }
+
+  it("defaults to 25 items per page with no offset on the first page", async () => {
+    env.messages = [msg("m1")];
+    render(<InboxPage />);
+    await screen.findByText("Subject m1");
+    expect(env.getCalls.filter((c) => c.startsWith("/inbox"))).toEqual(["/inbox?limit=25"]);
+    const sizeSelect = screen.getByLabelText("Items per page") as HTMLSelectElement;
+    expect(sizeSelect.value).toBe("25");
+  });
+
+  it("shows the count summary for the current window", async () => {
+    env.messages = [msg("m1"), msg("m2"), msg("m3", { read_at: now() })];
+    render(<InboxPage />);
+    expect(await screen.findByText(/Showing 1–3 of 3/)).toBeInTheDocument();
+  });
+
+  it("changing the items-per-page selector re-fetches and resets to page 1", async () => {
+    env.messages = manyMsgs(30);
+    render(<InboxPage />);
+    await screen.findByText("Subject m0");
+    await userEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await vi.waitFor(() => expect(env.getCalls).toContain("/inbox?limit=25&offset=25"));
+    await userEvent.selectOptions(screen.getByLabelText("Items per page"), "10");
+    await vi.waitFor(() => expect(env.getCalls).toContain("/inbox?limit=10"));
+    // Reset to page 1: the newest inbox call carries no offset.
+    const lastInbox = env.getCalls.filter((c) => c.startsWith("/inbox")).at(-1);
+    expect(lastInbox).toBe("/inbox?limit=10");
+    expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+  });
+
+  it("navigates forward and back through pages", async () => {
+    env.messages = manyMsgs(60);
+    render(<InboxPage />);
+    await screen.findByText("Subject m0");
+    expect(screen.getByRole("button", { name: "Previous page" })).toBeDisabled();
+    expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await vi.waitFor(() => expect(env.getCalls).toContain("/inbox?limit=25&offset=25"));
+    expect(screen.getByText("Page 2 of 3")).toBeInTheDocument();
+    expect(screen.getByText(/Showing 26–50 of 60/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    await vi.waitFor(() =>
+      expect(env.getCalls.filter((c) => c.startsWith("/inbox")).at(-1)).toBe("/inbox?limit=25"),
+    );
+    expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+  });
+
+  it("hides the pager when there are no messages", async () => {
+    render(<InboxPage />);
+    await screen.findByText("Your inbox is empty");
+    expect(screen.queryByRole("button", { name: "Next page" })).not.toBeInTheDocument();
+  });
+
+  it("changing a filter jumps back to the first page", async () => {
+    env.messages = manyMsgs(30);
+    render(<InboxPage />);
+    await screen.findByText("Subject m0");
+    await userEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await vi.waitFor(() => expect(env.getCalls).toContain("/inbox?limit=25&offset=25"));
+    await userEvent.selectOptions(screen.getByLabelText("Show"), "Unread only");
+    await vi.waitFor(() =>
+      expect(env.getCalls.filter((c) => c.startsWith("/inbox")).at(-1)).toBe(
+        "/inbox?unread=true&limit=25",
+      ),
+    );
+    expect(screen.getByText("Page 1 of 2")).toBeInTheDocument();
+  });
+
+  it("bulk delete on the last page steps back when the page empties", async () => {
+    env.messages = manyMsgs(26); // page 2 holds exactly one row
+    render(<InboxPage />);
+    await screen.findByText("Subject m0");
+    await userEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await vi.waitFor(() => expect(env.getCalls).toContain("/inbox?limit=25&offset=25"));
+    expect(screen.getByText("Page 2 of 2")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Select all visible messages" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete 1 selected messages" }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
+    await vi.waitFor(() => expect(env.deleteCalls).toHaveLength(1));
+    // Total drops to 25 → back to a single page.
+    expect(await screen.findByText("Page 1 of 1")).toBeInTheDocument();
   });
 });
 

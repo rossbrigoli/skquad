@@ -52,12 +52,20 @@ export function unreadCount(items: readonly { read_at?: string }[]): number {
 // buildInboxQuery assembles the /inbox (or /notifications) query string
 // from the screen's filter controls. Empty fields are dropped so the API
 // never sees `?user_id=` noise. `unread` is only emitted when true.
-export function buildScopedListQuery(opts: { unread?: boolean; userId?: string; limit?: number }): string {
+export function buildScopedListQuery(opts: {
+  unread?: boolean;
+  userId?: string;
+  limit?: number;
+  offset?: number;
+}): string {
   const params = new URLSearchParams();
   if (opts.unread) params.set("unread", "true");
   const userId = (opts.userId ?? "").trim();
   if (userId !== "") params.set("user_id", userId);
   if (opts.limit && opts.limit > 0) params.set("limit", String(opts.limit));
+  // S-239: paging offset; only sent when positive so the default
+  // first-page query stays byte-identical to the pre-pager shape.
+  if (opts.offset && opts.offset > 0) params.set("offset", String(opts.offset));
   const qs = params.toString();
   return qs === "" ? "" : `?${qs}`;
 }

@@ -277,6 +277,10 @@ type MessageStore interface {
 type InboxStore interface {
 	CreateInboxMessage(ctx context.Context, msg *domain.InboxMessage) (*domain.InboxMessage, error)
 	ListInboxMessages(ctx context.Context, userID string, unreadOnly bool, limit int) ([]*domain.InboxMessage, error)
+	// ListInboxPage returns one page (newest first) of the user's inbox
+	// plus the TOTAL number of messages matching the filter, so paged
+	// clients render a pager without a second round-trip (S-239).
+	ListInboxPage(ctx context.Context, userID string, unreadOnly bool, limit, offset int) ([]*domain.InboxMessage, int, error)
 	MarkInboxMessageRead(ctx context.Context, userID string, id string) (*domain.InboxMessage, error)
 	// GetInboxMessage fetches one message by id (S-193: delete
 	// authorization needs the recipient before removal).
