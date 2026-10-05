@@ -112,6 +112,75 @@ func TestMemoryStoreSumMeteringDailySquadFilter(t *testing.T) {
 	require.Len(t, all, 2)
 }
 
+// S-238: provider resolution for the daily rollup must key on the
+// SERVED model (model_used, falling back to the requested model), not
+// the requested model alone. Covers: served-model resolution when the
+// requested alias is unregistered, unknown fallback, and no row
+// multiplication when a model_name exists under two providers.
+func TestMemoryStoreSumMeteringDailyResolvesProviderFromServedModel(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	ctx := context.Background()
+	squadA, _, agentA, _, provX, provY := seedDailyMeteringFixture(t, store)
+
+	_, err := store.CreateAIModel(ctx, &domain.AIModel{
+		ProviderID: provX.ID, DisplayName: "X Served", ModelName: "served-x",
+		Status: domain.ResourceActive, RegisteredBy: "tester",
+	})
+	require.NoError(t, err)
+	// "shared-model" is registered under BOTH providers: the deterministic
+	// lowest-provider-id pick must yield exactly one bucket, never two.
+	_, err = store.CreateAIModel(ctx, &domain.AIModel{
+		ProviderID: provY.ID, DisplayName: "Y Shared", ModelName: "shared-model",
+		Status: domain.ResourceActive, RegisteredBy: "tester",
+	})
+	require.NoError(t, err)
+	_, err = store.CreateAIModel(ctx, &domain.AIModel{
+		ProviderID: provX.ID, DisplayName: "X Shared", ModelName: "shared-model",
+		Status: domain.ResourceActive, RegisteredBy: "tester",
+	})
+	require.NoError(t, err)
+
+	today := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	record := func(model, modelUsed string, cost float64) {
+		require.NoError(t, store.RecordMetering(ctx, &domain.MeteringEvent{
+			AgentID: agentA.ID, SquadID: squadA.ID, ProviderID: "",
+			Model: model, ModelUsed: modelUsed,
+			InputTokens: 10, OutputTokens: 1, Cost: cost, Currency: "USD", Timestamp: today,
+		}))
+	}
+	// Requested alias is unregistered; served model resolves to provX.
+	record("alias-fast", "served-x", 0.10)
+	// No model_used: falls back to requested model; shared-model exists
+	// under two providers → deterministic single pick (min provider id).
+	record("shared-model", "", 0.20)
+	// Nothing resolves → unknown provider path (empty provider id).
+	record("mystery-model", "still-mystery", 0.30)
+
+	rows, err := store.SumMeteringDaily(ctx, time.Time{}, nil)
+	require.NoError(t, err)
+	require.Len(t, rows, 3, "one bucket per event; shared-model must NOT split by provider")
+
+	byModel := map[string]domain.MeteringDailyRow{}
+	for _, r := range rows {
+		byModel[r.Model] = r
+	}
+
+	served := byModel["alias-fast"]
+	require.Equal(t, provX.ID, served.ProviderID, "model_used must resolve the provider")
+	require.Equal(t, "prov-x", served.ProviderName)
+
+	shared := byModel["shared-model"]
+	wantShared := provX.ID
+	if provY.ID < provX.ID {
+		wantShared = provY.ID
+	}
+	require.Equal(t, wantShared, shared.ProviderID, "deterministic min-provider pick on ambiguous model_name")
+
+	unknown := byModel["mystery-model"]
+	require.Empty(t, unknown.ProviderID, "unresolvable model stays unlinked (unknown provider label)")
+}
+
 func TestMemoryStoreSumMeteringDailySortedByDay(t *testing.T) {
 	t.Parallel()
 	store := NewMemoryStore()

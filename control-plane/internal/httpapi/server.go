@@ -3496,6 +3496,10 @@ type meteringPricingSnapshot struct {
 	RateCacheWritePer1M  *float64
 	RateOutputPer1M      *float64
 	Snapshot             bool
+	// ProviderID is the owning provider of the resolved AI model, used
+	// to stamp metering events that arrive without provider linkage
+	// (S-238). Empty when no model resolves.
+	ProviderID string
 }
 
 // resolveMeteringPricing snapshots the pricing of the model that served
@@ -3510,6 +3514,7 @@ func (s *Server) resolveMeteringPricing(ctx context.Context, agent *domain.Agent
 	if !ok {
 		return snap
 	}
+	snap.ProviderID = model.ProviderID
 	pricing, err := domain.ParseModelPricing(model.Pricing)
 	if err != nil || pricing == nil {
 		return snap
@@ -3582,11 +3587,22 @@ func (s *Server) ingestGatewayMetering(w http.ResponseWriter, r *http.Request) {
 	}
 	snap := s.resolveMeteringPricing(r.Context(), agent, modelUsed, req)
 
+	// S-238: stamp the provider identity at WRITE time. The gateway
+	// callback usually omits provider_id, which left every metering row
+	// unlinked and made per-provider cost rollups depend entirely on
+	// query-time registry joins. When the reporter omits it, use the
+	// provider of the AI model that served the call; a reporter-supplied
+	// provider_id always wins.
+	providerID := strings.TrimSpace(req.ProviderID)
+	if providerID == "" {
+		providerID = snap.ProviderID
+	}
+
 	if err := s.store.RecordMetering(r.Context(), &domain.MeteringEvent{
 		AgentID:              req.AgentID,
 		SquadID:              req.SquadID,
 		TaskID:               req.TaskID,
-		ProviderID:           req.ProviderID,
+		ProviderID:           providerID,
 		Model:                req.Model,
 		ModelUsed:            modelUsed,
 		InputTokens:          req.InputTokens,

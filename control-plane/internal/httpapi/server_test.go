@@ -486,8 +486,64 @@ func TestGatewayMeteringCallbackRecordsUsageAndAudit(t *testing.T) {
 	require.Contains(t, auditActions(audit), "llm.metering.ingest")
 }
 
-func TestGatewayMeteringCallbackRejectsBadToken(t *testing.T) {
+// S-238: the metering ingest must STAMP provider_id at write time from
+// the resolved served model when the gateway omits it, and a
+// reporter-supplied provider_id must always win.
+func TestGatewayMeteringCallbackStampsProviderFromServedModel(t *testing.T) {
 	t.Parallel()
+
+	store := storage.NewMemoryStore()
+	cfg := testConfig()
+	cfg.GatewayCallbackToken = callbackToken
+	handler := New(cfg, store)
+
+	var squad domain.Squad
+	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{
+		"name": "Stamping Squad",
+	}, http.StatusCreated, &squad)
+	var agent domain.Agent
+	doJSON(t, handler, http.MethodPost, pathSquadsPrefix+squad.ID+pathAgents, map[string]any{
+		"name": "Stamping Agent",
+	}, http.StatusCreated, &agent)
+
+	ctx := context.Background()
+	provA, err := store.CreateAIProvider(ctx, &domain.AIProvider{Name: "stamp-prov-a", Kind: "openai", BaseURL: "https://a.test"})
+	require.NoError(t, err)
+	provB, err := store.CreateAIProvider(ctx, &domain.AIProvider{Name: "stamp-prov-b", Kind: "anthropic", BaseURL: "https://b.test"})
+	require.NoError(t, err)
+	_, err = store.CreateAIModel(ctx, &domain.AIModel{
+		ProviderID: provA.ID, DisplayName: "A Served", ModelName: "stamp-served",
+		Status: domain.ResourceActive, RegisteredBy: "tester",
+	})
+	require.NoError(t, err)
+
+	// Reporter omits provider_id: ingest stamps the served model's provider.
+	doGatewayCallback(t, handler, callbackToken, map[string]any{
+		"agent_id": agent.ID, "squad_id": squad.ID,
+		"model": "client-alias", "model_used": "stamp-served",
+		"input_tokens": 4, "output_tokens": 2, "cost": 0.05, "currency": "USD",
+	}, http.StatusAccepted)
+	// Reporter supplies provider_id explicitly: it wins over the registry.
+	doGatewayCallback(t, handler, callbackToken, map[string]any{
+		"agent_id": agent.ID, "squad_id": squad.ID,
+		"provider_id": provB.ID,
+		"model": "client-alias", "model_used": "stamp-served",
+		"input_tokens": 3, "output_tokens": 1, "cost": 0.04, "currency": "USD",
+	}, http.StatusAccepted)
+
+	rows, err := store.SumMeteringDaily(ctx, time.Time{}, nil)
+	require.NoError(t, err)
+	require.Len(t, rows, 2, "one bucket per provider; stamping must not merge or split")
+
+	byProv := map[string]domain.MeteringDailyRow{}
+	for _, r := range rows {
+		byProv[r.ProviderID] = r
+	}
+	require.Contains(t, byProv, provA.ID, "write-time stamp from served model")
+	require.Contains(t, byProv, provB.ID, "reporter-supplied provider_id wins")
+}
+
+func TestGatewayMeteringCallbackRejectsBadToken(t *testing.T) {	t.Parallel()
 
 	cfg := testConfig()
 	cfg.GatewayCallbackToken = callbackToken

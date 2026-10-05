@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
 
@@ -108,6 +110,91 @@ func TestPostgresSumMeteringDailyJoinsRealSchema(t *testing.T) {
 	if r2.Model != "model-b" || r2.InputTokens != 7 || r2.OutputTokens != 3 {
 		t.Fatalf("day2 row = %+v", r2)
 	}
+}
+
+func TestPostgresSumMeteringDailyResolvesProviderFromServedModel(t *testing.T) {
+	store := postgresTestStore(t)
+	f := newPGFixture(t, store)
+	ctx := context.Background()
+
+	suffix := time.Now().UTC().Format("150405.000000")
+	provServed, err := store.CreateAIProvider(ctx, &domain.AIProvider{
+		Name: "served-prov-" + suffix, Kind: "openai", BaseURL: "https://served.test",
+		APIKeyRef: "secret/served", Status: domain.ResourceActive, RegisteredBy: f.user.ID,
+	})
+	require.NoError(t, err)
+	provShared, err := store.CreateAIProvider(ctx, &domain.AIProvider{
+		Name: "shared-prov-" + suffix, Kind: "anthropic", BaseURL: "https://shared.test",
+		APIKeyRef: "secret/shared", Status: domain.ResourceActive, RegisteredBy: f.user.ID,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = store.pool.Exec(bg, `DELETE FROM providers WHERE id = $1`, provServed.ID)
+		_, _ = store.pool.Exec(bg, `DELETE FROM providers WHERE id = $1`, provShared.ID)
+	})
+
+	_, err = store.CreateAIModel(ctx, &domain.AIModel{
+		ProviderID: provServed.ID, DisplayName: "Served X", ModelName: "served-x-" + suffix,
+		Status: domain.ResourceActive, RegisteredBy: f.user.ID,
+	})
+	require.NoError(t, err)
+	// Ambiguous model_name under two providers: the scalar-subquery pick
+	// must resolve one provider and never multiply rows.
+	_, err = store.CreateAIModel(ctx, &domain.AIModel{
+		ProviderID: provShared.ID, DisplayName: "Shared Y", ModelName: "shared-m-" + suffix,
+		Status: domain.ResourceActive, RegisteredBy: f.user.ID,
+	})
+	require.NoError(t, err)
+	_, err = store.CreateAIModel(ctx, &domain.AIModel{
+		ProviderID: provServed.ID, DisplayName: "Shared X", ModelName: "shared-m-" + suffix,
+		Status: domain.ResourceActive, RegisteredBy: f.user.ID,
+	})
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	events := []*domain.MeteringEvent{
+		// Requested alias unregistered; served model resolves provServed.
+		{AgentID: f.agent.ID, SquadID: f.squad.ID, Model: "alias-fast-" + suffix,
+			ModelUsed: "served-x-" + suffix, InputTokens: 10, OutputTokens: 1, Cost: 0.1,
+			Currency: "USD", Timestamp: now},
+		// No model_used: fallback to requested; ambiguous name → single row.
+		{AgentID: f.agent.ID, SquadID: f.squad.ID, Model: "shared-m-" + suffix,
+			ModelUsed: "", InputTokens: 20, OutputTokens: 2, Cost: 0.2,
+			Currency: "USD", Timestamp: now},
+		// Unresolvable → unknown provider path.
+		{AgentID: f.agent.ID, SquadID: f.squad.ID, Model: "mystery-" + suffix,
+			ModelUsed: "still-mystery-" + suffix, InputTokens: 30, OutputTokens: 3, Cost: 0.3,
+			Currency: "USD", Timestamp: now},
+	}
+	for _, ev := range events {
+		require.NoError(t, store.RecordMetering(ctx, ev))
+	}
+
+	rows, err := store.SumMeteringDaily(ctx, now.Add(-time.Hour), []string{f.squad.ID})
+	require.NoError(t, err)
+	byModel := map[string]domain.MeteringDailyRow{}
+	for _, r := range rows {
+		if r.AgentID == f.agent.ID {
+			byModel[r.Model] = r
+		}
+	}
+	require.Len(t, byModel, 3, "shared model must not split/multiply rows")
+
+	served := byModel["alias-fast-"+suffix]
+	require.Equal(t, provServed.ID, served.ProviderID, "model_used must drive the registry join")
+	require.Equal(t, provServed.Name, served.ProviderName)
+
+	shared := byModel["shared-m-"+suffix]
+	wantShared := provServed.ID
+	if provShared.ID < provServed.ID {
+		wantShared = provShared.ID
+	}
+	require.Equal(t, wantShared, shared.ProviderID, "deterministic min-provider pick on ambiguous model_name")
+
+	unknown := byModel["mystery-"+suffix]
+	require.Empty(t, unknown.ProviderID)
+	require.Empty(t, unknown.ProviderName)
 }
 
 func TestPostgresSumMeteringDailySquadAllowlist(t *testing.T) {
