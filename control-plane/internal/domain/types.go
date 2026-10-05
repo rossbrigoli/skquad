@@ -391,6 +391,12 @@ type Message struct {
 	ID            string          `json:"id"`
 	FromType      string          `json:"from_type"` // "user" | "agent"
 	FromID        string          `json:"from_id"`
+	// FromDisplay (S-235) is the sender's display name resolved at read
+	// time: agents show their current name (renames after the event still
+	// show the new name); users show their first name with the email
+	// local-part as fallback. Additive wire field — clients that ignore
+	// it keep working off from_type/from_id.
+	FromDisplay string `json:"from_display,omitempty"`
 	ToAgentID     string          `json:"to_agent_id"`
 	SquadID       string          `json:"squad_id"`
 	Type          MessageType     `json:"type"`
@@ -836,6 +842,11 @@ type AuditEntry struct {
 	ID           string          `json:"id"`
 	ActorType    string          `json:"actor_type"` // "user" | "agent" | "system"
 	ActorID      string          `json:"actor_id"`
+	// ActorDisplay (S-235) is the actor's display name resolved at read
+	// time (current agent name; user first name with email local-part
+	// fallback). Empty for system actors and unresolvable ids. Additive
+	// wire field — see Message.FromDisplay.
+	ActorDisplay string `json:"actor_display,omitempty"`
 	Action       string          `json:"action"`
 	ResourceType string          `json:"resource_type"`
 	ResourceID   string          `json:"resource_id"`
