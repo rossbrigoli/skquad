@@ -8,9 +8,10 @@ function makePool(size: number, timeoutMs = 250) {
   const pool = new BrowserPool(
     size,
     {
-      create: (id) => {
+      create: async (id) => {
         const i = new FakeBrowserInstance(id);
         made.push(i);
+        await i.launch();
         return i;
       },
     },

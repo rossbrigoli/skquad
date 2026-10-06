@@ -4,7 +4,7 @@ import { startServer } from '../src/server';
 import { FakeBrowserInstance } from '../src/browser';
 import { BrowserBusyError } from '../src/pool';
 
-const TOKEN = 'test-interna…-123';
+const TOKEN = 'test-internal-secret-9f3a2b';
 
 interface Stack {
   port: number;
@@ -20,9 +20,10 @@ async function stack(poolSize = 4, acquireTimeoutMs = 250): Promise<Stack> {
     acquireTimeoutMs,
     internalToken: TOKEN,
     instanceFactory: {
-      create: (id) => {
+      create: async (id) => {
         const f = new FakeBrowserInstance(id);
         made.push(f);
+        await f.launch();
         return f;
       },
     },
@@ -273,7 +274,7 @@ test('MCP navigate happy path: {url,title,page_index}', async () => {
     const r = await toolCall(s.port, 'browser.navigate', { session: token, url: 'http://93.184.216.34/' });
     assert.equal(r.json.error, undefined, JSON.stringify(r.json));
     assert.equal(r.json.result.isError, false);
-    const out = JSON.parse(r.json.result.text);
+    const out = JSON.parse(r.json.result.content[0].text);
     assert.equal(out.url, 'http://93.184.216.34/');
     assert.equal(typeof out.title, 'string');
     assert.equal(out.page_index, 1);
@@ -359,7 +360,7 @@ test('screenshot cap: full-page over cap clips to viewport', async () => {
     (sess.page as any).screenshotSize = 1000;
     const r = await toolCall(s.port, 'browser.screenshot', { session: token, full_page: true });
     assert.equal(r.json.error, undefined);
-    const out = JSON.parse(r.json.result.text);
+    const out = JSON.parse(r.json.result.content[0].text);
     assert.equal(out.bytes, 1000, 'clipped to viewport');
     assert.equal(out.mime, 'image/png');
     assert.ok(Buffer.from(out.screenshot_b64, 'base64').length === 1000);
@@ -389,7 +390,7 @@ test('extract: capped at 200 KB', async () => {
     const sess = s.store.getByToken(token);
     (sess.page as any).text = 'x'.repeat(250_000);
     const r = await toolCall(s.port, 'browser.extract', { session: token });
-    const out = JSON.parse(r.json.result.text);
+    const out = JSON.parse(r.json.result.content[0].text);
     assert.ok(Buffer.byteLength(out.text, 'utf8') <= 200_000);
     assert.equal(Buffer.byteLength(out.text, 'utf8'), 200_000);
   } finally {
@@ -404,10 +405,10 @@ test('click + type tools work after navigate', async () => {
     await toolCall(s.port, 'browser.navigate', { session: token, url: 'http://93.184.216.34/' });
     let r = await toolCall(s.port, 'browser.click', { session: token, selector: '#btn' });
     assert.equal(r.json.result.isError, false);
-    assert.deepEqual(JSON.parse(r.json.result.text), { clicked: '#btn' });
+    assert.deepEqual(JSON.parse(r.json.result.content[0].text), { clicked: '#btn' });
     r = await toolCall(s.port, 'browser.type', { session: token, selector: '#q', text: 'hello', submit: true });
     assert.equal(r.json.result.isError, false);
-    assert.deepEqual(JSON.parse(r.json.result.text), { typed: '#q' });
+    assert.deepEqual(JSON.parse(r.json.result.content[0].text), { typed: '#q' });
   } finally {
     await s.close();
   }
@@ -431,7 +432,7 @@ test('browser.close_session: closes, then token is invalid (-32001)', async () =
     const { session_id, token } = await createSession(s.port);
     const r = await toolCall(s.port, 'browser.close_session', { session: token });
     assert.equal(r.json.result.isError, false);
-    assert.deepEqual(JSON.parse(r.json.result.text), { closed: session_id });
+    assert.deepEqual(JSON.parse(r.json.result.content[0].text), { closed: session_id });
     const r2 = await toolCall(s.port, 'browser.extract', { session: token });
     assert.equal(r2.json.error.code, -32001);
   } finally {

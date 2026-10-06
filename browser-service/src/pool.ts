@@ -77,8 +77,7 @@ export class BrowserPool {
         this.waiters = this.waiters.filter((w) => w.timer !== timer);
         reject(new BrowserBusyError());
       }, timeoutMs);
-      // Don't hold the event loop open just for the queue timer.
-      timer.unref?.();
+      // NOTE: intentionally NOT unref'd — the timeout must fire to reject waiters.
       this.waiters.push({ resolve, reject, timer });
     });
   }

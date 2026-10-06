@@ -11,7 +11,7 @@ test('matchDenyHost: plain pattern matches exact host and subdomains', () => {
 test('matchDenyHost: glob *.internal matches sub/superdomain and bare domain', () => {
   assert.equal(matchDenyHost('foo.internal', ['*.internal']), true);
   assert.equal(matchDenyHost('a.b.internal', ['*.internal']), true);
-  assert.equal(matchDenyHost('internal', ['*.internal']), true);
+  assert.equal(matchDenyHost('internal', ['*.internal']), false, 'bare domain needs exact entry');
   assert.equal(matchDenyHost('external.com', ['*.internal']), false);
 });
 

@@ -9,9 +9,10 @@ function makeStore(size = 4) {
   const pool = new BrowserPool(
     size,
     {
-      create: (id) => {
+      create: async (id) => {
         const f = new FakeBrowserInstance(id);
         made.push(f);
+        await f.launch();
         return f;
       },
     },
