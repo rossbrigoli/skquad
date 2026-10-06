@@ -1,0 +1,141 @@
+{{- if .Values.browserService.enabled }}
+{{- /*
+TG-6 quarantine pod (docs/tg6-browser-protocol.md §4/§5/§7):
+  * browser-service  — Playwright MCP + session API on :8090 (internal-token auth)
+  * browser-proxy    — netguard forward proxy on :8888; Chromium is pointed at
+    127.0.0.1:8888, and because the sidecar shares the pod network namespace
+    the localhost hop is invisible to NetworkPolicy — pod-level egress (see
+    browser-networkpolicy.yaml) therefore allows public 80/443-minus-private
+    for the proxy, and netguard is the real fail-closed L7 guard.
+
+Readiness: the service's /v1/sessions requires auth, so probes are plain TCP
+on both containers (task directive: nothing fancy).
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "skquad.browserServiceName" . }}
+  namespace: {{ .Values.browserService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: browser-service
+spec:
+  # Single quarantine pod; scaling the pool means raising poolSize, not
+  # replicas (v1 keeps one Chromium pool in one process group).
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: browser-service
+  template:
+    metadata:
+      labels:
+        {{- include "skquad.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: browser-service
+    spec:
+      # The browser zone never talks to the Kubernetes API.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: browser-service
+          image: {{ include "skquad.browserServiceImage" . | quote }}
+          imagePullPolicy: {{ .Values.browserService.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.browserService.port }}
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: {{ .Values.browserService.port | quote }}
+            - name: POOL_SIZE
+              value: {{ .Values.browserService.poolSize | quote }}
+            - name: BROWSER_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "skquad.browserInternalTokenSecretName" . }}
+                  key: {{ .Values.browserService.internalTokenSecret.key }}
+            {{- if .Values.browserService.browserExecutable }}
+            - name: BROWSER_EXECUTABLE
+              value: {{ .Values.browserService.browserExecutable | quote }}
+            {{- end }}
+            # Read-only rootfs: Chromium writes cache/tmp under HOME — point
+            # HOME at the writable /tmp emptyDir.
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          # /v1/sessions readiness needs auth → TCP probe only.
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: shm
+              mountPath: /dev/shm
+          resources:
+            {{- toYaml .Values.browserService.resources | nindent 12 }}
+        - name: browser-proxy
+          image: {{ include "skquad.browserProxyImage" . | quote }}
+          imagePullPolicy: {{ .Values.browserService.imagePullPolicy }}
+          ports:
+            - name: proxy
+              containerPort: {{ .Values.browserService.proxyPort }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.browserService.proxyPort | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          readinessProbe:
+            tcpSocket:
+              port: proxy
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: proxy
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        # Chromium needs a writable /tmp under a read-only rootfs.
+        - name: tmp
+          emptyDir: {}
+        # Chromium shared memory (default 64Mi is too small for rendering).
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+      {{- with .Values.browserService.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.browserService.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

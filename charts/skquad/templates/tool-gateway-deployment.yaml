@@ -63,6 +63,20 @@ spec:
                   name: {{ include "skquad.gatewayInternalTokenSecretName" . }}
                   key: {{ .Values.toolGateway.internalTokenSecret.key }}
                   optional: true
+            {{- if .Values.browserService.enabled }}
+            # TG-6: token the gateway presents to the browser-service control
+            # plane (POST/DELETE /v1/sessions, docs §1/§6). The service URL
+            # itself is NOT an env var here — the browser driver reads it from
+            # the resource's base_url config delivered by the CP (see
+            # tool-gateway/internal/drivers/browser/policy.go). Empty token =
+            # driver fails closed (denial), never unauthenticated calls.
+            - name: SKQUAD_BROWSER_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "skquad.browserInternalTokenSecretName" . }}
+                  key: {{ .Values.browserService.internalTokenSecret.key }}
+                  optional: true
+            {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

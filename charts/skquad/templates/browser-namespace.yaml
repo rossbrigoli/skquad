@@ -1,0 +1,18 @@
+{{- if .Values.browserService.enabled }}
+{{- /*
+TG-6 (docs/tg6-browser-protocol.md §7): quarantine namespace for the
+browser service. Untrusted page content executes here; the namespace is
+default-deny on both directions (see browser-networkpolicy.yaml) and
+enforces the restricted Pod Security profile as a second floor.
+*/ -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.browserService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: browser-service
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+{{- end }}

@@ -103,3 +103,24 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "skquad.toolGatewayImage" -}}
 {{- printf "%s:%s" .Values.image.toolGateway.repository .Values.image.toolGateway.tag -}}
 {{- end -}}
+
+{{- /* TG-6: browser service quarantine zone helpers */ -}}
+{{- define "skquad.browserServiceName" -}}
+{{- printf "%s-browser-service" (include "skquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "skquad.browserServiceImage" -}}
+{{- printf "%s:%s" .Values.browserService.image.repository .Values.browserService.image.tag -}}
+{{- end -}}
+
+{{- define "skquad.browserProxyImage" -}}
+{{- printf "%s:%s" .Values.browserService.proxyImage.repository .Values.browserService.proxyImage.tag -}}
+{{- end -}}
+
+{{- define "skquad.browserInternalTokenSecretName" -}}
+{{- if .Values.browserService.internalTokenSecret.name -}}
+{{- .Values.browserService.internalTokenSecret.name -}}
+{{- else -}}
+{{- printf "%s-internal-token" (include "skquad.browserServiceName" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
