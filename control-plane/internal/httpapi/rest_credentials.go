@@ -204,9 +204,15 @@ func (s *Server) internalCredentials(w http.ResponseWriter, r *http.Request) {
 	if agentID != "" {
 		if name := kube.ResourceAgentSecretName(resourceID, agentID); name != "" {
 			fields, err := s.resourceSecrets.GetResourceSecret(r.Context(), name)
-			if err == nil && len(fields) > 0 {
+			if err == nil && len(fields) > 0 && restFieldsMatchKind(kind, fields) {
 				s.serveCredential(w, r, resourceID, agentID, kind, "agent", fields)
 				return
+			}
+			if err == nil && len(fields) > 0 {
+				// Stale payload (e.g. auth_kind rotated on the resource
+				// after the per-agent secret was written): refuse rather
+				// than inject the wrong shape; fall back to the default.
+				log.Printf("credentials: per-agent secret %s inconsistent with auth_kind, falling back to resource default", name)
 			}
 			if err != nil {
 				// Per-agent read failed: fall back to the resource

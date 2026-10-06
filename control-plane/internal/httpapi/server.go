@@ -739,6 +739,11 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Get(routeRegistryResource, s.getRegistryResource)
 			r.Patch(routeRegistryResource, s.updateRegistryResource)
 			r.Post("/registry/{registryType}/{resourceID}/deprecate", s.deprecateRegistryResource)
+			// TG-4c (S-259): per-agent BYO REST credentials — set/probe/
+			// clear one agent's own credential (write-only; owner or admin).
+			r.Put("/registry/{registryType}/{resourceID}/agent-credentials/{agentID}", s.putRestAgentCredential)
+			r.Get("/registry/{registryType}/{resourceID}/agent-credentials/{agentID}", s.getRestAgentCredentialStatus)
+			r.Delete("/registry/{registryType}/{resourceID}/agent-credentials/{agentID}", s.deleteRestAgentCredential)
 			r.Delete(routeRegistryResource, s.deleteRegistryResource)
 
 			r.Get("/metering/summary", s.getMeteringSummary)
