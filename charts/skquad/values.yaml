@@ -447,6 +447,16 @@ toolGateway:
   # Runtime kill switch (SKQUAD_TOOL_GATEWAY_ENABLED). Flip to false to make
   # the gateway refuse ALL non-health traffic without removing the Deployment.
   enabledRuntime: true
+  # TG-5: shared secret for the CP→gateway MCP enumerate direction
+  # (X-Skquad-Internal-Token on POST /internal/mcp/enumerate). The
+  # control-plane sends it; the gateway requires it; the MCP drift scanner
+  # is gated on it. Separate from the gateway callback token (direction-
+  # scoped). Inline dev value below; for a hardened deployment set
+  # internalTokenSecret.name to a SealedSecret and leave internalToken "".
+  internalToken: ""
+  internalTokenSecret:
+    name: ""
+    key: token
   # Control plane base URL for the internal policy API. Empty => derived
   # in-cluster from the api-server Service.
   controlPlaneUrl: ""
