@@ -156,6 +156,16 @@ spec:
             - name: SKQUAD_OIDC_ADMIN_GROUPS
               value: {{ .Values.apiServer.oidc.adminGroups | join "," | quote }}
             {{- end }}
+            {{- if .Values.toolGateway.enabled }}
+            # TG-4: with this set, the CP executes web_fetch + rest_call in
+            # the tool gateway instead of in-cluster legacy paths. Override
+            # with apiServer.runtimeToolGatewayUrl for an external gateway.
+            - name: SKQUAD_TOOL_GATEWAY_URL
+              value: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "skquad.toolGatewayName" .) .Release.Namespace .Values.toolGateway.port) .Values.apiServer.runtimeToolGatewayUrl | quote }}
+            {{- end }}
+            {{- with .Values.apiServer.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
