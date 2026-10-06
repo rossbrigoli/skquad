@@ -44,8 +44,11 @@ spec:
       ports:
         - protocol: TCP
           port: http
-    # Browser Service placeholder (TG-6, quarantine namespace).
-    # Rule is inert until the service exists.
+    # Browser Service (TG-6, quarantine namespace). Gateway → browser pods
+    # on the service port (control + MCP). Matches the live pod labels from
+    # browser-service-deployment.yaml (component browser-service, container
+    # port named http = {{ .Values.browserService.port }}). Inert until the
+    # service exists.
     - to:
         - namespaceSelector:
             matchLabels:
@@ -55,7 +58,7 @@ spec:
               app.kubernetes.io/component: {{ .Values.toolGateway.browserService.componentLabel }}
       ports:
         - protocol: TCP
-          port: http
+          port: {{ .Values.browserService.port }}
     # Public internet: 80,443 everywhere EXCEPT the cluster's own
     # pod/service CIDRs (configured via toolGateway.clusterCIDRs — adjust
     # to the actual cluster CIDRs; k3s defaults shipped).

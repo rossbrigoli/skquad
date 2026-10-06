@@ -498,6 +498,67 @@ toolGateway:
   nodeSelector: {}
   tolerations: []
 
+# TG-6: Browser Service quarantine zone (docs/tg6-browser-protocol.md §7).
+# One pod, two containers: browser-service (Playwright, :8090) + browser-proxy
+# (netguard forward proxy sidecar, :8888). Lives in its own namespace
+# (skquad-browser) with default-deny ingress+egress; only the tool-gateway may
+# reach :8090, and pod egress is DNS + public-internet-80/443-minus-private
+# (the proxy sidecar shares the pod netns, so localhost is netpol-invisible;
+# netguard inside the proxy is the real fail-closed L7 floor — the netpol here
+# is deliberately coarse).
+browserService:
+  enabled: false
+  namespace: skquad-browser
+  image:
+    repository: ghcr.io/rossbrigoli/skquad-browser-service
+    tag: "0.1.0"
+  proxyImage:
+    repository: ghcr.io/rossbrigoli/skquad-browser-proxy
+    tag: "0.1.0"
+  imagePullPolicy: IfNotPresent
+  port: 8090
+  proxyPort: 8888
+  # Warm Chromium pool. Each instance ≈150–300 MB; the pod limits below give
+  # a pool of 4 ≈ 1.2 GB of headroom.
+  poolSize: 4
+  # Protocol default idle timeout (seconds). NOTE: the service takes the
+  # effective idle timeout per-session from the gateway-supplied policy
+  # (docs §2); this value documents the protocol default and is not read
+  # by the service as an env var.
+  idleTimeoutS: 600
+  # Shared secret the gateway presents to the browser-service control plane
+  # (SKQUAD_BROWSER_INTERNAL_TOKEN, docs §1). Same dev pattern as
+  # toolGateway.internalToken: inline value for dev, or set
+  # internalTokenSecret.name to a pre-created (Sealed)Secret and leave
+  # internalToken "". The secret is rendered into BOTH the release namespace
+  # (for the gateway's env) and the quarantine namespace (for the service) —
+  # when using an override name, that secret must exist in both namespaces.
+  internalToken: ""
+  internalTokenSecret:
+    name: ""
+    key: token
+  # Optional explicit Chromium path (BROWSER_EXECUTABLE). Leave empty to use
+  # the image default (bundled Chromium symlinked onto PATH).
+  browserExecutable: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 3Gi
+  # Coarse egress exclusion list for the quarantine pod (public 80/443 only,
+  # minus every private range we can name). toolGateway.clusterCIDRs is
+  # appended automatically. netguard remains the fail-closed floor at L7.
+  deniedEgressCIDRs:
+    - 10.0.0.0/8        # RFC1918
+    - 172.16.0.0/12     # RFC1918
+    - 192.168.0.0/16    # RFC1918
+    - 100.64.0.0/10     # CGNAT
+    - 169.254.0.0/16    # link-local
+  nodeSelector: {}
+  tolerations: []
+
 # TG-1: explicit no-internet-egress assertion for the control plane
 # (design §5.4). DISABLED by default: enabling requires enumerating every
 # legitimate CP egress path (K8s API CIDR etc.) or the CP breaks. The

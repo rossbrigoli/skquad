@@ -47,6 +47,20 @@ func validateTypedResourceFields(resourceType string, endpointConfig, policyCeil
 		}
 		return nil
 	}
+	if resourceType == "mcp" && egresspolicy.IsBrowserConfig(endpointConfig) {
+		// TG-6 slice D: browser-driver mcp resources fold the flat
+		// browser ceiling (docs/tg6-browser-protocol.md §2/§6), not the
+		// plain-mcp ceiling, and must be internal-class: the browser
+		// service is an in-cluster endpoint and registration enumerates
+		// it through the gateway's private-egress path.
+		if !strings.EqualFold(strings.TrimSpace(egressClass), "internal") {
+			return egresspolicy.Violations{{Field: "egress_class", Code: "invalid_value", Message: "browser resources must use egress_class=internal (in-cluster browser service)"}}
+		}
+		if v := egresspolicy.ValidateBrowserCeiling(policyCeiling); len(v) > 0 {
+			return v
+		}
+		return egresspolicy.ValidateEndpointConfig(resourceType, endpointConfig)
+	}
 	if v := egresspolicy.ValidateCeiling(resourceType, policyCeiling); len(v) > 0 {
 		return v
 	}

@@ -138,6 +138,18 @@ jobs:
             image: skquad-embedder
             tag_suffix: -cuda
             extra_build_args: BASE_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b11347
+          # TG-6: browser-service (Playwright quarantine zone, TS app builds
+          # in-image because dist/ is gitignored).
+          - component: browser-service
+            context: browser-service
+            dockerfile: browser-service/Dockerfile
+            image: skquad-browser-service
+          # TG-6: browser egress proxy sidecar. Builds from the repo root
+          # because its go.mod replaces the shared module at ../shared.
+          - component: browser-proxy
+            context: .
+            dockerfile: browser-proxy/Dockerfile
+            image: skquad-browser-proxy
 
     steps:
       - uses: actions/checkout@v7

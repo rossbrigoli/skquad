@@ -1,0 +1,110 @@
+{{- if .Values.browserService.enabled }}
+{{- /*
+TG-6 quarantine NetworkPolicy topology (docs/tg6-browser-protocol.md §7).
+
+COARSE-BY-DESIGN: NetworkPolicy is L3/L4 only. The real egress guard is
+netguard inside the browser-proxy sidecar (dial-time IP pinning, private/
+loopback/CGNAT/link-local/metadata/ULA denial, ports 80/443 only) plus the
+in-service navigation ceiling (§4). This policy's job is to make the
+quarantine namespace default-deny and keep the blast radius off private
+space — netguard remains the fail-closed floor at L7.
+
+Key subtlety: the proxy shares the browser pod's network namespace, so
+pod-level egress rules govern BOTH containers. Chromium → proxy is a
+localhost hop (not policy-filtered); proxy → internet must therefore be
+permitted at pod level, minus every private range we can name.
+*/ -}}
+# (a) Default-deny ALL ingress + egress for the quarantine namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: skquad-browser-default-deny
+  namespace: {{ .Values.browserService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: browser-service
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# (b) Ingress to browser pods ONLY from tool-gateway pods on the service
+# port (control plane + MCP both arrive from the gateway; nothing else may
+# initiate a connection to the quarantine zone).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: skquad-browser-ingress-from-tool-gateway
+  namespace: {{ .Values.browserService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: browser-service
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: browser-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "skquad.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: tool-gateway
+      ports:
+        - protocol: TCP
+          port: {{ .Values.browserService.port }}
+---
+# (c)+(d) Egress from browser pods:
+#   1. DNS only to kube-system (the service must resolve deny_hosts and the
+#      proxy must resolve targets).
+#   2. Public internet 80/443 — required because the proxy sidecar shares
+#      this pod's network namespace — with EVERY private range explicitly
+#      excluded: RFC1918, CGNAT, link-local, plus the cluster pod/service
+#      CIDRs from toolGateway.clusterCIDRs. Direct-to-private from this pod
+#      is impossible at L3; netguard re-checks at dial time regardless.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: skquad-browser-egress
+  namespace: {{ .Values.browserService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: browser-service
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: browser-service
+  policyTypes:
+    - Egress
+  egress:
+    # kube DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Public internet for the proxy sidecar, minus all private ranges.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            {{- range (concat .Values.browserService.deniedEgressCIDRs .Values.toolGateway.clusterCIDRs) }}
+            except:
+              - {{ . }}
+            {{- end }}
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+{{- end }}

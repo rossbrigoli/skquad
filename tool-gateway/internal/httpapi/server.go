@@ -606,11 +606,17 @@ func (s *Server) handleMCPCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Driver dispatch.
-	drv, ok := s.deps.Drivers["mcp"]
+	// 4. Driver dispatch. A grant whose config (or ceiling) declares
+	// `driver: "browser"` routes to the TG-6 browser driver (session
+	// brokering); everything else keeps the plain mcp driver.
+	driverName := "mcp"
+	if grantRequestsBrowserDriver(grant) {
+		driverName = "browser"
+	}
+	drv, ok := s.deps.Drivers[driverName]
 	if !ok {
-		emit(audit.DecisionError, http.StatusNotFound, "no mcp driver")
-		writeError(w, http.StatusNotFound, "not_found", "no mcp driver registered")
+		emit(audit.DecisionError, http.StatusNotFound, "no "+driverName+" driver")
+		writeError(w, http.StatusNotFound, "not_found", "no "+driverName+" driver registered")
 		return
 	}
 	resp, err := drv.Handle(r.Context(), &drivers.Request{
@@ -654,10 +660,33 @@ func (s *Server) handleMCPCall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, code, resp.Body)
 }
 
+// grantRequestsBrowserDriver reports whether an mcp-typed grant opts
+// into the TG-6 browser driver via `driver: "browser"` in its config
+// (registration layer) or ceiling. Lenient: malformed layers simply
+// don't select the browser driver (the plain mcp driver will then
+// fail its own policy validation — no silent widening).
+func grantRequestsBrowserDriver(grant *policy.Grant) bool {
+	if grant == nil {
+		return false
+	}
+	for _, raw := range []json.RawMessage{grant.Config, grant.Ceiling} {
+		if len(raw) == 0 {
+			continue
+		}
+		var probe struct {
+			Driver string `json:"driver"`
+		}
+		if err := json.Unmarshal(raw, &probe); err == nil && strings.EqualFold(strings.TrimSpace(probe.Driver), "browser") {
+			return true
+		}
+	}
+	return false
+}
+
 // handleGitProxy runs the pipeline for the TG-4b `git` driver:
 // kill switch → authn → grant lookup (typed git resource addressed
 // by id) → streaming dispatch. The body is NEVER read into memory
-// here — the driver streams it straight to the upstream (packfiles).
+// here - the driver streams it straight to the upstream (packfiles).
 // The driver owns the response wire after the grant check; denials
 // before that map to 403 with a client-safe reason, parse failures
 // to 400, upstream failures to 502. Audit records repo/service and,
@@ -731,7 +760,7 @@ func (s *Server) handleGitProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Streaming dispatch. NOTE: no body read/cap — the driver
+	// 3. Streaming dispatch. NOTE: no body read/cap - the driver
 	// streams the packfile through (a cap here would break pushes).
 	drv, ok := s.deps.StreamDrivers["git"]
 	if !ok {

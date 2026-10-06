@@ -129,6 +129,7 @@ var (
 	httpMethods = map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true, "HEAD": true, "OPTIONS": true}
 	authKinds   = map[string]bool{"none": true, "bearer": true, "api_key_header": true, "basic": true, "oauth2_client_credentials": true}
 	mcpAuth     = map[string]bool{"none": true, "bearer": true}
+	mcpDrivers  = map[string]bool{"browser": true, "mcp": true}
 	egressClass = map[string]bool{"public": true, "internal": true}
 )
 
@@ -150,7 +151,7 @@ var (
 	WebShapeKeys    = []string{"deny_domains", "deny_cidrs", "rate_per_min", "max_bytes", "timeout_seconds", "allow_private_network"}
 	RestConfigKeys  = []string{"base_url", "auth_kind", "header_name"}
 	RestCeilingKeys = []string{"methods", "path_allow", "path_deny", "max_request_bytes", "max_response_bytes", "rate_per_min", "egress_class"}
-	MCPConfigKeys   = []string{"url", "auth_kind"}
+	MCPConfigKeys = []string{"url", "auth_kind", "driver"}
 	// TG-5 slice B2a: egress_class joins the MCP ceiling shape — the
 	// gateway's mcp policy folds it into AllowPrivate (internal-class
 	// upstreams need allow_private at enumerate/call time), matching the
@@ -282,6 +283,11 @@ func validateMCPConfig(obj map[string]json.RawMessage) Violations {
 	}
 	var authKind string
 	v = append(v, stringField(obj, "auth_kind", "endpoint_config.auth_kind", &authKind, false, mcpAuth)...)
+	// TG-6 slice D: driver selects the gateway driver for this mcp
+	// registration. "browser" routes to the TG-6 browser driver; "mcp"
+	// is the explicit default. Anything else is a typo, not a driver.
+	var driver string
+	v = append(v, stringField(obj, "driver", "endpoint_config.driver", &driver, false, mcpDrivers)...)
 	return sortByField(v)
 }
 

@@ -172,6 +172,15 @@ func mcpAllowlistViolations(ceiling json.RawMessage, tools []MCPToolInfo) egress
 	return v
 }
 
+// browserEnumeratePlaceholder is the non-secret bearer the CP sends when
+// enumerating a browser-driver resource that carries no BYO token. The
+// browser service authenticates MCP tool CALLS with brokered session
+// tokens and does not check the bearer on initialize/tools/list; the
+// gateway enumerate endpoint requires a non-empty token, so this
+// placeholder satisfies the transport contract without pretending a
+// real credential exists. Never stored as a Secret.
+const browserEnumeratePlaceholder = "skquad-browser-in-cluster"
+
 // snapshotMCPTools runs the gateway enumeration for an MCP resource and
 // stamps the snapshot fields onto the (unsaved) resource. It does NOT
 // persist — callers persist via CreateResource/UpdateResource so the
@@ -183,6 +192,12 @@ func (s *Server) snapshotMCPTools(ctx context.Context, resource *domain.Registry
 			code:    "gateway_unavailable",
 			message: "MCP registration requires the tool gateway (set SKQUAD_TOOL_GATEWAY_URL and SKQUAD_GATEWAY_INTERNAL_TOKEN)",
 		}
+	}
+	// TG-6 slice D: browser-driver resources need no BYO bearer (auth
+	// is session-brokered); enumerate with the placeholder so the
+	// gateway's non-empty-token contract is met.
+	if strings.TrimSpace(bearerToken) == "" && egresspolicy.IsBrowserConfig(resource.EndpointConfig) {
+		bearerToken = browserEnumeratePlaceholder
 	}
 	upstream := mcpURLFromConfig(resource.EndpointConfig)
 	if upstream == "" {

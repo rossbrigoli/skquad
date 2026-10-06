@@ -1,0 +1,26 @@
+{{- if .Values.browserService.enabled }}
+{{- /*
+TG-6: ClusterIP service for the browser-service control + MCP surface.
+Only tool-gateway pods can actually connect (browser-networkpolicy.yaml).
+The proxy (:8888) is deliberately NOT exposed as a service — it is a
+same-pod localhost sidecar only.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: skquad-browser-service
+  namespace: {{ .Values.browserService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: browser-service
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "skquad.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: browser-service
+  ports:
+    - name: http
+      port: {{ .Values.browserService.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}
