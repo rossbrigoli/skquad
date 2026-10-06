@@ -78,6 +78,13 @@ func GitSecretName(resourceID string) string {
 	return managedSecretName("skquad-git-", resourceID)
 }
 
+// MCPSecretName derives the managed Secret name for a BYO MCP resource
+// id (TG-5 slice B2a). The "skquad-mcp-" prefix keeps MCP custody
+// Secrets disjoint from the REST/git custody namespaces.
+func MCPSecretName(resourceID string) string {
+	return managedSecretName("skquad-mcp-", resourceID)
+}
+
 // agentSecretSuffix renders the per-agent marker shared by the REST
 // and git per-(resource,agent) Secret names. Returns "" for agent
 // ids that sanitize away to nothing.
@@ -131,6 +138,22 @@ func GitAgentSecretName(resourceID, agentID string) string {
 		return ""
 	}
 	name := GitSecretName(resourceID) + "-" + suffix
+	if len(name) > 253 {
+		name = strings.TrimRight(name[:253], "-")
+	}
+	return name
+}
+
+// MCPAgentSecretName derives the managed Secret name for ONE agent's
+// per-agent credential on a BYO MCP resource (TG-5 slice B2a). Same
+// per-(resource,agent) pattern as ResourceAgentSecretName / GitAgentSecretName,
+// under the "skquad-mcp-" custody prefix.
+func MCPAgentSecretName(resourceID, agentID string) string {
+	suffix := agentSecretSuffix(agentID)
+	if suffix == "" {
+		return ""
+	}
+	name := MCPSecretName(resourceID) + "-" + suffix
 	if len(name) > 253 {
 		name = strings.TrimRight(name[:253], "-")
 	}

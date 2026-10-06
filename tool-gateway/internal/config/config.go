@@ -41,6 +41,13 @@ type Config struct {
 	// Audit sink. TG-1 ships the stdout structured-JSON sink; a CP/pipe
 	// sink can be added behind the audit.Emitter interface later.
 	AuditSink string // SKQUAD_TOOL_GATEWAY_AUDIT_SINK, default "stdout"
+
+	// InternalToken is the shared secret for trusted-internal callers
+	// INTO the gateway (CP → gateway, e.g. the TG-5 slice B1 MCP
+	// enumerate endpoint). Presented via X-Skquad-Internal-Token or
+	// Authorization: Bearer; constant-time compared. Empty (default)
+	// disables internal endpoints fail-closed (503).
+	InternalToken string // SKQUAD_GATEWAY_INTERNAL_TOKEN
 }
 
 // Load reads configuration from the process environment.
@@ -55,6 +62,7 @@ func Load() (*Config, error) {
 		Enabled:          envBool("SKQUAD_TOOL_GATEWAY_ENABLED", true),
 		BoundaryVerifier: envString("SKQUAD_TOOL_GATEWAY_BOUNDARY_VERIFIER", "static"),
 		AuditSink:        envString("SKQUAD_TOOL_GATEWAY_AUDIT_SINK", "stdout"),
+		InternalToken:    strings.TrimSpace(os.Getenv("SKQUAD_GATEWAY_INTERNAL_TOKEN")),
 	}
 	if cfg.CPBaseURL == "" {
 		return nil, fmt.Errorf("SKQUAD_CP_BASE_URL is required")

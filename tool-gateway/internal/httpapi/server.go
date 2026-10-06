@@ -9,6 +9,7 @@
 //	                              reachable at least once AND boundary fence
 //	                              confirmed; otherwise 503
 //	GET  /internal/verify-boundary  fence state (TG-1 stub, interface in place)
+//	POST /internal/mcp/enumerate  CP-only upstream MCP tool enumeration (TG-5 B1)
 //	POST /v1/echo                 pipeline-proving driver
 package httpapi
 
@@ -45,6 +46,11 @@ type Deps struct {
 	StreamDrivers map[string]drivers.StreamingDriver
 	// MaxBodyBytes caps request payloads read by drivers.
 	MaxBodyBytes int64
+	// InternalToken is the shared secret trusted-internal callers
+	// (the control-plane) must present on /internal/* endpoints via
+	// X-Skquad-Internal-Token (or Authorization: Bearer). Empty =
+	// those endpoints are disabled (fail-closed). TG-5 slice B1.
+	InternalToken string
 }
 
 // Server implements http.Handler for the gateway.
@@ -74,6 +80,14 @@ func New(deps Deps) *Server {
 	s.mux.HandleFunc("POST /v1/echo", s.handleEcho)
 	s.mux.HandleFunc("POST /v1/web/fetch", s.handleWebFetch)
 	s.mux.HandleFunc("POST /v1/rest/{resourceID}", s.handleRestCall)
+	// TG-5 slice A: MCP streamable-HTTP tool call (agent-facing body
+	// {tool, arguments}). Trailing /call keeps the verb explicit and
+	// mirrors the rest resource addressing by id.
+	s.mux.HandleFunc("POST /v1/mcp/{resourceID}/call", s.handleMCPCall)
+	// TG-5 slice B1: CP-facing enumeration of an upstream MCP server
+	// (registration-time tool snapshot + drift hash). Internal-only:
+	// requires the shared internal token, never agent-facing.
+	s.mux.HandleFunc("POST /internal/mcp/enumerate", s.handleMCPEnumerate)
 	// TG-4b: git smart-HTTP proxy (clone/fetch/push). GET and POST,
 	// trailing path is "<org>/<repo>.git/<service>" (+ query).
 	s.mux.HandleFunc("GET /git/{resourceID}/{trailing...}", s.handleGitProxy)
@@ -461,6 +475,174 @@ func (s *Server) handleRestCall(w http.ResponseWriter, r *http.Request) {
 		}
 		emit(audit.DecisionError, http.StatusBadGateway, err.Error())
 		writeError(w, http.StatusBadGateway, "rest_failed", "rest call failed (blocked by policy or unreachable target)")
+		return
+	}
+
+	code := resp.StatusCode
+	if code == 0 {
+		code = http.StatusOK
+	}
+	emit(audit.DecisionAllow, code, "")
+	writeJSON(w, code, resp.Body)
+}
+
+// handleMCPCall runs the pipeline for the TG-5 slice A `mcp` driver:
+// kill switch → authn → body cap → grant lookup (typed mcp resource
+// addressed by id) → driver dispatch → audit. The audit records the
+// tool name and serialized args SIZE (never args values, never the
+// credential). Driver denials map to 403 except "args_too_large"
+// which maps to 413; upstream/transport failures map to 502
+// mcp_failed (never echoing internal detail).
+func (s *Server) handleMCPCall(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	reqID := newRequestID()
+	resourceID := strings.TrimSpace(r.PathValue("resourceID"))
+	resource := "mcp:" + resourceID
+	operation := "mcp_call"
+	agentID := ""
+	toolName := ""
+	argsBytes := 0
+
+	emit := func(decision string, code int, detail string) {
+		payload := map[string]any{}
+		if toolName != "" {
+			payload["tool"] = toolName
+		}
+		if argsBytes > 0 {
+			payload["args_bytes"] = argsBytes
+		}
+		if detail != "" {
+			payload["reason"] = detail
+		}
+		detailJSON := ""
+		if len(payload) > 0 {
+			if b, err := json.Marshal(payload); err == nil {
+				detailJSON = string(b)
+			}
+		}
+		s.deps.Audit.Emit(audit.Event{
+			Timestamp:  time.Now(),
+			RequestID:  reqID,
+			AgentID:    agentID,
+			Resource:   resource,
+			Operation:  operation,
+			Decision:   decision,
+			StatusCode: code,
+			LatencyMS:  time.Since(start).Milliseconds(),
+			Detail:     detailJSON,
+		})
+	}
+
+	if resourceID == "" || strings.ContainsAny(resourceID, "/\\") || resourceID == "." || resourceID == ".." {
+		emit(audit.DecisionDeny, http.StatusBadRequest, "bad_resource_id")
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid resource id")
+		return
+	}
+
+	// 0. Kill switch.
+	if s.deps.Enabled != nil && !s.deps.Enabled.Load() {
+		emit(audit.DecisionDeny, http.StatusServiceUnavailable, "kill_switch")
+		writeError(w, http.StatusServiceUnavailable, "gateway_disabled", "tool gateway is disabled by kill switch")
+		return
+	}
+
+	// 1. Authn.
+	principal, err := auth.Middleware(r.Context(), s.deps.Policy,
+		r.Header.Get("X-Skquad-Agent-ID"), r.Header.Get("Authorization"))
+	if err != nil {
+		switch {
+		case errors.Is(err, policy.ErrPolicyUnavailable):
+			emit(audit.DecisionDeny, http.StatusBadGateway, "policy_unavailable")
+			writeError(w, http.StatusBadGateway, "policy_unavailable", "policy could not be resolved; failing closed")
+		default:
+			emit(audit.DecisionDeny, http.StatusUnauthorized, err.Error())
+			writeError(w, http.StatusUnauthorized, "unauthorized", err.Error())
+		}
+		return
+	}
+	agentID = principal.AgentID
+
+	// 2. Read + cap body.
+	body, err := io.ReadAll(io.LimitReader(r.Body, s.deps.MaxBodyBytes+1))
+	if err != nil {
+		emit(audit.DecisionError, http.StatusBadRequest, "body read error")
+		writeError(w, http.StatusBadRequest, "bad_request", "failed reading request body")
+		return
+	}
+	if int64(len(body)) > s.deps.MaxBodyBytes {
+		emit(audit.DecisionDeny, http.StatusRequestEntityTooLarge, "payload too large")
+		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body exceeds limit")
+		return
+	}
+
+	// Extract the tool name + args size for the audit BEFORE dispatch
+	// (denied calls must still say what was attempted). Lenient: the
+	// driver performs the strict validation; a malformed body here
+	// just audits empty fields.
+	var auditIn struct {
+		Tool      string          `json:"tool"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(body, &auditIn); err == nil {
+		toolName = auditIn.Tool
+		argsBytes = len(auditIn.Arguments)
+	}
+
+	// 3. Grant lookup: the agent must hold a live grant to THIS mcp
+	// resource (id-addressed, same posture as rest/git).
+	var grant *policy.Grant
+	if principal.Snapshot != nil {
+		for i := range principal.Snapshot.Grants {
+			g := principal.Snapshot.Grants[i]
+			if g.ResourceType == "mcp" && g.ResourceID == resourceID {
+				grant = &principal.Snapshot.Grants[i]
+				break
+			}
+		}
+	}
+	if grant == nil {
+		emit(audit.DecisionDeny, http.StatusForbidden, "no_mcp_grant")
+		writeError(w, http.StatusForbidden, "no_grant", "agent has no grant to this mcp resource")
+		return
+	}
+
+	// 4. Driver dispatch.
+	drv, ok := s.deps.Drivers["mcp"]
+	if !ok {
+		emit(audit.DecisionError, http.StatusNotFound, "no mcp driver")
+		writeError(w, http.StatusNotFound, "not_found", "no mcp driver registered")
+		return
+	}
+	resp, err := drv.Handle(r.Context(), &drivers.Request{
+		Agent:     principal,
+		Resource:  grant.ResourceID,
+		Operation: operation,
+		Payload:   body,
+		Grant:     grant,
+	})
+	if err != nil {
+		var denied *drivers.DeniedError
+		if errors.As(err, &denied) {
+			code := http.StatusForbidden
+			if denied.Reason == "args_too_large" {
+				code = http.StatusRequestEntityTooLarge
+			}
+			emit(audit.DecisionDeny, code, denied.Reason)
+			writeError(w, code, "denied", denied.Reason)
+			return
+		}
+		if errors.Is(err, drivers.ErrDenied) {
+			emit(audit.DecisionDeny, http.StatusForbidden, "denied")
+			writeError(w, http.StatusForbidden, "denied", "blocked by policy")
+			return
+		}
+		if strings.HasPrefix(err.Error(), "bad_request") {
+			emit(audit.DecisionDeny, http.StatusBadRequest, "bad_request")
+			writeError(w, http.StatusBadRequest, "bad_request", "invalid mcp call request")
+			return
+		}
+		emit(audit.DecisionError, http.StatusBadGateway, "mcp_failed")
+		writeError(w, http.StatusBadGateway, "mcp_failed", "mcp call failed (blocked by policy or unreachable target)")
 		return
 	}
 

@@ -100,6 +100,16 @@ type policyGrant struct {
 	Ceiling      json.RawMessage `json:"ceiling,omitempty"`
 	RiskTier     string          `json:"risk_tier,omitempty"`
 	EgressClass  string          `json:"egress_class,omitempty"`
+	// TG-5 slice B2a: MCP tool snapshot surfaced for the gateway's mcp
+	// driver (tools + gateway-canonical hash, docs §6.3). The ceiling is
+	// emitted verbatim (tools_allow/tools_deny/per_tool/rate_per_min/
+	// max_args_bytes) exactly as the slice A driver folds it. Snapshot
+	// input schemas pass through the same secret-stripping defense as
+	// configs: a schema property that looks like secret material is
+	// removed fail-closed (call-time arg validation then rejects it),
+	// because this response must never become an exfil path.
+	ToolsSnapshot json.RawMessage `json:"tools_snapshot,omitempty"`
+	ToolsHash     string          `json:"tools_hash,omitempty"`
 }
 
 // policySnapshot is the full policy document for one agent.
@@ -249,13 +259,15 @@ func (s *Server) buildPolicySnapshot(ctx context.Context, agentID string) (*poli
 			continue
 		}
 		snap.Grants = append(snap.Grants, policyGrant{
-			ResourceID:   resource.ID,
-			ResourceType: string(resource.Type),
-			Config:       safeConfigJSON(resource.EndpointConfig),
-			Constraints:  safeConfigJSON(perm.Constraints),
-			Ceiling:      safeConfigJSON(resource.PolicyCeiling),
-			RiskTier:     resource.RiskTier,
-			EgressClass:  resource.EgressClass,
+			ResourceID:    resource.ID,
+			ResourceType:  string(resource.Type),
+			Config:        safeConfigJSON(resource.EndpointConfig),
+			Constraints:   safeConfigJSON(perm.Constraints),
+			Ceiling:       safeConfigJSON(resource.PolicyCeiling),
+			RiskTier:      resource.RiskTier,
+			EgressClass:   resource.EgressClass,
+			ToolsSnapshot: safeConfigJSON(resource.ToolsSnapshot),
+			ToolsHash:     resource.ToolsHash,
 		})
 	}
 	return snap, nil

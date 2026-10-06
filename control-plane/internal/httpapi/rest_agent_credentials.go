@@ -62,8 +62,8 @@ func (s *Server) restAgentCredentialSetup(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return nil, nil, "", false
 	}
-	if typ != domain.ResRest && typ != domain.ResGit {
-		writeError(w, http.StatusBadRequest, "bad_request", "per-agent credentials are only valid for rest and git resources")
+	if typ != domain.ResRest && typ != domain.ResGit && typ != domain.ResMCP {
+		writeError(w, http.StatusBadRequest, "bad_request", "per-agent credentials are only valid for rest, git and mcp resources")
 		return nil, nil, "", false
 	}
 	resource, err := s.store.GetResource(r.Context(), typ, chi.URLParam(r, "resourceID"))
@@ -90,8 +90,12 @@ func (s *Server) restAgentCredentialSetup(w http.ResponseWriter, r *http.Request
 		return nil, nil, "", false
 	}
 	name := kube.ResourceAgentSecretName(resource.ID, agent.ID)
-	if typ == domain.ResGit {
+	switch typ {
+	case domain.ResGit:
 		name = kube.GitAgentSecretName(resource.ID, agent.ID)
+	case domain.ResMCP:
+		// TG-5 slice B2a: MCP per-agent custody under the "skquad-mcp-" prefix.
+		name = kube.MCPAgentSecretName(resource.ID, agent.ID)
 	}
 	if name == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "agent id is not usable for secret naming")

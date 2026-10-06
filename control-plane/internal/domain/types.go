@@ -149,7 +149,7 @@ type AgentIdentity struct {
 	// rotation; the policy endpoint surfaces it so the gateway can bind
 	// sessions to a generation and material from an old generation dies
 	// with the rotation that replaced it.
-	Generation       int `json:"generation"`
+	Generation int `json:"generation"`
 	// GatewayKeyToken is the LiteLLM key token (sha256 hash of the virtual
 	// key, not the key itself) used to update/revoke the key at the gateway.
 	GatewayKeyToken string `json:"-"`
@@ -394,15 +394,15 @@ const (
 
 // Message is a durable queued message for an agent inbox.
 type Message struct {
-	ID            string          `json:"id"`
-	FromType      string          `json:"from_type"` // "user" | "agent"
-	FromID        string          `json:"from_id"`
+	ID       string `json:"id"`
+	FromType string `json:"from_type"` // "user" | "agent"
+	FromID   string `json:"from_id"`
 	// FromDisplay (S-235) is the sender's display name resolved at read
 	// time: agents show their current name (renames after the event still
 	// show the new name); users show their first name with the email
 	// local-part as fallback. Additive wire field — clients that ignore
 	// it keep working off from_type/from_id.
-	FromDisplay string `json:"from_display,omitempty"`
+	FromDisplay   string          `json:"from_display,omitempty"`
 	ToAgentID     string          `json:"to_agent_id"`
 	SquadID       string          `json:"squad_id"`
 	Type          MessageType     `json:"type"`
@@ -654,9 +654,9 @@ const (
 type ResourceType string
 
 const (
-	ResAIProvider       ResourceType = "ai_provider"
-	ResSkill            ResourceType = "skill"
-	ResTool             ResourceType = "tool"
+	ResAIProvider ResourceType = "ai_provider"
+	ResSkill      ResourceType = "skill"
+	ResTool       ResourceType = "tool"
 	// ResAPI is the legacy type name; TG-2 canonicalizes it to ResRest.
 	ResAPI              ResourceType = "api"
 	ResWeb              ResourceType = "web"
@@ -759,6 +759,39 @@ type RegistryResource struct {
 	RiskTier       string          `json:"risk_tier,omitempty"`
 	EgressClass    string          `json:"egress_class,omitempty"`
 	OwnerUserID    string          `json:"owner_user_id,omitempty"`
+	// TG-5 slice B2a (S-244-series): MCP tool snapshot (docs/tool-gateway.md §6.3).
+	// Registration enumerates the live tool set through the gateway
+	// (POST /internal/mcp/enumerate); the CP persists the enumerated tools
+	// (name + description + inputSchema), the gateway-computed canonical hash
+	// VERBATIM (the CP never recomputes it) and the enumeration timestamp.
+	// Drift detection (slice B2b) re-enumerates and compares against
+	// ToolsHash. Meaningful only on mcp resources; empty elsewhere.
+	ToolsSnapshot     json.RawMessage `json:"tools_snapshot,omitempty"`
+	ToolsHash         string          `json:"tools_hash,omitempty"`
+	ToolsEnumeratedAt *time.Time      `json:"tools_enumerated_at,omitempty"`
+	// TG-5 slice B2b (S-244-series): MCP upstream drift state.
+	// MCPDriftPending is the raw mcp_drift_pending column: a JSON array
+	// of tool names newly-added upstream that WOULD match the resource's
+	// current tools_allow (only wildcards can newly match). Such tools
+	// are denied until an admin re-approves: on drift the CP expands the
+	// newly-matching wildcard into the concrete old-snapshot names, so
+	// the gateway's effective allowlist excludes the pending tool, and
+	// the pending set persists as the review marker until
+	// approve-tools replaces the allowlist and clears it.
+	// MCPDriftCheckedAt is the last drift check (on-demand or scan).
+	// Drift is the computed view surfaced on GET/list (never persisted).
+	MCPDriftPending   json.RawMessage `json:"-"`
+	MCPDriftCheckedAt *time.Time      `json:"-"`
+	Drift             *MCPDriftState  `json:"drift,omitempty"`
+}
+
+// MCPDriftState is the computed drift view surfaced on mcp resources
+// (TG-5 slice B2b): pending = tool names denied until re-approved,
+// last_checked_at = last drift check, drifted = pending is non-empty.
+type MCPDriftState struct {
+	Pending       []string   `json:"pending"`
+	LastCheckedAt *time.Time `json:"last_checked_at,omitempty"`
+	Drifted       bool       `json:"drifted"`
 }
 
 // AgentPermission grants an agent access to a registry resource (Layer-2 RBAC,
@@ -872,14 +905,14 @@ type WakeLatencyEvent struct {
 
 // AuditEntry is an append-only record of a significant action.
 type AuditEntry struct {
-	ID           string          `json:"id"`
-	ActorType    string          `json:"actor_type"` // "user" | "agent" | "system"
-	ActorID      string          `json:"actor_id"`
+	ID        string `json:"id"`
+	ActorType string `json:"actor_type"` // "user" | "agent" | "system"
+	ActorID   string `json:"actor_id"`
 	// ActorDisplay (S-235) is the actor's display name resolved at read
 	// time (current agent name; user first name with email local-part
 	// fallback). Empty for system actors and unresolvable ids. Additive
 	// wire field — see Message.FromDisplay.
-	ActorDisplay string `json:"actor_display,omitempty"`
+	ActorDisplay string          `json:"actor_display,omitempty"`
 	Action       string          `json:"action"`
 	ResourceType string          `json:"resource_type"`
 	ResourceID   string          `json:"resource_id"`

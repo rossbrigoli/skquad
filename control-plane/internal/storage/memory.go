@@ -3391,6 +3391,8 @@ func cloneResource(r *domain.RegistryResource) *domain.RegistryResource {
 	v.Manifest = slices.Clone(r.Manifest)
 	v.EndpointConfig = slices.Clone(r.EndpointConfig)
 	v.PolicyCeiling = slices.Clone(r.PolicyCeiling)
+	v.ToolsSnapshot = slices.Clone(r.ToolsSnapshot)
+	v.MCPDriftPending = slices.Clone(r.MCPDriftPending)
 	return &v
 }
 

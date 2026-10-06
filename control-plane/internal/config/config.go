@@ -86,6 +86,13 @@ type Config struct {
 	ToolGatewayURL     string // SKQUAD_TOOL_GATEWAY_URL, e.g. http://tool-gateway.skquad-system.svc.cluster.local:8080
 	WebFetchViaGateway bool   // SKQUAD_WEBFETCH_VIA_GATEWAY, default true
 
+	// TG-5 slice B2a: CP→gateway trusted-internal shared secret used for
+	// the reverse (control-plane-initiated) direction, e.g. MCP tool
+	// enumeration at registration (POST /internal/mcp/enumerate with
+	// X-Skquad-Internal-Token). Mirrors the gateway's env var of the
+	// same name. SECRET: never logged, never echoed.
+	GatewayInternalToken string // SKQUAD_GATEWAY_INTERNAL_TOKEN - SECRET
+
 	// Built-in web_search providers (BT-2, ADR-0012 §3). SECRETS: they
 	// must come from a SealedSecret on the control-plane deployment and
 	// never cross to the agent runtime. Empty key = provider unavailable
@@ -102,13 +109,14 @@ type Config struct {
 	MemoryEmbedderURL string
 
 	// Behaviour
-	DefaultIdleTimeout   time.Duration
-	ReaperInterval       time.Duration // how often the execution reaper runs
-	ReaperGrace          time.Duration // extra time beyond the lease before an execution is declared dead
-	ConsultSweepInterval time.Duration // S-173: how often the consult-timeout sweeper runs
-	ConsultTimeout       time.Duration // S-173: default reply deadline for agent consults
-	StuckScanInterval    time.Duration // S-197: how often the stuck-task scanner sweeps
-	TaskStuckThreshold   time.Duration // S-197: silence (thread + heartbeat) before a task_stuck alert fires; also the per-task dedupe window
+	DefaultIdleTimeout        time.Duration
+	ReaperInterval            time.Duration // how often the execution reaper runs
+	ReaperGrace               time.Duration // extra time beyond the lease before an execution is declared dead
+	ConsultSweepInterval      time.Duration // S-173: how often the consult-timeout sweeper runs
+	ConsultTimeout            time.Duration // S-173: default reply deadline for agent consults
+	StuckScanInterval         time.Duration // S-197: how often the stuck-task scanner sweeps
+	TaskStuckThreshold        time.Duration // S-197: silence (thread + heartbeat) before a task_stuck alert fires; also the per-task dedupe window
+	MCPDriftScanInterval      time.Duration // TG-5 slice B2b: how often the MCP upstream drift scanner re-enumerates (default 1h)
 	NotificationSweepInterval time.Duration // S-198: how often the notification retention sweep runs (SKQUAD_NOTIFICATION_SWEEP_INTERVAL_SECONDS)
 	NotificationRetention     time.Duration // S-198: age past which READ notifications are purged (SKQUAD_NOTIFICATION_RETENTION_DAYS, default 90d)
 
@@ -135,61 +143,63 @@ type Config struct {
 // Load reads configuration from the environment, applying defaults.
 func Load() (*Config, error) {
 	c := &Config{
-		Addr:                    envOr("SKQUAD_ADDR", ":8080"),
-		AuthMode:                AuthMode(envOr("SKQUAD_AUTH_MODE", string(AuthDev))),
-		IssuerURL:               os.Getenv("SKQUAD_OIDC_ISSUER"),
-		Audience:                os.Getenv("SKQUAD_OIDC_AUDIENCE"),
-		OIDCAdminGroups:         envList("SKQUAD_OIDC_ADMIN_GROUPS"),
-		BreakGlassEnabled:       envBool("SKQUAD_BREAKGLASS_ENABLED", false),
-		BreakGlassUsername:      strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_USERNAME")),
-		BreakGlassPasswordHash:  strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_PASSWORD_HASH")),
-		BreakGlassJWTKey:        strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_JWT_KEY")),
-		BreakGlassAllowedCIDRs:  envList("SKQUAD_BREAKGLASS_ALLOWED_CIDRS"),
-		BreakGlassTokenTTL:      envDuration("SKQUAD_BREAKGLASS_TOKEN_TTL", 60*time.Minute),
-		BreakGlassMaxAttempts:   envInt("SKQUAD_BREAKGLASS_MAX_ATTEMPTS", 5),
-		BreakGlassWindow:        envDuration("SKQUAD_BREAKGLASS_WINDOW", 15*time.Minute),
-		DevEmail:                envOr("SKQUAD_DEV_EMAIL", "dev@skquad.local"),
-		DevName:                 envOr("SKQUAD_DEV_NAME", "Dev Admin"),
-		DatabaseURL:             os.Getenv("SKQUAD_DATABASE_URL"),
-		K8sEnabled:              envBool("SKQUAD_K8S_ENABLED", false),
-		K8sAPIBase:              envOr("SKQUAD_K8S_API_BASE", "https://kubernetes.default.svc"),
-		K8sNamespace:            envOr("SKQUAD_K8S_NAMESPACE", "skquad-system"),
-		K8sTokenFile:            envOr("SKQUAD_K8S_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
-		K8sCAFile:               envOr("SKQUAD_K8S_CA_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"),
-		K8sGroupVersion:         envOr("SKQUAD_K8S_GROUP_VERSION", "skquad.io/v1"),
-		K8sInsecure:             envBool("SKQUAD_K8S_INSECURE", false),
-		AgentImage:              envOr("SKQUAD_AGENT_IMAGE", "skquad/agent-runtime:0.1.0"),
-		ControlPlaneURL:         os.Getenv("SKQUAD_CONTROL_PLANE_URL"),
-		LLMGatewayURL:           os.Getenv("SKQUAD_LLM_GATEWAY_URL"),
-		LiteLLMAdminURL:         os.Getenv("SKQUAD_LITELLM_ADMIN_URL"),
-		LiteLLMMasterKey:        os.Getenv("SKQUAD_LITELLM_MASTER_KEY"),
-		GatewayCallbackToken:    os.Getenv("SKQUAD_GATEWAY_CALLBACK_TOKEN"),
-		LLMGatewayDeployment:    envOr("SKQUAD_LLM_GATEWAY_DEPLOYMENT", "skquad-llm-gateway"),
-		ToolGatewayURL:          strings.TrimRight(strings.TrimSpace(os.Getenv("SKQUAD_TOOL_GATEWAY_URL")), "/"),
-		WebFetchViaGateway:      envBool("SKQUAD_WEBFETCH_VIA_GATEWAY", true),
-		SearchBraveAPIKey:       strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_BRAVE_API_KEY")),
-		SearchPerplexityAPIKey:  strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_PERPLEXITY_API_KEY")),
-		MemoryEmbeddingsEnabled: envBool("SKQUAD_MEMORY_EMBEDDINGS_ENABLED", false),
-		MemoryEmbeddingModel:    os.Getenv("SKQUAD_MEMORY_EMBEDDING_MODEL"),
-		MemoryEmbedderURL:       os.Getenv("SKQUAD_MEMORY_EMBEDDER_URL"),
-		DefaultIdleTimeout:      envDuration("SKQUAD_DEFAULT_IDLE_TIMEOUT", 15*time.Minute),
-		ReaperInterval:          envSeconds("SKQUAD_REAPER_INTERVAL_SECONDS", 30),
-		ReaperGrace:             envSeconds("SKQUAD_REAPER_GRACE_SECONDS", 120),
-		ConsultSweepInterval:    envSeconds("SKQUAD_CONSULT_SWEEP_INTERVAL_SECONDS", 60),
-		ConsultTimeout:          envSeconds("SKQUAD_CONSULT_TIMEOUT_SECONDS", 900),
-		StuckScanInterval:       envSeconds("SKQUAD_STUCK_SCAN_INTERVAL_SECONDS", 300),
-		TaskStuckThreshold:      envSeconds("SKQUAD_TASK_STUCK_THRESHOLD_SECONDS", 86400),
+		Addr:                      envOr("SKQUAD_ADDR", ":8080"),
+		AuthMode:                  AuthMode(envOr("SKQUAD_AUTH_MODE", string(AuthDev))),
+		IssuerURL:                 os.Getenv("SKQUAD_OIDC_ISSUER"),
+		Audience:                  os.Getenv("SKQUAD_OIDC_AUDIENCE"),
+		OIDCAdminGroups:           envList("SKQUAD_OIDC_ADMIN_GROUPS"),
+		BreakGlassEnabled:         envBool("SKQUAD_BREAKGLASS_ENABLED", false),
+		BreakGlassUsername:        strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_USERNAME")),
+		BreakGlassPasswordHash:    strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_PASSWORD_HASH")),
+		BreakGlassJWTKey:          strings.TrimSpace(os.Getenv("SKQUAD_BREAKGLASS_JWT_KEY")),
+		BreakGlassAllowedCIDRs:    envList("SKQUAD_BREAKGLASS_ALLOWED_CIDRS"),
+		BreakGlassTokenTTL:        envDuration("SKQUAD_BREAKGLASS_TOKEN_TTL", 60*time.Minute),
+		BreakGlassMaxAttempts:     envInt("SKQUAD_BREAKGLASS_MAX_ATTEMPTS", 5),
+		BreakGlassWindow:          envDuration("SKQUAD_BREAKGLASS_WINDOW", 15*time.Minute),
+		DevEmail:                  envOr("SKQUAD_DEV_EMAIL", "dev@skquad.local"),
+		DevName:                   envOr("SKQUAD_DEV_NAME", "Dev Admin"),
+		DatabaseURL:               os.Getenv("SKQUAD_DATABASE_URL"),
+		K8sEnabled:                envBool("SKQUAD_K8S_ENABLED", false),
+		K8sAPIBase:                envOr("SKQUAD_K8S_API_BASE", "https://kubernetes.default.svc"),
+		K8sNamespace:              envOr("SKQUAD_K8S_NAMESPACE", "skquad-system"),
+		K8sTokenFile:              envOr("SKQUAD_K8S_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
+		K8sCAFile:                 envOr("SKQUAD_K8S_CA_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"),
+		K8sGroupVersion:           envOr("SKQUAD_K8S_GROUP_VERSION", "skquad.io/v1"),
+		K8sInsecure:               envBool("SKQUAD_K8S_INSECURE", false),
+		AgentImage:                envOr("SKQUAD_AGENT_IMAGE", "skquad/agent-runtime:0.1.0"),
+		ControlPlaneURL:           os.Getenv("SKQUAD_CONTROL_PLANE_URL"),
+		LLMGatewayURL:             os.Getenv("SKQUAD_LLM_GATEWAY_URL"),
+		LiteLLMAdminURL:           os.Getenv("SKQUAD_LITELLM_ADMIN_URL"),
+		LiteLLMMasterKey:          os.Getenv("SKQUAD_LITELLM_MASTER_KEY"),
+		GatewayCallbackToken:      os.Getenv("SKQUAD_GATEWAY_CALLBACK_TOKEN"),
+		LLMGatewayDeployment:      envOr("SKQUAD_LLM_GATEWAY_DEPLOYMENT", "skquad-llm-gateway"),
+		ToolGatewayURL:            strings.TrimRight(strings.TrimSpace(os.Getenv("SKQUAD_TOOL_GATEWAY_URL")), "/"),
+		WebFetchViaGateway:        envBool("SKQUAD_WEBFETCH_VIA_GATEWAY", true),
+		GatewayInternalToken:      strings.TrimSpace(os.Getenv("SKQUAD_GATEWAY_INTERNAL_TOKEN")),
+		SearchBraveAPIKey:         strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_BRAVE_API_KEY")),
+		SearchPerplexityAPIKey:    strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_PERPLEXITY_API_KEY")),
+		MemoryEmbeddingsEnabled:   envBool("SKQUAD_MEMORY_EMBEDDINGS_ENABLED", false),
+		MemoryEmbeddingModel:      os.Getenv("SKQUAD_MEMORY_EMBEDDING_MODEL"),
+		MemoryEmbedderURL:         os.Getenv("SKQUAD_MEMORY_EMBEDDER_URL"),
+		DefaultIdleTimeout:        envDuration("SKQUAD_DEFAULT_IDLE_TIMEOUT", 15*time.Minute),
+		ReaperInterval:            envSeconds("SKQUAD_REAPER_INTERVAL_SECONDS", 30),
+		ReaperGrace:               envSeconds("SKQUAD_REAPER_GRACE_SECONDS", 120),
+		ConsultSweepInterval:      envSeconds("SKQUAD_CONSULT_SWEEP_INTERVAL_SECONDS", 60),
+		ConsultTimeout:            envSeconds("SKQUAD_CONSULT_TIMEOUT_SECONDS", 900),
+		StuckScanInterval:         envSeconds("SKQUAD_STUCK_SCAN_INTERVAL_SECONDS", 300),
+		TaskStuckThreshold:        envSeconds("SKQUAD_TASK_STUCK_THRESHOLD_SECONDS", 86400),
+		MCPDriftScanInterval:      envSeconds("SKQUAD_MCP_DRIFT_SCAN_INTERVAL_SECONDS", 3600),
 		NotificationSweepInterval: envSeconds("SKQUAD_NOTIFICATION_SWEEP_INTERVAL_SECONDS", 3600),
 		NotificationRetention:     envDays("SKQUAD_NOTIFICATION_RETENTION_DAYS", 90),
-		DefaultAgentStorageSize: envOr("SKQUAD_DEFAULT_AGENT_STORAGE_SIZE", "2Gi"),
-		MaxAgentStorage:         envOr("SKQUAD_MAX_AGENT_STORAGE", "10Gi"),
-		StorageClass:            strings.TrimSpace(os.Getenv("SKQUAD_STORAGE_CLASS")),
-		APIServerVersion:        envOr("SKQUAD_VERSION", "unknown"),
-		OperatorVersion:         envOr("SKQUAD_OPERATOR_VERSION", "unknown"),
-		AgentRuntimeVersion:     envOr("SKQUAD_AGENT_RUNTIME_VERSION", "unknown"),
-		LLMGatewayVersion:       envOr("SKQUAD_LLM_GATEWAY_VERSION", "unknown"),
-		WebUIVersion:            envOr("SKQUAD_WEB_UI_VERSION", "unknown"),
-		GitCommit:               envOr("SKQUAD_GIT_COMMIT", "unknown"),
+		DefaultAgentStorageSize:   envOr("SKQUAD_DEFAULT_AGENT_STORAGE_SIZE", "2Gi"),
+		MaxAgentStorage:           envOr("SKQUAD_MAX_AGENT_STORAGE", "10Gi"),
+		StorageClass:              strings.TrimSpace(os.Getenv("SKQUAD_STORAGE_CLASS")),
+		APIServerVersion:          envOr("SKQUAD_VERSION", "unknown"),
+		OperatorVersion:           envOr("SKQUAD_OPERATOR_VERSION", "unknown"),
+		AgentRuntimeVersion:       envOr("SKQUAD_AGENT_RUNTIME_VERSION", "unknown"),
+		LLMGatewayVersion:         envOr("SKQUAD_LLM_GATEWAY_VERSION", "unknown"),
+		WebUIVersion:              envOr("SKQUAD_WEB_UI_VERSION", "unknown"),
+		GitCommit:                 envOr("SKQUAD_GIT_COMMIT", "unknown"),
 	}
 	if c.LiteLLMAdminURL == "" {
 		c.LiteLLMAdminURL = c.LLMGatewayURL
