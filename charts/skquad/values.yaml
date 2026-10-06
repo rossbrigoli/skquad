@@ -111,6 +111,10 @@ operator:
   # StorageSizeExceedsPlatformMax. Keep in sync with
   # apiServer.maxAgentStorageSize unless deliberately stricter.
   maxAgentStorage: 10Gi
+  # TG-4d (S-264): tool-gateway URL injected into agent pods (via the
+  # operator env SKQUAD_TOOL_GATEWAY_URL). Empty => derived in-cluster
+  # from the tool-gateway Service when toolGateway.enabled.
+  toolGatewayUrl: ""
   # S6864: explicit memory limit. S6892/S6897: explicit CPU request+limit
   # and ephemeral-storage request+limit for a complete scheduler profile.
   resources:

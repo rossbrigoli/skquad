@@ -278,6 +278,14 @@ func agentEnv(agent *skquadv1.Agent) []corev1.EnvVar {
 	if cfg := workspaceConfig(agent); cfg != nil {
 		env = append(env, corev1.EnvVar{Name: "SKQUAD_WORKSPACE_MOUNT_PATH", Value: cfg.MountPath})
 	}
+	// TG-4d (S-264): pass the tool-gateway URL through to agent pods so the
+	// runtime can register the synthetic rest_call tool for granted REST
+	// resources. Sourced from the operator's own env (chart-injected, see
+	// charts/skquad operator-deployment.yaml); when unset the env var is
+	// omitted entirely, so the runtime stays fail-closed (no tool).
+	if gatewayURL := os.Getenv("SKQUAD_TOOL_GATEWAY_URL"); gatewayURL != "" {
+		env = append(env, corev1.EnvVar{Name: "SKQUAD_TOOL_GATEWAY_URL", Value: gatewayURL})
+	}
 	return env
 }
 

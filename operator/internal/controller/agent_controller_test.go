@@ -397,6 +397,26 @@ func TestAgentEnvBuiltinToolsKillSwitch(t *testing.T) {
 	}
 }
 
+// TG-4d (S-264): the operator forwards its own SKQUAD_TOOL_GATEWAY_URL
+// (chart-injected) into agent pods so the runtime can register the
+// synthetic rest_call tool. When the operator env is empty the var must
+// be omitted entirely — the runtime then stays fail-closed (no tool).
+func TestAgentEnvToolGatewayURLPassthrough(t *testing.T) {
+	t.Setenv("SKQUAD_TOOL_GATEWAY_URL", "http://skquad-tool-gateway.skquad-system.svc.cluster.local:8080")
+	env := agentEnv(&skquadv1.Agent{})
+	if got := envValue(env, "SKQUAD_TOOL_GATEWAY_URL"); got != "http://skquad-tool-gateway.skquad-system.svc.cluster.local:8080" {
+		t.Fatalf("SKQUAD_TOOL_GATEWAY_URL = %q, want the operator-provided gateway URL", got)
+	}
+
+	t.Setenv("SKQUAD_TOOL_GATEWAY_URL", "")
+	env = agentEnv(&skquadv1.Agent{})
+	for _, item := range env {
+		if item.Name == "SKQUAD_TOOL_GATEWAY_URL" {
+			t.Fatalf("SKQUAD_TOOL_GATEWAY_URL must be omitted when the operator env is empty, got %q", item.Value)
+		}
+	}
+}
+
 func testScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 
