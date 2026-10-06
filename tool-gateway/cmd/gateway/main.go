@@ -19,6 +19,7 @@ import (
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/credentials"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/drivers"
 	gitdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/git"
+	mcpdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/mcp"
 	restdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/rest"
 	webdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/web"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/httpapi"
@@ -55,6 +56,7 @@ func main() {
 			"echo": drivers.Echo{},
 			"web":  webdriver.New(),
 			"rest": restdriver.New(credsClient),
+			"mcp":  mcpdriver.New(credsClient),
 		},
 		StreamDrivers: map[string]drivers.StreamingDriver{
 			"git": gitdriver.New(credsClient),
