@@ -43,6 +43,11 @@ logger = logging.getLogger(__name__)
 # control-plane published schema name, rest_tool_surface.go).
 REST_CALL_TOOL_NAME = "rest_call"
 
+# TG-5 slice C: the two synthetic MCP tools. One instance of each covers
+# ALL granted mcp resources (resource_id enum = granted ids).
+MCP_LIST_TOOL_NAME = "mcp_list"
+MCP_CALL_TOOL_NAME = "mcp_call"
+
 # Opener injection point for tests (same shape as ControlPlaneClient).
 Opener = Callable[[request.Request], object]
 
@@ -291,11 +296,310 @@ def build_rest_call_tools(
     return [RestCallTool(config.tool_gateway_url, resource_ids, methods)]
 
 
-# Generic synthetic-tool registry: future drivers (mcp_call, browser,
-# ssh) append their builder here and inherit both turn paths.
+def granted_mcp_resources(resources: list[RuntimeResource]) -> list[RuntimeResource]:
+    """MCP resources the agent holds a grant for (TG-5 slice C).
+
+    The wake surface carries no per-resource ``tools`` array for mcp (the
+    CP publishes typed tool schemas only for rest); the allowed-tool list
+    is derived from the grant's effective ``constraints.tools_allow``
+    (the canonical CP field, validated against the enumerated snapshot
+    at registration/ceiling-change time — mcp_registration.go).
+    """
+    return [
+        resource
+        for resource in resources
+        if resource.resource_type == "mcp" and resource.resource_id
+    ]
+
+
+def _mcp_allowed_tool_names(resource: RuntimeResource) -> tuple[str, ...]:
+    """Allowed tool names from the grant's ``constraints.tools_allow``.
+
+    Entries may be exact names or wildcard patterns (validated against
+    the CP's registration-time snapshot); the runtime renders them
+    verbatim — wildcard resolution stays the gateway's job.
+    """
+    raw = resource.constraints.get("tools_allow")
+    if not isinstance(raw, list):
+        return ()
+    names: list[str] = []
+    for item in raw:
+        name = str(item).strip()
+        if name and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+def _mcp_confirmation_map(resources: list[RuntimeResource]) -> dict[str, set[str]]:
+    """resource_id -> tools marked ``requires_confirmation`` in the
+    grant's ``constraints.per_tool`` (subset.go: a grant may tighten but
+    never loosen; the gateway driver denies these fail-closed too)."""
+    confirmations: dict[str, set[str]] = {}
+    for resource in resources:
+        per_tool = resource.constraints.get("per_tool")
+        if not isinstance(per_tool, Mapping):
+            continue
+        for tool_name, rule in per_tool.items():
+            if isinstance(rule, Mapping) and bool(rule.get("requires_confirmation", False)):
+                confirmations.setdefault(resource.resource_id, set()).add(str(tool_name))
+    return confirmations
+
+
+class McpListTool:
+    """Synthetic ``mcp_list`` plugin: wake-time discovery of the allowed
+    MCP tools per granted resource. Reads ONLY the cached wake surface —
+    it never touches the gateway or the network."""
+
+    name = MCP_LIST_TOOL_NAME
+
+    def __init__(self, tools_by_resource: Mapping[str, tuple[str, ...]]) -> None:
+        self.tools_by_resource = tools_by_resource
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": MCP_LIST_TOOL_NAME,
+                    "description": (
+                        "List the MCP tools you may call on a granted mcp resource "
+                        "(from your wake-time grant; no network call). "
+                        "Use the names with mcp_call."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "resource_id": {
+                                "type": "string",
+                                "enum": sorted(self.tools_by_resource),
+                                "description": "The granted MCP resource to enumerate.",
+                            },
+                        },
+                        "required": ["resource_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, config: BootstrapConfig) -> ToolResult:
+        args = call.arguments if isinstance(call.arguments, Mapping) else {}
+        resource_id = str(args.get("resource_id", ""))
+        if resource_id not in self.tools_by_resource:
+            return ToolResult(content="resource not granted", ok=False)
+        names = self.tools_by_resource[resource_id]
+        if not names:
+            return ToolResult(
+                content=(
+                    f"resource {resource_id}: no allowed tools published "
+                    "(the gateway default-denies unlisted tools)"
+                ),
+                ok=True,
+            )
+        # Descriptions are not carried on the agent wake surface (the CP
+        # keeps the enumerated snapshot admin-side); names only, compact.
+        lines = "\n".join(f"- {name}" for name in names)
+        logger.info(
+            "mcp_list: resource=%s allowed_tools=%d", resource_id, len(names)
+        )
+        return ToolResult(content=f"allowed tools for {resource_id}:\n{lines}", ok=True)
+
+
+class McpCallTool:
+    """Synthetic ``mcp_call`` plugin: governed MCP tool invocation via
+    the tool gateway. One instance covers ALL granted mcp resources.
+
+    Client-side checks (fail-closed, network-free): the resource must be
+    granted, and tools the grant marks ``requires_confirmation`` are
+    never auto-executed (the approval flow lands in TG-8; until then a
+    confirmation-required tool is a hard no). Tool-name allowlisting and
+    wildcard resolution stay the gateway's job — it re-validates every
+    call against the effective policy and audits it.
+    """
+
+    name = MCP_CALL_TOOL_NAME
+
+    def __init__(
+        self,
+        gateway_url: str,
+        resource_ids: tuple[str, ...],
+        confirmation_required: Mapping[str, set[str]],
+        opener: Opener | None = None,
+    ) -> None:
+        self.gateway_url = gateway_url.rstrip("/")
+        self.resource_ids = resource_ids
+        self.confirmation_required = confirmation_required
+        self._opener = opener or request.urlopen
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": MCP_CALL_TOOL_NAME,
+                    "description": (
+                        "Call a tool on a granted MCP resource through the tool "
+                        "gateway. Credentials are injected at the gateway (never "
+                        "visible to you); every call is policy-checked and audited. "
+                        "Discover callable tool names with mcp_list."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "resource_id": {
+                                "type": "string",
+                                "enum": list(self.resource_ids),
+                                "description": "The granted MCP resource to call.",
+                            },
+                            "tool": {
+                                "type": "string",
+                                "description": "The MCP tool name (see mcp_list).",
+                            },
+                            "arguments": {
+                                "type": "object",
+                                "additionalProperties": True,
+                                "description": "Tool arguments as a JSON object.",
+                            },
+                        },
+                        "required": ["resource_id", "tool"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, config: BootstrapConfig) -> ToolResult:
+        args = call.arguments if isinstance(call.arguments, Mapping) else {}
+        resource_id = str(args.get("resource_id", ""))
+        # Client-side grant check: never touch the gateway for an id the
+        # agent was not granted (defense in depth; the gateway enforces too).
+        if resource_id not in self.resource_ids:
+            return ToolResult(content="resource not granted", ok=False)
+        tool_name = str(args.get("tool", ""))
+        if not tool_name:
+            return ToolResult(content="mcp_call requires a non-empty 'tool' name", ok=False)
+        # Interim confirmation gate (TG-8 lands the approval flow): a tool
+        # the grant marks requires_confirmation is NEVER auto-executed.
+        if tool_name in self.confirmation_required.get(resource_id, set()):
+            logger.info(
+                "mcp_call: tool=%s on resource=%s requires admin confirmation; "
+                "not executed",
+                tool_name,
+                resource_id,
+            )
+            return ToolResult(
+                content=(
+                    f"tool '{tool_name}' on resource {resource_id} requires admin "
+                    "confirmation — not executed"
+                ),
+                ok=False,
+            )
+        arguments_arg = args.get("arguments")
+        arguments: dict[str, object] = (
+            {str(k): v for k, v in arguments_arg.items()}
+            if isinstance(arguments_arg, Mapping)
+            else {}
+        )
+        payload: dict[str, object] = {"tool": tool_name, "arguments": arguments}
+
+        credential = read_secret_value(config.agent_credential_path) or ""
+        url = f"{self.gateway_url}/v1/mcp/{quote(resource_id, safe='')}/call"
+        req = request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {credential}",
+                "X-Skquad-Agent-ID": config.agent_id,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with self._opener(req) as response:
+                raw = response.read()
+        except error.HTTPError as exc:
+            # Gateway/policy rejection (4xx/5xx): the LLM must SEE the
+            # rejection, so carry it as a successful tool result. The
+            # gateway error body is a controlled JSON envelope
+            # ({error:{code,message}}); never echo the raw exception
+            # (it can carry request headers in its repr).
+            body_text = _safe_read_error_body(exc)
+            logger.info(
+                "mcp_call: gateway rejected call for resource=%s tool=%s: HTTP %s %s",
+                resource_id,
+                tool_name,
+                exc.code,
+                body_text,
+            )
+            return ToolResult(
+                content=f"gateway rejected the call: HTTP {exc.code} {body_text}".strip(),
+                ok=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — transport failure
+            logger.warning(
+                "mcp_call: gateway transport failure for resource %s: %s",
+                resource_id,
+                type(exc).__name__,
+            )
+            return ToolResult(content="tool 'mcp_call' failed: gateway unreachable", ok=False)
+
+        try:
+            envelope = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return ToolResult(content="tool 'mcp_call' failed: malformed gateway response", ok=False)
+        if not isinstance(envelope, Mapping):
+            return ToolResult(content="tool 'mcp_call' failed: malformed gateway response", ok=False)
+        # Audit-friendly, credential-free trace of the governed call.
+        logger.info(
+            "mcp_call: resource=%s tool=%s gateway_status=2xx result_keys=%d",
+            resource_id,
+            tool_name,
+            len(envelope),
+        )
+        # The gateway already wrapped the upstream result as untrusted
+        # data; hand the JSON through verbatim.
+        return ToolResult(content=json.dumps(envelope), ok=True)
+
+
+def build_mcp_tools(
+    resources: list[RuntimeResource], config: BootstrapConfig
+) -> list:
+    """Register the two synthetic MCP tools (TG-5 slice C contract).
+
+    Present only when (a) at least one granted mcp resource exists AND
+    (b) SKQUAD_TOOL_GATEWAY_URL is configured. Otherwise [] — the tools
+    are absent, fail-closed. Exactly ONE mcp_list + ONE mcp_call per
+    wake regardless of how many mcp resources are granted.
+    """
+    mcp_resources = granted_mcp_resources(resources)
+    if not mcp_resources:
+        return []
+    if not config.tool_gateway_url:
+        logger.info(
+            "mcp: %d mcp grant(s) present but SKQUAD_TOOL_GATEWAY_URL is unset; "
+            "tools not registered (fail-closed)",
+            len(mcp_resources),
+        )
+        return []
+    resource_ids = tuple(r.resource_id for r in mcp_resources if r.resource_id)
+    if not resource_ids:
+        return []
+    tools_by_resource = {
+        rid: _mcp_allowed_tool_names(resource) for rid, resource in zip(resource_ids, mcp_resources)
+    }
+    confirmation_required = _mcp_confirmation_map(mcp_resources)
+    return [
+        McpListTool(tools_by_resource),
+        McpCallTool(config.tool_gateway_url, resource_ids, confirmation_required),
+    ]
+
+
+# Generic synthetic-tool registry: future drivers (browser, ssh) append
+# their builder here and inherit both turn paths.
 SYNTHETIC_TOOL_BUILDERS: tuple[
     Callable[[list[RuntimeResource], BootstrapConfig], list], ...
-] = (build_rest_call_tools,)
+] = (build_rest_call_tools, build_mcp_tools)
 
 
 def build_synthetic_tools(

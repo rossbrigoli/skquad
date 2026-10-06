@@ -13,7 +13,7 @@ import threading
 import uuid
 import contextvars
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic, sleep as default_sleep
@@ -636,6 +636,10 @@ class RuntimeResource:
     # publishes per grant (agentRuntimeResource.Tools, TG-4). Empty for
     # resources that unlock no typed tool.
     tools: tuple[Mapping[str, object], ...] = ()
+    # TG-5 slice C: the grant's effective constraints (agentRuntimeResource
+    # .Constraints, secret-stripped, TG-2 surfacing). MCP uses it for the
+    # allowed-tool list (tools_allow) and the per_tool confirmation flags.
+    constraints: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1210,6 +1214,12 @@ def runtime_resource(payload: Mapping[str, object]) -> RuntimeResource:
         if isinstance(raw_tools, list)
         else ()
     )
+    # TG-5 slice C: the grant's effective constraints (mcp tools_allow /
+    # per_tool confirmation); non-mapping / missing degrades to empty.
+    raw_constraints = payload.get("constraints")
+    constraints: Mapping[str, object] = (
+        raw_constraints if isinstance(raw_constraints, Mapping) else {}
+    )
     return RuntimeResource(
         resource_type=str(payload.get("resource_type", "")),
         resource_id=str(payload.get("resource_id", "")),
@@ -1218,6 +1228,7 @@ def runtime_resource(payload: Mapping[str, object]) -> RuntimeResource:
         endpoint=str(payload.get("endpoint", "")),
         manifest=manifest,
         tools=tools,
+        constraints=constraints,
     )
 
 
@@ -2781,6 +2792,16 @@ def resource_prompt_line(resource: RuntimeResource) -> str:
             bits.append(f"methods=[{','.join(methods)}]")
         if path_allow:
             bits.append(f"paths=[{','.join(path_allow)}]")
+    # TG-5 slice C: mcp resources surface the grant id and the allowed
+    # tool names (constraints.tools_allow) so the model can address the
+    # synthetic mcp_list / mcp_call tools. Compact, names only.
+    if resource.resource_type == "mcp":
+        bits.append(f"id={resource.resource_id}")
+        allowed = resource.constraints.get("tools_allow")
+        if isinstance(allowed, list):
+            names = [str(t).strip() for t in allowed if str(t).strip()]
+            if names:
+                bits.append(f"tools=[{','.join(names)}]")
     return "- " + " | ".join(bits)
 
 
