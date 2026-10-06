@@ -1500,7 +1500,12 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 	// the "skquad-mcp-" prefix; the token is MANDATORY because
 	// registration enumerates the upstream through the gateway with it.
 	var byoAuth map[string]string
-	if typ == domain.ResRest || typ == domain.ResGit || typ == domain.ResMCP {
+	// TG-6 slice D: browser-driver mcp resources broker auth via
+	// gateway-managed session tokens; a BYO bearer is OPTIONAL (custody
+	// still applies when one is supplied) and the ceiling carries the
+	// browser policy shape instead of the plain-mcp one.
+	browserResource := typ == domain.ResMCP && egresspolicy.IsBrowserConfig(req.EndpointConfig)
+	if typ == domain.ResRest || typ == domain.ResGit || (typ == domain.ResMCP && !browserResource) {
 		kind := restAuthKindFromConfig(req.EndpointConfig)
 		if typ == domain.ResGit {
 			kind = gitAuthKind
@@ -1526,9 +1531,33 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		byoAuth = fields
+	} else if browserResource {
+		if !isEmptyJSONObject(req.Auth) {
+			fields, v := parseRestAuth("bearer", req.Auth)
+			if len(v) > 0 {
+				writeViolations(w, "invalid_auth_payload", "auth payload failed validation", v)
+				return
+			}
+			if len(fields) > 0 && s.resourceSecrets == nil {
+				writeError(w, http.StatusServiceUnavailable, "secret_store_unavailable", "BYO credentials require Kubernetes secret storage")
+				return
+			}
+			byoAuth = fields
+		}
 	} else if !isEmptyJSONObject(req.Auth) {
 		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest, git and mcp resources")
 		return
+	}
+	// TG-6 slice D: materialize the browser ceiling defaults so the
+	// grant payload the gateway reads is fully explicit (the gateway
+	// would fold the same defaults; explicit beats implicit here).
+	if browserResource {
+		normalized, nv := egresspolicy.NormalizeBrowserCeiling(req.PolicyCeiling)
+		if len(nv) > 0 {
+			writeViolations(w, "invalid_resource_shape", "browser ceiling failed normalization", nv)
+			return
+		}
+		req.PolicyCeiling = normalized
 	}
 	if req.OwnerUserID != "" {
 		if _, err := s.store.GetUser(r.Context(), req.OwnerUserID); err != nil {
@@ -1699,6 +1728,18 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 		writeViolations(w, "invalid_resource_shape", "resource config/ceiling failed validation", v)
 		return
 	}
+	// TG-6 slice D: browser-driver resources re-materialize the ceiling
+	// defaults on update so the stored ceiling stays fully explicit for
+	// the gateway's policy fold.
+	browserResource := resource.Type == domain.ResMCP && egresspolicy.IsBrowserConfig(newConfig)
+	if browserResource && req.PolicyCeiling != nil {
+		normalized, nv := egresspolicy.NormalizeBrowserCeiling(newCeiling)
+		if len(nv) > 0 {
+			writeViolations(w, "invalid_resource_shape", "browser ceiling failed normalization", nv)
+			return
+		}
+		newCeiling = normalized
+	}
 	// TG-5 slice B2a: MCP snapshot maintenance. Rotating the bearer or
 	// moving the upstream URL re-enumerates through the gateway (the
 	// snapshot must describe what the URL actually serves); a ceiling
@@ -1713,7 +1754,7 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 				writeViolations(w, "invalid_auth_payload", "auth payload failed validation", v)
 				return
 			}
-			if strings.TrimSpace(fields["token"]) == "" {
+			if strings.TrimSpace(fields["token"]) == "" && !browserResource {
 				writeError(w, http.StatusBadRequest, "bad_request", "mcp rotation requires a bearer credential (auth.token)")
 				return
 			}
@@ -1723,22 +1764,31 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 		switch {
 		case mcpToken != "" || urlChanged:
 			if mcpToken == "" {
-				// URL moved with no fresh credential: reuse the stored one.
-				tok, err := s.mcpStoredToken(r.Context(), resource)
-				if err != nil {
-					writeError(w, http.StatusServiceUnavailable, "credentials_unavailable", "stored MCP credential could not be resolved to re-enumerate the new upstream URL")
-					return
+				if browserResource {
+					// Browser upstream needs no BYO credential (session-
+					// brokered auth); enumerate with the placeholder and
+					// store no Secret.
+					mcpToken = browserEnumeratePlaceholder
+				} else {
+					// URL moved with no fresh credential: reuse the stored one.
+					tok, err := s.mcpStoredToken(r.Context(), resource)
+					if err != nil {
+						writeError(w, http.StatusServiceUnavailable, "credentials_unavailable", "stored MCP credential could not be resolved to re-enumerate the new upstream URL")
+						return
+					}
+					mcpToken = tok
 				}
-				mcpToken = tok
 			}
 			resource.EndpointConfig = newConfig
 			if fail := s.snapshotMCPTools(r.Context(), resource, mcpToken); fail != nil {
 				fail.respond(w)
 				return
 			}
-			if err := s.setResourceSecret(r.Context(), resource, map[string]string{"token": mcpToken}); err != nil {
-				writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the MCP credential as a Kubernetes Secret")
-				return
+			if mcpToken != browserEnumeratePlaceholder {
+				if err := s.setResourceSecret(r.Context(), resource, map[string]string{"token": mcpToken}); err != nil {
+					writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the MCP credential as a Kubernetes Secret")
+					return
+				}
 			}
 		case req.PolicyCeiling != nil:
 			tools, ok := mcpSnapshotTools(resource.ToolsSnapshot)
@@ -1753,10 +1803,10 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if req.EndpointConfig != nil {
-		resource.EndpointConfig = *req.EndpointConfig
+		resource.EndpointConfig = newConfig
 	}
 	if req.PolicyCeiling != nil {
-		resource.PolicyCeiling = *req.PolicyCeiling
+		resource.PolicyCeiling = newCeiling
 	}
 	if req.RiskTier != nil {
 		resource.RiskTier = *req.RiskTier
@@ -3598,9 +3648,18 @@ func (s *Server) buildAgentPermissions(ctx context.Context, w http.ResponseWrite
 				writeStorageError(w, err)
 				return nil, false
 			}
-			if v := egresspolicy.ValidateGrant(string(resource.Type), item.Constraints, resource.PolicyCeiling); len(v) > 0 {
+			// TG-6 slice D: browser-driver resources validate against
+			// the flat browser ceiling (tightening-only numerics, deny-
+			// hosts may only grow) instead of the plain-mcp rules.
+			var gv egresspolicy.Violations
+			if egresspolicy.IsBrowserConfig(resource.EndpointConfig) {
+				gv = egresspolicy.ValidateBrowserGrant(item.Constraints, resource.PolicyCeiling)
+			} else {
+				gv = egresspolicy.ValidateGrant(string(resource.Type), item.Constraints, resource.PolicyCeiling)
+			}
+			if len(gv) > 0 {
 				writeViolations(w, "grant_escalation",
-					"grant constraints exceed the resource policy ceiling (no-escalation invariant)", v)
+					"grant constraints exceed the resource policy ceiling (no-escalation invariant)", gv)
 				return nil, false
 			}
 		}
