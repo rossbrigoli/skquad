@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/auth"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/policy"
@@ -50,6 +51,10 @@ type Request struct {
 	// against (typed drivers enforce ceiling/constraints/config from it).
 	// Echo and other pipeline-proving drivers ignore it.
 	Grant *policy.Grant
+	// Path is the driver-routed trailing path for streaming proxy
+	// drivers (TG-4b git: "<org>/<repo>.git/<service>"). Empty for
+	// buffered drivers, which carry everything in Payload.
+	Path string
 }
 
 // Response is what a driver returns on success.
@@ -62,6 +67,31 @@ type Response struct {
 type Driver interface {
 	Name() string
 	Handle(ctx context.Context, req *Request) (*Response, error)
+}
+
+// StreamResult is the audit metadata a streaming proxy driver returns
+// after it has written the upstream response through the
+// ResponseWriter (TG-4b git). It carries no secret material — refs
+// and identity only.
+type StreamResult struct {
+	Repo         string
+	Service      string // "git-upload-pack" | "git-receive-pack"
+	StatusCode   int    // upstream status passed through to the client
+	RefsAdvanced []string // push: refs reported "ok" by the upstream
+	RefsRejected []string // push: refs reported "ng" by the upstream
+}
+
+// StreamingDriver is implemented by drivers that proxy raw byte
+// streams end-to-end without buffering (git smart HTTP, TG-4b, docs
+// docs/tool-gateway.md §6.5). The gateway pipeline still owns kill
+// switch, authn and grant lookup; the driver then owns the wire: it
+// MUST stream request and response bodies with chunked passthrough
+// (io.Copy + http.Flusher, never io.ReadAll) and MUST NOT write to w
+// before returning an error, so the pipeline can render the error
+// envelope itself.
+type StreamingDriver interface {
+	Name() string
+	ServeStream(w http.ResponseWriter, r *http.Request, req *Request) (*StreamResult, error)
 }
 
 // Echo is the TG-1 pipeline-proving driver: it returns the request payload
