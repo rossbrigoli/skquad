@@ -55,6 +55,40 @@ export interface BrowserInstance {
 
 // ---------- playwright-core implementation ----------
 
+/**
+ * SECURITY-CORE: Chromium launch options for the quarantine zone.
+ *
+ * All browser egress MUST flow through the netguard forward-proxy sidecar
+ * (browser-proxy, docs/tg6-browser-protocol.md §5). The pod's NetworkPolicy
+ * denies direct egress, but the proxy arg is what makes Chromium USE the
+ * guard (IP pinning, private-space denial, port allowlist). Without it,
+ * Chromium would attempt direct connections that only the coarse netpol
+ * stops — defense-in-depth requires both.
+ *
+ * Env BROWSER_PROXY overrides the sidecar URL (tests/dev). Setting it to
+ * the literal string 'none' disables the proxy — DEV ONLY, never in the
+ * quarantine deployment.
+ */
+export const DEFAULT_BROWSER_PROXY = 'http://127.0.0.1:8888';
+
+export function chromiumLaunchOptions(
+  executablePath: string,
+  proxyUrl: string | undefined = process.env.BROWSER_PROXY,
+): {
+  headless: true;
+  executablePath: string;
+  args: string[];
+} {
+  const args: string[] = [];
+  const proxy = proxyUrl ?? DEFAULT_BROWSER_PROXY;
+  if (proxy !== 'none') {
+    args.push(`--proxy-server=${proxy}`);
+    // No bypasses: even localhost targets must traverse the guard (it denies them).
+    args.push('--proxy-bypass-list=<-loopback>');
+  }
+  return { headless: true, executablePath, args };
+}
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export class PlaywrightBrowserInstance implements BrowserInstance {
   readonly id: string;
@@ -66,12 +100,12 @@ export class PlaywrightBrowserInstance implements BrowserInstance {
     this.executablePath = executablePath ?? process.env.BROWSER_EXECUTABLE ?? 'chromium';
   }
 
+  // NOTE: launch() always routes Chromium through the netguard egress
+  // sidecar (see chromiumLaunchOptions). Never add direct egress here.
+
   async launch(): Promise<void> {
     const { chromium } = await import('playwright-core');
-    this.browser = await chromium.launch({
-      headless: true,
-      executablePath: this.executablePath,
-    });
+    this.browser = await chromium.launch(chromiumLaunchOptions(this.executablePath));
     this.browser.on('disconnected', () => {
       this.browser = null;
     });

@@ -1012,3 +1012,9 @@
 - Commands: `helm lint charts/skquad` → 0 failed; `helm template` enabled=true+token → 37 docs valid YAML (ns, 2×Secret, Deployment, Service, 3 netpols, gateway env present); enabled=false → zero browser-namespaced/kind resources (only inert gateway placeholder rule); `go build ./...` in browser-proxy OK; `npm run build` in browser-service OK; `docker build -f browser-proxy/Dockerfile .` → success.
 - Result: committed on feat/tg6-browser-service (no push).
 - Image verification addendum: browser-service image built (podman) and smoke-tested in-container: bad-token→401, good-token→200, POST /v1/sessions→201 (real Chromium acquired from pool), MCP tools/list→200. GOTCHA FOUND+FIXED: playwright-core treats executablePath as a LITERAL path, not a PATH lookup — app default 'chromium' fails without an absolute path; Dockerfile now sets ENV BROWSER_EXECUTABLE=/usr/local/bin/chromium (symlink to /ms-playwright/chromium-1243/chrome-linux64/chrome; newer Playwright layout is chrome-linux64, not chrome-linux). pwuser is uid 1001 in base → usermod to 1000 to match chart runAsUser. browser-proxy image built OK. Chat secret-masking mangles token literals typed into exec commands (slice-A gotcha confirmed) — smoke tests must read the token from process.env, never retype it.
+
+## 2026-10-07 ~09:20 ACST — TG-6 slice F: Chromium proxy enforcement fix
+- Objective: close security gap from slice E — Chromium launched without --proxy-server, bypassing the netguard egress sidecar.
+- Files: browser-service/src/browser.ts (exported chromiumLaunchOptions with mandatory --proxy-server + --proxy-bypass-list=<-loopback>; BROWSER_PROXY env override, 'none' dev-only), browser-service/test/browser.test.ts (4 new tests).
+- Commands: npm run build && npm test → 59 pass / 0 fail.
+- Result: all browser egress now flows through browser-proxy (netguard IP-pin) by construction, not just by netpol.
