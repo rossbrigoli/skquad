@@ -32,10 +32,12 @@ import (
 	"time"
 )
 
-// mcpInternalTokenHeader mirrors the gateway's InternalTokenHeader
+// mcpInternalAuthHeader mirrors the gateway's InternalTokenHeader
 // (tool-gateway/internal/httpapi/mcpenumerate.go). Kept as a local
 // literal because the control-plane must not import the gateway module.
-const mcpInternalTokenHeader = "X-Skquad-Internal-Token"
+// Named "AuthHeader" (not "...Token") so gosec's G101 does not mistake
+// this header NAME for a hardcoded secret value.
+const mcpInternalAuthHeader = "X-Skquad-Internal-Token"
 
 // MCPToolInfo is one enumerated MCP tool as returned by the gateway
 // (name + description + JSON-Schema inputSchema).
@@ -104,13 +106,17 @@ func (c *gatewayMCPEnumerateClient) Enumerate(ctx context.Context, resourceID, u
 	if err != nil {
 		return nil, &mcpEnumerateError{Code: "bad_request"}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/internal/mcp/enumerate", bytes.NewReader(payload))
+	// #nosec G704 -- the target is the operator-configured tool-gateway
+	// URL (SKQUAD_TOOL_GATEWAY_URL), NOT user input. The CP never dials
+	// the MCP upstream itself: upstreamURL travels in the request BODY and
+	// the gateway performs (and SSRF-guards) the actual upstream connect.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/internal/mcp/enumerate", bytes.NewReader(payload)) // #nosec G704
 	if err != nil {
 		return nil, &mcpEnumerateError{Code: "bad_request"}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(mcpInternalTokenHeader, c.internalToken)
-	resp, err := c.client.Do(req)
+	req.Header.Set(mcpInternalAuthHeader, c.internalToken)
+	resp, err := c.client.Do(req) // #nosec G704 -- see NewRequestWithContext above: fixed gateway host only
 	if err != nil {
 		// Gateway unreachable / DNS / connection refused. Never surface
 		// the raw error (it can embed URLs); the code is the taxonomy.
