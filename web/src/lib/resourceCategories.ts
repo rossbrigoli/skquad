@@ -20,6 +20,7 @@ export const RESOURCE_CATEGORIES: readonly ResourceCategory[] = [
   { key: "skills", label: "Skills", description: "Reusable capabilities agents can install." },
   { key: "tools", label: "Tools", description: "Built-in and registered tools — pick a tool to configure it." },
   { key: "apis", label: "APIs", description: "External API resources agents may be granted." },
+  { key: "git", label: "Git repos", description: "BYO git hosts with repo-scoped, credential-governed access." },
   { key: "knowledge-bases", label: "Knowledge bases", description: "Curated knowledge agents can search." },
   { key: "project-workspaces", label: "Project workspaces", description: "Workspace resources scoped to projects." },
 ];

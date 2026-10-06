@@ -157,7 +157,7 @@ export type AppNotification = {
   created_at: string;
 };
 
-export type ResourceType = "ai_provider" | "skill" | "tool" | "api" | "knowledge_base" | "project_workspace";
+export type ResourceType = "ai_provider" | "skill" | "tool" | "api" | "knowledge_base" | "project_workspace" | "git";
 
 export type AIProvider = {
   id: string;

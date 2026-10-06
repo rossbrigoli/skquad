@@ -75,6 +75,9 @@ export default defineConfig({
         "src/app/settings/resources/tools/[toolId]/page.tsx",
         // TG-4c: per-agent REST credential set/rotate/clear control.
         "src/components/RestAgentCredential.tsx",
+        // TG-4b: BYO git registration panel + per-agent git credential control.
+        "src/components/GitAgentCredential.tsx",
+        "src/components/GitResourcePanel.tsx",
       ],
       exclude: [
         "src/**/*.test.ts",
