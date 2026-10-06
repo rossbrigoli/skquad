@@ -70,6 +70,25 @@ func ResourceSecretName(resourceID string) string {
 	return managedSecretName("skquad-rest-", resourceID)
 }
 
+// GitSecretName derives the managed Secret name for a BYO git
+// resource id (TG-4b). The "skquad-git-" prefix keeps git custody
+// Secrets disjoint from REST custody Secrets even if a resource id
+// were ever reused across types.
+func GitSecretName(resourceID string) string {
+	return managedSecretName("skquad-git-", resourceID)
+}
+
+// agentSecretSuffix renders the per-agent marker shared by the REST
+// and git per-(resource,agent) Secret names. Returns "" for agent
+// ids that sanitize away to nothing.
+func agentSecretSuffix(agentID string) string {
+	suffix := strings.Trim(managedSecretName("agent-", agentID), "-")
+	if suffix == "" || suffix == "agent" {
+		return ""
+	}
+	return suffix
+}
+
 // ResourceAgentSecretName derives the managed Secret name for ONE
 // agent's per-agent credential on a BYO REST resource (TG-4c, S-259).
 //
@@ -87,14 +106,32 @@ func ResourceSecretName(resourceID string) string {
 // sanitizes away to nothing — callers must treat that as invalid input
 // rather than silently resolving to the resource-level Secret.
 func ResourceAgentSecretName(resourceID, agentID string) string {
-	suffix := strings.Trim(managedSecretName("agent-", agentID), "-")
-	if suffix == "" || suffix == "agent" {
+	suffix := agentSecretSuffix(agentID)
+	if suffix == "" {
 		return ""
 	}
 	name := ResourceSecretName(resourceID) + "-" + suffix
 	if len(name) > 253 {
 		// Defensive: real ids are UUIDs (~85 chars total). Truncation
 		// can only collide for absurdly long resource ids.
+		name = strings.TrimRight(name[:253], "-")
+	}
+	return name
+}
+
+// GitAgentSecretName derives the managed Secret name for ONE agent's
+// per-agent credential on a BYO git resource (TG-4b). Same custody
+// pattern as ResourceAgentSecretName (per-(resource,agent) Secret,
+// disjoint from the resource-level Secret, conflict-scoped rotation)
+// with the "skquad-git-" prefix. Returns "" when the agent id
+// sanitizes away to nothing.
+func GitAgentSecretName(resourceID, agentID string) string {
+	suffix := agentSecretSuffix(agentID)
+	if suffix == "" {
+		return ""
+	}
+	name := GitSecretName(resourceID) + "-" + suffix
+	if len(name) > 253 {
 		name = strings.TrimRight(name[:253], "-")
 	}
 	return name

@@ -319,6 +319,14 @@ func validateGitCeiling(obj map[string]json.RawMessage) Violations {
 	var v Violations
 	var repos []string
 	v = append(v, stringListField(obj, "repos_allow", "policy_ceiling.repos_allow", &repos)...)
+	// TG-4b: repos_allow is REQUIRED and non-empty on a git ceiling.
+	// Default-deny is only meaningful when the admin explicitly
+	// enumerated the reachable repos; an unset list would leave the
+	// resource reachable-but-unusable and invites "it validated, so
+	// it must be allowed" confusion at grant time.
+	if len(repos) == 0 {
+		v = append(v, Violation{Field: "policy_ceiling.repos_allow", Code: "required", Message: "repos_allow is required and must contain at least one repo pattern (default-deny semantics)"})
+	}
 	var allowPush bool
 	v = append(v, boolField(obj, "allow_push", "policy_ceiling.allow_push", &allowPush)...)
 	var rate int

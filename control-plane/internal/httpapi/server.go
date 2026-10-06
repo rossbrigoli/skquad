@@ -1465,13 +1465,18 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 		writeViolations(w, "invalid_resource_shape", "resource config/ceiling failed validation", v)
 		return
 	}
-	// TG-4: BYO REST credentials — validate the write-only auth payload
+	// TG-4: BYO credentials — validate the write-only auth payload
 	// against the declared auth_kind before anything is written. The
 	// secret itself lands in a managed K8s Secret after the row exists
 	// (name derived from the row id); the response never carries it.
-	var restAuth map[string]string
-	if typ == domain.ResRest {
+	// TG-4b: git resources join the same custody flow with a fixed
+	// bearer kind (PAT) and the "skquad-git-" Secret prefix.
+	var byoAuth map[string]string
+	if typ == domain.ResRest || typ == domain.ResGit {
 		kind := restAuthKindFromConfig(req.EndpointConfig)
+		if typ == domain.ResGit {
+			kind = gitAuthKind
+		}
 		fields, v := parseRestAuth(kind, req.Auth)
 		if len(v) > 0 {
 			writeViolations(w, "invalid_auth_payload", "auth payload failed validation", v)
@@ -1481,9 +1486,9 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusServiceUnavailable, "secret_store_unavailable", "BYO credentials require Kubernetes secret storage")
 			return
 		}
-		restAuth = fields
+		byoAuth = fields
 	} else if !isEmptyJSONObject(req.Auth) {
-		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest resources")
+		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest and git resources")
 		return
 	}
 	if req.OwnerUserID != "" {
@@ -1520,8 +1525,8 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 		writeStorageError(w, err)
 		return
 	}
-	if len(restAuth) > 0 {
-		if err := s.setResourceSecret(r.Context(), created, restAuth); err != nil {
+	if len(byoAuth) > 0 {
+		if err := s.setResourceSecret(r.Context(), created, byoAuth); err != nil {
 			// Compensate: never leave a resource row whose secret failed
 			// to land in the Secret store (same posture as provider keys).
 			if delErr := s.store.DeleteResource(r.Context(), created.Type, created.ID); delErr != nil {
@@ -4682,6 +4687,14 @@ func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPer
 		rt.Constraints = safeConfigJSON(perm.Constraints)
 		rt.RiskTier = resource.RiskTier
 		rt.EgressClass = resource.EgressClass
+	}
+	// TG-4b: git resources publish the GATEWAY git base as their
+	// endpoint — the agent's git remote points at the gateway, never
+	// at the upstream with a secret. Derived from SKQUAD_TOOL_GATEWAY_URL
+	// (chart-injected). No synthetic tool: the agent uses the git CLI
+	// and the prompt line renders this endpoint.
+	if resource.Type == domain.ResGit && s.cfg != nil && s.cfg.ToolGatewayURL != "" {
+		rt.Endpoint = strings.TrimRight(s.cfg.ToolGatewayURL, "/") + "/git/" + resource.ID + "/"
 	}
 	// TG-4: rest grants publish the rest_call tool schema (effective
 	// ceiling ∧ grant). Non-rest typed resources gain no tools in v1.

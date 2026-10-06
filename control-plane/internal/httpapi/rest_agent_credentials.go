@@ -51,17 +51,19 @@ func restFieldsMatchKind(kind string, fields map[string]string) bool {
 }
 
 // restAgentCredentialSetup validates the request context shared by the
-// set / status / delete handlers: rest resource (active), existing
-// agent, credentialed auth_kind, and caller authorization (platform
-// admin or the agent's squad owner — the grant-endpoint posture).
-// On failure it has already written the HTTP error.
+// set / status / delete handlers: a credentialed typed resource
+// (rest or git, active), an existing agent, and caller authorization
+// (platform admin or the agent's squad owner — the grant-endpoint
+// posture). TG-4b extends the same custody pattern to git (bearer
+// PAT, "skquad-git-" Secret prefix). On failure it has already
+// written the HTTP error.
 func (s *Server) restAgentCredentialSetup(w http.ResponseWriter, r *http.Request) (*domain.RegistryResource, *domain.Agent, string, bool) {
 	typ, ok := registryTypeFromRequest(w, r)
 	if !ok {
 		return nil, nil, "", false
 	}
-	if typ != domain.ResRest {
-		writeError(w, http.StatusBadRequest, "bad_request", "per-agent credentials are only valid for rest resources")
+	if typ != domain.ResRest && typ != domain.ResGit {
+		writeError(w, http.StatusBadRequest, "bad_request", "per-agent credentials are only valid for rest and git resources")
 		return nil, nil, "", false
 	}
 	resource, err := s.store.GetResource(r.Context(), typ, chi.URLParam(r, "resourceID"))
@@ -82,12 +84,15 @@ func (s *Server) restAgentCredentialSetup(w http.ResponseWriter, r *http.Request
 	if _, ok := s.ensureOwnedOrAdminSquad(w, r, agent.SquadID); !ok {
 		return nil, nil, "", false
 	}
-	kind := restAuthKindFromConfig(resource.EndpointConfig)
+	kind := authKindForType(resource)
 	if kind == "none" {
 		writeError(w, http.StatusBadRequest, "bad_request", "resource has no credentialed auth_kind; per-agent credentials require bearer, api_key_header, basic or oauth2_client_credentials")
 		return nil, nil, "", false
 	}
 	name := kube.ResourceAgentSecretName(resource.ID, agent.ID)
+	if typ == domain.ResGit {
+		name = kube.GitAgentSecretName(resource.ID, agent.ID)
+	}
 	if name == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "agent id is not usable for secret naming")
 		return nil, nil, "", false
@@ -115,7 +120,7 @@ func (s *Server) putRestAgentCredential(w http.ResponseWriter, r *http.Request) 
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	kind := restAuthKindFromConfig(resource.EndpointConfig)
+	kind := authKindForType(resource)
 	fields, v := parseRestAuth(kind, req.Auth)
 	if len(v) > 0 {
 		writeViolations(w, "invalid_auth_payload", "auth payload failed validation", v)
@@ -129,7 +134,7 @@ func (s *Server) putRestAgentCredential(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the per-agent credential as a Kubernetes Secret")
 		return
 	}
-	s.recordUserAudit(r, "rest.credential.agent_set", string(domain.ResRest), resource.ID, agent.SquadID,
+	s.recordUserAudit(r, "rest.credential.agent_set", string(resource.Type), resource.ID, agent.SquadID,
 		json.RawMessage(mustJSON(map[string]string{"agent_id": agent.ID, "kind": kind})))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"resource_id": resource.ID,
@@ -151,14 +156,14 @@ func (s *Server) getRestAgentCredentialStatus(w http.ResponseWriter, r *http.Req
 	}
 	hasOwn := false
 	if s.resourceSecrets != nil {
-		if fields, err := s.resourceSecrets.GetResourceSecret(r.Context(), secretName); err == nil && restFieldsMatchKind(restAuthKindFromConfig(resource.EndpointConfig), fields) {
+		if fields, err := s.resourceSecrets.GetResourceSecret(r.Context(), secretName); err == nil && restFieldsMatchKind(authKindForType(resource), fields) {
 			hasOwn = true
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"resource_id":        resource.ID,
 		"agent_id":           agent.ID,
-		"auth_kind":          restAuthKindFromConfig(resource.EndpointConfig),
+		"auth_kind":          authKindForType(resource),
 		"has_own_credential": hasOwn,
 		"source":             map[bool]string{true: "agent", false: "resource_default"}[hasOwn],
 	})
@@ -180,7 +185,7 @@ func (s *Server) deleteRestAgentCredential(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	s.recordUserAudit(r, "rest.credential.agent_delete", string(domain.ResRest), resource.ID, agent.SquadID,
+	s.recordUserAudit(r, "rest.credential.agent_delete", string(resource.Type), resource.ID, agent.SquadID,
 		json.RawMessage(mustJSON(map[string]string{"agent_id": agent.ID})))
 	w.WriteHeader(http.StatusNoContent)
 }
