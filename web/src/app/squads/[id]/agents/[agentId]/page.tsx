@@ -67,6 +67,7 @@ import {
   withCurrentOption,
 } from "../../../../../lib/agentLlm";
 import { foldRestConstraints, grantConstraintsLabel, restCeilingSummary, splitList, type RestCeiling } from "../../../../../lib/restResources";
+import { RestAgentCredential } from "../../../../../components/RestAgentCredential";
 
 const GRANTABLE_TYPES: { type: ResourceType; path: string; label: string }[] = [
   { type: "skill", path: "skills", label: "Skills" },
@@ -128,10 +129,14 @@ function TaskListSection({
 
 function GrantedResourcesSection({
   grants,
+  agentId,
+  token,
   onGrantClick,
   onRevoke,
 }: Readonly<{
   grants: AgentPermission[];
+  agentId: string;
+  token: string;
   onGrantClick: () => void;
   onRevoke: (next: { resource_type: string; resource_id: string }[]) => Promise<void>;
 }>) {
@@ -157,6 +162,11 @@ function GrantedResourcesSection({
                 <span className="entity-meta mono">{grant.resource_id.slice(0, 12)}</span>
                 {grantConstraintsLabel(grant.constraints) ? (
                   <span className="entity-meta">narrowing: {grantConstraintsLabel(grant.constraints)}</span>
+                ) : null}
+                {["api", "rest"].includes(grant.resource_type as string) ? (
+                  // TG-4c (S-259): own-vs-default credential per agent.
+                  // "api" is the legacy alias the web types still use.
+                  <RestAgentCredential resourceId={grant.resource_id} agentId={agentId} token={token} />
                 ) : null}
               </div>
               <div className="entity-side">
@@ -808,7 +818,7 @@ function AgentConfigPane({
         </div>
       ) : null}
 
-      <GrantedResourcesSection grants={grants} onGrantClick={onGrantClick} onRevoke={onRevoke} />
+      <GrantedResourcesSection grants={grants} agentId={agent.id} token={token} onGrantClick={onGrantClick} onRevoke={onRevoke} />
 
       <RuntimeIdentitySection
         hasIdentity={!!agent.identity_id}
