@@ -92,4 +92,115 @@ describe("RestAgentCredential", () => {
     await waitFor(() => expect(env.apiDelete).toHaveBeenCalledWith("/registry/rest/r1/agent-credentials/a1", "tok"));
     await waitFor(() => expect(screen.getByTestId("cred-indicator").textContent).toContain("resource default"));
   });
+
+  it("renders nothing when the credential probe fails", async () => {
+    env.apiGet = vi.fn(async () => {
+      throw new Error("probe unavailable");
+    });
+
+    const { container } = render(<RestAgentCredential resourceId="r1" agentId="a1" token="tok" />);
+
+    await waitFor(() => expect(env.apiGet).toHaveBeenCalledTimes(1));
+    expect(container.textContent).toBe("");
+  });
+
+  it("hides credential actions for auth_kind none", async () => {
+    env.probe = { ...env.probe, auth_kind: "none", has_own_credential: false, source: "resource_default" };
+
+    render(<RestAgentCredential resourceId="r1" agentId="a1" token="tok" />);
+
+    const badge = await screen.findByTestId("cred-indicator");
+    expect(badge.textContent).toContain("resource default (none)");
+    expect(screen.queryByRole("button", { name: "Set own" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rotate own" })).toBeNull();
+  });
+
+  it("falls back to no editable fields for an unknown auth kind", async () => {
+    env.probe = { ...env.probe, auth_kind: "bogus-kind", has_own_credential: false, source: "resource_default" };
+
+    render(<RestAgentCredential resourceId="r1" agentId="a1" token="tok" />);
+
+    expect((await screen.findByTestId("cred-indicator")).textContent).toContain("bogus-kind");
+    expect(screen.queryByRole("button", { name: "Set own" })).toBeNull();
+  });
+
+  it("renders non-secret fields as text and secret fields as password", async () => {
+    env.probe = { ...env.probe, auth_kind: "basic", has_own_credential: false, source: "resource_default" };
+    const user = userEvent.setup();
+    render(<RestAgentCredential resourceId="r1" agentId="a1" token="tok" />);
+    await screen.findByTestId("cred-indicator");
+    await user.click(screen.getByRole("button", { name: "Set own" }));
+
+    expect((screen.getByLabelText("Username") as HTMLInputElement).type).toBe("text");
+    expect((screen.getByLabelText("Password") as HTMLInputElement).type).toBe("password");
+  });
+
+  it("shows save errors without echoing secret values", async () => {
+    env.apiPut = vi.fn(async () => {
+      throw new Error("store failed");
+    });
+    const user = userEvent.setup();
+    render(<RestAgentCredential resourceId="r1" agentId="a1" token="tok" />);
+    await screen.findByTestId("cred-indicator");
+    await user.click(screen.getByRole("button", { name: "Set own" }));
+    await user.type(screen.getByLabelText("Bearer token"), "fake-pat-save-error-DO-NOT-USE");
+    await user.click(screen.getByRole("button", { name: "Save credential" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("store failed");
+    expect(document.body.textContent).not.toContain("fake-pat-save-error-DO-NOT-USE");
+    expect(screen.getByRole("button", { name: "Save credential" })).toBeTruthy();
+  });
+
+  it("uses a generic save error for non-Error failures", async () => {
+    env.apiPut = vi.fn(async () => {
+      throw "boom";
+    });
+    const user = userEvent.setup();
+    render(<RestAgentCredential resourceId="r1" agentId="a1" token="tok" />);
+    await screen.findByTestId("cred-indicator");
+    await user.click(screen.getByRole("button", { name: "Set own" }));
+    await user.click(screen.getByRole("button", { name: "Save credential" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not store the credential");
+  });
+
+  it("cancel exits edit mode and clears write-only input state", async () => {
+    const user = userEvent.setup();
+    render(<RestAgentCredential resourceId="r1" agentId="a1" token="tok" />);
+    await screen.findByTestId("cred-indicator");
+    await user.click(screen.getByRole("button", { name: "Set own" }));
+    await user.type(screen.getByLabelText("Bearer token"), "fake-pat-cancel-DO-NOT-USE");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByLabelText("Bearer token")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Set own" }));
+    expect((screen.getByLabelText("Bearer token") as HTMLInputElement).value).toBe("");
+  });
+
+  it("shows clear errors and keeps the own credential indicator", async () => {
+    env.probe = { ...env.probe, has_own_credential: true, source: "agent" };
+    env.apiDelete = vi.fn(async () => {
+      throw new Error("clear failed");
+    });
+    const user = userEvent.setup();
+    render(<RestAgentCredential resourceId="r1" agentId="a1" token="tok" />);
+    await screen.findByTestId("cred-indicator");
+    await user.click(screen.getByRole("button", { name: "Clear (use default)" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("clear failed");
+    expect(screen.getByTestId("cred-indicator").textContent).toContain("this agent's own");
+  });
+
+  it("uses a generic clear error for non-Error failures", async () => {
+    env.probe = { ...env.probe, has_own_credential: true, source: "agent" };
+    env.apiDelete = vi.fn(async () => {
+      throw "boom";
+    });
+    const user = userEvent.setup();
+    render(<RestAgentCredential resourceId="r1" agentId="a1" token="tok" />);
+    await screen.findByTestId("cred-indicator");
+    await user.click(screen.getByRole("button", { name: "Clear (use default)" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not clear the credential");
+  });
 });

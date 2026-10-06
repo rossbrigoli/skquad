@@ -281,7 +281,7 @@ func getAgentTx(ctx context.Context, tx pgx.Tx, id string) (*domain.Agent, error
 
 func getAgentIdentityTx(ctx context.Context, tx pgx.Tx, agentID string) (*domain.AgentIdentity, error) {
 	row := tx.QueryRow(ctx, `
-		SELECT id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status
+		SELECT id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status, generation
 		FROM agent_identities
 		WHERE agent_id = $1
 	`, agentID)
@@ -908,7 +908,7 @@ func (p *PostgresStore) SetAgentIdentityGatewayKey(ctx context.Context, agentID 
 		SET gateway_key_token = $2,
 		    gateway_key_status = $3
 		WHERE agent_id = $1
-		RETURNING id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status
+		RETURNING id::text, agent_id::text, credential_ref, credential_hash, coalesce(virtual_key_ref, ''), created_by::text, created_at, rotated_at, gateway_key_token, gateway_key_status, generation
 	`, agentID, token, string(status))
 	return scanAgentIdentity(row)
 }

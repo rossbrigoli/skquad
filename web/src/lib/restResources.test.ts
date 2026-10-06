@@ -154,3 +154,101 @@ describe("restCeilingSummary / splitList", () => {
     expect(grantConstraintsLabel({ path_allow: ["/issues/**"] })).toBe("allow: /issues/**");
   });
 });
+
+// TG-4c coverage: edge branches in the REST helpers (defensive paths the
+// happy-path suite above does not reach).
+describe("restResources edge branches", () => {
+  function validForm(overrides: Partial<RestResourceForm> = {}): RestResourceForm {
+    return formWith({
+      name: "GitHub API",
+      baseUrl: "https://api.github.com",
+      authKind: "bearer",
+      secrets: { token: "fake-token-DO-NOT-USE" },
+      ...overrides,
+    });
+  }
+
+  it("validateRestForm surfaces numeric-bound messages", () => {
+    expect(validateRestForm(validForm({ maxRequestBytes: "abc" }))).toContain("is not a positive integer");
+    expect(validateRestForm(validForm({ ratePerMin: "0" }))).toContain("is not a positive integer");
+    expect(validateRestForm(validForm({ maxResponseBytes: "1.5" }))).toContain("is not a positive integer");
+  });
+
+  it("validateRestForm rejects unparseable and non-http base URLs", () => {
+    expect(validateRestForm(validForm({ baseUrl: "not a url" }))).toBe("Base URL must be an absolute http(s) URL");
+    expect(validateRestForm(validForm({ baseUrl: "ftp://example.com" }))).toBe("Base URL must be http(s)");
+  });
+
+  it("buildRestResourcePayload omits unset bounds and empty lists", () => {
+    const f = validForm({
+      authKind: "none",
+      secrets: {},
+      methods: [],
+      pathAllow: "",
+      pathDeny: "",
+      maxRequestBytes: "",
+      maxResponseBytes: "",
+      ratePerMin: "",
+    });
+    const p = buildRestResourcePayload(f, false) as { policy_ceiling: Record<string, unknown>; auth?: unknown };
+    expect(p.policy_ceiling).toEqual({ egress_class: f.egressClass });
+    expect(p.auth).toBeUndefined();
+  });
+
+  it("buildRestResourcePayload skips empty secret fields when includeAuth is true", () => {
+    const f = validForm({ authKind: "basic", secrets: { username: "u", password: "" } });
+    const p = buildRestResourcePayload(f, true) as { auth: Record<string, string> };
+    expect(p.auth).toEqual({ username: "u" });
+  });
+
+  it("foldRestConstraints tolerates undefined ceiling and grant", () => {
+    const e = foldRestConstraints(undefined, undefined);
+    expect(e.methods).toEqual([]);
+    expect(e.path_allow).toEqual([]);
+    expect(e.path_deny).toEqual([]);
+    expect(e.max_request_bytes).toBe(65536);
+    expect(e.max_response_bytes).toBe(262144);
+    expect(e.rate_per_min).toBe(0);
+    expect(e.egress_class).toBe("public");
+  });
+
+  it("foldRestConstraints uppercases before intersecting methods", () => {
+    const e = foldRestConstraints({ methods: ["get", "post"] }, { methods: ["GET"] });
+    expect(e.methods).toEqual(["GET"]);
+  });
+
+  it("grantConstraintsLabel renders deny lists and byte caps", () => {
+    expect(grantConstraintsLabel({ path_deny: ["/admin/**"] })).toBe("deny: /admin/**");
+    expect(grantConstraintsLabel({ max_request_bytes: 2048, max_response_bytes: 5120 })).toBe(
+      "req ≤ 2 KiB · resp ≤ 5 KiB",
+    );
+  });
+
+  it("grantConstraintsLabel tolerates non-object inputs", () => {
+    expect(grantConstraintsLabel(null)).toBe("");
+    expect(grantConstraintsLabel([1, 2])).toBe("");
+    expect(grantConstraintsLabel("nope")).toBe("");
+  });
+
+  it("restCeilingSummary handles undefined and full ceilings", () => {
+    const empty = restCeilingSummary(undefined);
+    expect(empty).toContain("none (default-deny)");
+    expect(empty).toContain("no rate limit");
+    expect(empty).toContain("egress: public");
+
+    const full = restCeilingSummary({
+      methods: ["GET"],
+      path_allow: ["/issues/**"],
+      path_deny: ["/admin/**"],
+      max_request_bytes: 2048,
+      max_response_bytes: 4096,
+      rate_per_min: 5,
+      egress_class: "internal",
+    });
+    expect(full).toContain("deny: /admin/**");
+    expect(full).toContain("req ≤ 2 KiB");
+    expect(full).toContain("resp ≤ 4 KiB");
+    expect(full).toContain("≤ 5/min");
+    expect(full).toContain("egress: internal");
+  });
+});
