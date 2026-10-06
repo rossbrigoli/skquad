@@ -49,19 +49,39 @@ func callReq(agent, payload string, g *policy.Grant) *drivers.Request {
 func raw(s string) json.RawMessage { return json.RawMessage(s) }
 
 // fakeCreds is a stub credentials.Resolver. It counts resolutions so
-// tests can prove ACL denials happen BEFORE any secret fetch.
+// tests can prove ACL denials happen BEFORE any secret fetch, and
+// records the resolved agent id (TG-4c isolation assertions).
 type fakeCreds struct {
-	secret *credentials.Secret
-	err    error
-	calls  atomic.Int64
+	secret    *credentials.Secret
+	err       error
+	calls     atomic.Int64
+	lastAgent atomic.Value // string
 }
 
-func (f *fakeCreds) Resolve(_ context.Context, _ string) (*credentials.Secret, error) {
+func (f *fakeCreds) Resolve(_ context.Context, _ string, agentID string) (*credentials.Secret, error) {
 	f.calls.Add(1)
+	f.lastAgent.Store(agentID)
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.secret, nil
+}
+
+// keyedCreds serves a DIFFERENT secret per agent id (TG-4c, S-259
+// isolation): the resolution is keyed by the calling agent, so agent
+// A can never receive agent B's material.
+type keyedCreds struct {
+	byAgent map[string]*credentials.Secret
+	calls   atomic.Int64
+}
+
+func (k *keyedCreds) Resolve(_ context.Context, _, agentID string) (*credentials.Secret, error) {
+	k.calls.Add(1)
+	s, ok := k.byAgent[agentID]
+	if !ok {
+		return nil, credentials.ErrUnavailable
+	}
+	return s, nil
 }
 
 // openGrant builds a permissive-but-internal grant for the given base
@@ -581,4 +601,62 @@ func TestPathNormalization(t *testing.T) {
 		require.Error(t, err, "path %q must be rejected", p)
 		require.NotErrorIs(t, err, drivers.ErrDenied, "malformed path is bad_request, not a policy denial")
 	}
+}
+
+// TG-4c (S-259): per-agent credential isolation at the gateway. The
+// resolution is keyed by the calling agent, so agent A's credential
+// can never be injected for agent B (and vice versa).
+func TestPerAgentCredentialIsolation(t *testing.T) {
+	var gotAuth atomic.Value
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth.Store(r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer up.Close()
+
+	creds := &keyedCreds{byAgent: map[string]*credentials.Secret{
+		"agent-A": {Kind: AuthBearer, Fields: map[string]string{"token": "fake-token-A-DO-NOT-USE"}},
+		"agent-B": {Kind: AuthBearer, Fields: map[string]string{"token": "fake-token-B-DO-NOT-USE"}},
+	}}
+	d := New(creds)
+	g := openGrant(up.URL, AuthBearer)
+
+	_, err := d.Handle(context.Background(), callReq("agent-A", `{"method":"GET","path":"/x"}`, g))
+	require.NoError(t, err)
+	require.Equal(t, "Bearer fake-token-A-DO-NOT-USE", gotAuth.Load().(string), "agent A must inject its OWN credential")
+
+	_, err = d.Handle(context.Background(), callReq("agent-B", `{"method":"GET","path":"/x"}`, g))
+	require.NoError(t, err)
+	require.Equal(t, "Bearer fake-token-B-DO-NOT-USE", gotAuth.Load().(string), "agent B must inject its OWN credential")
+
+	// Unknown agent with no resolvable credential: fail closed. Never
+	// proceed with another agent's material.
+	_, err = d.Handle(context.Background(), callReq("agent-C", `{"method":"GET","path":"/x"}`, g))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "credentials_unavailable")
+}
+
+// TG-4c: a credentialed kind without a resolved agent identity is
+// denied BEFORE resolution — we cannot honour the per-agent guarantee
+// without knowing who is calling.
+func TestCredentialedCallWithoutAgentIdentityDenied(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream must not be reached when the agent identity is missing")
+	}))
+	defer up.Close()
+
+	creds := &fakeCreds{secret: &credentials.Secret{Kind: AuthBearer, Fields: map[string]string{"token": "t-FAKE"}}}
+	d := New(creds)
+	g := openGrant(up.URL, AuthBearer)
+	req := &drivers.Request{
+		Agent:     nil,
+		Resource:  g.ResourceID,
+		Operation: "call",
+		Payload:   []byte(`{"method":"GET","path":"/x"}`),
+		Grant:     g,
+	}
+	_, err := d.Handle(context.Background(), req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "agent_identity_missing")
+	require.Equal(t, int64(0), creds.calls.Load(), "deny must happen BEFORE any secret fetch")
 }

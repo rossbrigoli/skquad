@@ -24,7 +24,7 @@ func TestResolveHappyPath(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL, 2*time.Second)
-	s, err := c.Resolve(context.Background(), "res-1")
+	s, err := c.Resolve(context.Background(), "res-1", "")
 	require.NoError(t, err)
 	require.Equal(t, "res-1", s.ResourceID)
 	require.Equal(t, "bearer", s.Kind)
@@ -39,7 +39,7 @@ func TestResolveNotFound(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL, 2*time.Second)
-	_, err := c.Resolve(context.Background(), "missing")
+	_, err := c.Resolve(context.Background(), "missing", "")
 	require.ErrorIs(t, err, ErrUnavailable)
 }
 
@@ -50,7 +50,7 @@ func TestResolveServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL, 2*time.Second)
-	_, err := c.Resolve(context.Background(), "res-1")
+	_, err := c.Resolve(context.Background(), "res-1", "")
 	require.ErrorIs(t, err, ErrUnavailable)
 }
 
@@ -61,7 +61,7 @@ func TestResolveMalformedBody(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL, 2*time.Second)
-	_, err := c.Resolve(context.Background(), "res-1")
+	_, err := c.Resolve(context.Background(), "res-1", "")
 	require.ErrorIs(t, err, ErrUnavailable)
 }
 
@@ -72,7 +72,7 @@ func TestResolveMissingKind(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL, 2*time.Second)
-	_, err := c.Resolve(context.Background(), "res-1")
+	_, err := c.Resolve(context.Background(), "res-1", "")
 	require.ErrorIs(t, err, ErrUnavailable)
 }
 
@@ -82,7 +82,7 @@ func TestResolveUnreachableFailsClosed(t *testing.T) {
 	srv.Close() // nothing listening
 
 	c := NewClient(url, 500*time.Millisecond)
-	_, err := c.Resolve(context.Background(), "res-1")
+	_, err := c.Resolve(context.Background(), "res-1", "")
 	require.ErrorIs(t, err, ErrUnavailable)
 	require.True(t, errors.Is(err, ErrUnavailable))
 }
@@ -95,7 +95,34 @@ func TestResolveErrorsNeverCarrySecrets(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL, 2*time.Second)
-	_, err := c.Resolve(context.Background(), "res-1")
+	_, err := c.Resolve(context.Background(), "res-1", "")
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), "test-token-DO-NOT-USE")
+}
+
+// TG-4c (S-259): the agent parameter is forwarded when present and
+// omitted when empty (resource-only backwards compat).
+func TestResolveForwardsAgentParameter(t *testing.T) {
+	var gotAgent string
+	var hadAgent bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAgent = r.URL.Query().Get("agent")
+		_, hadAgent = r.URL.Query()["agent"]
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"resource_id":"res-1","kind":"bearer","fields":{"token":"agentA-token-DO-NOT-USE"},"scope":"agent"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, 2*time.Second)
+	s, err := c.Resolve(context.Background(), "res-1", "agent-42")
+	require.NoError(t, err)
+	require.Equal(t, "agent-42", gotAgent, "agent query parameter must be forwarded")
+	require.True(t, hadAgent)
+	require.Equal(t, "agentA-token-DO-NOT-USE", s.Fields["token"])
+
+	// Empty agent → parameter omitted entirely.
+	hadAgent = false
+	_, err = c.Resolve(context.Background(), "res-1", "")
+	require.NoError(t, err)
+	require.False(t, hadAgent, "empty agent must omit the parameter (backwards compat)")
 }

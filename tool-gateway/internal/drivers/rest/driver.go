@@ -158,13 +158,21 @@ func (d *Driver) Handle(ctx context.Context, req *drivers.Request) (*drivers.Res
 	}
 
 	// Per-call secret resolution (fail-closed). auth_kind=none needs
-	// no secret and skips the CP round-trip.
+	// no secret and skips the CP round-trip. TG-4c (S-259): the
+	// calling agent's identity is part of the resolution key — the CP
+	// injects that agent's OWN credential when it has one, else the
+	// resource default. A credentialed call without a resolved agent
+	// identity is denied: without it we could not honour the
+	// per-agent isolation guarantee.
 	var secret *credentials.Secret
 	if pol.AuthKind != AuthNone && pol.AuthKind != "" {
 		if d.creds == nil {
 			return nil, drivers.Denied("credentials_unavailable")
 		}
-		s, err := d.creds.Resolve(ctx, req.Resource)
+		if agentID == "" {
+			return nil, drivers.Denied("agent_identity_missing")
+		}
+		s, err := d.creds.Resolve(ctx, req.Resource, agentID)
 		if err != nil {
 			return nil, drivers.Denied("credentials_unavailable")
 		}

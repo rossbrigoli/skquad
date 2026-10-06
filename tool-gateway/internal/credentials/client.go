@@ -42,9 +42,13 @@ type Secret struct {
 	Fields     map[string]string `json:"fields"`
 }
 
-// Resolver resolves the credential secret for a resource id.
+// Resolver resolves the credential secret for one (resource, agent)
+// pair (TG-4c, S-259). agentID is the calling agent: the control
+// plane serves that agent's OWN per-agent credential when one exists,
+// else the resource-level default. Pass "" for the resource-only
+// (backwards-compatible) resolution.
 type Resolver interface {
-	Resolve(ctx context.Context, resourceID string) (*Secret, error)
+	Resolve(ctx context.Context, resourceID, agentID string) (*Secret, error)
 }
 
 // Client is an HTTP resolver against the CP internal credentials API.
@@ -64,16 +68,20 @@ func NewClient(cpBaseURL string, timeout time.Duration) *Client {
 	}
 }
 
-// Resolve fetches the secret material for resourceID. Any non-200 or
-// malformed response is ErrUnavailable (fail-closed). Error strings
-// never contain secret material.
-func (c *Client) Resolve(ctx context.Context, resourceID string) (*Secret, error) {
+// Resolve fetches the secret material for (resourceID, agentID). Any
+// non-200 or malformed response is ErrUnavailable (fail-closed). Error
+// strings never contain secret material. agentID "" omits the agent
+// query parameter (resource-default resolution).
+func (c *Client) Resolve(ctx context.Context, resourceID, agentID string) (*Secret, error) {
 	u, err := url.Parse(c.baseURL + "/internal/v1/credentials")
 	if err != nil {
 		return nil, fmt.Errorf("%w: bad CP base URL", ErrUnavailable)
 	}
 	q := u.Query()
 	q.Set("resource", resourceID)
+	if agentID != "" {
+		q.Set("agent", agentID)
+	}
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
