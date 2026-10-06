@@ -769,6 +769,29 @@ type RegistryResource struct {
 	ToolsSnapshot     json.RawMessage `json:"tools_snapshot,omitempty"`
 	ToolsHash         string          `json:"tools_hash,omitempty"`
 	ToolsEnumeratedAt *time.Time      `json:"tools_enumerated_at,omitempty"`
+	// TG-5 slice B2b (S-244-series): MCP upstream drift state.
+	// MCPDriftPending is the raw mcp_drift_pending column: a JSON array
+	// of tool names newly-added upstream that WOULD match the resource's
+	// current tools_allow (only wildcards can newly match). Such tools
+	// are denied until an admin re-approves: on drift the CP expands the
+	// newly-matching wildcard into the concrete old-snapshot names, so
+	// the gateway's effective allowlist excludes the pending tool, and
+	// the pending set persists as the review marker until
+	// approve-tools replaces the allowlist and clears it.
+	// MCPDriftCheckedAt is the last drift check (on-demand or scan).
+	// Drift is the computed view surfaced on GET/list (never persisted).
+	MCPDriftPending   json.RawMessage `json:"-"`
+	MCPDriftCheckedAt *time.Time      `json:"-"`
+	Drift             *MCPDriftState  `json:"drift,omitempty"`
+}
+
+// MCPDriftState is the computed drift view surfaced on mcp resources
+// (TG-5 slice B2b): pending = tool names denied until re-approved,
+// last_checked_at = last drift check, drifted = pending is non-empty.
+type MCPDriftState struct {
+	Pending       []string   `json:"pending"`
+	LastCheckedAt *time.Time `json:"last_checked_at,omitempty"`
+	Drifted       bool       `json:"drifted"`
 }
 
 // AgentPermission grants an agent access to a registry resource (Layer-2 RBAC,

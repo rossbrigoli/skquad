@@ -226,21 +226,10 @@ func (s *Server) snapshotMCPTools(ctx context.Context, resource *domain.Registry
 // mcpStoredToken resolves the resource-level bearer from the managed
 // Secret behind auth_ref (used when an MCP upstream URL moves but no
 // fresh credential is supplied — the stored token re-enumerates the
-// new URL). Never logs the token.
+// new URL). Never logs the token. TG-5 B2b: the shared core lives in
+// mcpStoredTokenFor so the drift scanner can use it without a *Server.
 func (s *Server) mcpStoredToken(ctx context.Context, resource *domain.RegistryResource) (string, error) {
-	if s.resourceSecrets == nil || resource.AuthRef == "" {
-		return "", errors.New("no managed MCP credential")
-	}
-	name := resource.AuthRef[strings.LastIndex(resource.AuthRef, "/")+1:]
-	fields, err := s.resourceSecrets.GetResourceSecret(ctx, name)
-	if err != nil {
-		return "", err
-	}
-	tok := strings.TrimSpace(fields["token"])
-	if tok == "" {
-		return "", errors.New("stored MCP credential has no token field")
-	}
-	return tok, nil
+	return mcpStoredTokenFor(ctx, s.resourceSecrets, resource)
 }
 
 // mcpSnapshotTools decodes a stored snapshot into the enumerated tool

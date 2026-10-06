@@ -116,6 +116,7 @@ type Config struct {
 	ConsultTimeout            time.Duration // S-173: default reply deadline for agent consults
 	StuckScanInterval         time.Duration // S-197: how often the stuck-task scanner sweeps
 	TaskStuckThreshold        time.Duration // S-197: silence (thread + heartbeat) before a task_stuck alert fires; also the per-task dedupe window
+	MCPDriftScanInterval      time.Duration // TG-5 slice B2b: how often the MCP upstream drift scanner re-enumerates (default 1h)
 	NotificationSweepInterval time.Duration // S-198: how often the notification retention sweep runs (SKQUAD_NOTIFICATION_SWEEP_INTERVAL_SECONDS)
 	NotificationRetention     time.Duration // S-198: age past which READ notifications are purged (SKQUAD_NOTIFICATION_RETENTION_DAYS, default 90d)
 
@@ -187,6 +188,7 @@ func Load() (*Config, error) {
 		ConsultTimeout:            envSeconds("SKQUAD_CONSULT_TIMEOUT_SECONDS", 900),
 		StuckScanInterval:         envSeconds("SKQUAD_STUCK_SCAN_INTERVAL_SECONDS", 300),
 		TaskStuckThreshold:        envSeconds("SKQUAD_TASK_STUCK_THRESHOLD_SECONDS", 86400),
+		MCPDriftScanInterval:      envSeconds("SKQUAD_MCP_DRIFT_SCAN_INTERVAL_SECONDS", 3600),
 		NotificationSweepInterval: envSeconds("SKQUAD_NOTIFICATION_SWEEP_INTERVAL_SECONDS", 3600),
 		NotificationRetention:     envDays("SKQUAD_NOTIFICATION_RETENTION_DAYS", 90),
 		DefaultAgentStorageSize:   envOr("SKQUAD_DEFAULT_AGENT_STORAGE_SIZE", "2Gi"),

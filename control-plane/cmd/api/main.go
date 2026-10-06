@@ -50,6 +50,13 @@ func main() {
 	go httpapi.RunStuckTaskScanner(context.Background(), store, cfg.StuckScanInterval, cfg.TaskStuckThreshold)
 	slog.Info("started stuck task scanner", "interval", cfg.StuckScanInterval, "threshold", cfg.TaskStuckThreshold)
 
+	// TG-5 slice B2b: MCP upstream drift scanner. Re-enumerates every
+	// active mcp resource through the tool gateway (default hourly) and
+	// files admin review events on change. Gated internally on the
+	// CP→gateway enumerate path + secret store being configured; a
+	// no-op otherwise.
+	httpapi.StartMCPDriftScanner(context.Background(), store, cfg)
+
 	// S-198: notification retention sweep. Purges READ notifications
 	// older than the retention window (default 90 days) plus the
 	// 'inbox.deleted' audit rows written by the inbox delete endpoint.

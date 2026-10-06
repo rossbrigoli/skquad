@@ -760,6 +760,10 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Get(routeRegistryResource, s.getRegistryResource)
 			r.Patch(routeRegistryResource, s.updateRegistryResource)
 			r.Post("/registry/{registryType}/{resourceID}/deprecate", s.deprecateRegistryResource)
+			// TG-5 slice B2b (S-244-series): MCP upstream drift surface
+			// (platform admin; mcp-only, enforced in-handler).
+			r.Post("/registry/{registryType}/{resourceID}/re-enumerate", s.reEnumerateMCP)
+			r.Post("/registry/{registryType}/{resourceID}/approve-tools", s.approveMCPTools)
 			// TG-4c (S-259): per-agent BYO REST credentials — set/probe/
 			// clear one agent's own credential (write-only; owner or admin).
 			r.Put("/registry/{registryType}/{resourceID}/agent-credentials/{agentID}", s.putRestAgentCredential)
@@ -1603,6 +1607,10 @@ func (s *Server) listRegistryResources(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
+	// TG-5 slice B2b: surface the MCP drift view on every item.
+	for _, res := range resources {
+		attachMCPDrift(res)
+	}
 	writeJSON(w, http.StatusOK, resources)
 }
 
@@ -1616,6 +1624,8 @@ func (s *Server) getRegistryResource(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
+	// TG-5 slice B2b: surface the MCP drift view (no-op for non-mcp).
+	attachMCPDrift(resource)
 	writeJSON(w, http.StatusOK, resource)
 }
 

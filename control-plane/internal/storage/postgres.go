@@ -1448,13 +1448,15 @@ func (p *PostgresStore) CreateResource(ctx context.Context, resource *domain.Reg
 		INSERT INTO registry_resources (
 			type, name, description, endpoint, auth_ref, manifest, status, registered_by,
 			endpoint_config, policy_ceiling, risk_tier, egress_class, owner_user_id,
-			tools_snapshot, tools_hash, tools_enumerated_at
+			tools_snapshot, tools_hash, tools_enumerated_at,
+			mcp_drift_pending, mcp_drift_checked_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		RETURNING `+resourceColumns+`
 	`, domain.CanonicalResourceType(resource.Type), resource.Name, resource.Description, resource.Endpoint, resource.AuthRef, defaultJSON(resource.Manifest, "{}"), defaultResourceStatus(resource.Status), resource.RegisteredBy,
 		defaultJSON(resource.EndpointConfig, "{}"), defaultJSON(resource.PolicyCeiling, "{}"), defaultRiskTier(resource.RiskTier), defaultEgressClass(resource.EgressClass), nullableText(resource.OwnerUserID),
-		nullableJSON(resource.ToolsSnapshot), resource.ToolsHash, nullableTime(resource.ToolsEnumeratedAt))
+		nullableJSON(resource.ToolsSnapshot), resource.ToolsHash, nullableTime(resource.ToolsEnumeratedAt),
+		nullableJSON(resource.MCPDriftPending), nullableTime(resource.MCPDriftCheckedAt))
 	created, err := scanResource(txRow)
 	if err != nil {
 		return nil, err
@@ -1508,12 +1510,15 @@ func (p *PostgresStore) UpdateResource(ctx context.Context, resource *domain.Reg
 		    owner_user_id = $13,
 		    tools_snapshot = $14,
 		    tools_hash = $15,
-		    tools_enumerated_at = $16
+		    tools_enumerated_at = $16,
+		    mcp_drift_pending = $17,
+		    mcp_drift_checked_at = $18
 		WHERE type = $1 AND id = $2
 		RETURNING `+resourceColumns+`
 	`, domain.CanonicalResourceType(resource.Type), resource.ID, resource.Name, resource.Description, resource.Endpoint, resource.AuthRef, defaultJSON(resource.Manifest, "{}"), defaultResourceStatus(resource.Status),
 		defaultJSON(resource.EndpointConfig, "{}"), defaultJSON(resource.PolicyCeiling, "{}"), defaultRiskTier(resource.RiskTier), defaultEgressClass(resource.EgressClass), nullableText(resource.OwnerUserID),
-		nullableJSON(resource.ToolsSnapshot), resource.ToolsHash, nullableTime(resource.ToolsEnumeratedAt))
+		nullableJSON(resource.ToolsSnapshot), resource.ToolsHash, nullableTime(resource.ToolsEnumeratedAt),
+		nullableJSON(resource.MCPDriftPending), nullableTime(resource.MCPDriftCheckedAt))
 	created, err := scanResource(txRow)
 	if err != nil {
 		return nil, err
@@ -3793,6 +3798,7 @@ func scanUserModelGrant(row scanner) (*domain.UserModelGrant, error) {
 func scanResource(row scanner) (*domain.RegistryResource, error) {
 	var r domain.RegistryResource
 	var enumeratedAt sql.NullTime
+	var driftCheckedAt sql.NullTime
 	if err := row.Scan(
 		&r.ID,
 		&r.Type,
@@ -3812,6 +3818,8 @@ func scanResource(row scanner) (*domain.RegistryResource, error) {
 		&r.ToolsSnapshot,
 		&r.ToolsHash,
 		&enumeratedAt,
+		&r.MCPDriftPending,
+		&driftCheckedAt,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}
@@ -3823,9 +3831,17 @@ func scanResource(row scanner) (*domain.RegistryResource, error) {
 	if string(r.ToolsSnapshot) == "null" {
 		r.ToolsSnapshot = nil
 	}
+	// TG-5 B2b: same NULL normalization for the drift pending set.
+	if string(r.MCPDriftPending) == "null" {
+		r.MCPDriftPending = nil
+	}
 	if enumeratedAt.Valid {
 		t := enumeratedAt.Time
 		r.ToolsEnumeratedAt = &t
+	}
+	if driftCheckedAt.Valid {
+		t := driftCheckedAt.Time
+		r.MCPDriftCheckedAt = &t
 	}
 	return &r, nil
 }
@@ -3837,7 +3853,8 @@ const resourceColumns = `
 		registered_by::text, created_at,
 		coalesce(endpoint_config, '{}'::jsonb), coalesce(policy_ceiling, '{}'::jsonb),
 		risk_tier, egress_class, coalesce(owner_user_id::text, ''),
-		coalesce(tools_snapshot, 'null'::jsonb), tools_hash, tools_enumerated_at`
+		coalesce(tools_snapshot, 'null'::jsonb), tools_hash, tools_enumerated_at,
+		coalesce(mcp_drift_pending, 'null'::jsonb), mcp_drift_checked_at`
 
 func scanAgentPermission(row scanner) (*domain.AgentPermission, error) {
 	var p domain.AgentPermission
