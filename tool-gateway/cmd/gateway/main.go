@@ -61,6 +61,7 @@ func main() {
 		StreamDrivers: map[string]drivers.StreamingDriver{
 			"git": gitdriver.New(credsClient),
 		},
+		InternalToken: cfg.InternalToken,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

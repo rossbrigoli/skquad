@@ -119,7 +119,10 @@ func (c *client) call(method string, params any) (*rpcResponse, error) {
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("mcp_failed: upstream request failed")
+		// Cause wrapped (%w) so callers can classify redirect/SSRF
+		// refusals (TG-5 B1 enumerate taxonomy); behavior for the
+		// call path is unchanged (still a transport error → 502).
+		return nil, fmt.Errorf("mcp_failed: upstream request failed: %w", err)
 	}
 	defer resp.Body.Close()
 

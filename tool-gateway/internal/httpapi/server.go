@@ -9,6 +9,7 @@
 //	                              reachable at least once AND boundary fence
 //	                              confirmed; otherwise 503
 //	GET  /internal/verify-boundary  fence state (TG-1 stub, interface in place)
+//	POST /internal/mcp/enumerate  CP-only upstream MCP tool enumeration (TG-5 B1)
 //	POST /v1/echo                 pipeline-proving driver
 package httpapi
 
@@ -45,6 +46,11 @@ type Deps struct {
 	StreamDrivers map[string]drivers.StreamingDriver
 	// MaxBodyBytes caps request payloads read by drivers.
 	MaxBodyBytes int64
+	// InternalToken is the shared secret trusted-internal callers
+	// (the control-plane) must present on /internal/* endpoints via
+	// X-Skquad-Internal-Token (or Authorization: Bearer). Empty =
+	// those endpoints are disabled (fail-closed). TG-5 slice B1.
+	InternalToken string
 }
 
 // Server implements http.Handler for the gateway.
@@ -78,6 +84,10 @@ func New(deps Deps) *Server {
 	// {tool, arguments}). Trailing /call keeps the verb explicit and
 	// mirrors the rest resource addressing by id.
 	s.mux.HandleFunc("POST /v1/mcp/{resourceID}/call", s.handleMCPCall)
+	// TG-5 slice B1: CP-facing enumeration of an upstream MCP server
+	// (registration-time tool snapshot + drift hash). Internal-only:
+	// requires the shared internal token, never agent-facing.
+	s.mux.HandleFunc("POST /internal/mcp/enumerate", s.handleMCPEnumerate)
 	// TG-4b: git smart-HTTP proxy (clone/fetch/push). GET and POST,
 	// trailing path is "<org>/<repo>.git/<service>" (+ query).
 	s.mux.HandleFunc("GET /git/{resourceID}/{trailing...}", s.handleGitProxy)
