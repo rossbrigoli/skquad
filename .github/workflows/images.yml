@@ -101,6 +101,12 @@ jobs:
             context: .
             dockerfile: control-plane/Dockerfile
             image: skquad-api-server
+          # TG-4: tool gateway also builds from repo root (same ../shared
+          # replace directive in its go.mod).
+          - component: tool-gateway
+            context: .
+            dockerfile: tool-gateway/Dockerfile
+            image: skquad-tool-gateway
           - component: operator
             context: operator
             dockerfile: operator/Dockerfile
