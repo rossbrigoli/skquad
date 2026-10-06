@@ -291,6 +291,10 @@ func (r *SquadReconciler) ensurePlatformEgressNetworkPolicy(ctx context.Context,
 							Values: []string{
 								"api-server",
 								"llm-gateway",
+								// TG-1: agent pods may reach the Tool
+								// Gateway (governed egress plane,
+								// docs/tool-gateway.md §5.4).
+								"tool-gateway",
 							},
 						}},
 					},

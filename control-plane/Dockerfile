@@ -1,13 +1,19 @@
+# TG-3: builds from the REPOSITORY ROOT context because go.mod `replace`s
+# the shared module at ../shared. Build with:
+#   docker build -f control-plane/Dockerfile .
 ARG GO_VERSION=1.26.8
 
 FROM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
 
-COPY go.mod go.sum ./
-RUN go mod download
+COPY shared/go.mod shared/go.sum ./shared/
+COPY control-plane/go.mod control-plane/go.sum ./control-plane/
+RUN cd control-plane && go mod download
 
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/skquad-api ./cmd/api \
+COPY shared ./shared
+COPY control-plane ./control-plane
+RUN cd control-plane \
+ && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/skquad-api ./cmd/api \
  && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/embed-backfill ./cmd/embed-backfill
 
 FROM alpine:3.20

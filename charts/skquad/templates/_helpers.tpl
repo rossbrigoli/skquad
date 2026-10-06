@@ -87,3 +87,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "skquad.embedderImage" -}}
 {{- printf "%s:%s" .Values.embedder.image.repository .Values.embedder.image.tag -}}
 {{- end -}}
+
+{{- define "skquad.toolGatewayName" -}}
+{{- printf "%s-tool-gateway" (include "skquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "skquad.toolGatewayImage" -}}
+{{- printf "%s:%s" .Values.image.toolGateway.repository .Values.image.toolGateway.tag -}}
+{{- end -}}

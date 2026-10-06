@@ -2309,7 +2309,7 @@ func TestDeleteRegistryResourceInUseWarnsThenForceDeletes(t *testing.T) {
 
 	doJSON(t, handler, http.MethodPut, pathAgentsPrefix+agent.ID+pathPermissions, []map[string]string{
 		{"resource_type": "skill", "resource_id": skill.ID},
-	}, http.StatusOK, &[]map[string]string{})
+	}, http.StatusOK, &[]map[string]any{})
 
 	// In-use delete must warn with 409 + usage list, not delete.
 	var conflict struct {

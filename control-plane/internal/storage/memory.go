@@ -590,6 +590,9 @@ func (m *MemoryStore) CreateAgentIdentity(ctx context.Context, i *domain.AgentId
 	created := cloneAgentIdentity(i)
 	created.ID = uuid.NewString()
 	created.CreatedAt = time.Now().UTC()
+	if created.Generation < 1 {
+		created.Generation = 1
+	}
 	m.identities[created.ID] = created
 	m.identityAgent[created.AgentID] = created.ID
 	agent.IdentityID = created.ID
@@ -623,6 +626,9 @@ func (m *MemoryStore) RotateAgentIdentity(ctx context.Context, agentID string, c
 	identity.GatewayKeyToken = ""
 	identity.GatewayKeyStatus = domain.GatewayKeyNone
 	identity.RotatedAt = time.Now().UTC()
+	// TG-2 generation-bound credentials: rotation bumps the epoch so
+	// material issued under the old generation is visibly dead.
+	identity.Generation = identity.Generation + 1
 	m.enqueueAgentOutboxLocked(domain.KubernetesOpUpsertAgent, m.agents[agentID])
 	m.drainPendingAuditsLocked(ctx, identity.ID)
 	return cloneAgentIdentity(identity), nil
@@ -1017,8 +1023,21 @@ func (m *MemoryStore) CreateResource(ctx context.Context, r *domain.RegistryReso
 	}
 	created := cloneResource(r)
 	created.ID = uuid.NewString()
+	created.Type = domain.CanonicalResourceType(created.Type)
 	if created.Status == "" {
 		created.Status = domain.ResourceActive
+	}
+	if created.RiskTier == "" {
+		created.RiskTier = "low"
+	}
+	if created.EgressClass == "" {
+		created.EgressClass = "public"
+	}
+	if len(created.EndpointConfig) == 0 {
+		created.EndpointConfig = json.RawMessage(`{}`)
+	}
+	if len(created.PolicyCeiling) == 0 {
+		created.PolicyCeiling = json.RawMessage(`{}`)
 	}
 	created.CreatedAt = time.Now().UTC()
 	m.resources[created.ID] = created
@@ -1030,7 +1049,17 @@ func (m *MemoryStore) GetResource(_ context.Context, typ domain.ResourceType, id
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	resource, ok := m.resources[id]
-	if !ok || resource.Type != typ {
+	if !ok || resource.Type != domain.CanonicalResourceType(typ) {
+		return nil, ErrNotFound
+	}
+	return cloneResource(resource), nil
+}
+
+func (m *MemoryStore) GetResourceByID(_ context.Context, id string) (*domain.RegistryResource, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	resource, ok := m.resources[id]
+	if !ok {
 		return nil, ErrNotFound
 	}
 	return cloneResource(resource), nil
@@ -1040,11 +1069,11 @@ func (m *MemoryStore) UpdateResource(ctx context.Context, r *domain.RegistryReso
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	existing, ok := m.resources[r.ID]
-	if !ok || existing.Type != r.Type {
+	if !ok || existing.Type != domain.CanonicalResourceType(r.Type) {
 		return nil, ErrNotFound
 	}
 	for _, other := range m.resources {
-		if other.ID != r.ID && other.Type == r.Type && strings.EqualFold(other.Name, r.Name) {
+		if other.ID != r.ID && other.Type == existing.Type && strings.EqualFold(other.Name, r.Name) {
 			return nil, ErrConflict
 		}
 	}
@@ -1061,7 +1090,7 @@ func (m *MemoryStore) DeprecateResource(ctx context.Context, typ domain.Resource
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	resource, ok := m.resources[id]
-	if !ok || resource.Type != typ {
+	if !ok || resource.Type != domain.CanonicalResourceType(typ) {
 		return ErrNotFound
 	}
 	resource.Status = domain.ResourceDeprecated
@@ -1075,12 +1104,13 @@ func (m *MemoryStore) DeleteResource(ctx context.Context, typ domain.ResourceTyp
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	resource, ok := m.resources[id]
-	if !ok || resource.Type != typ {
+	if !ok || resource.Type != domain.CanonicalResourceType(typ) {
 		return ErrNotFound
 	}
 	delete(m.resources, id)
+	canon := domain.CanonicalResourceType(typ)
 	for key, perm := range m.permissions {
-		if perm.ResourceType == typ && perm.ResourceID == id {
+		if perm.ResourceType == canon && perm.ResourceID == id {
 			delete(m.permissions, key)
 		}
 	}
@@ -1092,8 +1122,9 @@ func (m *MemoryStore) ListResources(_ context.Context, typ domain.ResourceType) 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := []*domain.RegistryResource{}
+	canon := domain.CanonicalResourceType(typ)
 	for _, resource := range m.resources {
-		if resource.Type == typ {
+		if resource.Type == canon {
 			out = append(out, cloneResource(resource))
 		}
 	}
@@ -1109,12 +1140,16 @@ func (m *MemoryStore) GrantAgentPermission(_ context.Context, p *domain.AgentPer
 	if _, ok := m.agents[p.AgentID]; !ok {
 		return ErrNotFound
 	}
-	key := permissionKey(p.AgentID, p.ResourceType, p.ResourceID)
+	key := permissionKey(p.AgentID, domain.CanonicalResourceType(p.ResourceType), p.ResourceID)
 	if _, ok := m.permissions[key]; ok {
 		return nil
 	}
 	created := cloneAgentPermission(p)
 	created.ID = uuid.NewString()
+	created.ResourceType = domain.CanonicalResourceType(created.ResourceType)
+	if len(created.Constraints) == 0 {
+		created.Constraints = json.RawMessage(`{}`)
+	}
 	created.CreatedAt = time.Now().UTC()
 	m.permissions[key] = created
 	return nil
@@ -1126,7 +1161,7 @@ func (m *MemoryStore) RevokeAgentPermission(_ context.Context, agentID string, t
 	if _, ok := m.agents[agentID]; !ok {
 		return ErrNotFound
 	}
-	delete(m.permissions, permissionKey(agentID, typ, resourceID))
+	delete(m.permissions, permissionKey(agentID, domain.CanonicalResourceType(typ), resourceID))
 	return nil
 }
 
@@ -1155,8 +1190,9 @@ func (m *MemoryStore) ListPermissionsByResource(_ context.Context, typ domain.Re
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := []*domain.AgentPermission{}
+	canon := domain.CanonicalResourceType(typ)
 	for _, perm := range m.permissions {
-		if perm.ResourceType == typ && perm.ResourceID == resourceID {
+		if perm.ResourceType == canon && perm.ResourceID == resourceID {
 			out = append(out, cloneAgentPermission(perm))
 		}
 	}
@@ -1182,6 +1218,10 @@ func (m *MemoryStore) SetAgentPermissions(_ context.Context, agentID string, per
 		created := cloneAgentPermission(&perm)
 		created.ID = uuid.NewString()
 		created.AgentID = agentID
+		created.ResourceType = domain.CanonicalResourceType(created.ResourceType)
+		if len(created.Constraints) == 0 {
+			created.Constraints = json.RawMessage(`{}`)
+		}
 		created.CreatedAt = now
 		m.permissions[permissionKey(agentID, created.ResourceType, created.ResourceID)] = created
 	}
@@ -1197,7 +1237,7 @@ func (m *MemoryStore) AgentHasPermission(_ context.Context, agentID string, typ 
 	if _, ok := m.agents[agentID]; !ok {
 		return false, ErrNotFound
 	}
-	_, ok := m.permissions[permissionKey(agentID, typ, resourceID)]
+	_, ok := m.permissions[permissionKey(agentID, domain.CanonicalResourceType(typ), resourceID)]
 	return ok, nil
 }
 
@@ -3349,6 +3389,8 @@ func cloneResource(r *domain.RegistryResource) *domain.RegistryResource {
 	}
 	v := *r
 	v.Manifest = slices.Clone(r.Manifest)
+	v.EndpointConfig = slices.Clone(r.EndpointConfig)
+	v.PolicyCeiling = slices.Clone(r.PolicyCeiling)
 	return &v
 }
 
@@ -3357,6 +3399,7 @@ func cloneAgentPermission(p *domain.AgentPermission) *domain.AgentPermission {
 		return nil
 	}
 	v := *p
+	v.Constraints = slices.Clone(p.Constraints)
 	return &v
 }
 

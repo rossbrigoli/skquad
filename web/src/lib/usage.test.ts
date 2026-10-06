@@ -9,6 +9,7 @@ import {
   CHART_PALETTE,
   pointValue,
   providerUsageMap,
+  sumSeriesCost,
   type UsagePoint,
   type UsageSeries,
 } from "./usage";
@@ -122,5 +123,31 @@ describe("formatDayLabel", () => {
     expect(formatDayLabel("not-a-date")).toBe("not-a-date");
     expect(formatDayLabel("2026-13-01")).toBe("2026-13-01");
     expect(formatDayLabel("")).toBe("");
+  });
+
+  it("tolerates null/undefined day (defensive ?? path)", () => {
+    expect(formatDayLabel(null as unknown as string)).toBe(null);
+    expect(formatDayLabel(undefined as unknown as string)).toBe(undefined);
+  });
+});
+
+describe("defensive fallbacks", () => {
+  it("pointValue coalesces missing cost/tokens to zero", () => {
+    const noTokens = { day: "d", input_tokens: 0, output_tokens: 0, cost: 5 } as unknown as UsagePoint;
+    const noCost = { day: "d", input_tokens: 0, output_tokens: 0, tokens: 7 } as unknown as UsagePoint;
+    expect(pointValue(noTokens, "tokens")).toBe(0);
+    expect(pointValue(noCost, "cost")).toBe(0);
+  });
+
+  it("buildStackedChart tolerates series without a points array", () => {
+    const model = buildStackedChart(["2026-10-01"], [{ id: "s1", name: "S1" } as unknown as UsageSeries], "tokens");
+    expect(model.columns[0].total).toBe(0);
+    expect(model.hasData).toBe(false);
+  });
+
+  it("sumSeriesCost handles undefined series and missing points", () => {
+    expect(sumSeriesCost(undefined)).toBe(0);
+    expect(sumSeriesCost({ id: "s", name: "s" } as unknown as UsageSeries)).toBe(0);
+    expect(sumSeriesCost(series("s", "s", [point("d1", 10, 1.5), point("d2", 20, 2.5)]))).toBeCloseTo(4);
   });
 });

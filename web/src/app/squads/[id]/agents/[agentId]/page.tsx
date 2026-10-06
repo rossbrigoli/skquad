@@ -66,6 +66,8 @@ import {
   selectableModels,
   withCurrentOption,
 } from "../../../../../lib/agentLlm";
+import { foldRestConstraints, grantConstraintsLabel, restCeilingSummary, splitList, type RestCeiling } from "../../../../../lib/restResources";
+import { RestAgentCredential } from "../../../../../components/RestAgentCredential";
 
 const GRANTABLE_TYPES: { type: ResourceType; path: string; label: string }[] = [
   { type: "skill", path: "skills", label: "Skills" },
@@ -127,10 +129,14 @@ function TaskListSection({
 
 function GrantedResourcesSection({
   grants,
+  agentId,
+  token,
   onGrantClick,
   onRevoke,
 }: Readonly<{
   grants: AgentPermission[];
+  agentId: string;
+  token: string;
   onGrantClick: () => void;
   onRevoke: (next: { resource_type: string; resource_id: string }[]) => Promise<void>;
 }>) {
@@ -154,6 +160,14 @@ function GrantedResourcesSection({
               <div className="entity-main">
                 <span className="entity-title">{grant.resource_type}</span>
                 <span className="entity-meta mono">{grant.resource_id.slice(0, 12)}</span>
+                {grantConstraintsLabel(grant.constraints) ? (
+                  <span className="entity-meta">narrowing: {grantConstraintsLabel(grant.constraints)}</span>
+                ) : null}
+                {["api", "rest"].includes(grant.resource_type as string) ? (
+                  // TG-4c (S-259): own-vs-default credential per agent.
+                  // "api" is the legacy alias the web types still use.
+                  <RestAgentCredential resourceId={grant.resource_id} agentId={agentId} token={token} />
+                ) : null}
               </div>
               <div className="entity-side">
                 <span className="entity-meta">{formatRelativeTime(grant.created_at)}</span>
@@ -167,7 +181,13 @@ function GrantedResourcesSection({
                       // would break every revoke.
                       grants
                         .filter((p) => p.id !== grant.id)
-                        .map((p) => ({ resource_type: p.resource_type, resource_id: p.resource_id })),
+                        .map((p) => ({
+                          resource_type: p.resource_type,
+                          resource_id: p.resource_id,
+                          // TG-4: preserve constraints — the PUT
+                          // replaces the whole set.
+                          ...(p.constraints && Object.keys(p.constraints as object).length > 0 ? { constraints: p.constraints } : {}),
+                        })),
                     ).catch(() => undefined)
                   }
                 >
@@ -798,7 +818,7 @@ function AgentConfigPane({
         </div>
       ) : null}
 
-      <GrantedResourcesSection grants={grants} onGrantClick={onGrantClick} onRevoke={onRevoke} />
+      <GrantedResourcesSection grants={grants} agentId={agent.id} token={token} onGrantClick={onGrantClick} onRevoke={onRevoke} />
 
       <RuntimeIdentitySection
         hasIdentity={!!agent.identity_id}
@@ -1362,10 +1382,27 @@ function GrantModal({
 }) {
   const [typeIdx, setTypeIdx] = useState(0);
   const [resourceId, setResourceId] = useState("");
+  // TG-4: optional grant-level constraints for rest (BYO) resources.
+  const [methods, setMethods] = useState<string[]>([]);
+  const [pathAllow, setPathAllow] = useState("");
+  const [ratePerMin, setRatePerMin] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const selectedType = GRANTABLE_TYPES[typeIdx];
   const resources = useApi<RegistryResource[]>(`/registry/${selectedType.path}`, 0);
+  const selectedResource = (resources.data || []).find((r) => r.id === resourceId);
+  const ceiling = (selectedResource?.policy_ceiling ?? undefined) as RestCeiling | undefined;
+  const isRest = selectedType.type === "api";
+
+  function toggleGrantMethod(m: string) {
+    setMethods((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
+  }
+
+  const draftConstraints: RestCeiling = {};
+  if (isRest && methods.length > 0) draftConstraints.methods = methods;
+  if (isRest && splitList(pathAllow).length > 0) draftConstraints.path_allow = splitList(pathAllow);
+  if (isRest && ratePerMin.trim() !== "" && Number(ratePerMin) > 0) draftConstraints.rate_per_min = Number(ratePerMin);
+  const hasDraft = Object.keys(draftConstraints).length > 0;
 
   const alreadyGranted = (id: string) =>
     existing.some((p) => p.resource_type === selectedType.type && p.resource_id === id);
@@ -1383,8 +1420,14 @@ function GrantModal({
           setError("");
           try {
             const next = [
-              ...existing.map((p) => ({ resource_type: p.resource_type, resource_id: p.resource_id })),
-              { resource_type: selectedType.type, resource_id: resourceId },
+              // Preserve existing grants' constraints (TG-2) — the PUT
+              // replaces the whole set, so drop nothing silently.
+              ...existing.map((p) => ({
+                resource_type: p.resource_type,
+                resource_id: p.resource_id,
+                ...(p.constraints && Object.keys(p.constraints as object).length > 0 ? { constraints: p.constraints } : {}),
+              })),
+              { resource_type: selectedType.type, resource_id: resourceId, ...(hasDraft ? { constraints: draftConstraints } : {}) },
             ];
             await apiPut(`/agents/${agentId}/permissions`, token, next);
             onGranted();
@@ -1429,6 +1472,40 @@ function GrantModal({
             </span>
           ) : null}
         </label>
+        {isRest && selectedResource ? (
+          <>
+            <div className="notice">Resource ceiling: {restCeilingSummary(ceiling)}</div>
+            <div className="field">
+              <span>Narrow methods (optional — must stay within the ceiling)</span>
+              <div className="field-row">
+                {(ceiling?.methods ?? []).map((m) => (
+                  <label key={m} className="field-checkbox">
+                    <input type="checkbox" checked={methods.includes(m)} onChange={() => toggleGrantMethod(m)} />
+                    {m}
+                  </label>
+                ))}
+              </div>
+              {(ceiling?.methods ?? []).length === 0 ? (
+                <span className="field-hint">Ceiling allows no methods — this resource cannot be usefully granted.</span>
+              ) : null}
+            </div>
+            <div className="field-row">
+              <label className="field">
+                <span>Narrow path allow (optional)</span>
+                <input value={pathAllow} onChange={(e) => setPathAllow(e.target.value)} placeholder="/issues/**" />
+              </label>
+              <label className="field">
+                <span>Rate / min (optional)</span>
+                <input value={ratePerMin} onChange={(e) => setRatePerMin(e.target.value)} placeholder="30" />
+              </label>
+            </div>
+            {hasDraft ? (
+              <div className="notice">Effective for this agent: {restCeilingSummary(foldRestConstraints(ceiling, draftConstraints))}</div>
+            ) : (
+              <div className="notice">No grant narrowing — agent gets the full resource ceiling.</div>
+            )}
+          </>
+        ) : null}
       </ModalForm>
     </Modal>
   );

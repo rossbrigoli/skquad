@@ -103,6 +103,44 @@ jobs:
           name: tests-control-plane
           path: test-results/control-plane.xml
 
+  # TG-3: the shared SSRF-guard/html-extract module consumed by BOTH the
+  # control plane and the tool gateway (single source of truth).
+  shared:
+    name: Shared library
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: shared/go.mod
+          cache-dependency-path: shared/go.sum
+      - name: Go vet
+        working-directory: shared
+        run: go vet ./...
+      - name: Go test
+        working-directory: shared
+        run: go test ./...
+
+  # TG-3: tool gateway (governed egress plane). Vet + test only; no
+  # coverage gate yet (module is young, mirrors TG-1 wiring).
+  tool-gateway:
+    name: Tool gateway
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: tool-gateway/go.mod
+          cache-dependency-path: |
+            tool-gateway/go.sum
+            shared/go.sum
+      - name: Go vet
+        working-directory: tool-gateway
+        run: go vet ./...
+      - name: Go test
+        working-directory: tool-gateway
+        run: go test ./...
+
   operator:
     name: Operator
     runs-on: ubuntu-latest

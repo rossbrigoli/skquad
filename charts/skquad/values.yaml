@@ -10,6 +10,9 @@ image:
   llmGateway:
     repository: ghcr.io/rossbrigoli/skquad-llm-gateway
     tag: "0.1.0"
+  toolGateway:
+    repository: ghcr.io/rossbrigoli/skquad-tool-gateway
+    tag: "0.1.0"
   agentRuntime:
     repository: ghcr.io/rossbrigoli/skquad-agent-runtime
     tag: "0.1.0"
@@ -20,6 +23,7 @@ image:
 replicas:
   apiServer: 2
   llmGateway: 2
+  toolGateway: 2
   operator: 1
   web: 1
 
@@ -429,3 +433,63 @@ embedder:
       drop: [ALL]
     runAsNonRoot: true
     runAsUser: 1000
+
+# TG-1: Tool Gateway (governed egress plane, docs/tool-gateway.md §5.2).
+toolGateway:
+  # Deploy the component at all.
+  enabled: true
+  imagePullPolicy: IfNotPresent
+  port: 8080
+  # Runtime kill switch (SKQUAD_TOOL_GATEWAY_ENABLED). Flip to false to make
+  # the gateway refuse ALL non-health traffic without removing the Deployment.
+  enabledRuntime: true
+  # Control plane base URL for the internal policy API. Empty => derived
+  # in-cluster from the api-server Service.
+  controlPlaneUrl: ""
+  policyTtl: "30s"
+  policyTimeout: "5s"
+  probeGap: "10s"
+  # Boundary verifier: "static" = TG-1 placeholder (reports fence applied);
+  # "none" = never ready (used to prove the fail-closed gate). Real
+  # operator-verified hook replaces this in TG-2/TG-9.
+  boundaryVerifier: "static"
+  # Pod/service CIDRs of the cluster. The gateway's public-egress rule
+  # allows 0.0.0.0/0 on 80,443 EXCEPT these ranges, so cluster-internal
+  # addresses are unreachable from the gateway except via the explicit
+  # CP / DNS / browser-service peers below.
+  clusterCIDRs:
+    - 10.42.0.0/16   # k3s pod CIDR
+    - 10.43.0.0/16   # k3s service CIDR
+  # Browser Service (TG-6) placeholder: namespace + component label the
+  # gateway is allowed to reach. Harmless until the service exists.
+  browserService:
+    namespace: skquad-browser
+    componentLabel: browser-service
+  resources:
+    requests:
+      cpu: "100m"
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+      ephemeral-storage: 256Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    # RPS-based scaling target. Requires a custom/external metrics adapter
+    # exposing "requests_per_second" (pod metric); CPU fallback included so
+    # the HPA still functions pre-adapter.
+    targetRPS: 100
+    targetCPUUtilization: 70
+  nodeSelector: {}
+  tolerations: []
+
+# TG-1: explicit no-internet-egress assertion for the control plane
+# (design §5.4). DISABLED by default: enabling requires enumerating every
+# legitimate CP egress path (K8s API CIDR etc.) or the CP breaks. The
+# orchestrator enables it after the TG-9 bypass drill enumerates paths.
+cpNoInternetEgress:
+  enabled: false
+  # CIDRs of the Kubernetes API server(s) the CP must reach. Required when
+  # enabled.
+  apiServerCIDRs: []

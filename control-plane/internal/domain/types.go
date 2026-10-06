@@ -144,6 +144,12 @@ type AgentIdentity struct {
 	CreatedBy      string    `json:"created_by"`
 	CreatedAt      time.Time `json:"created_at"`
 	RotatedAt      time.Time `json:"rotated_at,omitempty"`
+	// Generation is the credential epoch (TG-2, design §5.2
+	// generation-bound tokens). It starts at 1 and increments on every
+	// rotation; the policy endpoint surfaces it so the gateway can bind
+	// sessions to a generation and material from an old generation dies
+	// with the rotation that replaced it.
+	Generation       int `json:"generation"`
 	// GatewayKeyToken is the LiteLLM key token (sha256 hash of the virtual
 	// key, not the key itself) used to update/revoke the key at the gateway.
 	GatewayKeyToken string `json:"-"`
@@ -651,10 +657,26 @@ const (
 	ResAIProvider       ResourceType = "ai_provider"
 	ResSkill            ResourceType = "skill"
 	ResTool             ResourceType = "tool"
+	// ResAPI is the legacy type name; TG-2 canonicalizes it to ResRest.
 	ResAPI              ResourceType = "api"
+	ResWeb              ResourceType = "web"
+	ResRest             ResourceType = "rest"
+	ResMCP              ResourceType = "mcp"
+	ResGit              ResourceType = "git"
 	ResKnowledgeBase    ResourceType = "knowledge_base"
 	ResProjectWorkspace ResourceType = "project_workspace"
 )
+
+// CanonicalResourceType maps the legacy 'api' type to its TG-2 canonical
+// form 'rest' (design §7 type widening). All storage paths run types
+// through this so old consumers asking for 'api' transparently operate on
+// 'rest' rows.
+func CanonicalResourceType(t ResourceType) ResourceType {
+	if t == ResAPI {
+		return ResRest
+	}
+	return t
+}
 
 // AIProvider is a model endpoint registered in the registry (BYOM).
 type AIProvider struct {
@@ -729,17 +751,28 @@ type RegistryResource struct {
 	Status       ResourceStatus  `json:"status"`
 	RegisteredBy string          `json:"registered_by"`
 	CreatedAt    time.Time       `json:"created_at"`
+	// TG-2 governed egress fields (design §7). EndpointConfig never
+	// contains secret material — credentials live behind AuthRef (K8s
+	// Secret) and are resolved only at call time by the gateway.
+	EndpointConfig json.RawMessage `json:"endpoint_config,omitempty"`
+	PolicyCeiling  json.RawMessage `json:"policy_ceiling,omitempty"`
+	RiskTier       string          `json:"risk_tier,omitempty"`
+	EgressClass    string          `json:"egress_class,omitempty"`
+	OwnerUserID    string          `json:"owner_user_id,omitempty"`
 }
 
 // AgentPermission grants an agent access to a registry resource (Layer-2 RBAC,
-// squad-owner managed).
+// squad-owner managed). Constraints (TG-2) narrow the resource's
+// policy_ceiling for this agent; they must satisfy the no-escalation
+// invariant (egresspolicy.ValidateGrant) before being written.
 type AgentPermission struct {
-	ID           string       `json:"id"`
-	AgentID      string       `json:"agent_id"`
-	ResourceType ResourceType `json:"resource_type"`
-	ResourceID   string       `json:"resource_id"`
-	GrantedBy    string       `json:"granted_by"`
-	CreatedAt    time.Time    `json:"created_at"`
+	ID           string          `json:"id"`
+	AgentID      string          `json:"agent_id"`
+	ResourceType ResourceType    `json:"resource_type"`
+	ResourceID   string          `json:"resource_id"`
+	GrantedBy    string          `json:"granted_by"`
+	CreatedAt    time.Time       `json:"created_at"`
+	Constraints  json.RawMessage `json:"constraints,omitempty"`
 }
 
 // GranteeType identifies who an access grant is issued to.

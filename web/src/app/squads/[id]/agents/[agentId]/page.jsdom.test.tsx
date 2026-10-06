@@ -111,6 +111,13 @@ vi.mock("../../../../../components/AgentInboxPanel", () => ({
 vi.mock("../../../../../components/MarkdownMessage", () => ({
   MarkdownMessage: ({ text }: { text: string }) => <div className="md">{text}</div>,
 }));
+// TG-4c: the real panel does its own HTTP; covered in its own jsdom test.
+// Here we only assert the page mounts it for rest/api grant rows.
+vi.mock("../../../../../components/RestAgentCredential", () => ({
+  RestAgentCredential: ({ resourceId, agentId }: { resourceId: string; agentId: string }) => (
+    <div data-testid="rest-agent-cred">{`cred:${resourceId}:${agentId}`}</div>
+  ),
+}));
 
 vi.mock("../../../../../lib/auth", () => ({
   useAuth: () => ({
@@ -601,6 +608,38 @@ describe("configuration tab", () => {
     render(<AgentProfilePage />);
     await openConfigTab();
     expect(screen.getByText("No resource grants")).toBeInTheDocument();
+  });
+
+  it("rest grant rows show narrowing label + per-agent credential and preserve constraints on revoke", async () => {
+    env.perms = [
+      {
+        id: "g1",
+        agent_id: "ag1",
+        resource_type: "rest",
+        resource_id: "r-gh",
+        created_at: new Date().toISOString(),
+        constraints: { methods: ["GET"], rate_per_min: 10 },
+      },
+      { id: "g2", agent_id: "ag1", resource_type: "tool", resource_id: "tl1", created_at: new Date().toISOString() },
+    ];
+    render(<AgentProfilePage />);
+    await openConfigTab();
+    // Branch: constraints label renders only when the grant narrows something.
+    expect(screen.getByText(/narrowing: methods: GET/)).toBeInTheDocument();
+    // Branch: rest grants mount the per-agent credential control.
+    expect(screen.getByTestId("rest-agent-cred")).toHaveTextContent("cred:r-gh:ag1");
+
+    // Revoke the rest grant → tool grant remains without constraints key.
+    await userEvent.click(screen.getAllByRole("button", { name: "Revoke" })[0]);
+    await vi.waitFor(() => expect(env.puts).toHaveLength(1));
+    expect(env.puts[0].body).toEqual([{ resource_type: "tool", resource_id: "tl1" }]);
+
+    // Revoke the tool grant → rest grant keeps its constraints through the PUT.
+    await userEvent.click(screen.getAllByRole("button", { name: "Revoke" })[1]);
+    await vi.waitFor(() => expect(env.puts).toHaveLength(2));
+    expect(env.puts[1].body).toEqual([
+      { resource_type: "rest", resource_id: "r-gh", constraints: { methods: ["GET"], rate_per_min: 10 } },
+    ]);
   });
 
   it("provisions a missing identity", async () => {

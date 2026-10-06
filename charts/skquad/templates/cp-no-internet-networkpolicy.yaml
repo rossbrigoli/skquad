@@ -1,0 +1,65 @@
+{{- if .Values.cpNoInternetEgress.enabled }}
+# TG-1 (design §5.4): the control plane must have NO internet egress.
+# NetworkPolicy is allow-only, so this policy pins CP egress to:
+# kube DNS, in-cluster peers, and the Kubernetes API server CIDRs —
+# nothing else reaches the public internet from CP pods.
+#
+# DISABLED BY DEFAULT (cpNoInternetEgress.enabled=false): enabling it
+# without a complete enumeration of the CP's legitimate egress paths
+# (K8s API CIDRs, any external OIDC issuer, etc.) WILL break the CP.
+# The orchestrator flips this on only after the TG-9 bypass drill has
+# enumerated and tested every path. apiServerCIDRs is required when on.
+{{- if not .Values.cpNoInternetEgress.apiServerCIDRs }}
+{{- fail "cpNoInternetEgress.apiServerCIDRs must be set when cpNoInternetEgress.enabled=true" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-api-server-no-internet" (include "skquad.fullname" .) | trunc 63 | trimSuffix "-" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api-server
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api-server
+  policyTypes:
+    - Egress
+  egress:
+    # kube DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # All in-cluster destinations (Postgres, llm-gateway admin API,
+    # embedder, operator, browser service, tool gateway, agent pods).
+    - to:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: NotIn
+                values: []
+          podSelector: {}
+      # NOTE: namespaceSelector NotIn [] matches every namespace INCLUDING
+      # this one; combined with podSelector {} this allows all in-cluster
+      # pods on all ports. Public internet remains denied because no rule
+      # covers non-cluster IPs other than the K8s API CIDRs below.
+    # Kubernetes API server(s) — required for the CP's CR writes.
+    {{- range .Values.cpNoInternetEgress.apiServerCIDRs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+      ports:
+        - protocol: TCP
+          port: 6443
+        - protocol: TCP
+          port: 443
+    {{- end }}
+{{- end }}

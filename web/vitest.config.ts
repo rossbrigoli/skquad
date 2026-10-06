@@ -73,6 +73,8 @@ export default defineConfig({
         "src/components/PromptTemplatesPanel.tsx",
         "src/components/PlatformSettingsTab.tsx",
         "src/app/settings/resources/tools/[toolId]/page.tsx",
+        // TG-4c: per-agent REST credential set/rotate/clear control.
+        "src/components/RestAgentCredential.tsx",
       ],
       exclude: [
         "src/**/*.test.ts",

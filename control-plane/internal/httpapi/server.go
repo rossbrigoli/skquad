@@ -26,6 +26,7 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/breakglass"
 	"github.com/rossbrigoli/skquad/control-plane/internal/config"
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
+	"github.com/rossbrigoli/skquad/control-plane/internal/egresspolicy"
 	"github.com/rossbrigoli/skquad/control-plane/internal/embeddings"
 	"github.com/rossbrigoli/skquad/control-plane/internal/kube"
 	"github.com/rossbrigoli/skquad/control-plane/internal/promptcompo"
@@ -150,6 +151,12 @@ type Server struct {
 	// nil elsewhere (dev without a cluster). Creating/updating a provider
 	// with a key while nil returns 503 rather than storing plaintext.
 	providerKeys ProviderKeyStore
+	// resourceSecrets is the TG-4 Secret backend for BYO REST resource
+	// credentials (same custody pattern as S-155 provider keys). Built
+	// at startup when K8s connection config is present; nil elsewhere
+	// (dev without a cluster) — BYO registration then answers 503
+	// rather than storing plaintext secrets.
+	resourceSecrets ResourceSecretStore
 	// podRestarter is the S-162 restart path: deletes agent pods by
 	// label through the K8s API. Built at startup when K8s connection
 	// config is present; nil elsewhere (dev). Restart while nil → 503.
@@ -305,6 +312,7 @@ type serverDeps struct {
 	crWriter           CRWriter
 	searchProviders    map[string]search.Provider
 	providerKeys       ProviderKeyStore
+	resourceSecrets    ResourceSecretStore
 	restarter          PodRestarter
 	gwReloader         GatewayReloader
 	injectedEmbeddings EmbeddingsClient
@@ -342,6 +350,21 @@ func resolveProviderKeys(cfg *config.Config, explicit ProviderKeyStore) Provider
 		return nil
 	}
 	return keys
+}
+
+// resolveResourceSecrets returns the explicit resource-secret store
+// when given, otherwise builds one from in-cluster K8s config (TG-4,
+// same posture as resolveProviderKeys).
+func resolveResourceSecrets(cfg *config.Config, explicit ResourceSecretStore) ResourceSecretStore {
+	if explicit != nil || cfg == nil || !cfg.K8sEnabled || cfg.K8sAPIBase == "" || cfg.K8sTokenFile == "" {
+		return explicit
+	}
+	store, err := kube.NewSecretStore(cfg)
+	if err != nil {
+		log.Printf("resource secret store unavailable (BYO REST credentials disabled): %v", err)
+		return nil
+	}
+	return store
 }
 
 // resolvePodRestarter returns the explicit restarter when given, otherwise
@@ -456,6 +479,10 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 	// otherwise build from in-cluster K8s config. Absent config is fine
 	// (dev); handlers surface the gap when a key is actually pasted.
 	s.providerKeys = resolveProviderKeys(cfg, deps.providerKeys)
+	// TG-4: BYO REST resource-secret store. Explicit argument wins
+	// (tests); otherwise build from in-cluster K8s config. Absent
+	// config is fine (dev); handlers surface the gap.
+	s.resourceSecrets = resolveResourceSecrets(cfg, deps.resourceSecrets)
 	// S-162: pod restarter for the Restart Agent button. Explicit
 	// argument wins (tests); otherwise build from in-cluster K8s config.
 	s.podRestarter = resolvePodRestarter(cfg, deps.restarter)
@@ -498,6 +525,19 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 
 	r := chi.NewRouter()
 	r.Get("/healthz", s.health)
+
+	// TG-2: internal policy read API for the tool gateway (design §5.1.5).
+	// No app-layer auth by contract (the TG-1 gateway client sends none) —
+	// reachability is enforced by cluster NetworkPolicy (internal-only).
+	// Never expose this path outside the cluster. ETag/If-None-Match per
+	// the gateway cache contract.
+	r.Route("/internal/v1", func(r chi.Router) {
+		r.Get("/policy", s.internalPolicy)
+		// TG-4: per-call BYO credential resolution for the tool gateway.
+		// Same trust class as /policy: internal-only via NetworkPolicy,
+		// no app-layer auth. Never expose outside the cluster.
+		r.Get("/credentials", s.internalCredentials)
+	})
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/gateway/metering", s.ingestGatewayMetering)
@@ -699,6 +739,11 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Get(routeRegistryResource, s.getRegistryResource)
 			r.Patch(routeRegistryResource, s.updateRegistryResource)
 			r.Post("/registry/{registryType}/{resourceID}/deprecate", s.deprecateRegistryResource)
+			// TG-4c (S-259): per-agent BYO REST credentials — set/probe/
+			// clear one agent's own credential (write-only; owner or admin).
+			r.Put("/registry/{registryType}/{resourceID}/agent-credentials/{agentID}", s.putRestAgentCredential)
+			r.Get("/registry/{registryType}/{resourceID}/agent-credentials/{agentID}", s.getRestAgentCredentialStatus)
+			r.Delete("/registry/{registryType}/{resourceID}/agent-credentials/{agentID}", s.deleteRestAgentCredential)
 			r.Delete(routeRegistryResource, s.deleteRegistryResource)
 
 			r.Get("/metering/summary", s.getMeteringSummary)
@@ -961,7 +1006,16 @@ func registryTypeFromRequest(w http.ResponseWriter, r *http.Request) (domain.Res
 	case "tools":
 		return domain.ResTool, true
 	case "apis":
-		return domain.ResAPI, true
+		// TG-2 type widening: 'api' is the legacy alias for 'rest'.
+		return domain.ResRest, true
+	case "rest":
+		return domain.ResRest, true
+	case "web":
+		return domain.ResWeb, true
+	case "mcp":
+		return domain.ResMCP, true
+	case "git":
+		return domain.ResGit, true
 	case "knowledge-bases":
 		return domain.ResKnowledgeBase, true
 	case "project-workspaces":
@@ -978,8 +1032,11 @@ func registryTypeFromRequest(w http.ResponseWriter, r *http.Request) (domain.Res
 // itself stays until WP8 drops the DB CHECK constraint.
 func resourceTypeFromString(value string) (domain.ResourceType, bool) {
 	switch domain.ResourceType(value) {
-	case domain.ResSkill, domain.ResTool, domain.ResAPI, domain.ResKnowledgeBase, domain.ResProjectWorkspace:
-		return domain.ResourceType(value), true
+	case domain.ResSkill, domain.ResTool, domain.ResAPI, domain.ResWeb, domain.ResRest,
+		domain.ResMCP, domain.ResGit, domain.ResKnowledgeBase, domain.ResProjectWorkspace:
+		// TG-2: 'api' canonicalizes to 'rest' so grant paths operate on
+		// migrated rows transparently.
+		return domain.CanonicalResourceType(domain.ResourceType(value)), true
 	default:
 		return "", false
 	}
@@ -1377,11 +1434,17 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		Name        string          `json:"name"`
-		Description string          `json:"description"`
-		Endpoint    string          `json:"endpoint"`
-		AuthRef     string          `json:"auth_ref"`
-		Manifest    json.RawMessage `json:"manifest"`
+		Name           string          `json:"name"`
+		Description    string          `json:"description"`
+		Endpoint       string          `json:"endpoint"`
+		AuthRef        string          `json:"auth_ref"`
+		Auth           json.RawMessage `json:"auth"`
+		Manifest       json.RawMessage `json:"manifest"`
+		EndpointConfig json.RawMessage `json:"endpoint_config"`
+		PolicyCeiling  json.RawMessage `json:"policy_ceiling"`
+		RiskTier       string          `json:"risk_tier"`
+		EgressClass    string          `json:"egress_class"`
+		OwnerUserID    string          `json:"owner_user_id"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -1392,6 +1455,40 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 	if typ == domain.ResProjectWorkspace {
 		if msg, ok := validateGitWorkspace(req.Endpoint, req.AuthRef, req.Manifest); !ok {
 			writeError(w, http.StatusBadRequest, "bad_request", msg)
+			return
+		}
+	}
+	// TG-2: typed egress resources validate endpoint_config/policy_ceiling
+	// per type; unknown keys and bad values are rejected with structured
+	// violations before anything is written.
+	if v := validateTypedResourceFields(string(typ), req.EndpointConfig, req.PolicyCeiling, req.RiskTier, req.EgressClass); len(v) > 0 {
+		writeViolations(w, "invalid_resource_shape", "resource config/ceiling failed validation", v)
+		return
+	}
+	// TG-4: BYO REST credentials — validate the write-only auth payload
+	// against the declared auth_kind before anything is written. The
+	// secret itself lands in a managed K8s Secret after the row exists
+	// (name derived from the row id); the response never carries it.
+	var restAuth map[string]string
+	if typ == domain.ResRest {
+		kind := restAuthKindFromConfig(req.EndpointConfig)
+		fields, v := parseRestAuth(kind, req.Auth)
+		if len(v) > 0 {
+			writeViolations(w, "invalid_auth_payload", "auth payload failed validation", v)
+			return
+		}
+		if len(fields) > 0 && s.resourceSecrets == nil {
+			writeError(w, http.StatusServiceUnavailable, "secret_store_unavailable", "BYO credentials require Kubernetes secret storage")
+			return
+		}
+		restAuth = fields
+	} else if !isEmptyJSONObject(req.Auth) {
+		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest resources")
+		return
+	}
+	if req.OwnerUserID != "" {
+		if _, err := s.store.GetUser(r.Context(), req.OwnerUserID); err != nil {
+			writeStorageError(w, err)
 			return
 		}
 	}
@@ -1408,11 +1505,37 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 		Manifest:     req.Manifest,
 		Status:       domain.ResourceActive,
 		RegisteredBy: u.ID,
+		RiskTier:     req.RiskTier,
+		EgressClass:  req.EgressClass,
+		OwnerUserID:  req.OwnerUserID,
+	}
+	if len(req.EndpointConfig) > 0 {
+		resource.EndpointConfig = req.EndpointConfig
+	}
+	if len(req.PolicyCeiling) > 0 {
+		resource.PolicyCeiling = req.PolicyCeiling
 	}
 	created, err := s.store.CreateResource(s.pendingUserAuditCtx(r, "registry.resource.create", string(typ), "", "", nil), resource)
 	if err != nil {
 		writeStorageError(w, err)
 		return
+	}
+	if len(restAuth) > 0 {
+		if err := s.setResourceSecret(r.Context(), created, restAuth); err != nil {
+			// Compensate: never leave a resource row whose secret failed
+			// to land in the Secret store (same posture as provider keys).
+			if delErr := s.store.DeleteResource(r.Context(), created.Type, created.ID); delErr != nil {
+				log.Printf("rest resource %s: rollback after secret failure: %v", created.ID, delErr)
+			}
+			writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the resource credential as a Kubernetes Secret")
+			return
+		}
+		updated, err := s.store.UpdateResource(r.Context(), created)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		created = updated
 	}
 	writeJSON(w, http.StatusCreated, created)
 }
@@ -1457,11 +1580,17 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		Name        *string          `json:"name"`
-		Description *string          `json:"description"`
-		Endpoint    *string          `json:"endpoint"`
-		AuthRef     *string          `json:"auth_ref"`
-		Manifest    *json.RawMessage `json:"manifest"`
+		Name           *string          `json:"name"`
+		Description    *string          `json:"description"`
+		Endpoint       *string          `json:"endpoint"`
+		AuthRef        *string          `json:"auth_ref"`
+		Auth           *json.RawMessage `json:"auth"`
+		Manifest       *json.RawMessage `json:"manifest"`
+		EndpointConfig *json.RawMessage `json:"endpoint_config"`
+		PolicyCeiling  *json.RawMessage `json:"policy_ceiling"`
+		RiskTier       *string          `json:"risk_tier"`
+		EgressClass    *string          `json:"egress_class"`
+		OwnerUserID    *string          `json:"owner_user_id"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -1483,6 +1612,83 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.Manifest != nil {
 		resource.Manifest = *req.Manifest
+	}
+	// TG-2: validate any typed-field changes against the resource's type
+	// before writing. Ceiling changes are checked for shape here; the
+	// grant-change linter (inv.4, TG-8) adds risky-delta review later.
+	newConfig := resource.EndpointConfig
+	if req.EndpointConfig != nil {
+		newConfig = *req.EndpointConfig
+	}
+	newCeiling := resource.PolicyCeiling
+	if req.PolicyCeiling != nil {
+		newCeiling = *req.PolicyCeiling
+	}
+	riskTier := resource.RiskTier
+	if req.RiskTier != nil {
+		riskTier = *req.RiskTier
+	}
+	egressClass := resource.EgressClass
+	if req.EgressClass != nil {
+		egressClass = *req.EgressClass
+	}
+	if v := validateTypedResourceFields(string(resource.Type), newConfig, newCeiling, riskTier, egressClass); len(v) > 0 {
+		writeViolations(w, "invalid_resource_shape", "resource config/ceiling failed validation", v)
+		return
+	}
+	if req.EndpointConfig != nil {
+		resource.EndpointConfig = *req.EndpointConfig
+	}
+	if req.PolicyCeiling != nil {
+		resource.PolicyCeiling = *req.PolicyCeiling
+	}
+	if req.RiskTier != nil {
+		resource.RiskTier = *req.RiskTier
+	}
+	if req.EgressClass != nil {
+		resource.EgressClass = *req.EgressClass
+	}
+	if req.OwnerUserID != nil {
+		if *req.OwnerUserID != "" {
+			if _, err := s.store.GetUser(r.Context(), *req.OwnerUserID); err != nil {
+				writeStorageError(w, err)
+				return
+			}
+		}
+		resource.OwnerUserID = *req.OwnerUserID
+	}
+	// TG-4: BYO REST credential rotation. `auth` (write-only) replaces
+	// the managed Secret contents; rotating to auth_kind=none drops the
+	// managed Secret and blanks the ref. Values never echo back.
+	if req.Auth != nil && resource.Type != domain.ResRest {
+		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest resources")
+		return
+	}
+	if resource.Type == domain.ResRest && req.Auth != nil {
+		kind := restAuthKindFromConfig(newConfig)
+		if kind == "none" {
+			if !isEmptyJSONObject(*req.Auth) {
+				writeViolations(w, "invalid_auth_payload", "auth payload is not allowed with auth_kind=none", nil)
+				return
+			}
+			s.clearResourceSecret(r.Context(), resource)
+		} else {
+			fields, v := parseRestAuth(kind, *req.Auth)
+			if len(v) > 0 {
+				writeViolations(w, "invalid_auth_payload", "auth payload failed validation", v)
+				return
+			}
+			if len(fields) > 0 {
+				if s.resourceSecrets == nil {
+					writeError(w, http.StatusServiceUnavailable, "secret_store_unavailable", "BYO credentials require Kubernetes secret storage")
+					return
+				}
+				if err := s.setResourceSecret(r.Context(), resource, fields); err != nil {
+					writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the resource credential as a Kubernetes Secret")
+					return
+				}
+			}
+		}
 	}
 	updated, err := s.store.UpdateResource(s.pendingUserAuditCtx(r, "registry.resource.update", string(typ), resource.ID, "", nil), resource)
 	if err != nil {
@@ -1601,6 +1807,11 @@ func (s *Server) deleteRegistryResource(w http.ResponseWriter, r *http.Request) 
 			})
 			return
 		}
+	}
+	// TG-4: drop the managed BYO Secret (if any) so a deleted rest
+	// resource never leaves orphaned credential material behind.
+	if res, err := s.store.GetResource(r.Context(), typ, resourceID); err == nil && res.Type == domain.ResRest && res.AuthRef != "" {
+		s.clearResourceSecret(r.Context(), res)
 	}
 	if err := s.store.DeleteResource(s.pendingUserAuditCtx(r, "registry.resource.delete", string(typ), resourceID, "", nil), typ, resourceID); err != nil {
 		writeStorageError(w, err)
@@ -3224,9 +3435,13 @@ func (s *Server) listAgentPermissions(w http.ResponseWriter, r *http.Request) {
 }
 
 // agentPermissionRequest is one grant entry in the setAgentPermissions body.
+// Constraints (TG-2) optionally narrow the resource's policy_ceiling for
+// this agent; they are validated against the ceiling (no-escalation
+// invariant) before anything is written.
 type agentPermissionRequest struct {
-	ResourceType string `json:"resource_type"`
-	ResourceID   string `json:"resource_id"`
+	ResourceType string          `json:"resource_type"`
+	ResourceID   string          `json:"resource_id"`
+	Constraints  json.RawMessage `json:"constraints"`
 }
 
 // buildAgentPermissions validates the requested grant entries and builds the
@@ -3258,6 +3473,21 @@ func (s *Server) buildAgentPermissions(ctx context.Context, w http.ResponseWrite
 			writeStorageError(w, err)
 			return nil, false
 		}
+		// TG-2 no-escalation invariant: grant constraints must be a
+		// subset of the resource's policy_ceiling. Reject with the full
+		// structured violation list before any write happens.
+		if len(item.Constraints) > 0 && string(item.Constraints) != "{}" {
+			resource, err := s.store.GetResource(ctx, typ, resourceID)
+			if err != nil {
+				writeStorageError(w, err)
+				return nil, false
+			}
+			if v := egresspolicy.ValidateGrant(string(resource.Type), item.Constraints, resource.PolicyCeiling); len(v) > 0 {
+				writeViolations(w, "grant_escalation",
+					"grant constraints exceed the resource policy ceiling (no-escalation invariant)", v)
+				return nil, false
+			}
+		}
 		key := string(typ) + ":" + resourceID
 		if seen[key] {
 			continue
@@ -3268,6 +3498,7 @@ func (s *Server) buildAgentPermissions(ctx context.Context, w http.ResponseWrite
 			ResourceType: typ,
 			ResourceID:   resourceID,
 			GrantedBy:    u.ID,
+			Constraints:  item.Constraints,
 		})
 	}
 	return perms, true
@@ -4390,6 +4621,18 @@ type agentRuntimeResource struct {
 	Description  string              `json:"description,omitempty"`
 	Endpoint     string              `json:"endpoint,omitempty"`
 	Manifest     json.RawMessage     `json:"manifest"`
+	// TG-2 typed egress fields (present only for web/rest/mcp/git).
+	// Config is emitted secret-stripped; Constraints are the grant's
+	// effective narrowing of the resource ceiling.
+	EndpointConfig json.RawMessage `json:"endpoint_config,omitempty"`
+	Constraints    json.RawMessage `json:"constraints,omitempty"`
+	RiskTier       string          `json:"risk_tier,omitempty"`
+	EgressClass    string          `json:"egress_class,omitempty"`
+	// Tools is the fetch-at-wake tool surface (TG-4): the typed tools
+	// this grant unlocks for the runtime. Present only when the grant
+	// enables one (rest → rest_call); absent otherwise, so an ungranted
+	// agent never sees the tool name at all.
+	Tools json.RawMessage `json:"tools,omitempty"`
 }
 
 func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPermission) (agentRuntimeResource, bool, error) {
@@ -4423,14 +4666,29 @@ func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPer
 	if resource.Status != domain.ResourceActive {
 		return agentRuntimeResource{}, false, nil
 	}
-	return agentRuntimeResource{
+	rt := agentRuntimeResource{
 		ResourceType: resource.Type,
 		ResourceID:   resource.ID,
 		Name:         resource.Name,
 		Description:  resource.Description,
 		Endpoint:     resource.Endpoint,
 		Manifest:     defaultRawJSON(resource.Manifest, "{}"),
-	}, true, nil
+	}
+	// TG-2: typed resources surface their (secret-free) endpoint config
+	// and the grant's effective constraints so agents/runtimes can see
+	// what they may actually do with the resource.
+	if egresspolicy.IsTyped(string(resource.Type)) {
+		rt.EndpointConfig = safeConfigJSON(resource.EndpointConfig)
+		rt.Constraints = safeConfigJSON(perm.Constraints)
+		rt.RiskTier = resource.RiskTier
+		rt.EgressClass = resource.EgressClass
+	}
+	// TG-4: rest grants publish the rest_call tool schema (effective
+	// ceiling ∧ grant). Non-rest typed resources gain no tools in v1.
+	if resource.Type == domain.ResRest {
+		rt.Tools = restCallToolSchema(resource.Name, resource.ID, resource.PolicyCeiling, perm.Constraints)
+	}
+	return rt, true, nil
 }
 
 // agentMayMessageTarget enforces cross-squad messaging permissions. Same-squad

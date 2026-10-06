@@ -1,0 +1,99 @@
+// Package drivers defines the gateway driver contract. Drivers are the only
+// code that performs I/O toward external endpoints (design §5.2). TG-1
+// ships the echo driver to prove the pipeline; web/rest/mcp/browser arrive
+// in TG-3..TG-6.
+package drivers
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+
+	"github.com/rossbrigoli/skquad/tool-gateway/internal/auth"
+	"github.com/rossbrigoli/skquad/tool-gateway/internal/policy"
+)
+
+// ErrDenied wraps driver-level policy denials with a client-safe message.
+var ErrDenied = errors.New("denied")
+
+// DeniedError is a policy denial carrying a stable reason code
+// (e.g. "domain_denied", "rate_limited", "ssrf_blocked"). The reason
+// must never contain internal host/IP detail — it is surfaced to the
+// calling agent. errors.Is(err, ErrDenied) matches.
+type DeniedError struct {
+	Reason string
+}
+
+func (e *DeniedError) Error() string { return "denied: " + e.Reason }
+func (e *DeniedError) Is(target error) bool {
+	if target == ErrDenied {
+		return true
+	}
+	var d *DeniedError
+	if errors.As(target, &d) {
+		return d.Reason == e.Reason
+	}
+	return false
+}
+
+// Denied builds a client-safe policy denial.
+func Denied(reason string) *DeniedError { return &DeniedError{Reason: reason} }
+
+// Request is the dispatched call handed to a driver after authn and
+// policy lookup succeeded.
+type Request struct {
+	Agent     *auth.AgentPrincipal
+	Resource  string // logical resource name ("echo" for TG-1; resource id for typed drivers)
+	Operation string // e.g. "echo", "fetch"
+	Payload   []byte // raw request body
+	// Grant is the effective policy grant the dispatch was authorized
+	// against (typed drivers enforce ceiling/constraints/config from it).
+	// Echo and other pipeline-proving drivers ignore it.
+	Grant *policy.Grant
+}
+
+// Response is what a driver returns on success.
+type Response struct {
+	StatusCode int
+	Body       any
+}
+
+// Driver executes one class of governed operation.
+type Driver interface {
+	Name() string
+	Handle(ctx context.Context, req *Request) (*Response, error)
+}
+
+// Echo is the TG-1 pipeline-proving driver: it returns the request payload
+// plus the resolved agent identity. It performs no external I/O.
+type Echo struct{}
+
+func (Echo) Name() string { return "echo" }
+
+func (Echo) Handle(_ context.Context, req *Request) (*Response, error) {
+	agentID := ""
+	if req.Agent != nil {
+		agentID = req.Agent.AgentID
+	}
+	return &Response{
+		StatusCode: 200,
+		Body: map[string]any{
+			"gateway": "tool-gateway",
+			"agent":   map[string]any{"id": agentID},
+			"payload": jsonOrString(req.Payload),
+		},
+	}, nil
+}
+
+// jsonOrString embeds the payload as JSON when it parses, else as a string,
+// so echo round-trips arbitrary bodies losslessly.
+func jsonOrString(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(b, &v); err == nil {
+		return v
+	}
+	return string(b)
+}

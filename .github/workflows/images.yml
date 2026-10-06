@@ -95,24 +95,38 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # TG-3: api-server builds from the repo root because its go.mod
+          # replaces the shared module at ../shared.
           - component: api-server
-            context: control-plane
+            context: .
+            dockerfile: control-plane/Dockerfile
             image: skquad-api-server
+          # TG-4: tool gateway also builds from repo root (same ../shared
+          # replace directive in its go.mod).
+          - component: tool-gateway
+            context: .
+            dockerfile: tool-gateway/Dockerfile
+            image: skquad-tool-gateway
           - component: operator
             context: operator
+            dockerfile: operator/Dockerfile
             image: skquad-operator
           - component: agent-runtime
             context: agent-runtime
+            dockerfile: agent-runtime/Dockerfile
             image: skquad-agent-runtime
           - component: llm-gateway
             context: llm-gateway
+            dockerfile: llm-gateway/Dockerfile
             image: skquad-llm-gateway
           - component: web
             context: web
+            dockerfile: web/Dockerfile
             image: skquad-web
           # S-212: memory embedder (llama.cpp Vulkan + Qwen3-Embedding-0.6B).
           - component: embedder
             context: embedder
+            dockerfile: embedder/Dockerfile
             image: skquad-embedder
           # S-212 / ADR-0013: CUDA embedder variant for NVIDIA GPUs. The
           # Vulkan image ships only Mesa ICDs (no NVIDIA proprietary driver),
@@ -120,6 +134,7 @@ jobs:
           # selects this variant via SKQUAD_EMBEDDER_IMAGE_CUDA.
           - component: embedder-cuda
             context: embedder
+            dockerfile: embedder/Dockerfile
             image: skquad-embedder
             tag_suffix: -cuda
             extra_build_args: BASE_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b11347
@@ -159,6 +174,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
