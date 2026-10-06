@@ -18,6 +18,7 @@ import (
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/config"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/credentials"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/drivers"
+	browserdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/browser"
 	gitdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/git"
 	mcpdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/mcp"
 	restdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/rest"
@@ -53,10 +54,11 @@ func main() {
 		Audit:        auditSink,
 		Enabled:      enabled,
 		Drivers: map[string]drivers.Driver{
-			"echo": drivers.Echo{},
-			"web":  webdriver.New(),
-			"rest": restdriver.New(credsClient),
-			"mcp":  mcpdriver.New(credsClient),
+			"echo":    drivers.Echo{},
+			"web":     webdriver.New(),
+			"rest":    restdriver.New(credsClient),
+			"mcp":     mcpdriver.New(credsClient),
+			"browser": browserdriver.New(cfg.BrowserInternalToken),
 		},
 		StreamDrivers: map[string]drivers.StreamingDriver{
 			"git": gitdriver.New(credsClient),

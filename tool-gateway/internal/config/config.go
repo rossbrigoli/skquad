@@ -48,21 +48,28 @@ type Config struct {
 	// Authorization: Bearer; constant-time compared. Empty (default)
 	// disables internal endpoints fail-closed (503).
 	InternalToken string // SKQUAD_GATEWAY_INTERNAL_TOKEN
+
+	// BrowserInternalToken is the gateway's internal token presented TO
+	// the browser-service control plane (POST/DELETE /v1/sessions,
+	// docs/tg6-browser-protocol.md §1/§6). Empty (default) disables
+	// the browser driver fail-closed (denial, never unauthenticated calls).
+	BrowserInternalToken string // SKQUAD_BROWSER_INTERNAL_TOKEN
 }
 
 // Load reads configuration from the process environment.
 func Load() (*Config, error) {
 	cfg := &Config{
-		Addr:             envString("SKQUAD_TOOL_GATEWAY_ADDR", ":8080"),
-		CPBaseURL:        strings.TrimRight(envString("SKQUAD_CP_BASE_URL", "http://skquad-api-server.skquad-system.svc.cluster.local:8080"), "/"),
-		ProbeAgent:       envString("SKQUAD_TOOL_GATEWAY_PROBE_AGENT", "probe"),
-		PolicyTTL:        envDuration("SKQUAD_TOOL_GATEWAY_POLICY_TTL", 30*time.Second),
-		PolicyProbeGap:   envDuration("SKQUAD_TOOL_GATEWAY_PROBE_GAP", 10*time.Second),
-		PolicyTimeout:    envDuration("SKQUAD_TOOL_GATEWAY_POLICY_TIMEOUT", 5*time.Second),
-		Enabled:          envBool("SKQUAD_TOOL_GATEWAY_ENABLED", true),
-		BoundaryVerifier: envString("SKQUAD_TOOL_GATEWAY_BOUNDARY_VERIFIER", "static"),
-		AuditSink:        envString("SKQUAD_TOOL_GATEWAY_AUDIT_SINK", "stdout"),
-		InternalToken:    strings.TrimSpace(os.Getenv("SKQUAD_GATEWAY_INTERNAL_TOKEN")),
+		Addr:                 envString("SKQUAD_TOOL_GATEWAY_ADDR", ":8080"),
+		CPBaseURL:            strings.TrimRight(envString("SKQUAD_CP_BASE_URL", "http://skquad-api-server.skquad-system.svc.cluster.local:8080"), "/"),
+		ProbeAgent:           envString("SKQUAD_TOOL_GATEWAY_PROBE_AGENT", "probe"),
+		PolicyTTL:            envDuration("SKQUAD_TOOL_GATEWAY_POLICY_TTL", 30*time.Second),
+		PolicyProbeGap:       envDuration("SKQUAD_TOOL_GATEWAY_PROBE_GAP", 10*time.Second),
+		PolicyTimeout:        envDuration("SKQUAD_TOOL_GATEWAY_POLICY_TIMEOUT", 5*time.Second),
+		Enabled:              envBool("SKQUAD_TOOL_GATEWAY_ENABLED", true),
+		BoundaryVerifier:     envString("SKQUAD_TOOL_GATEWAY_BOUNDARY_VERIFIER", "static"),
+		AuditSink:            envString("SKQUAD_TOOL_GATEWAY_AUDIT_SINK", "stdout"),
+		InternalToken:        strings.TrimSpace(os.Getenv("SKQUAD_GATEWAY_INTERNAL_TOKEN")),
+		BrowserInternalToken: strings.TrimSpace(os.Getenv("SKQUAD_BROWSER_INTERNAL_TOKEN")),
 	}
 	if cfg.CPBaseURL == "" {
 		return nil, fmt.Errorf("SKQUAD_CP_BASE_URL is required")
