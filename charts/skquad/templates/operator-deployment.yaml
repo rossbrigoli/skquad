@@ -84,6 +84,14 @@ spec:
               value: {{ .Values.embedder.images.vulkan | quote }}
             - name: SKQUAD_EMBEDDER_IMAGE_CPU
               value: {{ .Values.embedder.images.cpu | quote }}
+            {{- if .Values.toolGateway.enabled }}
+            # TG-4d (S-264): the operator forwards SKQUAD_TOOL_GATEWAY_URL
+            # verbatim into every agent pod, enabling the runtime's synthetic
+            # rest_call tool for granted REST resources. Override with
+            # operator.toolGatewayUrl for an external gateway.
+            - name: SKQUAD_TOOL_GATEWAY_URL
+              value: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "skquad.toolGatewayName" .) .Release.Namespace .Values.toolGateway.port) .Values.operator.toolGatewayUrl | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

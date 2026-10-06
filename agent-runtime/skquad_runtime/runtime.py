@@ -577,6 +577,10 @@ class BootstrapConfig:
     # CR's spec.thinkingLevel; mapped onto the LLM request's
     # reasoning_effort parameter by ``reasoning_effort_for``.
     thinking_level: str = ""
+    # TG-4d (S-264): tool-gateway base URL for the synthetic rest_call
+    # tool (SKQUAD_TOOL_GATEWAY_URL, operator-injected). Empty is legal:
+    # the synthetic tool registration then stays fail-closed (absent).
+    tool_gateway_url: str = ""
 
     @property
     def missing_required(self) -> list[str]:
@@ -628,6 +632,10 @@ class RuntimeResource:
     description: str
     endpoint: str
     manifest: Mapping[str, object]
+    # TG-4d (S-264): the fetch-at-wake tool surface the control plane
+    # publishes per grant (agentRuntimeResource.Tools, TG-4). Empty for
+    # resources that unlock no typed tool.
+    tools: tuple[Mapping[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -845,6 +853,7 @@ def load_bootstrap_config(environ: Mapping[str, str] | None = None) -> Bootstrap
         ),
         control_plane_url=env.get("SKQUAD_CONTROL_PLANE_URL", ""),
         llm_gateway_url=env.get("SKQUAD_LLM_GATEWAY_URL", ""),
+        tool_gateway_url=env.get("SKQUAD_TOOL_GATEWAY_URL", ""),
         task_loop_enabled=env_bool(env, "SKQUAD_TASK_LOOP_ENABLED", True),
         task_poll_interval_seconds=env_float(env, "SKQUAD_TASK_POLL_INTERVAL_SECONDS", 5.0),
         inbox_poll_interval_seconds=env_float(env, "SKQUAD_INBOX_POLL_INTERVAL_SECONDS", 5.0),
@@ -1192,6 +1201,15 @@ def runtime_resource(payload: Mapping[str, object]) -> RuntimeResource:
     manifest = payload.get("manifest") or {}
     if not isinstance(manifest, Mapping):
         manifest = {}
+    # TG-4d (S-264): keep the published tools array (rest → rest_call
+    # schema with effective constraints); non-list / missing degrades to
+    # empty so the synthetic tool stays absent.
+    raw_tools = payload.get("tools")
+    tools = (
+        tuple(item for item in raw_tools if isinstance(item, Mapping))
+        if isinstance(raw_tools, list)
+        else ()
+    )
     return RuntimeResource(
         resource_type=str(payload.get("resource_type", "")),
         resource_id=str(payload.get("resource_id", "")),
@@ -1199,6 +1217,7 @@ def runtime_resource(payload: Mapping[str, object]) -> RuntimeResource:
         description=str(payload.get("description", "")),
         endpoint=str(payload.get("endpoint", "")),
         manifest=manifest,
+        tools=tools,
     )
 
 
@@ -1400,6 +1419,10 @@ class LLMMessageHandler:
         # S-208: bound-model context-window cache (60s TTL, keyed by
         # model name) feeding the compaction limit (see compactor_for_model).
         self._context_window_cache: dict[str, tuple[int, float]] = {}
+        # TG-4d (S-264): fetch-at-wake resource cache (60s TTL) feeding
+        # the synthetic-tool registration in the chat path.
+        self._resources_cache: list[RuntimeResource] = []
+        self._resources_expires: float = 0.0
 
     def _model_context_window(self, config: BootstrapConfig, model: str) -> int:
         """S-208: bound model's context window via GET /agents/me/model."""
@@ -1428,6 +1451,19 @@ class LLMMessageHandler:
         if self._client is not None:
             return self._client
         return ControlPlaneClient.from_bootstrap(config)
+
+    def _wake_resources(self, config: BootstrapConfig) -> list[RuntimeResource]:
+        """TG-4d (S-264): fetch-at-wake resource surface for the chat
+        path (60s TTL cache, same pattern as the S-164 roster). Feeds
+        the synthetic-tool registration; a fetch failure yields no
+        resources, which keeps synthetic tools absent (fail-closed)."""
+        now = monotonic()
+        if now < self._resources_expires:
+            return self._resources_cache
+        resources = self._control_plane(config).list_resources()
+        self._resources_cache = resources
+        self._resources_expires = now + 60.0
+        return resources
 
     def handle_message(self, message: RuntimeMessage, config: BootstrapConfig) -> MessageResult:
         early_result = self._non_user_result(message, config)
@@ -1751,8 +1787,21 @@ class LLMMessageHandler:
         """
         from .builtin_tools import compose_builtin_and_plugins
 
+        # TG-4d (S-264): synthetic gateway-backed tools (rest_call) join
+        # the resource-derived plugin list before builtin composition, so
+        # the generic dispatch (invoke_plugin_tool) routes them in both
+        # turn paths without touching the plugin registry.
+        from .synthetic_tools import build_synthetic_tools
+
         try:
-            plugins = compose_builtin_and_plugins(load_builtin_tools(config), self.plugins)
+            resources = self._wake_resources(config)
+        except Exception:  # noqa: BLE001 — resource surface is fail-closed here: no grants visible => no synthetic tool
+            resources = []
+        synthetic = build_synthetic_tools(resources, config)
+        try:
+            plugins = compose_builtin_and_plugins(
+                load_builtin_tools(config), list(self.plugins) + synthetic
+            )
         except BuiltinToolsFetchError as exc:
             return [], [], MessageResult(ok=False, summary=f"builtin-tools fetch failed: {exc}")
         tools = self.tool_schemas(plugins)
@@ -2332,6 +2381,11 @@ class LiteLLMTaskHandler:
         resources = context.resources if context is not None else self.available_resources(config)
         memories = context.memory if context is not None else []
         plugins = self.available_plugins(resources)
+        # TG-4d (S-264): synthetic gateway-backed tools (rest_call) join
+        # the resource-derived plugin list before builtin composition.
+        from .synthetic_tools import build_synthetic_tools
+
+        plugins = plugins + build_synthetic_tools(resources, config)
         # BT-RUNTIME: platform builtins are prepended AFTER the per-agent
         # resource-grant filtering, so resource grants can never strip an
         # enabled builtin. BuiltinToolsFetchError propagates out of the
@@ -2715,7 +2769,31 @@ def resource_prompt_line(resource: RuntimeResource) -> str:
     default_model = resource.manifest.get("default_model")
     if default_model:
         bits.append(f"default_model={default_model}")
+    # TG-4d (S-264): rest resources surface the grant id and the
+    # effective published constraints so the model can address the
+    # synthetic rest_call tool. Other resource types render unchanged.
+    if resource.resource_type == "rest":
+        bits.append(f"id={resource.resource_id}")
+        constraints = _rest_tool_constraints(resource)
+        methods = [str(m) for m in constraints.get("methods", []) if str(m)]
+        path_allow = [str(p) for p in constraints.get("path_allow", []) if str(p)]
+        if methods:
+            bits.append(f"methods=[{','.join(methods)}]")
+        if path_allow:
+            bits.append(f"paths=[{','.join(path_allow)}]")
     return "- " + " | ".join(bits)
+
+
+def _rest_tool_constraints(resource: RuntimeResource) -> Mapping[str, object]:
+    """Effective constraints from the resource's published rest_call
+    schema (TG-4 surface); empty mapping when absent."""
+    for tool in resource.tools:
+        if str(tool.get("name", "")) != "rest_call":
+            continue
+        constraints = tool.get("constraints")
+        if isinstance(constraints, Mapping):
+            return constraints
+    return {}
 
 
 def memory_prompt_line(memory: RuntimeMemory) -> str:
