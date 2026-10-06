@@ -151,9 +151,13 @@ var (
 	RestConfigKeys  = []string{"base_url", "auth_kind", "header_name"}
 	RestCeilingKeys = []string{"methods", "path_allow", "path_deny", "max_request_bytes", "max_response_bytes", "rate_per_min", "egress_class"}
 	MCPConfigKeys   = []string{"url", "auth_kind"}
-	MCPCeilingKeys  = []string{"tools_allow", "tools_deny", "per_tool", "rate_per_min", "max_args_bytes"}
-	GitConfigKeys   = []string{"base_url"}
-	GitCeilingKeys  = []string{"repos_allow", "allow_push", "rate_per_min"}
+	// TG-5 slice B2a: egress_class joins the MCP ceiling shape — the
+	// gateway's mcp policy folds it into AllowPrivate (internal-class
+	// upstreams need allow_private at enumerate/call time), matching the
+	// §6.3 ceiling example.
+	MCPCeilingKeys = []string{"tools_allow", "tools_deny", "per_tool", "rate_per_min", "max_args_bytes", "egress_class"}
+	GitConfigKeys  = []string{"base_url"}
+	GitCeilingKeys = []string{"repos_allow", "allow_push", "rate_per_min"}
 )
 
 // ValidateEndpointConfig validates a resource's endpoint_config for its
@@ -292,6 +296,8 @@ func validateMCPCeiling(obj map[string]json.RawMessage) Violations {
 	var rate, maxArgs int
 	v = append(v, positiveIntField(obj, "rate_per_min", "policy_ceiling.rate_per_min", &rate)...)
 	v = append(v, positiveIntField(obj, "max_args_bytes", "policy_ceiling.max_args_bytes", &maxArgs)...)
+	var ec string
+	v = append(v, stringField(obj, "egress_class", "policy_ceiling.egress_class", &ec, false, egressClass)...)
 	if raw, ok := obj["per_tool"]; ok {
 		var perTool map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &perTool); err != nil {

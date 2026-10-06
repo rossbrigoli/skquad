@@ -1447,12 +1447,14 @@ func (p *PostgresStore) CreateResource(ctx context.Context, resource *domain.Reg
 	txRow := tx.QueryRow(ctx, `
 		INSERT INTO registry_resources (
 			type, name, description, endpoint, auth_ref, manifest, status, registered_by,
-			endpoint_config, policy_ceiling, risk_tier, egress_class, owner_user_id
+			endpoint_config, policy_ceiling, risk_tier, egress_class, owner_user_id,
+			tools_snapshot, tools_hash, tools_enumerated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		RETURNING `+resourceColumns+`
 	`, domain.CanonicalResourceType(resource.Type), resource.Name, resource.Description, resource.Endpoint, resource.AuthRef, defaultJSON(resource.Manifest, "{}"), defaultResourceStatus(resource.Status), resource.RegisteredBy,
-		defaultJSON(resource.EndpointConfig, "{}"), defaultJSON(resource.PolicyCeiling, "{}"), defaultRiskTier(resource.RiskTier), defaultEgressClass(resource.EgressClass), nullableText(resource.OwnerUserID))
+		defaultJSON(resource.EndpointConfig, "{}"), defaultJSON(resource.PolicyCeiling, "{}"), defaultRiskTier(resource.RiskTier), defaultEgressClass(resource.EgressClass), nullableText(resource.OwnerUserID),
+		nullableJSON(resource.ToolsSnapshot), resource.ToolsHash, nullableTime(resource.ToolsEnumeratedAt))
 	created, err := scanResource(txRow)
 	if err != nil {
 		return nil, err
@@ -1503,11 +1505,15 @@ func (p *PostgresStore) UpdateResource(ctx context.Context, resource *domain.Reg
 		    policy_ceiling = $10,
 		    risk_tier = $11,
 		    egress_class = $12,
-		    owner_user_id = $13
+		    owner_user_id = $13,
+		    tools_snapshot = $14,
+		    tools_hash = $15,
+		    tools_enumerated_at = $16
 		WHERE type = $1 AND id = $2
 		RETURNING `+resourceColumns+`
 	`, domain.CanonicalResourceType(resource.Type), resource.ID, resource.Name, resource.Description, resource.Endpoint, resource.AuthRef, defaultJSON(resource.Manifest, "{}"), defaultResourceStatus(resource.Status),
-		defaultJSON(resource.EndpointConfig, "{}"), defaultJSON(resource.PolicyCeiling, "{}"), defaultRiskTier(resource.RiskTier), defaultEgressClass(resource.EgressClass), nullableText(resource.OwnerUserID))
+		defaultJSON(resource.EndpointConfig, "{}"), defaultJSON(resource.PolicyCeiling, "{}"), defaultRiskTier(resource.RiskTier), defaultEgressClass(resource.EgressClass), nullableText(resource.OwnerUserID),
+		nullableJSON(resource.ToolsSnapshot), resource.ToolsHash, nullableTime(resource.ToolsEnumeratedAt))
 	created, err := scanResource(txRow)
 	if err != nil {
 		return nil, err
@@ -3786,6 +3792,7 @@ func scanUserModelGrant(row scanner) (*domain.UserModelGrant, error) {
 
 func scanResource(row scanner) (*domain.RegistryResource, error) {
 	var r domain.RegistryResource
+	var enumeratedAt sql.NullTime
 	if err := row.Scan(
 		&r.ID,
 		&r.Type,
@@ -3802,12 +3809,24 @@ func scanResource(row scanner) (*domain.RegistryResource, error) {
 		&r.RiskTier,
 		&r.EgressClass,
 		&r.OwnerUserID,
+		&r.ToolsSnapshot,
+		&r.ToolsHash,
+		&enumeratedAt,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}
 	// TG-2: canonicalize the legacy 'api' type to 'rest' on read so
 	// existing consumers transparently see the migrated rows.
 	r.Type = domain.CanonicalResourceType(r.Type)
+	// TG-5 B2a: the coalesce above renders SQL NULL as JSON "null";
+	// normalize back to an absent snapshot for API cleanliness.
+	if string(r.ToolsSnapshot) == "null" {
+		r.ToolsSnapshot = nil
+	}
+	if enumeratedAt.Valid {
+		t := enumeratedAt.Time
+		r.ToolsEnumeratedAt = &t
+	}
 	return &r, nil
 }
 
@@ -3817,7 +3836,8 @@ const resourceColumns = `
 		id::text, type, name, description, endpoint, auth_ref, manifest, status,
 		registered_by::text, created_at,
 		coalesce(endpoint_config, '{}'::jsonb), coalesce(policy_ceiling, '{}'::jsonb),
-		risk_tier, egress_class, coalesce(owner_user_id::text, '')`
+		risk_tier, egress_class, coalesce(owner_user_id::text, ''),
+		coalesce(tools_snapshot, 'null'::jsonb), tools_hash, tools_enumerated_at`
 
 func scanAgentPermission(row scanner) (*domain.AgentPermission, error) {
 	var p domain.AgentPermission
@@ -4136,6 +4156,23 @@ func defaultRiskTier(tier string) string {
 		return "low"
 	}
 	return tier
+}
+
+// nullableJSON renders an optional JSONB column: absent/JSON-null raw
+// becomes SQL NULL instead of an empty byte string (TG-5 B2a snapshot).
+func nullableJSON(raw json.RawMessage) any {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	return raw
+}
+
+// nullableTime renders an optional TIMESTAMPTZ column from a *time.Time.
+func nullableTime(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return *t
 }
 
 func defaultEgressClass(class string) string {

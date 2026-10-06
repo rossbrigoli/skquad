@@ -148,8 +148,13 @@ func (s *Server) setResourceSecret(ctx context.Context, resource *domain.Registr
 		return errSecretStoreUnconfigured
 	}
 	secretName := kube.ResourceSecretName(resource.ID)
-	if resource.Type == domain.ResGit {
+	switch resource.Type {
+	case domain.ResGit:
 		secretName = kube.GitSecretName(resource.ID)
+	case domain.ResMCP:
+		// TG-5 slice B2a: MCP custody under its own prefix, disjoint
+		// from rest/git even if a resource id were reused across types.
+		secretName = kube.MCPSecretName(resource.ID)
 	}
 	if err := s.resourceSecrets.EnsureResourceSecret(ctx, secretName, fields); err != nil {
 		return err
@@ -203,7 +208,10 @@ func (s *Server) internalCredentials(w http.ResponseWriter, r *http.Request) {
 	agentID := strings.TrimSpace(r.URL.Query().Get("agent"))
 	resource, err := s.store.GetResourceByID(r.Context(), resourceID)
 	// TG-4b: git resources join rest in BYO custody (bearer PAT).
-	if err != nil || (resource.Type != domain.ResRest && resource.Type != domain.ResGit) || resource.Status != domain.ResourceActive {
+	// TG-5 slice B2a: mcp resources join with bearer custody too — the
+	// gateway resolves the per-call bearer for mcp_call through this
+	// same endpoint (agent-scoped when supplied).
+	if err != nil || (resource.Type != domain.ResRest && resource.Type != domain.ResGit && resource.Type != domain.ResMCP) || resource.Status != domain.ResourceActive {
 		s.auditCredentialAccess(r, "", resourceID, agentID, "", "denied")
 		writeError(w, http.StatusNotFound, "not_found", "no credential for resource")
 		return
@@ -226,8 +234,11 @@ func (s *Server) internalCredentials(w http.ResponseWriter, r *http.Request) {
 	// custody (TG-4b) uses the same resolution with the git prefix.
 	if agentID != "" {
 		agentSecretName := kube.ResourceAgentSecretName(resourceID, agentID)
-		if resource.Type == domain.ResGit {
+		switch resource.Type {
+		case domain.ResGit:
 			agentSecretName = kube.GitAgentSecretName(resourceID, agentID)
+		case domain.ResMCP:
+			agentSecretName = kube.MCPAgentSecretName(resourceID, agentID)
 		}
 		if name := agentSecretName; name != "" {
 			fields, err := s.resourceSecrets.GetResourceSecret(r.Context(), name)

@@ -77,7 +77,10 @@ func createTypedResource(t *testing.T, handler http.Handler, kind string, body m
 }
 
 func TestRegisterTypedResources(t *testing.T) {
-	handler := New(testConfig(), storage.NewMemoryStore())
+	handler := newServer(testConfig(), storage.NewMemoryStore(), serverDeps{
+		resourceSecrets: newFakeResourceSecretStore(),
+		mcpEnumerate:    &stubMCPEnumerate{tools: defaultMCPTools(), hash: fakeMCPHash},
+	})
 
 	web := createTypedResource(t, handler, "web", map[string]any{
 		"name":            "system-web",
@@ -102,6 +105,7 @@ func TestRegisterTypedResources(t *testing.T) {
 		"name":            "gh-mcp",
 		"endpoint_config": map[string]any{"url": "https://api.github.com/mcp", "auth_kind": "bearer"},
 		"policy_ceiling":  map[string]any{"tools_allow": []string{"list_pulls", "get_issue"}, "tools_deny": []string{"*_delete"}},
+		"auth":            map[string]any{"token": fakeMCPTok},
 	})
 	require.Equal(t, "mcp", string(mcp.Type))
 
@@ -300,12 +304,12 @@ func TestPolicyEndpointNeverLeaksSecrets(t *testing.T) {
 	// first line, secret-stripping is the second, and neither alone is
 	// trusted.
 	evil, err := store.CreateResource(ctxBackground(), &domain.RegistryResource{
-		Type:         domain.ResRest,
-		Name:         "evil-api",
-		AuthRef:      "k8s://skquad/evil-secret",
-		Manifest:     json.RawMessage(`{}`),
-		Status:       domain.ResourceActive,
-		RegisteredBy: "test",
+		Type:           domain.ResRest,
+		Name:           "evil-api",
+		AuthRef:        "k8s://skquad/evil-secret",
+		Manifest:       json.RawMessage(`{}`),
+		Status:         domain.ResourceActive,
+		RegisteredBy:   "test",
 		EndpointConfig: json.RawMessage(`{"base_url":"https://x","api_key":"HUNTER2-DO-NOT-LEAK","nested":{"password":"<REDACTED>","safe":"ok"},"auth":{"token":"<REDACTED>"}}`),
 		PolicyCeiling:  json.RawMessage(`{"methods":["GET"]}`),
 	})
@@ -369,7 +373,11 @@ func TestPolicyGenerationBound(t *testing.T) {
 
 func TestDiscoveryIncludesTypedResources(t *testing.T) {
 	crWriter := &fakeCRWriter{}
-	handler := NewWithCRWriter(testConfig(), storage.NewMemoryStore(), crWriter)
+	handler := newServer(testConfig(), storage.NewMemoryStore(), serverDeps{
+		crWriter:        crWriter,
+		resourceSecrets: newFakeResourceSecretStore(),
+		mcpEnumerate:    &stubMCPEnumerate{tools: defaultMCPTools(), hash: fakeMCPHash},
+	})
 
 	res := createTypedResource(t, handler, "mcp", map[string]any{
 		"name":            "disc-mcp",
@@ -377,6 +385,7 @@ func TestDiscoveryIncludesTypedResources(t *testing.T) {
 		"policy_ceiling":  map[string]any{"tools_allow": []string{"a", "b"}, "max_args_bytes": 1024},
 		"risk_tier":       "medium",
 		"egress_class":    "public",
+		"auth":            map[string]any{"token": fakeMCPTok},
 	})
 	var squad domain.Squad
 	doJSON(t, handler, http.MethodPost, pathSquads, map[string]any{"name": "disc-squad"}, http.StatusCreated, &squad)

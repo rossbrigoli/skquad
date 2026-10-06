@@ -184,6 +184,13 @@ type Server struct {
 	// dev — PUT embedder_runtime then answers 503 instead of silently
 	// storing a setting nothing acts on.
 	embedderConfig EmbedderConfigWriter
+	// mcpEnumerate (TG-5 slice B2a) is the CP→gateway trusted-internal
+	// client used to enumerate MCP tool sets at registration/rotation
+	// (POST /internal/mcp/enumerate). Built from SKQUAD_TOOL_GATEWAY_URL
+	// + SKQUAD_GATEWAY_INTERNAL_TOKEN; nil when either is absent — MCP
+	// registration then answers 503 rather than creating unverified
+	// resources.
+	mcpEnumerate MCPEnumerateClient
 }
 
 // EmbedderConfigWriter persists the admin's embedder runtime choice to
@@ -317,6 +324,7 @@ type serverDeps struct {
 	gwReloader         GatewayReloader
 	injectedEmbeddings EmbeddingsClient
 	embedderConfig     EmbedderConfigWriter
+	mcpEnumerate       MCPEnumerateClient
 }
 
 // buildLLMGateway constructs the LiteLLM gateway provisioner and model
@@ -495,6 +503,19 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 	// absent config (dev) leaves nil and the admin PUT answers 503
 	// rather than storing a setting nothing acts on.
 	s.embedderConfig = resolveEmbedderConfig(cfg, deps.embedderConfig)
+	// TG-5 slice B2a: MCP enumerate client (CP→gateway). Explicit
+	// argument wins (tests); otherwise build from the gateway URL +
+	// internal token config. Absent config leaves nil and MCP
+	// registration surfaces the gap as 503.
+	s.mcpEnumerate = deps.mcpEnumerate
+	if s.mcpEnumerate == nil && cfg != nil && cfg.ToolGatewayURL != "" && cfg.GatewayInternalToken != "" {
+		client, err := newGatewayMCPEnumerateClient(cfg.ToolGatewayURL, cfg.GatewayInternalToken)
+		if err != nil {
+			log.Printf("mcp enumerate client unavailable (MCP registration disabled): %v", err)
+		} else {
+			s.mcpEnumerate = client
+		}
+	}
 	// S-212: embeddings client for memory RAG. Built only when the
 	// feature is enabled with a model and a reachable gateway config.
 	s.embeddings = buildMemoryEmbeddings(cfg)
@@ -1471,11 +1492,21 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 	// (name derived from the row id); the response never carries it.
 	// TG-4b: git resources join the same custody flow with a fixed
 	// bearer kind (PAT) and the "skquad-git-" Secret prefix.
+	// TG-5 slice B2a: mcp resources join with a fixed bearer kind and
+	// the "skquad-mcp-" prefix; the token is MANDATORY because
+	// registration enumerates the upstream through the gateway with it.
 	var byoAuth map[string]string
-	if typ == domain.ResRest || typ == domain.ResGit {
+	if typ == domain.ResRest || typ == domain.ResGit || typ == domain.ResMCP {
 		kind := restAuthKindFromConfig(req.EndpointConfig)
 		if typ == domain.ResGit {
 			kind = gitAuthKind
+		}
+		if typ == domain.ResMCP {
+			if k := restAuthKindFromConfig(req.EndpointConfig); k != "bearer" {
+				writeError(w, http.StatusBadRequest, "bad_request", "mcp resources require endpoint_config.auth_kind=bearer")
+				return
+			}
+			kind = "bearer"
 		}
 		fields, v := parseRestAuth(kind, req.Auth)
 		if len(v) > 0 {
@@ -1486,9 +1517,13 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusServiceUnavailable, "secret_store_unavailable", "BYO credentials require Kubernetes secret storage")
 			return
 		}
+		if typ == domain.ResMCP && len(fields) == 0 {
+			writeError(w, http.StatusBadRequest, "bad_request", "mcp registration requires a bearer credential (auth.token) to enumerate the upstream")
+			return
+		}
 		byoAuth = fields
 	} else if !isEmptyJSONObject(req.Auth) {
-		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest and git resources")
+		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest, git and mcp resources")
 		return
 	}
 	if req.OwnerUserID != "" {
@@ -1524,6 +1559,19 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		writeStorageError(w, err)
 		return
+	}
+	// TG-5 slice B2a: MCP snapshot — enumerate the REAL tool set through
+	// the gateway before the resource is usable, and validate the ceiling's
+	// tools_allow against it. Any failure compensates by deleting the row:
+	// a half-registered MCP resource must never exist.
+	if typ == domain.ResMCP {
+		if fail := s.snapshotMCPTools(r.Context(), created, byoAuth["token"]); fail != nil {
+			if delErr := s.store.DeleteResource(r.Context(), created.Type, created.ID); delErr != nil {
+				log.Printf("mcp resource %s: rollback after enumerate failure: %v", created.ID, delErr)
+			}
+			fail.respond(w)
+			return
+		}
 	}
 	if len(byoAuth) > 0 {
 		if err := s.setResourceSecret(r.Context(), created, byoAuth); err != nil {
@@ -1641,6 +1689,59 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 		writeViolations(w, "invalid_resource_shape", "resource config/ceiling failed validation", v)
 		return
 	}
+	// TG-5 slice B2a: MCP snapshot maintenance. Rotating the bearer or
+	// moving the upstream URL re-enumerates through the gateway (the
+	// snapshot must describe what the URL actually serves); a ceiling
+	// change alone is validated against the effective stored snapshot so
+	// admins still cannot allowlist tools that do not exist. Runs BEFORE
+	// the field assignments below so the old config is still readable.
+	if resource.Type == domain.ResMCP {
+		mcpToken := ""
+		if req.Auth != nil {
+			fields, v := parseRestAuth("bearer", *req.Auth)
+			if len(v) > 0 {
+				writeViolations(w, "invalid_auth_payload", "auth payload failed validation", v)
+				return
+			}
+			if strings.TrimSpace(fields["token"]) == "" {
+				writeError(w, http.StatusBadRequest, "bad_request", "mcp rotation requires a bearer credential (auth.token)")
+				return
+			}
+			mcpToken = fields["token"]
+		}
+		urlChanged := req.EndpointConfig != nil && mcpURLFromConfig(newConfig) != mcpURLFromConfig(resource.EndpointConfig)
+		switch {
+		case mcpToken != "" || urlChanged:
+			if mcpToken == "" {
+				// URL moved with no fresh credential: reuse the stored one.
+				tok, err := s.mcpStoredToken(r.Context(), resource)
+				if err != nil {
+					writeError(w, http.StatusServiceUnavailable, "credentials_unavailable", "stored MCP credential could not be resolved to re-enumerate the new upstream URL")
+					return
+				}
+				mcpToken = tok
+			}
+			resource.EndpointConfig = newConfig
+			if fail := s.snapshotMCPTools(r.Context(), resource, mcpToken); fail != nil {
+				fail.respond(w)
+				return
+			}
+			if err := s.setResourceSecret(r.Context(), resource, map[string]string{"token": mcpToken}); err != nil {
+				writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the MCP credential as a Kubernetes Secret")
+				return
+			}
+		case req.PolicyCeiling != nil:
+			tools, ok := mcpSnapshotTools(resource.ToolsSnapshot)
+			if !ok || len(tools) == 0 {
+				writeError(w, http.StatusBadRequest, "snapshot_missing", "no MCP tool snapshot to validate the ceiling against; rotate the credential (auth) to re-enumerate")
+				return
+			}
+			if v := mcpAllowlistViolations(newCeiling, tools); len(v) > 0 {
+				writeViolations(w, "invalid_tool_allowlist", "tools_allow entries must exist in the enumerated MCP tool set", v)
+				return
+			}
+		}
+	}
 	if req.EndpointConfig != nil {
 		resource.EndpointConfig = *req.EndpointConfig
 	}
@@ -1665,8 +1766,8 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 	// TG-4: BYO REST credential rotation. `auth` (write-only) replaces
 	// the managed Secret contents; rotating to auth_kind=none drops the
 	// managed Secret and blanks the ref. Values never echo back.
-	if req.Auth != nil && resource.Type != domain.ResRest {
-		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest resources")
+	if req.Auth != nil && resource.Type != domain.ResRest && resource.Type != domain.ResMCP {
+		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest and mcp resources")
 		return
 	}
 	if resource.Type == domain.ResRest && req.Auth != nil {

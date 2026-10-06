@@ -287,6 +287,17 @@ func validateMCPGrant(c, ce map[string]json.RawMessage) Violations {
 	if _, has := c["max_args_bytes"]; has {
 		v = append(v, numLE("constraints.max_args_bytes", intIn(c, "max_args_bytes"), intIn(ce, "max_args_bytes"))...)
 	}
+	// TG-5 B2a: egress_class must equal the ceiling (internal reach is
+	// admin-only) — same rule as the rest grant.
+	if _, has := c["egress_class"]; has {
+		var ec string
+		_ = json.Unmarshal(c["egress_class"], &ec)
+		var cec string
+		if raw, ok := ce["egress_class"]; ok {
+			_ = json.Unmarshal(raw, &cec)
+		}
+		v = append(v, equalField("constraints.egress_class", ec, cec)...)
+	}
 	if raw, has := c["per_tool"]; has {
 		var cPer map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &cPer); err != nil {
