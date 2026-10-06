@@ -60,6 +60,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
+{{- define "skquad.gatewayInternalTokenSecretName" -}}
+{{- if .Values.toolGateway.internalTokenSecret.name -}}
+{{- .Values.toolGateway.internalTokenSecret.name -}}
+{{- else -}}
+{{- printf "%s-internal-token" (include "skquad.toolGatewayName" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "skquad.webName" -}}
 {{- printf "%s-web" (include "skquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

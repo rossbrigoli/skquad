@@ -54,6 +54,15 @@ spec:
               value: {{ .Values.toolGateway.boundaryVerifier | quote }}
             - name: SKQUAD_TOOL_GATEWAY_AUDIT_SINK
               value: "stdout"
+            # TG-5: shared internal token for the CP→gateway MCP enumerate
+            # direction. Optional so a deployment without it simply keeps the
+            # enumerate endpoint disabled (503) rather than crash-looping.
+            - name: SKQUAD_GATEWAY_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "skquad.gatewayInternalTokenSecretName" . }}
+                  key: {{ .Values.toolGateway.internalTokenSecret.key }}
+                  optional: true
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

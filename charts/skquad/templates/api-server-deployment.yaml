@@ -108,6 +108,16 @@ spec:
                 secretKeyRef:
                   name: {{ include "skquad.llmGatewayMasterKeySecretName" . }}
                   key: {{ .Values.llmGateway.masterKeySecret.key }}
+            # TG-5: shared internal token the CP sends to the gateway's
+            # MCP enumerate endpoint (and which gates the drift scanner).
+            # Same secret the tool-gateway reads; direction-scoped, distinct
+            # from the callback token above.
+            - name: SKQUAD_GATEWAY_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "skquad.gatewayInternalTokenSecretName" . }}
+                  key: {{ .Values.toolGateway.internalTokenSecret.key }}
+                  optional: true
             - name: SKQUAD_MEMORY_EMBEDDINGS_ENABLED
               value: {{ .Values.apiServer.memoryEmbeddings.enabled | quote }}
             - name: SKQUAD_MEMORY_EMBEDDING_MODEL
