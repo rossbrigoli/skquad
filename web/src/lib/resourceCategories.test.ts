@@ -8,11 +8,12 @@ import {
 } from "./resourceCategories";
 
 describe("resourceCategories (S-204 follow-up)", () => {
-  it("contains the five known categories in display order", () => {
+  it("contains the six known categories in display order", () => {
     expect(RESOURCE_CATEGORIES.map((c) => c.key)).toEqual([
       "skills",
       "tools",
       "apis",
+      "git",
       "knowledge-bases",
       "project-workspaces",
     ]);

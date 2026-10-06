@@ -15,6 +15,7 @@ import { AppShell } from "../../../../components/AppShell";
 import { AuthGate } from "../../../../components/AuthGate";
 import { ResourceRegistryPanel } from "../../../../components/ResourceRegistryPanel";
 import { RestResourcePanel } from "../../../../components/RestResourcePanel";
+import { GitResourcePanel } from "../../../../components/GitResourcePanel";
 import { useAuth } from "../../../../lib/auth";
 import { isPlatformAdmin } from "../../../../lib/aimodels";
 import { findResourceCategory } from "../../../../lib/resourceCategories";
@@ -37,6 +38,19 @@ export default function ResourceCategoryPage() {
       <AuthGate>
         <AppShell>
           <RestResourcePanel isAdmin={isAdmin} />
+        </AppShell>
+      </AuthGate>
+    );
+  }
+
+  // TG-4b: the "git" category is the BYO git surface — a purpose-built
+  // registration form (write-only bearer PAT + repo ceiling) instead of
+  // the generic registry panel.
+  if (category.key === "git") {
+    return (
+      <AuthGate>
+        <AppShell>
+          <GitResourcePanel isAdmin={isAdmin} />
         </AppShell>
       </AuthGate>
     );

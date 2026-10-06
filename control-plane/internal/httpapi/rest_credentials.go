@@ -73,6 +73,22 @@ func restAuthKindFromConfig(endpointConfig json.RawMessage) string {
 	return s.AuthKind
 }
 
+// gitAuthKind is the fixed credential kind for git resources
+// (TG-4b): a bearer token — GitHub fine-grained PAT or App
+// installation token. The git endpoint_config shape has no auth_kind
+// key; custody is always bearer.
+const gitAuthKind = "bearer"
+
+// authKindForType resolves the custody credential kind for a typed
+// resource: rest derives it from endpoint_config.auth_kind; git is
+// always bearer. "none" for anything else.
+func authKindForType(resource *domain.RegistryResource) string {
+	if resource.Type == domain.ResGit {
+		return gitAuthKind
+	}
+	return restAuthKindFromConfig(resource.EndpointConfig)
+}
+
 // parseRestAuth validates the write-only auth payload against the
 // resource's auth_kind. Unknown fields, missing required fields and a
 // non-URL token_url are violations. Violation messages never echo
@@ -123,14 +139,18 @@ func parseRestAuth(authKind string, raw json.RawMessage) (map[string]string, egr
 	return fields, nil
 }
 
-// setResourceSecret stores BYO REST secret fields in the managed
-// Secret store and points the resource's auth_ref at it (the caller
-// persists the resource).
+// setResourceSecret stores BYO secret fields in the managed Secret
+// store and points the resource's auth_ref at it (the caller
+// persists the resource). Git resources (TG-4b) use the
+// "skquad-git-" custody prefix; everything else the REST prefix.
 func (s *Server) setResourceSecret(ctx context.Context, resource *domain.RegistryResource, fields map[string]string) error {
 	if s.resourceSecrets == nil {
 		return errSecretStoreUnconfigured
 	}
 	secretName := kube.ResourceSecretName(resource.ID)
+	if resource.Type == domain.ResGit {
+		secretName = kube.GitSecretName(resource.ID)
+	}
 	if err := s.resourceSecrets.EnsureResourceSecret(ctx, secretName, fields); err != nil {
 		return err
 	}
@@ -182,30 +202,37 @@ func (s *Server) internalCredentials(w http.ResponseWriter, r *http.Request) {
 	}
 	agentID := strings.TrimSpace(r.URL.Query().Get("agent"))
 	resource, err := s.store.GetResourceByID(r.Context(), resourceID)
-	if err != nil || resource.Type != domain.ResRest || resource.Status != domain.ResourceActive {
-		s.auditCredentialAccess(r, resourceID, agentID, "", "denied")
+	// TG-4b: git resources join rest in BYO custody (bearer PAT).
+	if err != nil || (resource.Type != domain.ResRest && resource.Type != domain.ResGit) || resource.Status != domain.ResourceActive {
+		s.auditCredentialAccess(r, "", resourceID, agentID, "", "denied")
 		writeError(w, http.StatusNotFound, "not_found", "no credential for resource")
 		return
 	}
-	kind := restAuthKindFromConfig(resource.EndpointConfig)
+	resType := string(resource.Type)
+	kind := authKindForType(resource)
 	if kind == "none" {
-		s.auditCredentialAccess(r, resourceID, agentID, kind, "denied")
+		s.auditCredentialAccess(r, resType, resourceID, agentID, kind, "denied")
 		writeError(w, http.StatusNotFound, "not_found", "no credential for resource")
 		return
 	}
 	if s.resourceSecrets == nil {
-		s.auditCredentialAccess(r, resourceID, agentID, kind, "unavailable")
+		s.auditCredentialAccess(r, resType, resourceID, agentID, kind, "unavailable")
 		writeError(w, http.StatusServiceUnavailable, "credentials_unavailable", "secret store not configured")
 		return
 	}
 	// Per-agent credential first (TG-4c isolation guarantee): the
 	// fields served for (resource, agent) are that agent's own secret
-	// whenever one exists — never another agent's.
+	// whenever one exists — never another agent's. Git per-agent
+	// custody (TG-4b) uses the same resolution with the git prefix.
 	if agentID != "" {
-		if name := kube.ResourceAgentSecretName(resourceID, agentID); name != "" {
+		agentSecretName := kube.ResourceAgentSecretName(resourceID, agentID)
+		if resource.Type == domain.ResGit {
+			agentSecretName = kube.GitAgentSecretName(resourceID, agentID)
+		}
+		if name := agentSecretName; name != "" {
 			fields, err := s.resourceSecrets.GetResourceSecret(r.Context(), name)
 			if err == nil && len(fields) > 0 && restFieldsMatchKind(kind, fields) {
-				s.serveCredential(w, r, resourceID, agentID, kind, "agent", fields)
+				s.serveCredential(w, r, resType, resourceID, agentID, kind, "agent", fields)
 				return
 			}
 			if err == nil && len(fields) > 0 {
@@ -223,24 +250,24 @@ func (s *Server) internalCredentials(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if resource.AuthRef == "" {
-		s.auditCredentialAccess(r, resourceID, agentID, kind, "denied")
+		s.auditCredentialAccess(r, resType, resourceID, agentID, kind, "denied")
 		writeError(w, http.StatusNotFound, "not_found", "no credential for resource")
 		return
 	}
 	name := resource.AuthRef[strings.LastIndex(resource.AuthRef, "/")+1:]
 	fields, err := s.resourceSecrets.GetResourceSecret(r.Context(), name)
 	if err != nil || len(fields) == 0 {
-		s.auditCredentialAccess(r, resourceID, agentID, kind, "unavailable")
+		s.auditCredentialAccess(r, resType, resourceID, agentID, kind, "unavailable")
 		writeError(w, http.StatusServiceUnavailable, "credentials_unavailable", "credential could not be resolved")
 		return
 	}
-	s.serveCredential(w, r, resourceID, agentID, kind, "resource", fields)
+	s.serveCredential(w, r, resType, resourceID, agentID, kind, "resource", fields)
 }
 
 // serveCredential writes a resolved credential response and audits
 // the serve. Values go to the response body only — never the audit.
-func (s *Server) serveCredential(w http.ResponseWriter, r *http.Request, resourceID, agentID, kind, scope string, fields map[string]string) {
-	s.auditCredentialAccess(r, resourceID, agentID, kind, "served")
+func (s *Server) serveCredential(w http.ResponseWriter, r *http.Request, resType, resourceID, agentID, kind, scope string, fields map[string]string) {
+	s.auditCredentialAccess(r, resType, resourceID, agentID, kind, "served")
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"resource_id": resourceID,
@@ -253,7 +280,7 @@ func (s *Server) serveCredential(w http.ResponseWriter, r *http.Request, resourc
 // auditCredentialAccess records one credentials-API access with NO
 // secret values — resource id, agent id, auth kind, resolution scope
 // and outcome only.
-func (s *Server) auditCredentialAccess(r *http.Request, resourceID, agentID, kind, outcome string) {
+func (s *Server) auditCredentialAccess(r *http.Request, resType, resourceID, agentID, kind, outcome string) {
 	metadata, _ := json.Marshal(map[string]string{
 		"kind": kind, "outcome": outcome, "agent": agentID,
 	})
@@ -261,7 +288,7 @@ func (s *Server) auditCredentialAccess(r *http.Request, resourceID, agentID, kin
 		ActorType:    "system",
 		ActorID:      "tool-gateway",
 		Action:       "credentials.access",
-		ResourceType: string(domain.ResRest),
+		ResourceType: resType,
 		ResourceID:   resourceID,
 		Metadata:     metadata,
 		Timestamp:    time.Now().UTC(),

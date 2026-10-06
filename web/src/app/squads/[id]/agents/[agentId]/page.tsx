@@ -68,11 +68,13 @@ import {
 } from "../../../../../lib/agentLlm";
 import { foldRestConstraints, grantConstraintsLabel, restCeilingSummary, splitList, type RestCeiling } from "../../../../../lib/restResources";
 import { RestAgentCredential } from "../../../../../components/RestAgentCredential";
+import { GitAgentCredential } from "../../../../../components/GitAgentCredential";
 
 const GRANTABLE_TYPES: { type: ResourceType; path: string; label: string }[] = [
   { type: "skill", path: "skills", label: "Skills" },
   { type: "tool", path: "tools", label: "Tools" },
   { type: "api", path: "apis", label: "APIs" },
+  { type: "git", path: "git", label: "Git repos" },
   { type: "knowledge_base", path: "knowledge-bases", label: "Knowledge bases" },
   { type: "project_workspace", path: "project-workspaces", label: "Project workspaces" },
 ];
@@ -167,6 +169,11 @@ function GrantedResourcesSection({
                   // TG-4c (S-259): own-vs-default credential per agent.
                   // "api" is the legacy alias the web types still use.
                   <RestAgentCredential resourceId={grant.resource_id} agentId={agentId} token={token} />
+                ) : null}
+                {grant.resource_type === ("git" as string) ? (
+                  // TG-4b: same own-vs-default custody for git grants
+                  // (bearer PAT, skquad-git- Secret prefix).
+                  <GitAgentCredential resourceId={grant.resource_id} agentId={agentId} token={token} />
                 ) : null}
               </div>
               <div className="entity-side">
