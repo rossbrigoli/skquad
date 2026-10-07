@@ -100,6 +100,34 @@ agent:
   # SKQUAD_AGENT_BUILTIN_TOOLS_ENABLED, which injects it into every agent pod.
   builtinToolsEnabled: "true"
 
+# TG-9 slice B: netpol startup-race mitigation for AGENT pods.
+# TG-9 drill finding 1 (CRITICAL, 2026-10-07): freshly-scheduled pods in
+# squad namespaces have a ~1-3s window where NetworkPolicies are not yet
+# enforced — a birth probe reached the internet. Mitigation (Ross-approved
+# option (a)): every agent pod gets a blocking `netpol-guard` init-container
+# that probes a canary destination and refuses to let the workload start
+# until egress enforcement is CONFIRMED (N consecutive blocked probes).
+# The guard is built by the operator into the agent pod spec
+# (operator/internal/controller/agent_controller.go); these values flow to
+# the operator via SKQUAD_NETPOL_GUARD_* env vars.
+agentNetpolGuard:
+  # Default ON: agent workloads must never start before egress is enforced.
+  enabled: true
+  # Canary = a destination that must ALWAYS be unreachable from the agent
+  # network position (agents have no internet egress). Any HTTP/TLS
+  # response from it means enforcement is NOT active.
+  canaryUrl: "https://example.com"
+  # Probe pacing and confirmation threshold: requiredBlockedProbes
+  # CONSECUTIVE connection failures (refused/timeout/unresolvable) confirm
+  # enforcement. Any response that reaches the canary resets the counter.
+  probeIntervalMs: 250
+  maxWaitSeconds: 30
+  requiredBlockedProbes: 3
+  # Minimal curl-capable image (matches the security-drill convention, see
+  # scripts/security-drills/lib.sh CURL_IMAGE). Alpine/busybox based: sh +
+  # curl + fractional sleep.
+  image: "curlimages/curl:8.10.1"
+
 operator:
   leaderElection: true
   metricsBindAddress: ":8080"

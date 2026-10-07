@@ -25,13 +25,16 @@ require kubectl jq
 
 SUITE="bypass"
 AGENT_POD="${DRILL_PREFIX}-agent-${DRILL_TS}"
+GUARD_POD="${DRILL_PREFIX}-guard-${DRILL_TS}"
+SKQUAD_SYS_NS="${SKQUAD_SYS_NS:-skquad-system}"
+OPERATOR_DEPLOY="${OPERATOR_DEPLOY:-skquad-operator}"
 CLEANED=0
 
 cleanup() {
   [[ "$CLEANED" -eq 1 ]] && return
   CLEANED=1
-  log "cleanup: deleting throwaway pod ${AGENT_POD} in ${SQUAD_NS}"
-  kubectl -n "$SQUAD_NS" delete pod "$AGENT_POD" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  log "cleanup: deleting throwaway pods ${AGENT_POD} ${GUARD_POD} in ${SQUAD_NS}"
+  kubectl -n "$SQUAD_NS" delete pod "$AGENT_POD" "$GUARD_POD" --ignore-not-found --wait=false >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
 
@@ -77,9 +80,106 @@ for t in $(seq 1 15); do
   sleep 1
 done
 if [[ "$RACE_HITS" -gt 0 ]]; then
-  record "$SUITE" "agent-startup-race" FAIL "${RACE_HITS}/15 startup probes REACHED internet (first block: ${RACE_FIRST_BLOCK:-never}) — NetworkPolicy enforcement lags pod creation; exfiltration window for new agent pods"
+  record "$SUITE" "raw-startup-race-nonagent" INFO "${RACE_HITS}/15 raw startup probes REACHED internet (first block: ${RACE_FIRST_BLOCK:-never}) — INFORMATIONAL: this bare drill pod has NO netpol-guard. Real agent pods are gated by the TG-9 slice B blocking init-container (see guard-birth check below); an unguarded pod reaching the internet at birth no longer implies agent exposure."
 else
-  record "$SUITE" "agent-startup-race" PASS "no unrestricted startup window observed (first block: ${RACE_FIRST_BLOCK:-n/a})"
+  record "$SUITE" "raw-startup-race-nonagent" INFO "no unrestricted startup window observed this run for the bare (unguarded) drill pod"
+fi
+
+# --- 0b. guard-birth check: TG-9 slice B netpol-guard on agent pods ---------
+# Real agent pods get a blocking `netpol-guard` init-container built by the
+# operator (operator/internal/controller/agent_controller.go). This check
+# creates a MIMIC pod in the same squad namespace: the same guard script and
+# the SAME parameters currently deployed on the operator (read from its env,
+# chart defaults as fallback), with a plain sleep app container behind it.
+# Assertions:
+#   * the pod reaches Ready (the guard confirmed enforcement — it never
+#     lets the workload start unconfirmed),
+#   * the guard log carries the CONFIRMED line,
+#   * the FIRST probe from the app container (workload birth) is BLOCKED
+#     => zero pre-block internet hits with the guard in place.
+log "guard-birth: reading deployed guard params from ${OPERATOR_DEPLOY}"
+guard_env() { # guard_env <SKQUAD_ENV_NAME> <fallback>
+  local v
+  v=$(kubectl -n "$SKQUAD_SYS_NS" get deploy "$OPERATOR_DEPLOY" -o json 2>/dev/null \
+    | jq -r --arg n "$1" '[.spec.template.spec.containers[].env[] | select(.name==$n) | .value] | last // empty')
+  [[ -n "$v" ]] && printf '%s' "$v" || printf '%s' "$2"
+}
+G_CANARY="$(guard_env SKQUAD_NETPOL_GUARD_CANARY_URL https://example.com)"
+G_INTERVAL_MS="$(guard_env SKQUAD_NETPOL_GUARD_PROBE_INTERVAL_MS 250)"
+G_MAX_WAIT="$(guard_env SKQUAD_NETPOL_GUARD_MAX_WAIT_SECONDS 30)"
+G_REQUIRED="$(guard_env SKQUAD_NETPOL_GUARD_REQUIRED_BLOCKED_PROBES 3)"
+G_IMAGE="$(guard_env SKQUAD_NETPOL_GUARD_IMAGE curlimages/curl:8.10.1)"
+G_ENABLED="$(guard_env SKQUAD_NETPOL_GUARD_ENABLED true)"
+
+# Canonical script lives in agent_controller.go (netpolGuardScript).
+# This copy must stay in sync (TG-9 slice B).
+G_SCRIPT='set -u
+canary="$NETPOL_GUARD_CANARY_URL"
+required="$NETPOL_GUARD_REQUIRED_BLOCKED_PROBES"
+max_wait="$NETPOL_GUARD_MAX_WAIT_SECONDS"
+interval="$NETPOL_GUARD_PROBE_INTERVAL_SECONDS"
+deadline=$(( $(date +%s) + max_wait ))
+blocked=0
+echo "netpol-guard: awaiting egress enforcement (need $required consecutive blocked probes, max ${max_wait}s)"
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  if curl -s -o /dev/null --max-time 2 "$canary"; then
+    blocked=0
+    echo "netpol-guard: canary REACHED (full HTTP response) — enforcement not active, counter reset"
+  else
+    rc=$?
+    blocked=$((blocked + 1))
+    echo "netpol-guard: canary blocked (curl exit=$rc) consecutive=$blocked/$required"
+    if [ "$blocked" -ge "$required" ]; then
+      echo "netpol-guard: egress enforcement CONFIRMED ($required consecutive blocked probes)"
+      exit 0
+    fi
+  fi
+  sleep "$interval"
+done
+echo "netpol-guard: FAIL-CLOSED — enforcement not confirmed within ${max_wait}s"
+exit 1'
+
+if [[ "$G_ENABLED" != "true" ]]; then
+  record "$SUITE" "agent-guard-birth" FAIL "operator reports guard DISABLED (SKQUAD_NETPOL_GUARD_ENABLED=$G_ENABLED) — agent pods start without enforcement confirmation"
+else
+  G_INTERVAL_S=$(awk -v ms="$G_INTERVAL_MS" 'BEGIN{printf "%.3f", ms/1000}')
+  log "guard-birth: creating guarded mimic pod ${GUARD_POD} (canary=${G_CANARY} interval=${G_INTERVAL_S}s max=${G_MAX_WAIT}s need=${G_REQUIRED})"
+  jq -n --arg pod "$GUARD_POD" --arg img "$G_IMAGE" --arg script "$G_SCRIPT" \
+        --arg canary "$G_CANARY" --arg interval "$G_INTERVAL_S" \
+        --arg maxwait "$G_MAX_WAIT" --arg required "$G_REQUIRED" '
+    {apiVersion:"v1", kind:"Pod",
+     metadata:{name:$pod},
+     spec:{automountServiceAccountToken:false,
+       initContainers:[{name:"netpol-guard", image:$img,
+         command:["/bin/sh","-c",$script],
+         env:[{name:"NETPOL_GUARD_CANARY_URL", value:$canary},
+              {name:"NETPOL_GUARD_PROBE_INTERVAL_SECONDS", value:$interval},
+              {name:"NETPOL_GUARD_MAX_WAIT_SECONDS", value:$maxwait},
+              {name:"NETPOL_GUARD_REQUIRED_BLOCKED_PROBES", value:$required}],
+         resources:{requests:{cpu:"10m",memory:"16Mi"},limits:{cpu:"100m",memory:"64Mi"}},
+         securityContext:{runAsNonRoot:true, runAsUser:1000, runAsGroup:1000, allowPrivilegeEscalation:false, readOnlyRootFilesystem:true,
+                        capabilities:{drop:["ALL"]}, seccompProfile:{type:"RuntimeDefault"}}}],
+       containers:[{name:"app", image:$img, command:["sleep","600"],
+         resources:{requests:{cpu:"10m",memory:"32Mi"},limits:{cpu:"200m",memory:"128Mi"}},
+         securityContext:{runAsNonRoot:true, runAsUser:1000, runAsGroup:1000, allowPrivilegeEscalation:false,
+                        capabilities:{drop:["ALL"]}, seccompProfile:{type:"RuntimeDefault"}}}]}}' \
+    | kubectl -n "$SQUAD_NS" apply -f - >/dev/null
+
+  if ! kubectl -n "$SQUAD_NS" wait --for=condition=Ready "pod/${GUARD_POD}" --timeout=90s >/dev/null 2>&1; then
+    G_PHASE=$(kubectl -n "$SQUAD_NS" get pod "$GUARD_POD" -o jsonpath='{.status.phase} {.status.initContainerStatuses[0].state}' 2>/dev/null || echo unknown)
+    record "$SUITE" "agent-guard-birth" FAIL "guarded mimic pod never became Ready (state: ${G_PHASE}) — guard fail-closed without confirmation (or cluster/image issue); check logs -c netpol-guard"
+  else
+    G_LOG=$(kubectl -n "$SQUAD_NS" logs "$GUARD_POD" -c netpol-guard 2>/dev/null || true)
+    FIRST=$(curl_in_pod "$SQUAD_NS" "$GUARD_POD" "app" -- --max-time 2 "$INTERNET_URL")
+    FIRST_RC="${FIRST##* }"
+    if grep -q "CONFIRMED" <<<"$G_LOG" && [[ "$FIRST_RC" != "0" ]]; then
+      record "$SUITE" "agent-guard-birth" PASS "guard confirmed enforcement before workload start; first app-container probe blocked (curl exit=$FIRST_RC) — 0 pre-block internet hits"
+    elif ! grep -q "CONFIRMED" <<<"$G_LOG"; then
+      record "$SUITE" "agent-guard-birth" FAIL "guard container Ready but log lacks CONFIRMED line — guard did not run as expected"
+    else
+      record "$SUITE" "agent-guard-birth" FAIL "first app-container probe REACHED internet (http=${FIRST%% *}) despite guard confirmation — enforcement regression"
+    fi
+  fi
 fi
 
 # Let netpol programming settle before steady-state assertions.
