@@ -863,6 +863,61 @@ type GrantRequest struct {
 	UpdatedAt         time.Time          `json:"updated_at,omitempty"`
 }
 
+// ── TG-8 slice C: confirmation gates + standing grants (docs/tg8-grant-approvals-spec.md §C) ──
+
+// ConfirmationState is the state of a gated-call confirmation. Legal
+// transitions: pending → approved_once | approved_standing | denied,
+// plus approved_once → expired at consume time when the 15-minute TTL
+// has passed. denied/expired are terminal.
+type ConfirmationState string
+
+const (
+	ConfirmationPending          ConfirmationState = "pending"
+	ConfirmationApprovedOnce     ConfirmationState = "approved_once"
+	ConfirmationApprovedStanding ConfirmationState = "approved_standing"
+	ConfirmationDenied           ConfirmationState = "denied"
+	ConfirmationExpired          ConfirmationState = "expired"
+)
+
+// PendingConfirmation is one gated tool call awaiting (or having received)
+// the resource owner's decision. The row is bound to the exact call via
+// args_hash; approvals never cover a different argument set.
+type PendingConfirmation struct {
+	ID         string            `json:"id"`
+	ResourceID string            `json:"resource_id"`
+	AgentID    string            `json:"agent_id"`
+	Tool       string            `json:"tool"`
+	ArgsHash   string            `json:"args_hash"`
+	State      ConfirmationState `json:"state"`
+	// InboxMessageID links the owner's action_required inbox message.
+	InboxMessageID string `json:"inbox_message_id,omitempty"`
+	// RequestedBy is the resource owner's user id resolved at request
+	// time (the authority for this confirmation).
+	RequestedBy  string     `json:"requested_by"`
+	DeniedReason string     `json:"denied_reason,omitempty"`
+	ApprovedAt   *time.Time `json:"approved_at,omitempty"`
+	ConsumedAt   *time.Time `json:"consumed_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at,omitempty"`
+}
+
+// StandingGrant is a persistent "approve this and future" decision: the
+// resource owner pre-authorizes (agent, tool) calls until expires_at.
+// Revoke is soft (revoked_at set) so the row survives as audit trail;
+// the live uniqueness index guarantees at most one live row per
+// (resource, agent, tool) — invariant 2: revocation is immediately
+// effective because the live row is gone.
+type StandingGrant struct {
+	ID         string     `json:"id"`
+	ResourceID string     `json:"resource_id"`
+	AgentID    string     `json:"agent_id"` // specific agent for v1; '*' literal reserved for future all-agent grants
+	Tool       string     `json:"tool"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	CreatedBy  string     `json:"created_by"`
+	CreatedAt  time.Time  `json:"created_at"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+}
+
 // GranteeType identifies who an access grant is issued to.
 type GranteeType string
 

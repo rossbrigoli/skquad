@@ -117,6 +117,7 @@ type Store interface {
 	storage.InboxStore
 	storage.NotificationStore
 	storage.GrantRequestStore
+	storage.ConfirmationStore
 	storage.WorkNotificationStore
 	storage.PromptTierStore
 	storage.PromptTemplateStore
@@ -198,6 +199,10 @@ type Server struct {
 	// enabled); production wires the real grantlint.LintChange via
 	// NewWithGrantLinter at merge time without touching call sites.
 	grantLinter GrantLinter
+	// confirmationNow (TG-8 slice C) is the injectable clock for
+	// confirmation TTL / standing-grant expiry. nil ⇒ time.Now().UTC();
+	// tests drive it to age approvals past the 15-minute TTL.
+	confirmationNow func() time.Time
 }
 
 // EmbedderConfigWriter persists the admin's embedder runtime choice to
@@ -581,6 +586,11 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 		// Same trust class as /policy: internal-only via NetworkPolicy,
 		// no app-layer auth. Never expose outside the cluster.
 		r.Get("/credentials", s.internalCredentials)
+		// TG-8 slice C: confirmation gates for the tool gateway (check
+		// standing-first, consume the owner's decision). Same internal
+		// trust class as /policy — the gateway sends no app-layer auth.
+		r.Post("/confirmation/check", s.confirmationCheckHandler)
+		r.Post("/confirmation/consume", s.confirmationConsumeHandler)
 	})
 
 	r.Route("/api/v1", func(r chi.Router) {
@@ -755,6 +765,16 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Post("/grant-requests/{requestID}/approve-owner", s.approveGrantOwnerHandler)
 			r.Post("/grant-requests/{requestID}/approve-admin", s.approveGrantAdminHandler)
 			r.Post("/grant-requests/{requestID}/deny", s.denyGrantHandler)
+
+			// TG-8 slice C: confirmation gates + standing grants.
+			// Decisions need the resource owner attribute or
+			// platform_admin (see confirmations.go).
+			r.Get("/confirmations", s.listConfirmationsHandler)
+			r.Post("/confirmations/{confID}/approve-once", s.approveConfirmationOnceHandler)
+			r.Post("/confirmations/{confID}/approve-standing", s.approveConfirmationStandingHandler)
+			r.Post("/confirmations/{confID}/deny", s.denyConfirmationHandler)
+			r.Get("/standing-grants", s.listStandingGrantsHandler)
+			r.Delete("/standing-grants/{grantID}", s.revokeStandingGrantHandler)
 
 			r.Post("/registry/ai-providers", s.createAIProvider)
 			r.Get("/registry/ai-providers", s.listAIProviders)

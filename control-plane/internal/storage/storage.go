@@ -37,6 +37,7 @@ type Store interface {
 	PermissionStore
 	GrantStore
 	GrantRequestStore
+	ConfirmationStore
 	MeteringStore
 	WakeLatencyStore
 	AuditStore
@@ -423,6 +424,66 @@ type GrantRequestUpdate struct {
 	ApprovedByOwnerAt *time.Time
 	ApprovedByAdminAt *time.Time
 	DeniedReason      string
+}
+
+// ConfirmationStore persists the TG-8 slice C confirmation gates and
+// standing grants (docs/tg8-grant-approvals-spec.md §C). Same
+// guarded-transition contract as GrantRequestStore: expectedFrom
+// mismatch ⇒ ErrConflict, nothing written (race-safe double-decision).
+type ConfirmationStore interface {
+	CreatePendingConfirmation(ctx context.Context, c *domain.PendingConfirmation) (*domain.PendingConfirmation, error)
+	GetPendingConfirmation(ctx context.Context, id string) (*domain.PendingConfirmation, error)
+	// ListPendingConfirmations filters by any combination of state,
+	// requesting owner, and resource. Empty filter fields mean "no
+	// constraint on that axis".
+	ListPendingConfirmations(ctx context.Context, f ConfirmationFilter) ([]*domain.PendingConfirmation, error)
+	// UpdateConfirmationState applies a state transition guarded by the
+	// expected current state; concurrent decision ⇒ ErrConflict.
+	UpdateConfirmationState(ctx context.Context, id string, expectedFrom domain.ConfirmationState, up ConfirmationUpdate) (*domain.PendingConfirmation, error)
+
+	// FindLiveStandingGrant returns the live (not revoked, not expired
+	// as of `now`) standing grant for exactly (resource, agent, tool),
+	// or ErrNotFound. v1 matches the agent id exactly — the '*' reserved
+	// literal never matches.
+	FindLiveStandingGrant(ctx context.Context, resourceID, agentID, tool string, now time.Time) (*domain.StandingGrant, error)
+	// UpsertStandingGrant creates the live grant or, when one already
+	// exists for (resource, agent, tool), refreshes expires_at and
+	// created_by in place (the live-row uniqueness invariant).
+	UpsertStandingGrant(ctx context.Context, g *domain.StandingGrant) (*domain.StandingGrant, error)
+	// ListStandingGrants filters by resource owner (OwnerUserID matches
+	// registry_resources.owner_user_id). Revoked grants are excluded
+	// unless IncludeRevoked is set.
+	ListStandingGrants(ctx context.Context, f StandingGrantFilter) ([]*domain.StandingGrant, error)
+	// GetStandingGrant resolves a grant by id alone (authz before revoke).
+	GetStandingGrant(ctx context.Context, id string) (*domain.StandingGrant, error)
+	// RevokeStandingGrant soft-deletes the live row (sets revoked_at).
+	// Missing or already-revoked ⇒ ErrNotFound.
+	RevokeStandingGrant(ctx context.Context, id string, at time.Time) (*domain.StandingGrant, error)
+}
+
+// ConfirmationFilter narrows ListPendingConfirmations. Zero value = all.
+type ConfirmationFilter struct {
+	State       string
+	RequestedBy string
+	ResourceID  string
+}
+
+// ConfirmationUpdate carries the mutable fields of one confirmation
+// transition. Timestamps/links apply only when non-nil; DeniedReason is
+// written only when non-empty (deny transition).
+type ConfirmationUpdate struct {
+	State          domain.ConfirmationState
+	InboxMessageID *string
+	ApprovedAt     *time.Time
+	ConsumedAt     *time.Time
+	DeniedReason   string
+}
+
+// StandingGrantFilter narrows ListStandingGrants. Zero value = all live
+// grants.
+type StandingGrantFilter struct {
+	OwnerUserID    string
+	IncludeRevoked bool
 }
 
 // GrantStore persists owner-issued access grants.
