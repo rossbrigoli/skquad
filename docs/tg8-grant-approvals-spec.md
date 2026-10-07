@@ -30,15 +30,25 @@ type ChangeSnapshot struct {
 ```
 
 Rules (all `block` severity unless noted):
-- `new_credentialed_reach`: HasCredential && hosts gained (after \ before non-empty).
-- `new_http_method`: methods gained (after \ before). GET-only→POST = block.
-- `new_mcp_tool`: tools gained.
-- `metadata_path`: any host/IP matching 169.254.0.0/16, metadata.google.internal,
-  *.metadata.goog, 100.100.100.200 (Alibaba) — regardless of before.
-- `cluster_internal_path`: RFC1918/CGNAT/IPv6-ULA hosts, *.svc(.cluster.local),
-  *.cluster.local, *.internal, or EgressClass=="internal" newly.
-- `ceiling_widened`: any NumericCaps increased, or set fields widened
-  (before ⊂ after). Pure shrink/narrow → no findings.
+- **Absolute rule (fires regardless of before):** `metadata_path` — any host/IP
+  matching 169.254.0.0/16, metadata.google.internal, *.metadata.goog,
+  100.100.100.200 (Alibaba) in `after`.
+- **Gained rules (need a baseline; for before==nil, gained = all of after):**
+  `cluster_internal_path` — gained hosts in RFC1918/CGNAT/IPv6-ULA,
+  *.svc(.cluster.local), *.cluster.local, *.internal; or EgressClass newly
+  "internal". (Brand-new grants into private space ARE caught.)
+- **Widening rules (only meaningful when before != nil; a brand-new grant has
+  nothing to widen from — its review path is tier routing):**
+  `new_credentialed_reach` (HasCredential && hosts gained), `new_http_method`
+  (methods gained), `new_mcp_tool` (tools gained), `ceiling_widened` (any
+  NumericCaps increased; added-cap-on-existing = `warn`).
+- Pure shrink/narrow or identical snapshots → no findings. Metadata hosts are
+  not double-reported under cluster_internal_path.
+
+> Clarification (post-slice-A): the original draft listed the three
+> cred/method/tool codes as plain gained rules, which would flag EVERY brand-new
+> credentialed grant and break the BYO instant path. They are widening-only.
+> Implemented + corpus-tested in internal/grantlint.
 - No findings for identical snapshots.
 
 Corpus tests: known-bad shapes (each code triggered), known-good (narrowing,

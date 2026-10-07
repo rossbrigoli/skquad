@@ -1018,3 +1018,10 @@
 - Files: browser-service/src/browser.ts (exported chromiumLaunchOptions with mandatory --proxy-server + --proxy-bypass-list=<-loopback>; BROWSER_PROXY env override, 'none' dev-only), browser-service/test/browser.test.ts (4 new tests).
 - Commands: npm run build && npm test → 59 pass / 0 fail.
 - Result: all browser egress now flows through browser-proxy (netguard IP-pin) by construction, not just by netpol.
+
+## 2026-10-07 ~10:50 ACST — TG-8 slice A: grant-change linter (built by parent; worker returned empty)
+- Objective: implement docs/tg8-grant-approvals-spec.md §A linter after slice-A worker died with no output.
+- Files: control-plane/internal/grantlint/{grantlint.go,grantlint_test.go} (new).
+- Semantics clarified: widening codes (new_credentialed_reach/new_http_method/new_mcp_tool) require non-nil before; absolute metadata_path always; cluster_internal_path gained-based (fires for brand-new private-space grants). Spec doc updated to match.
+- Commands: go vet + go test ./internal/grantlint/... -count=1 → ok (17 tests incl. known-bad corpus, determinism x25, conservative unparseable-host).
+- Note: full CP suite currently broken by slice-B in-flight Store interface change (MemoryStore missing CreateGrantRequest) — expected mid-work state, not a slice-A regression.
