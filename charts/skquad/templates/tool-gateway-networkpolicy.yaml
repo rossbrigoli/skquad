@@ -62,13 +62,18 @@ spec:
     # Public internet: 80,443 everywhere EXCEPT the cluster's own
     # pod/service CIDRs (configured via toolGateway.clusterCIDRs — adjust
     # to the actual cluster CIDRs; k3s defaults shipped).
+    # NOTE (TG-9 drill finding 2 sibling fix, 2026-10-07): single `except:`
+    # key — the previous per-iteration `except:` collapsed to the LAST CIDR
+    # only. RFC1918 is intentionally NOT excluded here: internal-class
+    # registrations legitimately reach private IPs through the gateway
+    # (netguard AllowPrivate governs that at L7).
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
-            {{- range .Values.toolGateway.clusterCIDRs }}
             except:
+              {{- range .Values.toolGateway.clusterCIDRs }}
               - {{ . }}
-            {{- end }}
+              {{- end }}
       ports:
         - protocol: TCP
           port: 80

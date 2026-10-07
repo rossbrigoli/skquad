@@ -95,13 +95,18 @@ spec:
         - protocol: TCP
           port: 53
     # Public internet for the proxy sidecar, minus all private ranges.
+    # NOTE (TG-9 drill finding 2, fixed 2026-10-07): the `except:` key must
+    # appear ONCE with all CIDRs under it. The previous template emitted
+    # `except:` per loop iteration — duplicate YAML keys collapsed to the
+    # LAST one only (10.43.0.0/16), leaving RFC1918/CGNAT/link-local
+    # reachable from the quarantine pod. Do not move the range inside except.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
-            {{- range (concat .Values.browserService.deniedEgressCIDRs .Values.toolGateway.clusterCIDRs) }}
             except:
+              {{- range (concat .Values.browserService.deniedEgressCIDRs .Values.toolGateway.clusterCIDRs) }}
               - {{ . }}
-            {{- end }}
+              {{- end }}
       ports:
         - protocol: TCP
           port: 80
