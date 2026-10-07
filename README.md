@@ -120,7 +120,12 @@ The repository currently implements:
 - task claiming and completion, task-scoped context, bounded recent memory,
   lease-backed/fenced task execution, durable task-result summaries, inbox
   processing, and permission-filtered runtime plugins;
-- LiteLLM gateway deployment and agent-scoped virtual-key provisioning; and
+- LiteLLM gateway deployment and agent-scoped virtual-key provisioning;
+- a tool gateway (`web`, `rest`, `mcp`, `git` drivers) with BYO per-agent
+  credential custody, and browser-as-a-service in a quarantine namespace
+  (TG-6, 0.1.269);
+- risk-tiered grant approvals: owner Inbox, confirmation gates, standing
+  grants, and a pre-effect grant-change linter (TG-8, 0.1.270); and
 - Helm packaging plus CI validation and versioned container images.
 
 Important gaps remain:
@@ -131,8 +136,11 @@ Important gaps remain:
 - automatic memory embedding generation and durable artifact storage are planned;
 - automatic task materialization for `delegate`/`handoff` messages is planned;
   and
-- production ingress, TLS, external-database operations, observability, and
-  network-policy hardening are not complete.
+- production ingress, TLS, external-database operations, and observability
+  are not complete; network-policy hardening is in progress (the TG-9
+  netpol-guard init-container and the egress except-list hotfix, PR #203,
+  are not yet deployed — see
+  [implementation status](docs/implementation-status.md)).
 
 The detailed source-of-truth requirements are in
 [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md). The
@@ -222,7 +230,7 @@ suite and cluster-required checks.
 | Product scope | [Requirements](docs/REQUIREMENTS.md), [domain model](docs/domain-model.md) |
 | System design | [Architecture](docs/ARCHITECTURE.md), [data model](docs/data-model.md), [API design](docs/api-design.md), [implementation status](docs/implementation-status.md), [ADRs](docs/adr/) |
 | Agent execution | [Runtime](docs/agent-runtime.md), [task lifecycle](docs/kanban-task-lifecycle.md), [messaging](docs/collaboration-messaging.md), [plugins](docs/plugin-architecture.md) |
-| Platform services | [LLM gateway](docs/llm-gateway.md), [resource registry](docs/resource-registry.md), [operator and deployment](docs/deployment-operator.md), [operator runbook](docs/operator-runbook.md), [embedder / memory RAG](embedder/README.md) |
+| Platform services | [LLM gateway](docs/llm-gateway.md), [tool gateway](docs/tool-gateway.md), [TG-6 browser service protocol](docs/tg6-browser-protocol.md), [TG-8 grant approvals spec](docs/tg8-grant-approvals-spec.md), [resource registry](docs/resource-registry.md), [operator and deployment](docs/deployment-operator.md), [operator runbook](docs/operator-runbook.md), [embedder / memory RAG](embedder/README.md) |
 | Operations and security | [Identity and security](docs/identity-security.md), [threat model](docs/security-threat-model.md), [observability and metering](docs/observability-metering.md), [CI/CD](docs/ci-cd.md), [testing strategy](docs/testing-strategy.md) |
 | Releases | [Versioning](docs/versioning.md) — `major.minor.build`, CI auto-increment, where the version is displayed |
 | User experience | [Web application UX](docs/web-app-ux.md) |

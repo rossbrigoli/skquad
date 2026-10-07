@@ -65,6 +65,27 @@ spec:
               value: {{ include "skquad.apiServerName" . | quote }}
             - name: SKQUAD_MAX_AGENT_STORAGE
               value: {{ .Values.operator.maxAgentStorage | quote }}
+            # TG-9 slice B: netpol startup-race mitigation. The operator
+            # injects a blocking netpol-guard init-container into every
+            # agent pod (see agent_controller.go) so the agent workload
+            # never starts before egress enforcement is CONFIRMED.
+            # Bool-aware rendering (same as builtinToolsEnabled).
+            - name: SKQUAD_NETPOL_GUARD_ENABLED
+              {{- if kindIs "bool" .Values.agentNetpolGuard.enabled }}
+              value: {{ ternary "true" "false" .Values.agentNetpolGuard.enabled | quote }}
+              {{- else }}
+              value: {{ default "true" .Values.agentNetpolGuard.enabled | quote }}
+              {{- end }}
+            - name: SKQUAD_NETPOL_GUARD_CANARY_URL
+              value: {{ .Values.agentNetpolGuard.canaryUrl | quote }}
+            - name: SKQUAD_NETPOL_GUARD_PROBE_INTERVAL_MS
+              value: {{ .Values.agentNetpolGuard.probeIntervalMs | quote }}
+            - name: SKQUAD_NETPOL_GUARD_MAX_WAIT_SECONDS
+              value: {{ .Values.agentNetpolGuard.maxWaitSeconds | quote }}
+            - name: SKQUAD_NETPOL_GUARD_REQUIRED_BLOCKED_PROBES
+              value: {{ .Values.agentNetpolGuard.requiredBlockedProbes | quote }}
+            - name: SKQUAD_NETPOL_GUARD_IMAGE
+              value: {{ .Values.agentNetpolGuard.image | quote }}
             # S-212: embedder GPU reconciliation knobs.
             - name: SKQUAD_EMBEDDER_NAMESPACE
               value: {{ .Release.Namespace | quote }}

@@ -445,6 +445,8 @@ func deleteIfExists(ctx context.Context, c client.Client, obj client.Object) err
 
 func boolPtr(v bool) *bool { return &v }
 
+func int64Ptr(v int64) *int64 { return &v }
+
 // SetupWithManager registers the Squad controller with a controller-runtime
 // manager.
 func (r *SquadReconciler) SetupWithManager(mgr ctrl.Manager) error {

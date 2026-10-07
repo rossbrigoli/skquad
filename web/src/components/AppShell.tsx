@@ -12,7 +12,7 @@ import type { DashboardPayload } from "../lib/dashboard";
 import { ThemeToggle } from "./ThemeToggle";
 import { NotificationBell } from "./NotificationBell";
 import { UserMenu } from "./UserMenu";
-import { IconAbout, IconAgents, IconCosts, IconDashboard, IconInbox, IconSettings, IconSquads } from "./icons";
+import { IconAbout, IconAgents, IconAudit, IconCosts, IconDashboard, IconInbox, IconSettings, IconSquads } from "./icons";
 import { agentIdFromPath, breadcrumbsForPath, taskIdFromPath } from "../lib/breadcrumbs";
 import { formatTaskRef } from "../lib/taskRef";
 import { buildInfo, versionLabel } from "../lib/buildInfo";
@@ -44,6 +44,17 @@ const tailNav = [
   { href: "/settings", label: "Settings", Icon: IconSettings },
   { href: "/about", label: "About", Icon: IconAbout },
 ];
+
+// TG-9 slice C: platform admins get the Audit & Metering drill-down in
+// the rail (mirrors the backend: GET /audit is admin-only). Squad owners
+// reach the same page squad-scoped via direct link / squad pages.
+const AUDIT_NAV_ITEM = { href: "/audit", label: "Audit & Metering", Icon: IconAudit };
+
+export function tailNavForRole(role: string | undefined | null) {
+  return role === "platform_admin"
+    ? [tailNav[0], AUDIT_NAV_ITEM, ...tailNav.slice(1)]
+    : tailNav;
+}
 
 type NavItem = { href: string; label: string };
 
@@ -292,7 +303,7 @@ function PrimaryRail({
         loading={agentsLoading}
         onToggle={() => onToggleGroup("agents", agentsExpanded)}
       />
-      {tailNav.map((item) => (
+      {tailNavForRole(user?.role).map((item) => (
         <Link
           key={item.href}
           href={item.href}

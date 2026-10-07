@@ -83,6 +83,8 @@ export default defineConfig({
         "src/components/ConfirmationDecisionCard.tsx",
         "src/components/GrantRequestsPanel.tsx",
         "src/components/StandingGrantsPanel.tsx",
+  // TG-9 slice C: audit dashboard + per-resource metering rollups.
+  "src/app/audit/page.tsx",
       ],
       exclude: [
         "src/**/*.test.ts",

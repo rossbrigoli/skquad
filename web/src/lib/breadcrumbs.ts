@@ -22,6 +22,7 @@ const STATIC_LABELS: Record<string, string> = {
   dashboard: "Dashboard",
   inbox: "Inbox",
   costs: "Cost Management",
+  audit: "Audit & Metering",
   settings: "Settings",
   squads: "Squads",
   agents: "Agents",

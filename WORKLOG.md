@@ -1085,3 +1085,62 @@
 - Commands: `npx vitest run --coverage` → 92 files, 1267 tests ALL GREEN (was 1246; +21). Branches 90.49% (3227/3566) ≥ 90% threshold with margin. `npm run build` clean.
 - Remaining known-uncoverable-by-UI branches: GrantRequestsPanel busy-guard (line 72), StandingGrantsPanel !pendingRevoke guard (line 35), ConfirmationDecisionCard cancelled-race (line 58) + no-confirmation guard (line 73) — defensive early-returns unreachable through rendered interactions.
 - Result: committed on feat/tg8-risk-approvals worktree (no push).
+
+## 2026-10-07 13:55 — TG-9 slice C: audit dashboard + per-resource metering rollups (web only)
+- Objective: new Audit & Metering dashboard (admin + resource-owner scoped per backend enforcement), human-readable TG-8 decision codes, detail drawer, per-resource metering rollups, nav, tests ≥ CI branch threshold. Backend untouched.
+- Backend endpoints wired (discovered, NOT changed):
+  - GET /api/v1/audit?squad_id=<id>&limit=<n> — platform_admin only (listAudit)
+  - GET /api/v1/squads/{squadID}/audit?limit=<n> — squad owner or admin (listSquadAudit)
+  - Existing metering (unchanged, per-agent/squad only): GET /squads/{id}/metering, GET /agents/{id}/metering?since=, GET /metering/summary, GET /costs/summary
+  - limit: server default 100, cap 500 (boundedIntQuery) — UI window 100/200/500.
+- Files changed (all under web/):
+  - src/lib/audit.ts NEW — AuditFilters, buildAuditPath (admin vs squad-scoped endpoint, squad_id+limit only), filterAuditEntries (agent/task/resource/decision/time client-side), STABLE_DECISION_CODES (12 backend codes → human labels: denied_replayed→"already used", ceiling_exceeded→"limit exceeded", session_invalid, pending_confirmation, args_hash_mismatch, approval_expired, standing_grant_not_live, denied_by_owner, confirmation_expired/pending, browser_busy, confirmation_unavailable), deriveDecision (gate→action→reason precedence), deriveTier, taskRefFor, formatActor, clampAuditLimit.
+  - src/lib/resourceMetering.ts NEW — aggregateResourceRollups (per resource_type:id calls/allowed/denied/pending/lastSeen from audit entries), rollupTotals. Tokens/cost NOT attributable per resource (see gaps).
+  - src/app/audit/page.tsx NEW — tabs "Audit log" / "Resource metering"; filter bar (squad, agent, task, resource, decision, from/to, window); table timestamp/actor/resource/action/decision-chip/tier; EventDetail drawer with full fields + metadata JSON; owner "Pick a squad" gate; loading/empty/error states.
+  - src/components/AppShell.tsx — admin-only "Audit & Metering" rail item (tailNavForRole); icons.tsx IconAudit.
+  - src/lib/breadcrumbs.ts — /audit crumb label.
+  - src/lib/api.ts — AuditEntry += metadata?: unknown (additive wire field).
+  - src/app/globals.css — chip-allow/deny/pending + audit table/filter/detail styles.
+  - vitest.config.ts — coverage include: src/app/audit/page.tsx.
+  - Tests: src/lib/audit.test.ts (41: code-table completeness vs backend list, path building, filters, decision precedence), src/lib/resourceMetering.test.ts (8: aggregation math, ordering, lastSeen, totals), src/app/audit/page.jsdom.test.tsx (18: admin/owner endpoint selection, filters, chips, drawer, metering tab, empty/error states).
+- BACKEND GAPS FOUND (reported, NOT fixed):
+  1. Audit list supports ONLY squad_id + limit — no server-side agent/task/resource/time/decision filters; UI filters client-side over the ≤500-event window (truncation risk for busy squads).
+  2. No per-resource metering: metering aggregates exist per squad/agent/platform only; no raw metering list endpoint → per-resource tokens/cost impossible from API; UI shows audit-derived call/decision counts with tokens/cost marked "n/a" + TODO in resourceMetering.ts.
+  3. tool-gateway dispatch audit (audit.Event: gate outcome, resource, operation, decision) goes to the stdout sink only — not queryable via control-plane, so gateway-level gate rows don't appear in /api/v1/audit.
+- Commands: `vitest run --coverage` → 95 files, 1334 tests ALL GREEN; global branches 90.45% (≥90.3 target, CI gate 90). `npm run build` clean (/audit route static). eslint new files clean.
+- Note: worktree node_modules installed via `cp -al` from main checkout (identical lockfile); symlink rejected by Turbopack.
+- Result: committed on feat/tg9-audit-drills worktree (no push).
+
+## 2026-10-07 15:15 — TG-9 slice A: security bypass suite + secret probe + revocation harness (S-255)
+- Objective: live-runnable security drills in `scripts/security-drills/` — network bypass assertions, env-secret custody probe, revocation-latency timing harness, weekly CronJob manifest (manifest only, chart gating later).
+- Files changed: `scripts/security-drills/{lib.sh,bypass_suite.sh,secret_probe.sh,revocation_drill.sh,drill-cronjob.yaml,results-20261007.json}` (all new).
+- Commands run (LIVE vs lab cluster, KUBECONFIG=k3s-cluster):
+  - `./bypass_suite.sh` → 10 PASS / 2 FAIL (exit 1)
+  - `./secret_probe.sh` → 1 violation (exit 1)
+  - `./revocation_drill.sh --poll-only` → 3 PASS (exit 0)
+  - `bash -n` all scripts clean (shellcheck not installed on host).
+- SYSTEM FINDINGS (real, not script bugs):
+  1. **CRITICAL — netpol startup race:** freshly created pods in squad namespaces have a ~1–3s window where NetworkPolicies are not yet enforced. Reproduced twice: race pod probe #1 @02:59:18 got http=200 to internet (blocked from #2 on); final bypass run startup-race check caught 1/15 probes reaching internet before first block. A malicious agent pod can exfiltrate at birth. Mitigation options: init-container that blocks until policy verified, kubectl wait-on-enforcement pattern, or CNI with synchronous enforcement (e.g. kube-egress-policy/cilium). Needs decision.
+  2. **HIGH — browser pod bypasses its SSRF proxy:** `skquad-browser-egress` allows 0.0.0.0/0:80,443 except only 10.43.0.0/16. Raw curl from browser-service container reaches the internet directly (http=200), skipping browser-proxy's SSRF floor/denylist entirely. RFC1918 (192.168.68.0/24), CGNAT and 169.254.0.0/16 are NOT excluded from browser egress — lab-host "PASS" was only because nothing listens on 192.168.68.131:80. Fix: add except blocks for 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10; ideally iptables-redirect in pod so proxy is unavoidable.
+  3. **MEDIUM — browser pod carries BROWSER_INTERNAL_TOKEN in env** (secretRef in browser-service container). Violates strict gateway-custody for data-plane pods. It is a platform-internal service token (gateway↔browser auth), not a BYOM/agent credential — decide whether custody rule applies or browser is reclassified as trusted infra.
+  4. **INFO — gateway status asymmetry:** wrong token + real agent id → 401 (correct). Unknown agent id → 502 policy_unavailable (fail-closed deny, but distinguishes unknown-agent from bad-credential to callers).
+- Revocation harness mechanics: grants are DB-only (CP Postgres), surfaced via `GET /internal/v1/policy?agent=<id>` (no app-layer auth, topology-protected). Gateway caches with TTL+ETag (live `SKQUAD_TOOL_GATEWAY_POLICY_TTL=30s`, fail-closed). Harness port-forwards api-server, polls every 2s, hashes snapshot; full mode takes `--grant-delete-ts` (admin revokes via UI/API) and timestamps first change → staleness ≤30s target. Poll-only mode proved: endpoint live (200), If-None-Match→304 revalidation works, snapshot stable.
+- Secret probe scoping: ASSERTED = pods labelled `skquad.io/agent-id` (none running — agent runtime idle) + all skquad-browser pods. EXEMPT (inventory only, justified in script header) = skquad-system infra (api-server/operator/tool-gateway/llm-gateway/postgres/web/embedder — legitimate custody).
+- Result: committed on feat/tg9-audit-drills worktree (no push). Suites exit non-zero BY DESIGN until findings 1–3 are remediated — that is the drill telling the truth.
+
+## 2026-10-07 16:35 ACST — TG-9 slice B: netpol startup-race mitigation via blocking netpol-guard init-container (sherlock)
+- Objective: close drill finding 1 (CRITICAL) — freshly-scheduled pods in squad namespaces had a ~1–3s unenforced-egress window. Ross-approved option (a): agent pods must not start their workload until egress enforcement is CONFIRMED by a blocking init-container.
+- WHERE THE AGENT POD SPEC LIVES: agent pods are NOT chart-templated — they are built in Go by the operator: `operator/internal/controller/agent_controller.go` → `applyAgentDeploymentSpec()` (per-agent Deployment, pod template carries `skquad.io/agent-id`). Guard wiring: chart values `agentNetpolGuard.*` → operator Deployment env `SKQUAD_NETPOL_GUARD_*` → `netpolGuardContainer()` prepends init-container `netpol-guard` to the agent pod spec. Pod kinds: exactly ONE kind got the guard (the agent runtime pod). Browser pods are a separate chart-rendered kind and intentionally NOT guarded here (their egress story is the proxy + slice-A finding 2, separate remediation).
+- Files changed:
+  - `charts/skquad/values.yaml` — new `agentNetpolGuard:` block: enabled=true, canaryUrl=https://example.com, probeIntervalMs=250, maxWaitSeconds=30, requiredBlockedProbes=3, image=curlimages/curl:8.10.1 (matches drill convention).
+  - `charts/skquad/templates/operator-deployment.yaml` — renders the 6 `SKQUAD_NETPOL_GUARD_*` env vars on the operator (bool-aware ENABLED rendering, same pattern as builtinToolsEnabled).
+  - `operator/internal/controller/agent_controller.go` — `netpolGuardScript` const (POSIX-sh probe loop), `netpolGuardEnabled()`, `netpolGuardInt()` (invalid knobs fall back, never widen), `netpolGuardContainer()`; `applyAgentDeploymentSpec` sets/clears `InitContainers` explicitly so CreateOrUpdate removes the guard when disabled.
+  - `operator/internal/controller/squad_controller.go` — `int64Ptr` helper.
+  - `operator/internal/controller/netpol_guard_test.go` — NEW, 5 tests: default-enabled shape+env+securityContext, disabled absent + explicit clearing, knob overrides, invalid-knob fallback, script semantics (--max-time 2, counter reset, FAIL-CLOSED, no curl --fail).
+  - `scripts/check_netpol_guard_template.sh` — NEW chart-shape check (helm template: defaults on, enabled=false renders "false", knob overrides, exactly 6 guard env vars on the operator deployment only).
+  - `scripts/security-drills/bypass_suite.sh` — old raw startup-race probe reclassified FAIL→INFO (`raw-startup-race-nonagent`, informational for unguarded bare pods); NEW `agent-guard-birth` check: mimic pod in squad namespace with the same guard script + params read LIVE from the operator deployment env (chart-default fallback); asserts Ready + CONFIRMED log + first app-container probe blocked (0 pre-block hits); guard-disabled on operator = FAIL. Guard pod added to cleanup.
+- Guard semantics: loop `curl --max-time 2 $CANARY` every probeInterval; NON-ZERO curl exit (7 refused / 28 timeout / 5-6 unreachable) = connection blocked → consecutive++; ZERO exit (any full HTTP response, any status, TLS ok) = REACHED internet → counter reset. requiredBlockedProbes consecutive blocked → exit 0 (enforced). maxWaitSeconds exceeded → exit 1 FAIL-CLOSED (pod stuck Init:Error, workload never starts). Logs counts/status only, no secrets.
+- LIVE-DRILL-FOUND BUG (fixed): `runAsNonRoot:true` + curlimages/curl's non-numeric `curl_user` → CreateContainerConfigError on kubelet verification. Fixed by pinning `runAsUser:1000 / runAsGroup:1000` in the guard container (operator + drill mimic) + regression assertion in Go test.
+- Commands: `helm lint` clean (icon INFO only); `bash scripts/check_netpol_guard_template.sh` 15/15 PASS; `go build ./...` + `go vet` + `go test ./... -count=1` operator ALL GREEN (incl. 5 new guard tests); `bash -n` all drill scripts clean; LIVE `bypass_suite.sh` → `agent-guard-birth` PASS ("guard confirmed enforcement before workload start; first app-container probe blocked curl exit=7 — 0 pre-block internet hits"), raw race caught the race again this run (1/15 reached, probe #1, blocked from #2) now INFO. Remaining suite FAIL is only the known slice-A finding 2 (browser direct internet) — out of slice-B scope.
+- NOTE: guard takes effect for agent pods once the OPERATOR image carrying this code is deployed; until then the drill reads chart-default params via fallback and the real agent pods remain unguarded.
+- Result: committed on feat/tg9-audit-drills worktree (no push).

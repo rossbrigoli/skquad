@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,7 +64,67 @@ const (
 	// not ready yet (S-104). Without it a DesiredActive agent that never
 	// becomes ready is never revisited.
 	readinessRequeue = 10 * time.Second
+
+	// netpolGuardContainerName is the blocking init-container that gates
+	// agent workload startup on CONFIRMED egress enforcement (TG-9 slice
+	// B, startup-race mitigation for drill finding 1: a ~1-3s window
+	// where freshly-scheduled pods could reach the internet before
+	// NetworkPolicy programming caught up).
+	netpolGuardContainerName = "netpol-guard"
+	// Guard env knobs (set by the chart on the operator Deployment; see
+	// charts/skquad/templates/operator-deployment.yaml).
+	envNetpolGuardEnabled          = "SKQUAD_NETPOL_GUARD_ENABLED"
+	envNetpolGuardCanaryURL       = "SKQUAD_NETPOL_GUARD_CANARY_URL"
+	envNetpolGuardProbeIntervalMS = "SKQUAD_NETPOL_GUARD_PROBE_INTERVAL_MS"
+	envNetpolGuardMaxWaitSeconds  = "SKQUAD_NETPOL_GUARD_MAX_WAIT_SECONDS"
+	envNetpolGuardRequiredProbes  = "SKQUAD_NETPOL_GUARD_REQUIRED_BLOCKED_PROBES"
+	envNetpolGuardImage           = "SKQUAD_NETPOL_GUARD_IMAGE"
+	// defaultNetpolGuardImage matches the security-drill curl image
+	// (scripts/security-drills/lib.sh) — alpine/busybox: sh + curl +
+	// fractional sleep.
+	defaultNetpolGuardImage = "curlimages/curl:8.10.1"
 )
+
+// netpolGuardScript is the POSIX-sh probe loop run by the netpol-guard
+// init-container. Semantics (TG-9 slice B deliverable 3):
+//   - curl exit 0 means a FULL HTTP response arrived (any status code,
+//     TLS handshake succeeded) => the canary was REACHED => the pod is
+//     NOT blocked => reset the consecutive counter. HTTP error statuses
+//     (4xx/5xx) count as REACHED because reaching them proves internet
+//     connectivity past the policy boundary.
+//   - Non-zero curl exit (7 refused, 28 timeout, 5/6 unreachable/DNS
+//     blocked) is a connection-level failure => canary BLOCKED.
+//   - requiredBlockedProbes CONSECUTIVE blocked probes => enforcement
+//     confirmed => exit 0 and the agent container starts.
+//   - maxWaitSeconds exceeded without confirmation => exit 1: FAIL-CLOSED,
+//     the agent workload never starts (visible as Init:Error in pod status).
+// Logs counts/status only — no secrets, no response bodies.
+const netpolGuardScript = `set -u
+canary="$NETPOL_GUARD_CANARY_URL"
+required="$NETPOL_GUARD_REQUIRED_BLOCKED_PROBES"
+max_wait="$NETPOL_GUARD_MAX_WAIT_SECONDS"
+interval="$NETPOL_GUARD_PROBE_INTERVAL_SECONDS"
+deadline=$(( $(date +%s) + max_wait ))
+blocked=0
+echo "netpol-guard: awaiting egress enforcement (need $required consecutive blocked probes, max ${max_wait}s)"
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  if curl -s -o /dev/null --max-time 2 "$canary"; then
+    blocked=0
+    echo "netpol-guard: canary REACHED (full HTTP response) — enforcement not active, counter reset"
+  else
+    rc=$?
+    blocked=$((blocked + 1))
+    echo "netpol-guard: canary blocked (curl exit=$rc) consecutive=$blocked/$required"
+    if [ "$blocked" -ge "$required" ]; then
+      echo "netpol-guard: egress enforcement CONFIRMED ($required consecutive blocked probes)"
+      exit 0
+    fi
+  fi
+  sleep "$interval"
+done
+echo "netpol-guard: FAIL-CLOSED — enforcement not confirmed within ${max_wait}s"
+exit 1
+`
 
 // AgentReconciler reconciles Agent resources into per-agent Deployments.
 type AgentReconciler struct {
@@ -214,7 +275,84 @@ func (r *AgentReconciler) applyAgentDeploymentSpec(agent *skquadv1.Agent, deploy
 		deployment.Spec.Template.Spec.Volumes = nil
 	}
 	deployment.Spec.Template.Spec.Containers = []corev1.Container{container}
+	// TG-9 slice B: gate the agent workload on confirmed egress
+	// enforcement. The init-container must succeed before the agent
+	// container starts, closing the netpol startup race (drill finding 1).
+	// When the guard is disabled the field is explicitly cleared so
+	// CreateOrUpdate removes a previously-installed guard.
+	if guard := netpolGuardContainer(); guard != nil {
+		deployment.Spec.Template.Spec.InitContainers = []corev1.Container{*guard}
+	} else {
+		deployment.Spec.Template.Spec.InitContainers = nil
+	}
 	return replicas
+}
+
+// netpolGuardEnabled reports whether the netpol-guard init-container is
+// enabled. Default ON (fail-closed posture): only an explicit false/0/no
+// disables it.
+func netpolGuardEnabled() bool {
+	v := strings.ToLower(envOrDefault(envNetpolGuardEnabled, "true"))
+	return v != "false" && v != "0" && v != "no"
+}
+
+// netpolGuardInt reads a positive integer guard knob, falling back on
+// anything unusable (never widens: a bad value can only restore the
+// default, not disable or loosen the guard).
+func netpolGuardInt(name string, fallback int) int {
+	v, err := strconv.Atoi(strings.TrimSpace(envOrDefault(name, strconv.Itoa(fallback))))
+	if err != nil || v <= 0 {
+		return fallback
+	}
+	return v
+}
+
+// netpolGuardContainer builds the blocking netpol-guard init-container
+// for agent pods, or nil when disabled. The container probes the canary
+// (a destination ALWAYS blocked from the agent network position) and
+// only exits 0 after requiredBlockedProbes consecutive connection-level
+// failures confirm that egress policy is enforced.
+func netpolGuardContainer() *corev1.Container {
+	if !netpolGuardEnabled() {
+		return nil
+	}
+	intervalMS := netpolGuardInt(envNetpolGuardProbeIntervalMS, 250)
+	maxWait := netpolGuardInt(envNetpolGuardMaxWaitSeconds, 30)
+	required := netpolGuardInt(envNetpolGuardRequiredProbes, 3)
+	return &corev1.Container{
+		Name:    netpolGuardContainerName,
+		Image:   envOrDefault(envNetpolGuardImage, defaultNetpolGuardImage),
+		Command: []string{"/bin/sh", "-c", netpolGuardScript},
+		Env: []corev1.EnvVar{
+			{Name: "NETPOL_GUARD_CANARY_URL", Value: envOrDefault(envNetpolGuardCanaryURL, "https://example.com")},
+			// Seconds with millisecond precision so busybox fractional sleep matches probeIntervalMs.
+			{Name: "NETPOL_GUARD_PROBE_INTERVAL_SECONDS", Value: fmt.Sprintf("%.3f", float64(intervalMS)/1000.0)},
+			{Name: "NETPOL_GUARD_MAX_WAIT_SECONDS", Value: strconv.Itoa(maxWait)},
+			{Name: "NETPOL_GUARD_REQUIRED_BLOCKED_PROBES", Value: strconv.Itoa(required)},
+		},
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("10m"),
+				corev1.ResourceMemory: resource.MustParse("16Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("100m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			},
+		},
+		SecurityContext: &corev1.SecurityContext{
+			RunAsNonRoot:             boolPtr(true),
+			// curlimages/curl's USER is the non-numeric "curl_user"; kubelet
+			// cannot verify non-root from a name, so pin the numeric uid/gid
+			// (1000 = curl_user) or the container fails CreateContainerConfigError.
+			RunAsUser:                int64Ptr(1000),
+			RunAsGroup:               int64Ptr(1000),
+			AllowPrivilegeEscalation: boolPtr(false),
+			ReadOnlyRootFilesystem:   boolPtr(true),
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+		},
+	}
 }
 
 // agentEnv builds the container environment for the agent runtime.

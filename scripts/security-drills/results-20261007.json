@@ -1,0 +1,204 @@
+{
+  "bypass": {
+    "suite": "bypass",
+    "checks": [
+      {
+        "suite": "bypass",
+        "check": "agent-startup-race",
+        "status": "FAIL",
+        "detail": "1/15 startup probes REACHED internet (first block: probe #2 @ 03:11:38.382) — NetworkPolicy enforcement lags pod creation; exfiltration window for new agent pods",
+        "ts": "2026-10-07T03:12:01Z"
+      },
+      {
+        "suite": "bypass",
+        "check": "agent->internet",
+        "status": "PASS",
+        "detail": "curl exit=7 (blocked) for https://example.com",
+        "ts": "2026-10-07T03:12:12Z"
+      },
+      {
+        "suite": "bypass",
+        "check": "agent->lab-host",
+        "status": "PASS",
+        "detail": "curl exit=7 (blocked) for http://192.168.68.131/",
+        "ts": "2026-10-07T03:12:12Z"
+      },
+      {
+        "suite": "bypass",
+        "check": "agent->metadata-ip",
+        "status": "PASS",
+        "detail": "curl exit=7 (blocked) for http://169.254.169.254/",
+        "ts": "2026-10-07T03:12:12Z"
+      },
+      {
+        "suite": "bypass",
+        "check": "browser->internet-direct",
+        "status": "FAIL",
+        "detail": "REACHABLE (http=200) — expected blocked: https://example.com",
+        "ts": "2026-10-07T03:12:12Z"
+      },
+      {
+        "suite": "bypass",
+        "check": "browser->lab-host-direct",
+        "status": "PASS",
+        "detail": "curl exit=7 (blocked) for http://192.168.68.131/",
+        "ts": "2026-10-07T03:12:13Z"
+      },
+      {
+        "suite": "bypass",
+        "check": "browser->metadata-direct",
+        "status": "PASS",
+        "detail": "curl exit=28 (timeout (blocked or no respondent)) for http://169.254.169.254/",
+        "ts": "2026-10-07T03:12:18Z"
+      },
+      {
+        "suite": "bypass",
+        "check": "browser->k8s-api",
+        "status": "PASS",
+        "detail": "curl exit=7 (blocked) for https://kubernetes.default.svc:443/version",
+        "ts": "2026-10-07T03:12:18Z"
+      },
+      {
+        "suite": "bypass",
+        "check": "browser->proxy-allows-internet",
+        "status": "PASS",
+        "detail": "curl via 127.0.0.1:8888 http=200",
+        "ts": "2026-10-07T03:12:18Z"
+      },
+      {
+        "suite": "bypass",
+        "check": "gateway-unauth-dispatch",
+        "status": "PASS",
+        "detail": "POST /v1/echo no-auth → 401",
+        "ts": "2026-10-07T03:12:18Z"
+      },
+      {
+        "suite": "bypass",
+        "check": "gateway-wrong-token-dispatch",
+        "status": "PASS",
+        "detail": "POST /v1/echo wrong token (real agent id) → 401",
+        "ts": "2026-10-07T03:12:19Z"
+      },
+      {
+        "suite": "bypass",
+        "check": "gateway-unknown-agent-dispatch",
+        "status": "INFO",
+        "detail": "unknown agent id → http=502 (502=policy_unavailable fail-closed deny; acceptable but distinguishes unknown-agent from bad-cred)",
+        "ts": "2026-10-07T03:12:19Z"
+      }
+    ],
+    "finishedAt": "2026-10-07T03:12:19Z"
+  },
+  "secret-probe": {
+    "suite": "secret-probe",
+    "checks": [
+      {
+        "suite": "secret-probe",
+        "check": "agent-runtime-pods",
+        "status": "INFO",
+        "detail": "no running pods with label skquad.io/agent-id (agent runtime idle — browser pod is the live data-plane position; squad-netpol assertion covered by bypass_suite throwaway pod)",
+        "ts": "2026-10-07T03:12:19Z"
+      },
+      {
+        "suite": "secret-probe",
+        "check": "assert:skquad-browser/skquad-browser-service-7d8c8cf599-6jmrf",
+        "status": "FAIL",
+        "detail": "secrets present in data-plane env: browser-service/BROWSER_INTERNAL_TOKEN(secretRef) ",
+        "ts": "2026-10-07T03:12:19Z"
+      },
+      {
+        "suite": "secret-probe",
+        "check": "inventory:skquad-system/skquad-api-server-655844dd57-b26m9",
+        "status": "INFO",
+        "detail": "exempt infra pod — 7 secret-ish env var(s): SKQUAD_BREAKGLASS_PASSWORD_HASH(secretRef) SKQUAD_BREAKGLASS_JWT_KEY(secretRef) SKQUAD_LITELLM_MASTER_KEY(secretRef) SKQUAD_GATEWAY_CALLBACK_TOKEN(secretRef) SKQUAD_GATEWAY_INTERNAL_TOKEN(secretRef) SKQUAD_SEARCH_BRAVE_API_KEY(secretRef) SKQUAD_SEARCH_PERPLEXITY_API_KEY(secretRef)",
+        "ts": "2026-10-07T03:12:19Z"
+      },
+      {
+        "suite": "secret-probe",
+        "check": "inventory:skquad-system/skquad-embedder-75fc77c54-c77bk",
+        "status": "INFO",
+        "detail": "exempt infra pod — 0 secret-ish env var(s): ",
+        "ts": "2026-10-07T03:12:19Z"
+      },
+      {
+        "suite": "secret-probe",
+        "check": "inventory:skquad-system/skquad-llm-gateway-6f9b77b644-r8lcs",
+        "status": "INFO",
+        "detail": "exempt infra pod — 2 secret-ish env var(s): LITELLM_MASTER_KEY(secretRef) SKQUAD_GATEWAY_CALLBACK_TOKEN(secretRef)",
+        "ts": "2026-10-07T03:12:19Z"
+      },
+      {
+        "suite": "secret-probe",
+        "check": "inventory:skquad-system/skquad-operator-67bd586744-f72b2",
+        "status": "INFO",
+        "detail": "exempt infra pod — 1 secret-ish env var(s): SKQUAD_GPU_NODE_LABEL_KEY(literal:empty)",
+        "ts": "2026-10-07T03:12:19Z"
+      },
+      {
+        "suite": "secret-probe",
+        "check": "inventory:skquad-system/skquad-postgres-0",
+        "status": "INFO",
+        "detail": "exempt infra pod — 1 secret-ish env var(s): POSTGRES_PASSWORD(secretRef)",
+        "ts": "2026-10-07T03:12:19Z"
+      },
+      {
+        "suite": "secret-probe",
+        "check": "inventory:skquad-system/skquad-tool-gateway-65f7fd8b58-rxxgq",
+        "status": "INFO",
+        "detail": "exempt infra pod — 2 secret-ish env var(s): SKQUAD_GATEWAY_INTERNAL_TOKEN(secretRef) SKQUAD_BROWSER_INTERNAL_TOKEN(secretRef)",
+        "ts": "2026-10-07T03:12:19Z"
+      },
+      {
+        "suite": "secret-probe",
+        "check": "inventory:skquad-system/skquad-web-5664858486-wgj2g",
+        "status": "INFO",
+        "detail": "exempt infra pod — 1 secret-ish env var(s): SKQUAD_OIDC_CLIENT_SECRET(secretRef)",
+        "ts": "2026-10-07T03:12:19Z"
+      }
+    ],
+    "finishedAt": "2026-10-07T03:12:19Z",
+    "runs": 1
+  },
+  "revocation-drill": {
+    "suite": "revocation-drill",
+    "checks": [
+      {
+        "suite": "revocation-drill",
+        "check": "policy-endpoint-live",
+        "status": "PASS",
+        "detail": "GET /internal/v1/policy → 200 (etag=\"7eaf5502f119c1c82a1…, body=511B)",
+        "ts": "2026-10-07T03:12:49Z"
+      },
+      {
+        "suite": "revocation-drill",
+        "check": "etag-revalidation",
+        "status": "PASS",
+        "detail": "If-None-Match → 304 (cache revalidation works; unchanged policy refreshes TTL without re-transfer)",
+        "ts": "2026-10-07T03:12:49Z"
+      },
+      {
+        "suite": "revocation-drill",
+        "check": "gateway-policy-ttl",
+        "status": "INFO",
+        "detail": "live SKQUAD_TOOL_GATEWAY_POLICY_TTL=30s → worst-case revocation staleness ≈ 30s (cache is TTL-bound and fail-closed)",
+        "ts": "2026-10-07T03:12:49Z"
+      },
+      {
+        "suite": "revocation-drill",
+        "check": "poll-loop-stability",
+        "status": "PASS",
+        "detail": "policy snapshot stable across 6s window (no spurious churn); harness change-detection armed for real revocations",
+        "ts": "2026-10-07T03:12:55Z"
+      },
+      {
+        "suite": "revocation-drill",
+        "check": "harness-mechanics",
+        "status": "INFO",
+        "detail": "full-mode usage: ./revocation_drill.sh --agent <id> --grant-delete-ts <ISO8601> --resource <res-id> — admin revokes via UI/API, harness timestamps snapshot change; target staleness ≤ 30s",
+        "ts": "2026-10-07T03:12:55Z"
+      }
+    ],
+    "finishedAt": "2026-10-07T03:12:55Z",
+    "runs": 1
+  }
+}

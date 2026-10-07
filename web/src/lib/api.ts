@@ -234,6 +234,10 @@ export type AuditEntry = {
   resource_type: string;
   resource_id: string;
   squad_id?: string;
+  // TG-9: raw audit metadata (JSON object as sent by the control plane;
+  // may also arrive as a pre-encoded string in fixtures). See lib/audit.ts
+  // parseAuditMetadata for normalisation.
+  metadata?: unknown;
   timestamp?: string;
 };
 
