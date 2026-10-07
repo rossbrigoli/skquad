@@ -808,6 +808,61 @@ type AgentPermission struct {
 	Constraints  json.RawMessage `json:"constraints,omitempty"`
 }
 
+// ── TG-8 slice B: grant-request workflow (docs/tg8-grant-approvals-spec.md §B) ──
+
+// GrantRequestState is the workflow state of a grant request. Legal
+// transitions: pending_owner → pending_admin → approved | denied, plus
+// pending_owner → approved (non-high tiers) and * → denied from any
+// pending state. approved/denied are terminal.
+type GrantRequestState string
+
+const (
+	GrantRequestPendingOwner GrantRequestState = "pending_owner"
+	GrantRequestPendingAdmin GrantRequestState = "pending_admin"
+	GrantRequestApproved     GrantRequestState = "approved"
+	GrantRequestDenied       GrantRequestState = "denied"
+)
+
+// GrantLintFinding mirrors grantlint.Finding (§A pinned interface). Kept
+// in domain so storage, httpapi and the Inbox UI share one shape without
+// importing the linter package.
+type GrantLintFinding struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"` // "block" | "warn"
+	Detail   string `json:"detail"`
+}
+
+// FindingsHaveBlock reports whether any finding is block-severity — the
+// signal that disables auto-approval (spec §B: block ALWAYS forces review).
+func FindingsHaveBlock(findings []GrantLintFinding) bool {
+	for _, f := range findings {
+		if f.Severity == "block" {
+			return true
+		}
+	}
+	return false
+}
+
+// GrantRequest is a workflow record for a proposed agent→resource grant.
+// Requests are workflow only; approval materializes the effective grant
+// row (agent_permissions) — invariant 2 of the gateway design.
+type GrantRequest struct {
+	ID                string             `json:"id"`
+	ResourceID        string             `json:"resource_id"`
+	AgentID           string             `json:"agent_id,omitempty"`
+	RequesterUserID   string             `json:"requester_user_id"`
+	Tier              string             `json:"tier"`
+	State             GrantRequestState  `json:"state"`
+	RequestedScope    json.RawMessage    `json:"requested_scope,omitempty"`
+	Findings          []GrantLintFinding `json:"findings"`
+	ApprovedByOwnerAt *time.Time         `json:"approved_by_owner_at,omitempty"`
+	ApprovedByAdminAt *time.Time         `json:"approved_by_admin_at,omitempty"`
+	DeniedReason      string             `json:"denied_reason,omitempty"`
+	Expiry            *time.Time         `json:"expiry,omitempty"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at,omitempty"`
+}
+
 // GranteeType identifies who an access grant is issued to.
 type GranteeType string
 

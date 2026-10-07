@@ -36,6 +36,7 @@ type Store interface {
 	AIModelStore
 	PermissionStore
 	GrantStore
+	GrantRequestStore
 	MeteringStore
 	WakeLatencyStore
 	AuditStore
@@ -389,6 +390,39 @@ type PermissionStore interface {
 	// ListPermissionsByResource returns every agent grant pointing at one
 	// resource — the usage check behind delete warnings (S-103).
 	ListPermissionsByResource(ctx context.Context, typ domain.ResourceType, resourceID string) ([]*domain.AgentPermission, error)
+}
+
+// GrantRequestStore persists the TG-8 grant-request workflow (spec §B).
+// Requests are workflow records; approval materializes the effective
+// grant via PermissionStore — requests never become the effective artifact.
+type GrantRequestStore interface {
+	CreateGrantRequest(ctx context.Context, r *domain.GrantRequest) (*domain.GrantRequest, error)
+	GetGrantRequest(ctx context.Context, id string) (*domain.GrantRequest, error)
+	// ListGrantRequests filters by any combination of state, requester, and
+	// resource owner (OwnerUserID matches registry_resources.owner_user_id).
+	// Empty filter fields mean "no constraint on that axis".
+	ListGrantRequests(ctx context.Context, f GrantRequestFilter) ([]*domain.GrantRequest, error)
+	// UpdateGrantRequestState applies a workflow transition guarded by the
+	// expected current state: if the row moved under the caller (concurrent
+	// decision), it returns ErrConflict and nothing is written.
+	UpdateGrantRequestState(ctx context.Context, id string, expectedFrom domain.GrantRequestState, up GrantRequestUpdate) (*domain.GrantRequest, error)
+}
+
+// GrantRequestFilter narrows ListGrantRequests. Zero value = all requests.
+type GrantRequestFilter struct {
+	State           string
+	RequesterUserID string
+	OwnerUserID     string
+}
+
+// GrantRequestUpdate carries the mutable fields of one transition.
+// Timestamps are applied only when non-nil; DeniedReason is written as
+// given (only the deny transition carries one).
+type GrantRequestUpdate struct {
+	State             domain.GrantRequestState
+	ApprovedByOwnerAt *time.Time
+	ApprovedByAdminAt *time.Time
+	DeniedReason      string
 }
 
 // GrantStore persists owner-issued access grants.

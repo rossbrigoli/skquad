@@ -28,6 +28,7 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 	"github.com/rossbrigoli/skquad/control-plane/internal/egresspolicy"
 	"github.com/rossbrigoli/skquad/control-plane/internal/embeddings"
+	"github.com/rossbrigoli/skquad/control-plane/internal/grantlint"
 	"github.com/rossbrigoli/skquad/control-plane/internal/kube"
 	"github.com/rossbrigoli/skquad/control-plane/internal/promptcompo"
 	"github.com/rossbrigoli/skquad/control-plane/internal/search"
@@ -115,6 +116,7 @@ type Store interface {
 	storage.MessageStore
 	storage.InboxStore
 	storage.NotificationStore
+	storage.GrantRequestStore
 	storage.WorkNotificationStore
 	storage.PromptTierStore
 	storage.PromptTemplateStore
@@ -191,6 +193,11 @@ type Server struct {
 	// registration then answers 503 rather than creating unverified
 	// resources.
 	mcpEnumerate MCPEnumerateClient
+	// grantLinter (TG-8 slice B) is the grant-change linter injected per
+	// the §A pinned signature. nil ⇒ no findings (auto-approval stays
+	// enabled); production wires the real grantlint.LintChange via
+	// NewWithGrantLinter at merge time without touching call sites.
+	grantLinter GrantLinter
 }
 
 // EmbedderConfigWriter persists the admin's embedder runtime choice to
@@ -280,6 +287,20 @@ func NewWithOIDCAuthenticator(cfg *config.Config, store Store, oidcAuth OIDCAuth
 	return newServer(cfg, store, serverDeps{oidcAuth: oidcAuth})
 }
 
+// NewWithGrantLinting returns an HTTP handler with the production
+// grant-change linter (TG-8 slice A) wired into the grant-request
+// workflow on top of the standard dependency set.
+func NewWithGrantLinting(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, providerKeys ProviderKeyStore) http.Handler {
+	return newServer(cfg, store, serverDeps{oidcAuth: oidcAuth, crWriter: crWriter, providerKeys: providerKeys, grantLinter: grantlint.LintChange})
+}
+
+// NewWithGrantLinter returns an HTTP handler whose grant-request workflow
+// runs the given linter (TG-8 slice B). Production wires
+// grantlint.LintChange here once the package lands; tests inject stubs.
+func NewWithGrantLinter(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, linter GrantLinter) http.Handler {
+	return newServer(cfg, store, serverDeps{oidcAuth: oidcAuth, grantLinter: linter})
+}
+
 // NewWithSearchProviders returns an HTTP handler whose web_search proxy
 // uses the given providers (BT-2). A nil map builds the production set
 // from config secrets (duckduckgo always; brave/perplexity only when
@@ -325,6 +346,7 @@ type serverDeps struct {
 	injectedEmbeddings EmbeddingsClient
 	embedderConfig     EmbedderConfigWriter
 	mcpEnumerate       MCPEnumerateClient
+	grantLinter        GrantLinter
 }
 
 // buildLLMGateway constructs the LiteLLM gateway provisioner and model
@@ -508,6 +530,7 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 	// internal token config. Absent config leaves nil and MCP
 	// registration surfaces the gap as 503.
 	s.mcpEnumerate = deps.mcpEnumerate
+	s.grantLinter = deps.grantLinter
 	if s.mcpEnumerate == nil && cfg != nil && cfg.ToolGatewayURL != "" && cfg.GatewayInternalToken != "" {
 		client, err := newGatewayMCPEnumerateClient(cfg.ToolGatewayURL, cfg.GatewayInternalToken)
 		if err != nil {
@@ -722,6 +745,16 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Put("/admin/budgets/platform", s.putPlatformBudget)
 			r.Get("/admin/budgets/users/{userID}", s.getUserBudgetAdmin)
 			r.Put("/admin/budgets/users/{userID}", s.putUserBudgetAdmin)
+
+			// TG-8 slice B: grant-request workflow (state machine + tier
+			// routing). Authorization is per-state: owner attribute for
+			// approve-owner, platform_admin for approve-admin; see
+			// grant_requests.go.
+			r.Post("/grant-requests", s.createGrantRequestHandler)
+			r.Get("/grant-requests", s.listGrantRequestsHandler)
+			r.Post("/grant-requests/{requestID}/approve-owner", s.approveGrantOwnerHandler)
+			r.Post("/grant-requests/{requestID}/approve-admin", s.approveGrantAdminHandler)
+			r.Post("/grant-requests/{requestID}/deny", s.denyGrantHandler)
 
 			r.Post("/registry/ai-providers", s.createAIProvider)
 			r.Get("/registry/ai-providers", s.listAIProviders)
