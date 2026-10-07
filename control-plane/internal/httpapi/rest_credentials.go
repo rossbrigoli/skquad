@@ -56,6 +56,10 @@ var restAuthFields = map[string][]string{
 	"api_key_header":            {"token"},
 	"basic":                     {"username", "password"},
 	"oauth2_client_credentials": {"client_id", "client_secret", "token_url"},
+	// TG-10: ssh BYO static key custody (auth_mode=static_key). CA mode
+	// needs no per-resource secret — ephemeral certs are minted by the
+	// terminal-service from the cluster-held SSH CA.
+	"ssh_key": {"private_key_pem"},
 }
 
 // restAuthKindFromConfig extracts endpoint_config.auth_kind ("none" when
@@ -86,8 +90,15 @@ func authKindForType(resource *domain.RegistryResource) string {
 	if resource.Type == domain.ResGit {
 		return gitAuthKind
 	}
+	if resource.Type == domain.ResSSH {
+		return sshKeyAuthKind
+	}
 	return restAuthKindFromConfig(resource.EndpointConfig)
 }
+
+// sshKeyAuthKind is the fixed credential kind for TG-10 ssh resources
+// (BYO static key; CA-mode resources carry no secret).
+const sshKeyAuthKind = "ssh_key"
 
 // parseRestAuth validates the write-only auth payload against the
 // resource's auth_kind. Unknown fields, missing required fields and a
@@ -211,7 +222,7 @@ func (s *Server) internalCredentials(w http.ResponseWriter, r *http.Request) {
 	// TG-5 slice B2a: mcp resources join with bearer custody too — the
 	// gateway resolves the per-call bearer for mcp_call through this
 	// same endpoint (agent-scoped when supplied).
-	if err != nil || (resource.Type != domain.ResRest && resource.Type != domain.ResGit && resource.Type != domain.ResMCP) || resource.Status != domain.ResourceActive {
+	if err != nil || (resource.Type != domain.ResRest && resource.Type != domain.ResGit && resource.Type != domain.ResMCP && resource.Type != domain.ResSSH) || resource.Status != domain.ResourceActive {
 		s.auditCredentialAccess(r, "", resourceID, agentID, "", "denied")
 		writeError(w, http.StatusNotFound, "not_found", "no credential for resource")
 		return
