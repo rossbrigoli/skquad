@@ -8,8 +8,13 @@
 > access to them.
 >
 > Registry CRUD, permission grants, and sanitized runtime resource discovery are
-> implemented. Generated network egress and deeper connector semantics remain
-> follow-up work; see [`implementation-status.md`](implementation-status.md).
+> implemented. Since TG-1…TG-8 the **tool gateway** is the enforcement point
+> for `web`/`rest`/`mcp`/`git`/`browser` traffic, and grants carry risk
+> tiers, ceilings, confirmation gates and standing grants (see
+> [`tool-gateway.md`](tool-gateway.md),
+> [`tg8-grant-approvals-spec.md`](tg8-grant-approvals-spec.md)). Deeper
+> connector semantics remain follow-up work;
+> see [`implementation-status.md`](implementation-status.md).
 
 ---
 
@@ -33,6 +38,8 @@
 | **API** | An external HTTP endpoint. | Agent runtime (tool/connector). |
 | **Knowledge Base** | A vector database collection. | Agent runtime (RAG connector). |
 | **Project Workspace** | git repo / Jira / Confluence. | Agent runtime (workspace connector). |
+| **MCP Server** (TG-5) | A registered streamable-HTTP MCP endpoint (snapshot + drift detection). | Tool gateway `mcp` driver. |
+| **Browser session** (TG-6) | Managed Chromium, registered as an `mcp`-type resource whose grant selects `driver: "browser"`. | Tool gateway `browser` driver → `browser-service` quarantine zone. |
 
 ---
 
@@ -71,6 +78,36 @@ Squad owner → "Grant agent X access to resource Y"
   → agent X's permission set includes Y
   → enforced at the relevant component
 ```
+
+### 4a. Ceilings, risk tiers and confirmation (TG-8, shipped 0.1.270)
+
+Grants carry two governance fields beyond "allow":
+
+- **`risk_tier`** — `low | medium | high`, deciding the grant path: BYO
+  low/medium self-grants; shared medium needs owner approval; high needs
+  owner approval **plus** platform-admin co-sign (grant-request workflow,
+  owner Inbox).
+- **`policy_ceiling`** — JSONB cap on what the grant may use (hosts,
+  methods, MCP tools, numeric caps). Invariant: `effective ⊆ ceiling ∩
+  grantor's delegable scope` — grants transfer, never amplify.
+- **Confirmation gate** — `require_confirmation` (alias
+  `requires_confirmation`) at grant or ceiling level, or per tool via
+  `per_tool.<name>.require_confirmation`; sticky-true (either layer true ⇒
+  gated). Gated calls pause at the gateway (HTTP 202
+  `pending_confirmation`) until the owner decides **deny / approve-once /
+  approve-standing**; the retry carries `X-Skquad-Confirmation-Id`. The
+  gate is fail-closed: gateway cannot reach the control plane ⇒ 503, the
+  tool never runs.
+- **Standing grants** — "Approve This and Future" materializes a
+  `(resource, agent, tool)` row with expiry (default +90 d). Every
+  auto-passing call logs `matched_standing_grant_id` (audit honesty —
+  standing approvals are never invisible); revocation is one row and is
+  re-validated at consume time, so it is immediately effective.
+- **Pre-effect linting** — every grant/ceiling change is machine-checked by
+  `grantlint` before it takes effect or auto-approves; `block` findings
+  (metadata paths, cluster-internal reach, new credentialed reach,
+  widening) force owner review. See
+  [`security-threat-model.md`](security-threat-model.md) T13.
 
 ---
 
@@ -156,6 +193,27 @@ project_workspace(
 ```
 - A **git repo / Jira / Confluence** the agent can read/write via a workspace
   connector.
+
+### 5.7 Browser (via MCP, TG-6)
+```
+registry_resource(
+  type = "mcp",              # browser rides the MCP resource type
+  url,                       # browser-service MCP endpoint (:8090/mcp)
+  status
+)
+# grant selects the driver and the session policy:
+grant.config.driver = "browser"
+grant policy: deny_hosts, max_pages, max_screenshot_bytes,
+              idle_timeout_s, max_session_minutes,
+              max_sessions_per_agent (default 1)
+```
+- The gateway `browser` driver creates a session bound immutably to
+  `(agent_id, task_id, resource_id)` and injects the session token into
+  tool args; agents never see or supply it.
+- Egress is layered: quarantine netpol except-list → mandatory Chromium
+  `--proxy-server` → netguard L7 floor. See
+  [`tg6-browser-protocol.md`](tg6-browser-protocol.md) and threat-model
+  T12.
 
 ---
 

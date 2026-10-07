@@ -11,6 +11,12 @@
 > This is the target threat model, not a production certification. Open
 > implementation gaps are tracked in
 > [`implementation-status.md`](implementation-status.md).
+>
+> **Refreshed 2026-10-07** to reflect what TG-6 (browser service, 0.1.269),
+> TG-8 (risk tiers / approvals / standing grants / grant linter, 0.1.270) and
+> TG-9 (drills, netpol-guard init-container, audit dashboard — in review on
+> `feat/tg9-audit-drills`) actually shipped, per live-cluster drills and the
+> WORKLOG. New: T11–T13 and three refreshed residual risks in §5.
 
 ---
 
@@ -97,8 +103,9 @@
     `raw_model_output` / `pending_review`; runtime prompts tell the model that
     memory is contextual evidence, not executable instruction.
   - Injection detection / guardrails at the gateway remain later work.
-  - **Human review** — sensitive actions (e.g. cross-squad handoff, external
-    writes) can require approval (later).
+  - **Human review** — shipped (TG-8, 0.1.270): confirmation-gated tool
+    calls land in the owner Inbox with deny / approve-once / approve-standing
+    actions; risky grant changes are linted before taking effect (T13).
 
 ### T4. LLM gateway abuse
 - **Threat:** An agent (or compromised agent) makes excessive or unauthorized
@@ -124,7 +131,14 @@
 - **Mitigations:**
   - Grants are **explicit, scoped** (specific permissions), and **revocable**.
   - Cross-squad messages/task creation are **enforced + audited**.
-  - Owners can **revoke** grants; revocation takes effect on the next check.
+  - Owners can **revoke** grants; revocation takes effect on the next check
+    (gateway policy cache TTL ≤ 30 s, fail-closed on CP unreachable).
+  - **Audit honesty for standing grants (TG-8):** every confirmation-gated
+    call that passes on a standing grant logs `matched_standing_grant_id`
+    and `gate:"standing"` on its audit event — a standing approval can
+    never act as an invisible bypass. The standing grant is **re-validated
+    at consume time**, so a revoke between approval and execution is
+    immediately effective.
   - **Least privilege** — grant only what's needed (e.g. `read`, `talk`,
     `ping`, or `add_task`).
 
@@ -166,15 +180,71 @@
   - **Backpressure** — message queue + task backlog bounds concurrent work.
   - **Alerts** on resource saturation.
 
+### T11. Network-policy startup race (exfiltration window at pod birth)
+- **Threat:** A freshly scheduled pod in a squad namespace runs for ~1–3 s
+  before the CNI finishes enforcing the namespace NetworkPolicies. A pod
+  born malicious can egress to the internet inside that window. Found live
+  by the TG-9 bypass drill (2026-10-07, reproduced twice).
+- **Mitigation (built in TG-9 slice B; pending merge + operator deploy):**
+  a blocking **`netpol-guard` init-container** on agent pods. It probes a
+  public canary every `probeIntervalMs` (default 250 ms); a **non-zero curl
+  exit** (refused/timeout/unreachable) counts as *connection blocked*.
+  **`requiredBlockedProbes` consecutive blocked probes** (default 3)
+  confirm enforcement and release the workload. If enforcement is not
+  confirmed within `maxWaitSeconds` (default 30) the init-container exits 1
+  — **fail-closed**: the pod stays `Init:Error` and the agent workload never
+  starts. Chart values: `agentNetpolGuard.*` (enabled by default; canary,
+  interval, wait, confirmation count, image). Guarded pod kind: the agent
+  runtime pod only — browser pods are covered by the proxy/netguard story
+  (T12) instead. The drill's `agent-guard-birth` check asserts the first
+  app-container probe is already blocked before the workload starts.
+
+### T12. Browser quarantine escape
+- **Threat:** A compromised browser session (drive-by / Chromium exploit) or
+  the browser container itself reaches internal services or bypasses the
+  egress denylist.
+- **Mitigations (defense-in-depth, three layers, TG-6 0.1.269):**
+  1. **NetworkPolicy except-list** — quarantine namespace
+     (`skquad-browser`) is default-deny all ingress+egress; browser pod
+     egress is public `80/443` with RFC1918, CGNAT, link-local and cluster
+     pod/service CIDRs excluded
+     (`browserService.deniedEgressCIDRs` + `toolGateway.clusterCIDRs`).
+  2. **Mandatory Chromium `--proxy-server`** — browser-service always
+     launches Chromium with `--proxy-server=http://127.0.0.1:8888` into
+     the browser-proxy sidecar; there is no supported launch path without
+     it, and the in-service navigation ceiling re-checks every subrequest
+     (host denylist, private-IP check, scheme/limits) fail-closed.
+  3. **netguard L7 floor** — the browser-proxy sidecar dials with
+     resolve→pin→blocklist (loopback/RFC1918/CGNAT/link-local/metadata/
+     IPv6 ULA denied), ports 80/443 only.
+- **Residual:** layers 2–3 are process-level; a raw socket from the pod
+  bypasses both (see §5, first bullet).
+
+### T13. Risky grant change (silent widening)
+- **Threat:** A grant/ceiling edit quietly gives an agent new credentialed
+  reach, new HTTP methods / MCP tools, or a path to cloud-metadata or
+  cluster-internal space.
+- **Mitigation (shipped TG-8, 0.1.270):** the **grant-change linter**
+  (`control-plane/internal/grantlint`) runs as a **pre-effect policy
+  check** on every grant/ceiling change — before persistence and before any
+  auto-approval. It is a deterministic before/after diff
+  (`LintChange(before, after)`) producing findings: `metadata_path`
+  (absolute block, fires regardless of baseline), `cluster_internal_path`,
+  `new_credentialed_reach`, `new_http_method`, `new_mcp_tool`,
+  `ceiling_widened` — severity `block` or `warn`. **Block findings
+  override auto-approval** and force the change through the owner Inbox
+  grant-request workflow with the findings shown; warns ride along without
+  blocking (v1).
+
 ---
 
 ## 4. Defense in Depth
 
 | Layer | Control |
 |-------|---------|
-| **Network** | Namespace isolation, egress policies, default-deny. |
+| **Network** | Namespace isolation, egress policies, default-deny, `netpol-guard` init-container on agent pods (T11), browser quarantine except-list + mandatory proxy + netguard floor (T12). |
 | **Identity** | OIDC (users), owner-created agent identities, virtual keys. |
-| **Authorization** | Two-layer RBAC (user + agent), access grants, deny-by-default. |
+| **Authorization** | Two-layer RBAC (user + agent), access grants, deny-by-default, risk tiers + pre-effect grant-change linting (T13), confirmation gates / standing grants. |
 | **Data** | Scoped credentials, no raw secrets in DB, RLS (optional). |
 | **Runtime** | Plugin sandboxing, tool allow-lists, least privilege. |
 | **Accountability** | Append-only audit, metering, alerts. |
@@ -184,11 +254,36 @@
 
 ## 5. Residual Risks
 
+- **Raw non-proxy egress from the browser pod (public hosts only).** The
+  quarantine netpol must allow public `80/443` at **pod** level because the
+  netguard proxy shares the browser pod's network namespace. A raw `curl`
+  from the browser container therefore reaches any **public** host directly,
+  bypassing the proxy's SSRF host-denylist — the proxy denylist is an L7
+  control and is **not network-enforced** for public destinations. Private
+  space is excluded at L3 (post-hotfix; see next bullet). Accepted for v1;
+  pod-per-session isolation is the eventual answer.
+- **Deployed browser/gateway except-list bug (hotfix pending merge).** The
+  shipped chart emitted one `except:` key per loop iteration; duplicate YAML
+  keys collapsed to the **last CIDR only** (10.43.0.0/16), so on the live
+  cluster (0.1.270) RFC1918/CGNAT/link-local are still reachable from the
+  quarantine pod. Fixed by a single-`except:` rendering fix, **open as PR
+  #203** — treat as live until merged and deployed. (TG-9 drill finding 2.)
+- **Gateway agent-existence oracle (502-vs-401).** With a valid internal
+  token, an unknown agent id returns `502 policy_unavailable` (a
+  fail-closed deny) while a bad credential returns `401` — letting a
+  caller distinguish "agent exists" from "credential invalid". Low
+  severity (requires cluster-internal reachability + token class);
+  normalize to a single 401 shape later. (TG-9 drill finding, INFO.)
+- **Browser pod holds `BROWSER_INTERNAL_TOKEN`.** The browser-service
+  container carries the platform-internal gateway↔browser service token in
+  its env (secretRef). Strict gateway-custody says data-plane pods hold no
+  tokens; the browser zone is currently classified as trusted infra.
+  **Custody ruling pending** (TG-9 drill finding 3, MEDIUM).
 - **Prompt injection** cannot be fully eliminated with LLMs; mitigations reduce
   blast radius (least privilege, egress controls, audit) but a determined
   attacker with a permitted tool could still cause harm within that scope.
-  **Mitigation:** keep scopes narrow; require human approval for sensitive
-  actions (later).
+  **Mitigation:** keep scopes narrow; confirmation gates + owner Inbox
+  approvals shipped in TG-8 (0.1.270).
 - **Compromised control plane** — if the API server is compromised, enforcement
   is bypassed. **Mitigation:** harden the control plane, least-privilege DB
   roles, audit, and (later) external secrets manager + mTLS.
@@ -217,5 +312,9 @@
   (later).
 - **mTLS** between control plane and agent pods (hardening).
 - **Prompt-injection guardrails** at the gateway (later).
-- **Human-approval gates** for sensitive actions (later).
+- **Human-approval gates** for sensitive actions — **shipped** (TG-8:
+  risk tiers, grant requests, confirmation gates, standing grants).
+- **Netpol-guard rollout:** the guard is effective only once the operator
+  image carrying it is deployed; until then real agent pods remain
+  exposed to the birth race (T11).
 - **Penetration test** before GA (implementation).
