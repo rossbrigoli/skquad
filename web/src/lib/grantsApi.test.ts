@@ -74,6 +74,16 @@ describe("confirmation client (slice C1 endpoints)", () => {
     await listConfirmations("tok", { mine: true, state: "pending" });
     expect(calls.get).toEqual([["/confirmations?mine=true&state=pending", "tok"]]);
   });
+  // TG-8 coverage top-up: the falsy side of the filter flags — no query
+  // string must be appended when nothing is set (or when mine is false).
+  it("lists all confirmations with no query string when no filters are given", async () => {
+    await listConfirmations("tok");
+    expect(calls.get).toEqual([["/confirmations", "tok"]]);
+  });
+  it("ignores a falsey mine flag and empty state", async () => {
+    await listConfirmations("tok", { mine: false, state: "" });
+    expect(calls.get[0][0]).toBe("/confirmations");
+  });
   it("approve-once hits /approve-once", async () => {
     await approveConfirmationOnce("tok", "c1");
     expect(calls.post).toEqual([["/confirmations/c1/approve-once", "tok", {}]]);

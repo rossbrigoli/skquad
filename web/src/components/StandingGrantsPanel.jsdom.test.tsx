@@ -138,3 +138,29 @@ describe("empty + error states", () => {
     expect(screen.getByText("boom")).toBeInTheDocument();
   });
 });
+
+// TG-8 coverage top-up: defensive branches the main suite never hits —
+// non-array payloads, missing expiry, and non-Error rejection fallback.
+describe("defensive branches (coverage top-up)", () => {
+  it("treats a non-array payload as empty", () => {
+    env.grants = null as unknown as unknown[];
+    render(<StandingGrantsPanel />);
+    expect(screen.getByText("No standing grants")).toBeInTheDocument();
+  });
+
+  it("shows an em-dash when a grant has no expiry", () => {
+    env.grants = [sg("g5", { expires_at: "" })];
+    render(<StandingGrantsPanel />);
+    expect(screen.getByText("—")).toBeInTheDocument();
+  });
+
+  it("falls back to 'revoke failed' when the rejection is not an Error", async () => {
+    env.revoke = vi.fn().mockRejectedValue("boom");
+    env.grants = [sg("g1")];
+    render(<StandingGrantsPanel />);
+    await userEvent.click(screen.getByRole("button", { name: "Revoke" }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("revoke failed");
+  });
+});

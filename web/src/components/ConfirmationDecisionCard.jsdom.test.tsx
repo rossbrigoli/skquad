@@ -151,4 +151,21 @@ describe("error handling", () => {
     expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
     expect(screen.queryByText("Approved (one-shot)")).not.toBeInTheDocument();
   });
+
+  // TG-8 coverage top-up: defensive branches — non-array list payload
+  // and the non-Error rejection fallback in errMessage().
+  it("hides the card when the confirmations list is not an array", async () => {
+    env.confirmations = "not-an-array" as unknown as unknown[];
+    const { container } = render(<ConfirmationDecisionCard messageId="m1" />);
+    await waitFor(() => expect(container.firstChild).toBeNull());
+  });
+
+  it("falls back to the generic message when the rejection is not an Error", async () => {
+    env.approveOnce = vi.fn().mockRejectedValue("boom");
+    env.confirmations = [pendingConf()];
+    render(<ConfirmationDecisionCard messageId="m1" />);
+    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("decision failed");
+    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+  });
 });

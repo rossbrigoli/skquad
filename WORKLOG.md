@@ -1073,3 +1073,15 @@
 - BACKEND PAYLOAD GAPS FOUND (reported, NOT changed): (1) the confirmation inbox message has no structured confirmation_id — join only works via confirmation.inbox_message_id (fine, but a payload field would be more direct); (2) PendingConfirmation JSON carries resource_id only — no resource NAME — so the inbox card and standing-grants table show raw resource ids (message body has the name but isn't machine-readable); (3) GrantRequest carries only requested_scope ("after") — no before-snapshot — so the UI "before/after diff" is the requested-scope summary + linter findings detail (findings encode what was gained/widened).
 - Commands: `npx vitest run` → 91 files, 1246 tests ALL GREEN (was 1214 before slice D; +32 new). `npm run build` clean. eslint on new files clean (inbox/page.tsx has ONE pre-existing react-hooks/set-state-in-effect error, verified present at HEAD before my change — untouched).
 - Result: committed on feat/tg8-risk-approvals worktree (no push).
+
+## 2026-10-07 12:45 — TG-8 slice D-fix: web branch-coverage top-up
+- Objective: CI "Web — Unit tests with coverage" failed only on branches 89.87% < 90% global threshold.
+- Files changed (tests only, no production code):
+  - web/src/lib/grantsWorkflow.test.ts — +6: confirmationIsPending false-side, confirmationDecisionChip default + approved_once, grantRequestStateMeta unknown-state default, countFindingsBySeverity non-block/warn severity, summarizeScope empty numeric_caps.
+  - web/src/lib/grantsApi.test.ts — +2: listConfirmations no-filter and falsey mine/empty-state (no query string appended).
+  - web/src/components/StandingGrantsPanel.jsdom.test.tsx — +3: non-array payload, missing expiry em-dash, non-Error revoke fallback toast.
+  - web/src/components/ConfirmationDecisionCard.jsdom.test.tsx — +2: non-array confirmations list hides card, non-Error rejection fallback + revert.
+  - web/src/components/GrantRequestsPanel.branches.jsdom.test.tsx — NEW (+8): fetch-error notice, non-array payload guard, collapse-on-second-toggle, null agent_id "squad grant", denied_reason + default-scope fallback, owner/admin approval stamps, blank-reason deny "denied" fallback, non-Error rejection fallback.
+- Commands: `npx vitest run --coverage` → 92 files, 1267 tests ALL GREEN (was 1246; +21). Branches 90.49% (3227/3566) ≥ 90% threshold with margin. `npm run build` clean.
+- Remaining known-uncoverable-by-UI branches: GrantRequestsPanel busy-guard (line 72), StandingGrantsPanel !pendingRevoke guard (line 35), ConfirmationDecisionCard cancelled-race (line 58) + no-confirmation guard (line 73) — defensive early-returns unreachable through rendered interactions.
+- Result: committed on feat/tg8-risk-approvals worktree (no push).

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   confirmationDecisionChip,
   confirmationDecisionLabel,
+  confirmationIsPending,
   countFindingsBySeverity,
   dateInputToIso,
   defaultExpiryDateString,
@@ -15,6 +16,8 @@ import {
   standingGrantStatus,
   summarizeScope,
   STANDING_GRANT_DEFAULT_DAYS,
+  type GrantLintFinding,
+  type GrantRequestState,
   type PendingConfirmation,
   type StandingGrant,
 } from "./grantsWorkflow";
@@ -166,5 +169,35 @@ describe("summarizeScope", () => {
     expect(summarizeScope({ hosts: [] })).toEqual([]);
     expect(summarizeScope(null)).toEqual([]);
     expect(summarizeScope("junk")).toEqual([]);
+  });
+});
+
+// TG-8 coverage top-up: branches the happy-path suites never reached —
+// the pending predicate's false side and the switch defaults that guard
+// against states arriving outside the known union (API drift).
+describe("pending predicate + switch defaults", () => {
+  it("confirmationIsPending is false for every decided state", () => {
+    expect(confirmationIsPending("pending")).toBe(true);
+    expect(confirmationIsPending("approved_once")).toBe(false);
+    expect(confirmationIsPending("approved_standing")).toBe(false);
+    expect(confirmationIsPending("denied")).toBe(false);
+    expect(confirmationIsPending("expired")).toBe(false);
+  });
+  it("confirmationDecisionChip falls back to a bare chip for pending", () => {
+    expect(confirmationDecisionChip("pending")).toBe("chip");
+  });
+  it("confirmationDecisionChip covers approved_once alongside approved_standing", () => {
+    expect(confirmationDecisionChip("approved_once")).toContain("chip-done");
+  });
+  it("grantRequestStateMeta degrades gracefully on an unknown state", () => {
+    const drifted = "teleported" as unknown as GrantRequestState;
+    expect(grantRequestStateMeta(drifted)).toEqual({ label: "teleported", className: "chip" });
+  });
+  it("countFindingsBySeverity ignores severities outside block/warn", () => {
+    const junk: GrantLintFinding[] = [{ code: "note", severity: "info", detail: "fyi" }];
+    expect(countFindingsBySeverity(junk)).toEqual({ block: 0, warn: 0 });
+  });
+  it("summarizeScope skips an empty numeric_caps object (no blank row)", () => {
+    expect(summarizeScope({ numeric_caps: {} })).toEqual([]);
   });
 });
