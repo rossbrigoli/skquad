@@ -1110,3 +1110,20 @@
 - Commands: `vitest run --coverage` → 95 files, 1334 tests ALL GREEN; global branches 90.45% (≥90.3 target, CI gate 90). `npm run build` clean (/audit route static). eslint new files clean.
 - Note: worktree node_modules installed via `cp -al` from main checkout (identical lockfile); symlink rejected by Turbopack.
 - Result: committed on feat/tg9-audit-drills worktree (no push).
+
+## 2026-10-07 15:15 — TG-9 slice A: security bypass suite + secret probe + revocation harness (S-255)
+- Objective: live-runnable security drills in `scripts/security-drills/` — network bypass assertions, env-secret custody probe, revocation-latency timing harness, weekly CronJob manifest (manifest only, chart gating later).
+- Files changed: `scripts/security-drills/{lib.sh,bypass_suite.sh,secret_probe.sh,revocation_drill.sh,drill-cronjob.yaml,results-20261007.json}` (all new).
+- Commands run (LIVE vs lab cluster, KUBECONFIG=k3s-cluster):
+  - `./bypass_suite.sh` → 10 PASS / 2 FAIL (exit 1)
+  - `./secret_probe.sh` → 1 violation (exit 1)
+  - `./revocation_drill.sh --poll-only` → 3 PASS (exit 0)
+  - `bash -n` all scripts clean (shellcheck not installed on host).
+- SYSTEM FINDINGS (real, not script bugs):
+  1. **CRITICAL — netpol startup race:** freshly created pods in squad namespaces have a ~1–3s window where NetworkPolicies are not yet enforced. Reproduced twice: race pod probe #1 @02:59:18 got http=200 to internet (blocked from #2 on); final bypass run startup-race check caught 1/15 probes reaching internet before first block. A malicious agent pod can exfiltrate at birth. Mitigation options: init-container that blocks until policy verified, kubectl wait-on-enforcement pattern, or CNI with synchronous enforcement (e.g. kube-egress-policy/cilium). Needs decision.
+  2. **HIGH — browser pod bypasses its SSRF proxy:** `skquad-browser-egress` allows 0.0.0.0/0:80,443 except only 10.43.0.0/16. Raw curl from browser-service container reaches the internet directly (http=200), skipping browser-proxy's SSRF floor/denylist entirely. RFC1918 (192.168.68.0/24), CGNAT and 169.254.0.0/16 are NOT excluded from browser egress — lab-host "PASS" was only because nothing listens on 192.168.68.131:80. Fix: add except blocks for 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10; ideally iptables-redirect in pod so proxy is unavoidable.
+  3. **MEDIUM — browser pod carries BROWSER_INTERNAL_TOKEN in env** (secretRef in browser-service container). Violates strict gateway-custody for data-plane pods. It is a platform-internal service token (gateway↔browser auth), not a BYOM/agent credential — decide whether custody rule applies or browser is reclassified as trusted infra.
+  4. **INFO — gateway status asymmetry:** wrong token + real agent id → 401 (correct). Unknown agent id → 502 policy_unavailable (fail-closed deny, but distinguishes unknown-agent from bad-credential to callers).
+- Revocation harness mechanics: grants are DB-only (CP Postgres), surfaced via `GET /internal/v1/policy?agent=<id>` (no app-layer auth, topology-protected). Gateway caches with TTL+ETag (live `SKQUAD_TOOL_GATEWAY_POLICY_TTL=30s`, fail-closed). Harness port-forwards api-server, polls every 2s, hashes snapshot; full mode takes `--grant-delete-ts` (admin revokes via UI/API) and timestamps first change → staleness ≤30s target. Poll-only mode proved: endpoint live (200), If-None-Match→304 revalidation works, snapshot stable.
+- Secret probe scoping: ASSERTED = pods labelled `skquad.io/agent-id` (none running — agent runtime idle) + all skquad-browser pods. EXEMPT (inventory only, justified in script header) = skquad-system infra (api-server/operator/tool-gateway/llm-gateway/postgres/web/embedder — legitimate custody).
+- Result: committed on feat/tg9-audit-drills worktree (no push). Suites exit non-zero BY DESIGN until findings 1–3 are remediated — that is the drill telling the truth.
