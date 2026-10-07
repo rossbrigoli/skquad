@@ -15,6 +15,7 @@ import (
 
 // Finding codes (stable wire values — Inbox UI and tests key on these).
 const (
+	// #nosec G101 -- finding-code wire constant, not a credential.
 	CodeNewCredentialedReach = "new_credentialed_reach"
 	CodeNewHTTPMethod        = "new_http_method"
 	CodeNewMCPTool           = "new_mcp_tool"
