@@ -18,6 +18,7 @@ const env = vi.hoisted(() => ({
   deleteError: null as Error | null,
   agentNames: { ag1: "coder", ag2: "tester" } as Record<string, string>,
   markRead: vi.fn(),
+  confirmations: [] as unknown[],
 }));
 
 vi.mock("next/link", () => ({
@@ -50,10 +51,19 @@ vi.mock("../../lib/useAttention", () => ({
   }),
 }));
 
-vi.mock("../../lib/api", () => ({
-  apiGet: async (path: string) => {
+vi.mock("../../lib/api", async (importOriginal) => {
+  // TG-8 slice D: spread the real module so ConfirmationDecisionCard's
+  // grantsApi imports (apiPost etc.) resolve; the three transports the
+  // inbox page itself uses stay mocked exactly as before.
+  const mod = await importOriginal<typeof import("../../lib/api")>();
+  return {
+    ...mod,
+    apiGet: async (path: string) => {
     env.getCalls.push(path);
     if (path === "/users") return env.users;
+    // TG-8 slice D: the ConfirmationDecisionCard looks up pending
+    // confirmations through the same transport.
+    if (path.startsWith("/confirmations")) return env.confirmations;
     return [];
   },
   // S-239: the inbox list now goes through apiGetWithTotal so the pager
@@ -79,7 +89,8 @@ vi.mock("../../lib/api", () => ({
     const deletedId = path.split("/").pop();
     env.messages = env.messages.filter((m) => (m as { id: string }).id !== deletedId);
   },
-}));
+  };
+});
 
 import InboxPage from "./page";
 import type { InboxMessage } from "../../lib/api";
@@ -108,6 +119,7 @@ beforeEach(() => {
   env.getCalls = [];
   env.deleteCalls = [];
   env.deleteError = null;
+  env.confirmations = [];
   env.markRead = vi.fn().mockResolvedValue(undefined);
 });
 
@@ -466,5 +478,52 @@ describe("envelope read-state icons (S-234)", () => {
     expect(statusSvg(container, "Subject m1").querySelector("path")?.getAttribute("d")).toContain(
       "M21.2 8.4",
     );
+  });
+});
+
+// TG-8 slice D: confirmation cards ride action_required messages. The
+// card joins via the confirmation's inbox_message_id (the inbox payload
+// carries none) and renders the 3 decision buttons inline in the
+// reading view. Non-confirmation action_required messages stay plain.
+describe("confirmation cards in the inbox (TG-8 slice D)", () => {
+  it("opens the decision card for an action_required message linked to a pending confirmation", async () => {
+    env.messages = [msg("m1", { kind: "action_required", subject: "Approve deploy on db?" })];
+    env.confirmations = [
+      {
+        id: "c1",
+        resource_id: "res1",
+        agent_id: "ag1",
+        tool: "deploy",
+        args_hash: "abcdef1234567890",
+        state: "pending",
+        inbox_message_id: "m1",
+        requested_by: "me",
+        created_at: now(),
+      },
+    ];
+    render(<InboxPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /Open message: Approve deploy/ }));
+    expect(await screen.findByRole("button", { name: "Deny" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve This and Future" })).toBeInTheDocument();
+    // The lookup went to the mine+pending endpoint.
+    expect(env.getCalls).toContain("/confirmations?mine=true&state=pending");
+  });
+
+  it("action_required WITHOUT a linked confirmation renders no decision card", async () => {
+    env.messages = [msg("m2", { kind: "action_required", subject: "Grant request awaiting review" })];
+    env.confirmations = [];
+    render(<InboxPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /Open message: Grant request/ }));
+    expect(await screen.findByText("Grant request awaiting review")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve This and Future" })).not.toBeInTheDocument();
+  });
+
+  it("plain agent_message never triggers the confirmation lookup", async () => {
+    env.messages = [msg("m3", { kind: "agent_message" })];
+    render(<InboxPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /Open message: Subject m3/ }));
+    await screen.findByText("Body of message m3");
+    expect(env.getCalls.some((c) => c.startsWith("/confirmations"))).toBe(false);
   });
 });

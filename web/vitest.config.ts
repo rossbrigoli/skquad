@@ -78,6 +78,11 @@ export default defineConfig({
         // TG-4b: BYO git registration panel + per-agent git credential control.
         "src/components/GitAgentCredential.tsx",
         "src/components/GitResourcePanel.tsx",
+        // TG-8 slice D: approval-workflow surfaces (confirmation card,
+        // grant-request review, standing grants panel).
+        "src/components/ConfirmationDecisionCard.tsx",
+        "src/components/GrantRequestsPanel.tsx",
+        "src/components/StandingGrantsPanel.tsx",
       ],
       exclude: [
         "src/**/*.test.ts",
