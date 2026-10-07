@@ -16,6 +16,7 @@ import (
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/audit"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/boundary"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/config"
+	"github.com/rossbrigoli/skquad/tool-gateway/internal/confirmation"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/credentials"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/drivers"
 	browserdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/browser"
@@ -35,6 +36,7 @@ func main() {
 
 	policyClient := policy.NewClient(cfg.CPBaseURL, cfg.PolicyTTL, cfg.PolicyTimeout)
 	credsClient := credentials.NewClient(cfg.CPBaseURL, cfg.PolicyTimeout)
+	confirmClient := confirmation.NewClient(cfg.CPBaseURL, cfg.PolicyTimeout)
 
 	var auditSink audit.Emitter
 	switch cfg.AuditSink {
@@ -64,6 +66,7 @@ func main() {
 			"git": gitdriver.New(credsClient),
 		},
 		InternalToken: cfg.InternalToken,
+		Confirmation:  confirmClient,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

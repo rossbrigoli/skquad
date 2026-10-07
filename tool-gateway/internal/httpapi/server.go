@@ -51,6 +51,11 @@ type Deps struct {
 	// X-Skquad-Internal-Token (or Authorization: Bearer). Empty =
 	// those endpoints are disabled (fail-closed). TG-5 slice B1.
 	InternalToken string
+	// Confirmation is the CP confirmation gate client (TG-8 slice C2).
+	// Required for gated grants: a gated dispatch with no client wired
+	// fails closed (503 confirmation_unavailable). Ungated grants never
+	// touch it.
+	Confirmation ConfirmationClient
 }
 
 // Server implements http.Handler for the gateway.
@@ -305,6 +310,12 @@ func (s *Server) handleWebFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	resource = grant.ResourceID
 
+	// 3b. TG-8 §C confirmation gate (before driver dispatch).
+	gateCtx, proceed := s.confirmationGate(w, r, reqID, agentID, grant, operation, operation, body)
+	if !proceed {
+		return
+	}
+
 	// 4. Driver dispatch.
 	drv, ok := s.deps.Drivers["web"]
 	if !ok {
@@ -312,7 +323,7 @@ func (s *Server) handleWebFetch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no web driver registered")
 		return
 	}
-	resp, err := drv.Handle(r.Context(), &drivers.Request{
+	resp, err := drv.Handle(gateCtx, &drivers.Request{
 		Agent:     principal,
 		Resource:  grant.ResourceID,
 		Operation: operation,
@@ -442,6 +453,12 @@ func (s *Server) handleRestCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 3b. TG-8 §C confirmation gate (before driver dispatch).
+	gateCtx, proceed := s.confirmationGate(w, r, reqID, agentID, grant, operation, operation, body)
+	if !proceed {
+		return
+	}
+
 	// 4. Driver dispatch.
 	drv, ok := s.deps.Drivers["rest"]
 	if !ok {
@@ -449,7 +466,7 @@ func (s *Server) handleRestCall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no rest driver registered")
 		return
 	}
-	resp, err := drv.Handle(r.Context(), &drivers.Request{
+	resp, err := drv.Handle(gateCtx, &drivers.Request{
 		Agent:     principal,
 		Resource:  grant.ResourceID,
 		Operation: operation,
@@ -606,6 +623,18 @@ func (s *Server) handleMCPCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 3b. TG-8 §C confirmation gate. The confirmation tool identity is
+	// the MCP tool name (falls back to the operation when the body was
+	// unparseable — the driver will reject it anyway).
+	confirmTool := toolName
+	if confirmTool == "" {
+		confirmTool = operation
+	}
+	gateCtx, proceed := s.confirmationGate(w, r, reqID, agentID, grant, operation, confirmTool, body)
+	if !proceed {
+		return
+	}
+
 	// 4. Driver dispatch. A grant whose config (or ceiling) declares
 	// `driver: "browser"` routes to the TG-6 browser driver (session
 	// brokering); everything else keeps the plain mcp driver.
@@ -619,7 +648,7 @@ func (s *Server) handleMCPCall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no "+driverName+" driver registered")
 		return
 	}
-	resp, err := drv.Handle(r.Context(), &drivers.Request{
+	resp, err := drv.Handle(gateCtx, &drivers.Request{
 		Agent:     principal,
 		Resource:  grant.ResourceID,
 		Operation: operation,
@@ -760,7 +789,18 @@ func (s *Server) handleGitProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Streaming dispatch. NOTE: no body read/cap - the driver
+	// 3b. TG-8 §C confirmation gate. The git body is a streamed
+	// packfile that is NEVER buffered here, so the args_hash binds the
+	// trailing path ("<org>/<repo>.git/<service>") instead of payload
+	// bytes — deviation documented in WORKLOG: approvals are bound to
+	// the addressed repo+service, not the pack contents.
+	gateCtx, proceed := s.confirmationGate(w, r, reqID, agentID, grant, operation, operation,
+		[]byte(r.PathValue("trailing")))
+	if !proceed {
+		return
+	}
+
+	// 3c. Streaming dispatch. NOTE: no body read/cap - the driver
 	// streams the packfile through (a cap here would break pushes).
 	drv, ok := s.deps.StreamDrivers["git"]
 	if !ok {
@@ -769,7 +809,7 @@ func (s *Server) handleGitProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tw := &writeTracker{ResponseWriter: w}
-	result, err := drv.ServeStream(tw, r, &drivers.Request{
+	result, err := drv.ServeStream(tw, r.WithContext(gateCtx), &drivers.Request{
 		Agent:     principal,
 		Resource:  grant.ResourceID,
 		Operation: operation,
