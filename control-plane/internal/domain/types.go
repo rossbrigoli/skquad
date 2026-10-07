@@ -808,6 +808,116 @@ type AgentPermission struct {
 	Constraints  json.RawMessage `json:"constraints,omitempty"`
 }
 
+// ── TG-8 slice B: grant-request workflow (docs/tg8-grant-approvals-spec.md §B) ──
+
+// GrantRequestState is the workflow state of a grant request. Legal
+// transitions: pending_owner → pending_admin → approved | denied, plus
+// pending_owner → approved (non-high tiers) and * → denied from any
+// pending state. approved/denied are terminal.
+type GrantRequestState string
+
+const (
+	GrantRequestPendingOwner GrantRequestState = "pending_owner"
+	GrantRequestPendingAdmin GrantRequestState = "pending_admin"
+	GrantRequestApproved     GrantRequestState = "approved"
+	GrantRequestDenied       GrantRequestState = "denied"
+)
+
+// GrantLintFinding mirrors grantlint.Finding (§A pinned interface). Kept
+// in domain so storage, httpapi and the Inbox UI share one shape without
+// importing the linter package.
+type GrantLintFinding struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"` // "block" | "warn"
+	Detail   string `json:"detail"`
+}
+
+// FindingsHaveBlock reports whether any finding is block-severity — the
+// signal that disables auto-approval (spec §B: block ALWAYS forces review).
+func FindingsHaveBlock(findings []GrantLintFinding) bool {
+	for _, f := range findings {
+		if f.Severity == "block" {
+			return true
+		}
+	}
+	return false
+}
+
+// GrantRequest is a workflow record for a proposed agent→resource grant.
+// Requests are workflow only; approval materializes the effective grant
+// row (agent_permissions) — invariant 2 of the gateway design.
+type GrantRequest struct {
+	ID                string             `json:"id"`
+	ResourceID        string             `json:"resource_id"`
+	AgentID           string             `json:"agent_id,omitempty"`
+	RequesterUserID   string             `json:"requester_user_id"`
+	Tier              string             `json:"tier"`
+	State             GrantRequestState  `json:"state"`
+	RequestedScope    json.RawMessage    `json:"requested_scope,omitempty"`
+	Findings          []GrantLintFinding `json:"findings"`
+	ApprovedByOwnerAt *time.Time         `json:"approved_by_owner_at,omitempty"`
+	ApprovedByAdminAt *time.Time         `json:"approved_by_admin_at,omitempty"`
+	DeniedReason      string             `json:"denied_reason,omitempty"`
+	Expiry            *time.Time         `json:"expiry,omitempty"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at,omitempty"`
+}
+
+// ── TG-8 slice C: confirmation gates + standing grants (docs/tg8-grant-approvals-spec.md §C) ──
+
+// ConfirmationState is the state of a gated-call confirmation. Legal
+// transitions: pending → approved_once | approved_standing | denied,
+// plus approved_once → expired at consume time when the 15-minute TTL
+// has passed. denied/expired are terminal.
+type ConfirmationState string
+
+const (
+	ConfirmationPending          ConfirmationState = "pending"
+	ConfirmationApprovedOnce     ConfirmationState = "approved_once"
+	ConfirmationApprovedStanding ConfirmationState = "approved_standing"
+	ConfirmationDenied           ConfirmationState = "denied"
+	ConfirmationExpired          ConfirmationState = "expired"
+)
+
+// PendingConfirmation is one gated tool call awaiting (or having received)
+// the resource owner's decision. The row is bound to the exact call via
+// args_hash; approvals never cover a different argument set.
+type PendingConfirmation struct {
+	ID         string            `json:"id"`
+	ResourceID string            `json:"resource_id"`
+	AgentID    string            `json:"agent_id"`
+	Tool       string            `json:"tool"`
+	ArgsHash   string            `json:"args_hash"`
+	State      ConfirmationState `json:"state"`
+	// InboxMessageID links the owner's action_required inbox message.
+	InboxMessageID string `json:"inbox_message_id,omitempty"`
+	// RequestedBy is the resource owner's user id resolved at request
+	// time (the authority for this confirmation).
+	RequestedBy  string     `json:"requested_by"`
+	DeniedReason string     `json:"denied_reason,omitempty"`
+	ApprovedAt   *time.Time `json:"approved_at,omitempty"`
+	ConsumedAt   *time.Time `json:"consumed_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at,omitempty"`
+}
+
+// StandingGrant is a persistent "approve this and future" decision: the
+// resource owner pre-authorizes (agent, tool) calls until expires_at.
+// Revoke is soft (revoked_at set) so the row survives as audit trail;
+// the live uniqueness index guarantees at most one live row per
+// (resource, agent, tool) — invariant 2: revocation is immediately
+// effective because the live row is gone.
+type StandingGrant struct {
+	ID         string     `json:"id"`
+	ResourceID string     `json:"resource_id"`
+	AgentID    string     `json:"agent_id"` // specific agent for v1; '*' literal reserved for future all-agent grants
+	Tool       string     `json:"tool"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	CreatedBy  string     `json:"created_by"`
+	CreatedAt  time.Time  `json:"created_at"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+}
+
 // GranteeType identifies who an access grant is issued to.
 type GranteeType string
 

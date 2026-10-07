@@ -140,7 +140,10 @@ func (d *Driver) Handle(ctx context.Context, req *drivers.Request) (*drivers.Res
 	if !pol.toolAllowed(in.Tool) {
 		return nil, drivers.Denied("tool_denied")
 	}
-	if pol.requiresConfirmation(in.Tool) {
+	if pol.requiresConfirmation(in.Tool) && !drivers.ConfirmationSatisfied(ctx) {
+		// TG-8 slice C: the gateway gate runs BEFORE dispatch; this
+		// fail-closed denial only fires if a confirmation-required tool
+		// somehow reaches the driver without a satisfied gate decision.
 		return nil, drivers.Denied("confirmation_required")
 	}
 

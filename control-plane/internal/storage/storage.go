@@ -36,6 +36,8 @@ type Store interface {
 	AIModelStore
 	PermissionStore
 	GrantStore
+	GrantRequestStore
+	ConfirmationStore
 	MeteringStore
 	WakeLatencyStore
 	AuditStore
@@ -389,6 +391,99 @@ type PermissionStore interface {
 	// ListPermissionsByResource returns every agent grant pointing at one
 	// resource — the usage check behind delete warnings (S-103).
 	ListPermissionsByResource(ctx context.Context, typ domain.ResourceType, resourceID string) ([]*domain.AgentPermission, error)
+}
+
+// GrantRequestStore persists the TG-8 grant-request workflow (spec §B).
+// Requests are workflow records; approval materializes the effective
+// grant via PermissionStore — requests never become the effective artifact.
+type GrantRequestStore interface {
+	CreateGrantRequest(ctx context.Context, r *domain.GrantRequest) (*domain.GrantRequest, error)
+	GetGrantRequest(ctx context.Context, id string) (*domain.GrantRequest, error)
+	// ListGrantRequests filters by any combination of state, requester, and
+	// resource owner (OwnerUserID matches registry_resources.owner_user_id).
+	// Empty filter fields mean "no constraint on that axis".
+	ListGrantRequests(ctx context.Context, f GrantRequestFilter) ([]*domain.GrantRequest, error)
+	// UpdateGrantRequestState applies a workflow transition guarded by the
+	// expected current state: if the row moved under the caller (concurrent
+	// decision), it returns ErrConflict and nothing is written.
+	UpdateGrantRequestState(ctx context.Context, id string, expectedFrom domain.GrantRequestState, up GrantRequestUpdate) (*domain.GrantRequest, error)
+}
+
+// GrantRequestFilter narrows ListGrantRequests. Zero value = all requests.
+type GrantRequestFilter struct {
+	State           string
+	RequesterUserID string
+	OwnerUserID     string
+}
+
+// GrantRequestUpdate carries the mutable fields of one transition.
+// Timestamps are applied only when non-nil; DeniedReason is written as
+// given (only the deny transition carries one).
+type GrantRequestUpdate struct {
+	State             domain.GrantRequestState
+	ApprovedByOwnerAt *time.Time
+	ApprovedByAdminAt *time.Time
+	DeniedReason      string
+}
+
+// ConfirmationStore persists the TG-8 slice C confirmation gates and
+// standing grants (docs/tg8-grant-approvals-spec.md §C). Same
+// guarded-transition contract as GrantRequestStore: expectedFrom
+// mismatch ⇒ ErrConflict, nothing written (race-safe double-decision).
+type ConfirmationStore interface {
+	CreatePendingConfirmation(ctx context.Context, c *domain.PendingConfirmation) (*domain.PendingConfirmation, error)
+	GetPendingConfirmation(ctx context.Context, id string) (*domain.PendingConfirmation, error)
+	// ListPendingConfirmations filters by any combination of state,
+	// requesting owner, and resource. Empty filter fields mean "no
+	// constraint on that axis".
+	ListPendingConfirmations(ctx context.Context, f ConfirmationFilter) ([]*domain.PendingConfirmation, error)
+	// UpdateConfirmationState applies a state transition guarded by the
+	// expected current state; concurrent decision ⇒ ErrConflict.
+	UpdateConfirmationState(ctx context.Context, id string, expectedFrom domain.ConfirmationState, up ConfirmationUpdate) (*domain.PendingConfirmation, error)
+
+	// FindLiveStandingGrant returns the live (not revoked, not expired
+	// as of `now`) standing grant for exactly (resource, agent, tool),
+	// or ErrNotFound. v1 matches the agent id exactly — the '*' reserved
+	// literal never matches.
+	FindLiveStandingGrant(ctx context.Context, resourceID, agentID, tool string, now time.Time) (*domain.StandingGrant, error)
+	// UpsertStandingGrant creates the live grant or, when one already
+	// exists for (resource, agent, tool), refreshes expires_at and
+	// created_by in place (the live-row uniqueness invariant).
+	UpsertStandingGrant(ctx context.Context, g *domain.StandingGrant) (*domain.StandingGrant, error)
+	// ListStandingGrants filters by resource owner (OwnerUserID matches
+	// registry_resources.owner_user_id). Revoked grants are excluded
+	// unless IncludeRevoked is set.
+	ListStandingGrants(ctx context.Context, f StandingGrantFilter) ([]*domain.StandingGrant, error)
+	// GetStandingGrant resolves a grant by id alone (authz before revoke).
+	GetStandingGrant(ctx context.Context, id string) (*domain.StandingGrant, error)
+	// RevokeStandingGrant soft-deletes the live row (sets revoked_at).
+	// Missing or already-revoked ⇒ ErrNotFound.
+	RevokeStandingGrant(ctx context.Context, id string, at time.Time) (*domain.StandingGrant, error)
+}
+
+// ConfirmationFilter narrows ListPendingConfirmations. Zero value = all.
+type ConfirmationFilter struct {
+	State       string
+	RequestedBy string
+	ResourceID  string
+}
+
+// ConfirmationUpdate carries the mutable fields of one confirmation
+// transition. Timestamps/links apply only when non-nil; DeniedReason is
+// written only when non-empty (deny transition).
+type ConfirmationUpdate struct {
+	State          domain.ConfirmationState
+	InboxMessageID *string
+	ApprovedAt     *time.Time
+	ConsumedAt     *time.Time
+	DeniedReason   string
+}
+
+// StandingGrantFilter narrows ListStandingGrants. Zero value = all live
+// grants.
+type StandingGrantFilter struct {
+	OwnerUserID    string
+	IncludeRevoked bool
 }
 
 // GrantStore persists owner-issued access grants.

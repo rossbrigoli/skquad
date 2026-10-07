@@ -38,6 +38,9 @@ type MemoryStore struct {
 	boards          map[string]*domain.Board
 	boardsBySquad   map[string]string
 	grants          map[string]*domain.AccessGrant
+	grantRequests   map[string]*domain.GrantRequest
+	pendingConfirms map[string]*domain.PendingConfirmation
+	standingGrants  map[string]*domain.StandingGrant
 	aiProviders     map[string]*domain.AIProvider
 	aiModels        map[string]*domain.AIModel
 	userModelGrants map[string]*domain.UserModelGrant
@@ -109,6 +112,9 @@ func NewMemoryStore() *MemoryStore {
 		boards:              map[string]*domain.Board{},
 		boardsBySquad:       map[string]string{},
 		grants:              map[string]*domain.AccessGrant{},
+		grantRequests:       map[string]*domain.GrantRequest{},
+		pendingConfirms:     map[string]*domain.PendingConfirmation{},
+		standingGrants:      map[string]*domain.StandingGrant{},
 		aiProviders:         map[string]*domain.AIProvider{},
 		aiModels:            map[string]*domain.AIModel{},
 		userModelGrants:     map[string]*domain.UserModelGrant{},

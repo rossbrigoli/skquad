@@ -62,6 +62,8 @@ import {
 } from "../../lib/providerTest";
 import { OrganizationPromptTab } from "../../components/PromptSettingsTab";
 import { DeadLettersPanel } from "../../components/DeadLettersPanel";
+import { GrantRequestsPanel } from "../../components/GrantRequestsPanel";
+import { StandingGrantsPanel } from "../../components/StandingGrantsPanel";
 import { PlatformSettingsTab } from "../../components/PlatformSettingsTab";
 import { NotificationPreferencesPanel } from "../../components/NotificationPreferencesPanel";
 import { DeleteResourceButton } from "../../components/DeleteResourceButton";
@@ -135,7 +137,7 @@ function duplicateModelMessage(err: unknown): string {
 // S-117: "appearance" and "session" tabs removed — theme switching lives
 // in the top-right ThemeToggle and session details/sign-out in the
 // bottom-left UserMenu popover, both available on every page.
-type Tab = "providers" | "ai-models" | "access" | "prompt" | "templates" | "dead-letters" | "platform" | "notifications";
+type Tab = "providers" | "ai-models" | "access" | "prompt" | "templates" | "dead-letters" | "platform" | "notifications" | "grant-requests" | "standing-grants";
 
 // S-204 follow-up: Resources is no longer an in-page tab — it lives on
 // real routes (/settings/resources + /settings/resources/<type>) so
@@ -1321,6 +1323,19 @@ function SettingsTabs({
         <TabButton active={activeTab === "dead-letters"} label="Dead letters" onClick={() => onSelect("dead-letters")} />
       ) : null}
       {isAdmin ? <TabButton active={activeTab === "platform"} label="Platform" onClick={() => onSelect("platform")} /> : null}
+      {/* TG-8 slice D: approval-workflow surfaces. Owners decide on their own
+          resources and standing grants, so every signed-in human sees these
+          tabs (the server scopes each list to the caller). */}
+      <TabButton
+        active={activeTab === "grant-requests"}
+        label="Grant Requests"
+        onClick={() => onSelect("grant-requests")}
+      />
+      <TabButton
+        active={activeTab === "standing-grants"}
+        label="Standing Grants"
+        onClick={() => onSelect("standing-grants")}
+      />
       {/* S-199: notification mute preferences are per-user, so every
           signed-in human sees this tab (not admin-only). */}
       <TabButton active={activeTab === "notifications"} label="Notifications" onClick={() => onSelect("notifications")} />
@@ -1343,6 +1358,10 @@ function renderTabContent(activeTab: Tab, isAdmin: boolean) {
         return <DeadLettersPanel />;
       case "platform":
         return <PlatformSettingsTab />;
+      case "grant-requests":
+        return <GrantRequestsPanel isAdmin={isAdmin} />;
+      case "standing-grants":
+        return <StandingGrantsPanel />;
       case "notifications":
         return <NotificationPreferencesPanel />;
       default:
@@ -1354,6 +1373,13 @@ function renderTabContent(activeTab: Tab, isAdmin: boolean) {
   }
   if (activeTab === "notifications") {
     return <NotificationPreferencesPanel />;
+  }
+  // TG-8 slice D: owner-facing approval surfaces (server scopes by caller).
+  if (activeTab === "grant-requests") {
+    return <GrantRequestsPanel isAdmin={false} />;
+  }
+  if (activeTab === "standing-grants") {
+    return <StandingGrantsPanel />;
   }
   return null;
 }

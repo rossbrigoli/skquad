@@ -4104,3 +4104,66 @@ button.squad-tab.active {
 .budget-user-error {
   grid-column: 1 / -1;
 }
+
+/* ── TG-8 slice D: approval workflows (confirmations, grant requests, standing grants) ── */
+.confirmation-card {
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--line, #d0d7de);
+  border-left: 4px solid var(--status-warning, #e8930c);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+}
+.confirmation-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2, 8px);
+}
+.confirmation-tool { font-weight: 700; }
+.confirmation-meta { color: var(--ink-muted); font-size: 0.9rem; }
+.confirmation-actions { display: flex; flex-wrap: wrap; gap: var(--space-2, 8px); }
+.confirmation-action-row { display: flex; gap: var(--space-2, 8px); margin-top: var(--space-2, 8px); }
+.confirmation-decided-note { color: var(--ink-muted); font-size: 0.9rem; margin: 0; }
+.findings-list { display: flex; flex-direction: column; gap: 6px; margin: var(--space-2, 8px) 0; }
+.finding {
+  padding: 6px 10px;
+  border-left: 3px solid var(--ink-muted);
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+.finding-block { border-left-color: var(--status-blocked, #c0392b); color: var(--status-blocked, #c0392b); }
+.finding-warn { border-left-color: var(--status-warning, #e8930c); color: var(--status-warning, #e8930c); }
+.grant-request-row { flex-wrap: wrap; }
+.grant-request-blocked { border-left: 3px solid var(--status-blocked, #c0392b); }
+.grant-request-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+}
+.grant-request-detail {
+  flex-basis: 100%;
+  padding: var(--space-2, 8px) 0 0;
+  border-top: 1px dashed var(--line, #d0d7de);
+  margin-top: var(--space-2, 8px);
+}
+.grant-request-no-findings { color: var(--ink-muted); font-size: 0.9rem; }
+.grant-request-denied-reason { color: var(--status-blocked, #c0392b); }
+.grant-request-stamp { color: var(--ink-muted); font-size: 0.85rem; margin: 2px 0; }
+.grant-scope-table { border-collapse: collapse; margin: var(--space-2, 8px) 0; }
+.grant-scope-table th { text-align: left; padding: 2px 12px 2px 0; color: var(--ink-muted); font-weight: 600; }
+.grant-scope-table td { padding: 2px 0; }
+.data-table { width: 100%; border-collapse: collapse; }
+.data-table th, .data-table td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line, #d0d7de); }
+.standing-grants-intro { color: var(--ink-muted); }
+.standing-grant-expired { opacity: 0.65; }
+.standing-grant-revoked { opacity: 0.5; }
+.standing-grant-revoked td:nth-child(2) { text-decoration: line-through; }
+.standing-grant-revoked-at { color: var(--ink-muted); font-size: 0.8rem; margin-left: 6px; }

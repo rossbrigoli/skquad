@@ -33,6 +33,7 @@ import Link from "next/link";
 import { AuthGate } from "../../components/AuthGate";
 import { AppShell } from "../../components/AppShell";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { ConfirmationDecisionCard } from "../../components/ConfirmationDecisionCard";
 import { EmptyState } from "../../components/EmptyState";
 import { IconEnvelopeRead, IconEnvelopeUnread } from "../../components/icons";
 import { apiDelete, apiGet, apiGetWithTotal, type ApiUser, type InboxMessage } from "../../lib/api";
@@ -545,6 +546,12 @@ function InboxDetail({
         <div className="inbox-detail-body">
           <p className="inbox-body-text">{body}</p>
         </div>
+        {/* TG-8 slice D: gated-call confirmations ride the action_required
+            kind; the card joins the confirmation via its inbox_message_id
+            and renders the owner's 3 decision buttons inline. */}
+        {message.kind === "action_required" ? (
+          <ConfirmationDecisionCard messageId={message.id} />
+        ) : null}
         {taskHref ? (
           <div className="inbox-detail-footer">
             <Link className="inbox-task-link" href={taskHref}>
