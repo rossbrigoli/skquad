@@ -124,3 +124,28 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-internal-token" (include "skquad.browserServiceName" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
+
+{{- /* TG-10: terminal-service (Terminal-as-a-Service) helpers */ -}}
+{{- define "skquad.terminalServiceName" -}}
+{{- printf "%s-terminal-service" (include "skquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "skquad.terminalServiceImage" -}}
+{{- printf "%s:%s" .Values.terminalService.image.repository .Values.terminalService.image.tag -}}
+{{- end -}}
+
+{{- define "skquad.stepCAName" -}}
+{{- printf "%s-step-ca" (include "skquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "skquad.stepCAImage" -}}
+{{- printf "%s:%s" .Values.terminalService.stepCA.image.repository .Values.terminalService.stepCA.image.tag -}}
+{{- end -}}
+
+{{- define "skquad.terminalInternalTokenSecretName" -}}
+{{- if .Values.terminalService.internalTokenSecret.name -}}
+{{- .Values.terminalService.internalTokenSecret.name -}}
+{{- else -}}
+{{- printf "%s-internal-token" (include "skquad.terminalServiceName" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
