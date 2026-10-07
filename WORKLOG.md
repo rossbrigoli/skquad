@@ -1085,3 +1085,28 @@
 - Commands: `npx vitest run --coverage` → 92 files, 1267 tests ALL GREEN (was 1246; +21). Branches 90.49% (3227/3566) ≥ 90% threshold with margin. `npm run build` clean.
 - Remaining known-uncoverable-by-UI branches: GrantRequestsPanel busy-guard (line 72), StandingGrantsPanel !pendingRevoke guard (line 35), ConfirmationDecisionCard cancelled-race (line 58) + no-confirmation guard (line 73) — defensive early-returns unreachable through rendered interactions.
 - Result: committed on feat/tg8-risk-approvals worktree (no push).
+
+## 2026-10-07 13:55 — TG-9 slice C: audit dashboard + per-resource metering rollups (web only)
+- Objective: new Audit & Metering dashboard (admin + resource-owner scoped per backend enforcement), human-readable TG-8 decision codes, detail drawer, per-resource metering rollups, nav, tests ≥ CI branch threshold. Backend untouched.
+- Backend endpoints wired (discovered, NOT changed):
+  - GET /api/v1/audit?squad_id=<id>&limit=<n> — platform_admin only (listAudit)
+  - GET /api/v1/squads/{squadID}/audit?limit=<n> — squad owner or admin (listSquadAudit)
+  - Existing metering (unchanged, per-agent/squad only): GET /squads/{id}/metering, GET /agents/{id}/metering?since=, GET /metering/summary, GET /costs/summary
+  - limit: server default 100, cap 500 (boundedIntQuery) — UI window 100/200/500.
+- Files changed (all under web/):
+  - src/lib/audit.ts NEW — AuditFilters, buildAuditPath (admin vs squad-scoped endpoint, squad_id+limit only), filterAuditEntries (agent/task/resource/decision/time client-side), STABLE_DECISION_CODES (12 backend codes → human labels: denied_replayed→"already used", ceiling_exceeded→"limit exceeded", session_invalid, pending_confirmation, args_hash_mismatch, approval_expired, standing_grant_not_live, denied_by_owner, confirmation_expired/pending, browser_busy, confirmation_unavailable), deriveDecision (gate→action→reason precedence), deriveTier, taskRefFor, formatActor, clampAuditLimit.
+  - src/lib/resourceMetering.ts NEW — aggregateResourceRollups (per resource_type:id calls/allowed/denied/pending/lastSeen from audit entries), rollupTotals. Tokens/cost NOT attributable per resource (see gaps).
+  - src/app/audit/page.tsx NEW — tabs "Audit log" / "Resource metering"; filter bar (squad, agent, task, resource, decision, from/to, window); table timestamp/actor/resource/action/decision-chip/tier; EventDetail drawer with full fields + metadata JSON; owner "Pick a squad" gate; loading/empty/error states.
+  - src/components/AppShell.tsx — admin-only "Audit & Metering" rail item (tailNavForRole); icons.tsx IconAudit.
+  - src/lib/breadcrumbs.ts — /audit crumb label.
+  - src/lib/api.ts — AuditEntry += metadata?: unknown (additive wire field).
+  - src/app/globals.css — chip-allow/deny/pending + audit table/filter/detail styles.
+  - vitest.config.ts — coverage include: src/app/audit/page.tsx.
+  - Tests: src/lib/audit.test.ts (41: code-table completeness vs backend list, path building, filters, decision precedence), src/lib/resourceMetering.test.ts (8: aggregation math, ordering, lastSeen, totals), src/app/audit/page.jsdom.test.tsx (18: admin/owner endpoint selection, filters, chips, drawer, metering tab, empty/error states).
+- BACKEND GAPS FOUND (reported, NOT fixed):
+  1. Audit list supports ONLY squad_id + limit — no server-side agent/task/resource/time/decision filters; UI filters client-side over the ≤500-event window (truncation risk for busy squads).
+  2. No per-resource metering: metering aggregates exist per squad/agent/platform only; no raw metering list endpoint → per-resource tokens/cost impossible from API; UI shows audit-derived call/decision counts with tokens/cost marked "n/a" + TODO in resourceMetering.ts.
+  3. tool-gateway dispatch audit (audit.Event: gate outcome, resource, operation, decision) goes to the stdout sink only — not queryable via control-plane, so gateway-level gate rows don't appear in /api/v1/audit.
+- Commands: `vitest run --coverage` → 95 files, 1334 tests ALL GREEN; global branches 90.45% (≥90.3 target, CI gate 90). `npm run build` clean (/audit route static). eslint new files clean.
+- Note: worktree node_modules installed via `cp -al` from main checkout (identical lockfile); symlink rejected by Turbopack.
+- Result: committed on feat/tg9-audit-drills worktree (no push).

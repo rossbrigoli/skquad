@@ -4167,3 +4167,71 @@ button.squad-tab.active {
 .standing-grant-revoked { opacity: 0.5; }
 .standing-grant-revoked td:nth-child(2) { text-decoration: line-through; }
 .standing-grant-revoked-at { color: var(--ink-muted); font-size: 0.8rem; margin-left: 6px; }
+
+/* TG-9 slice C: Audit & Metering dashboard */
+.chip-allow { color: var(--status-done); background: var(--status-done-bg); }
+.chip-deny { color: var(--status-blocked); background: var(--status-blocked-bg); }
+.chip-pending { color: var(--status-in-review); background: var(--status-in-review-bg); }
+
+.audit-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: flex-end;
+  margin-bottom: var(--space-4);
+}
+.audit-filter-bar label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.82rem;
+}
+.audit-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
+  gap: var(--space-4);
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .audit-layout { grid-template-columns: minmax(0, 1fr); }
+}
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.audit-table th {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 2px solid var(--border);
+  font-weight: 600;
+}
+.audit-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.audit-table tbody tr { cursor: pointer; }
+.audit-table tbody tr:hover { background: var(--surface-hover, rgba(128, 128, 128, 0.08)); }
+.audit-table tbody tr.selected { background: var(--status-running-bg); }
+.audit-detail dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 0;
+}
+.audit-detail dt { font-weight: 600; }
+.audit-detail dd { margin: 0; word-break: break-word; }
+.audit-meta {
+  max-height: 260px;
+  overflow: auto;
+  background: var(--status-idle-bg);
+  padding: 8px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+}
+.audit-detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
