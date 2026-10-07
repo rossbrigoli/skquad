@@ -1,6 +1,6 @@
 module github.com/rossbrigoli/skquad/terminal-service
 
-go 1.24
+go 1.25.0
 
 require (
 	github.com/minio/minio-go/v7 v7.0.81
@@ -20,6 +20,6 @@ require (
 	github.com/rs/xid v1.6.0 // indirect
 	golang.org/x/net v0.42.0 // indirect
 	golang.org/x/sys v0.35.0 // indirect
-	golang.org/x/text v0.28.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
