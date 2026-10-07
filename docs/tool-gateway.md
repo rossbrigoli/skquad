@@ -359,6 +359,41 @@ browser: put the privileged protocol behind a service.
   only; no cluster-internal routes.
 - **Risk tier: high.** Grant = prod resource-owner approval + admin co-sign.
 
+**M1 implementation notes (S-256, 2026-10-08):**
+
+- **CA: `step-ca`** chosen over Vault (not deployed here; step-ca is the
+  lighter fit). Deployed in `skquad-terminal` as an islander: ingress
+  only from terminal-service, zero egress.
+- **Deny-pattern gate identity:** the gateway drives the TG-8
+  confirmation client with tool identity
+  `ssh_exec#<host>#deny:<pattern>` and
+  `args_hash = ArgsHash(resource, "ssh_exec", canonical{host,command})`.
+  CP standing grants match on (resource, agent, tool) — so "Approve
+  This and Future" lands as a **pattern+host-scoped** standing grant
+  with no schema change, while "approve once" pins the exact command
+  via args_hash on Consume.
+- **Deny globs match ANYWHERE** in the normalized command (chained
+  payloads like `ls /; rm -rf /` still trip `rm -rf *`); **allow globs
+  are anchored** (prefix semantics). Over-matching deny costs extra
+  confirmations; under-matching would be a bypass.
+- **endpoint_config shape:** `{ssh_user, port?, known_hosts, auth_mode:
+  "ca"|"static_key"}`. `known_hosts` is REQUIRED — there is no code
+  path that skips host-key verification. Static keys live in credential
+  custody (kind `ssh_key`, per-agent or resource-level); CA mode
+  carries no secret at all.
+- **Recording format:** framed JSONL
+  `{v:1, recording_id, t_ms, stream: meta|out|in, data_b64}`; meta
+  frame first. Object storage has no append, so parts
+  `recordings/<date>/<id>.partN.jsonl` + final `<id>.index.json`.
+  Recording failure never kills the session (`recording_error` surfaced
+  in the response).
+- **Gateway fail-closed wiring:** the ssh driver registers only when
+  `SKQUAD_TERMINAL_SERVICE_URL` + `SKQUAD_TERMINAL_INTERNAL_TOKEN`
+  are both set; every terminal call carries the bearer token; terminal
+  errors map to stable client-safe codes.
+- **Deferred (M2):** recording replay UI + CP read API, live step-ca
+  provisioner (JWS/OTT) integration validation, bypass drill.
+
 **Alternatives rejected:**
 
 1. Gateway TCP-tunnel to :22 — the "VPN effect": opaque post-handshake,
