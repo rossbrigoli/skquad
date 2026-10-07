@@ -62,8 +62,8 @@ func (s *Server) restAgentCredentialSetup(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return nil, nil, "", false
 	}
-	if typ != domain.ResRest && typ != domain.ResGit && typ != domain.ResMCP {
-		writeError(w, http.StatusBadRequest, "bad_request", "per-agent credentials are only valid for rest, git and mcp resources")
+	if typ != domain.ResRest && typ != domain.ResGit && typ != domain.ResMCP && typ != domain.ResSSH {
+		writeError(w, http.StatusBadRequest, "bad_request", "per-agent credentials are only valid for rest, git, mcp and ssh resources")
 		return nil, nil, "", false
 	}
 	resource, err := s.store.GetResource(r.Context(), typ, chi.URLParam(r, "resourceID"))

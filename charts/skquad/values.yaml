@@ -596,3 +596,50 @@ cpNoInternetEgress:
   # CIDRs of the Kubernetes API server(s) the CP must reach. Required when
   # enabled.
   apiServerCIDRs: []
+
+# TG-10: Terminal-as-a-Service quarantine zone (docs/tool-gateway.md §6.6).
+# terminal-service executes governed SSH (exec + PTY sessions) on behalf of
+# the gateway ssh driver. ALL SSH credential material lives in the
+# skquad-terminal namespace; agent pods hold none. step-ca provides
+# short-lived host-principal SSH certificates (TTL 15–60 min). Session
+# recordings stream to S3-compatible object storage (MinIO).
+terminalService:
+  enabled: false
+  namespace: skquad-terminal
+  image:
+    repository: docker.io/brigss007/skquad-terminal-service
+    tag: "0.1.0"
+  imagePullPolicy: IfNotPresent
+  port: 8091
+  replicas: 1
+  internalToken: ""
+  internalTokenSecret:
+    name: ""
+    key: token
+  stepCA:
+    enabled: true
+    image:
+      repository: smallstep/step-ca
+      tag: "0.28.2"
+    port: 9000
+    provisioner: terminal-service
+    caPassword: ""
+    provisionerPassword: ""
+    storage: 1Gi
+    storageClass: ""
+  recording:
+    # MinIO (path-style) in this cluster; override per environment.
+    endpoint: "http://minio.minio.svc.cluster.local:9000"
+    namespace: minio
+    port: 9000
+    bucket: skquad-terminal-recordings
+    accessKey: ""
+    secretKey: ""
+  maxSessions: 8
+  sessionIdleTimeoutSeconds: 1800
+  # Admin-declared SSH target networks (coarse L4 fence; the resource
+  # ceiling hosts_allow is the fine-grained control). MUST be set to the
+  # smallest networks that contain the registered hosts.
+  sshEgressNetworks: []
+  nodeSelector: {}
+  tolerations: []

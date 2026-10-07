@@ -44,6 +44,8 @@ func ValidateGrant(resourceType string, constraints, ceiling json.RawMessage) Vi
 		return validateMCPGrant(cObj, ceObj)
 	case "git":
 		return validateGitGrant(cObj, ceObj)
+	case "ssh":
+		return validateSSHGrant(cObj, ceObj)
 	default:
 		// Untyped resources: constraints must simply be an object; nothing
 		// to escalate against.
@@ -365,6 +367,48 @@ func validateGitGrant(c, ce map[string]json.RawMessage) Violations {
 	}
 	if _, has := c["rate_per_min"]; has {
 		v = append(v, numLE("constraints.rate_per_min", intIn(c, "rate_per_min"), intIn(ce, "rate_per_min"))...)
+	}
+	return sortByField(v)
+}
+
+// validateSSHGrant enforces the ssh no-escalation invariant (§6.6/§8):
+// a grant may only narrow the ceiling. hosts_allow ⊆ ceiling.hosts_allow,
+// deny lists may only grow, numerics may only tighten, egress_class must
+// match.
+func validateSSHGrant(c, ce map[string]json.RawMessage) Violations {
+	if v := checkUnknownKeys("constraints", c, SSHCeilingKeys...); len(v) > 0 {
+		return v
+	}
+	var v Violations
+	if _, has := c["hosts_allow"]; has {
+		v = append(v, allowSubset("constraints.hosts_allow", listIn(c, "hosts_allow"), listIn(ce, "hosts_allow"))...)
+	}
+	if _, has := c["hosts_deny"]; has {
+		v = append(v, denyGrows("constraints.hosts_deny", listIn(c, "hosts_deny"), listIn(ce, "hosts_deny"))...)
+	}
+	if _, has := c["command_allow"]; has {
+		v = append(v, allowSubset("constraints.command_allow", listIn(c, "command_allow"), listIn(ce, "command_allow"))...)
+	}
+	if _, has := c["command_deny"]; has {
+		v = append(v, denyGrows("constraints.command_deny", listIn(c, "command_deny"), listIn(ce, "command_deny"))...)
+	}
+	if _, has := c["cert_ttl_minutes"]; has {
+		v = append(v, numLE("constraints.cert_ttl_minutes", intIn(c, "cert_ttl_minutes"), intIn(ce, "cert_ttl_minutes"))...)
+	}
+	if _, has := c["max_concurrent_sessions"]; has {
+		v = append(v, numLE("constraints.max_concurrent_sessions", intIn(c, "max_concurrent_sessions"), intIn(ce, "max_concurrent_sessions"))...)
+	}
+	if _, has := c["exec_timeout_seconds"]; has {
+		v = append(v, numLE("constraints.exec_timeout_seconds", intIn(c, "exec_timeout_seconds"), intIn(ce, "exec_timeout_seconds"))...)
+	}
+	if _, has := c["egress_class"]; has {
+		var ec string
+		_ = json.Unmarshal(c["egress_class"], &ec)
+		var cec string
+		if raw, ok := ce["egress_class"]; ok {
+			_ = json.Unmarshal(raw, &cec)
+		}
+		v = append(v, equalField("constraints.egress_class", ec, cec)...)
 	}
 	return sortByField(v)
 }

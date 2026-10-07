@@ -1,0 +1,141 @@
+{{- if .Values.terminalService.enabled }}
+{{- /*
+TG-10 quarantine NetworkPolicy topology (§6.6).
+
+The real per-command guard is the gateway ssh driver (ceiling, deny
+patterns, audit-before-execute); NetworkPolicy is the L3/L4 blast-radius
+control: the terminal namespace is default-deny and may only reach
+(a) the SSH CA, (b) recording object storage, (c) DNS, and (d) :22 on
+the admin-declared host networks. Cluster-internal ranges (pod/service
+CIDRs, node IPs, API server) are NOT in the egress allow-list, so a
+compromised terminal-service cannot pivot inside the cluster.
+*/ -}}
+# (a) Default-deny ALL ingress + egress for the quarantine namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: skquad-terminal-default-deny
+  namespace: {{ .Values.terminalService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: terminal-service
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# (b) Ingress to terminal-service ONLY from tool-gateway pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: skquad-terminal-ingress-from-tool-gateway
+  namespace: {{ .Values.terminalService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: terminal-service
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: terminal-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "skquad.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: tool-gateway
+      ports:
+        - protocol: TCP
+          port: {{ .Values.terminalService.port }}
+---
+# (c) Terminal-service egress: SSH CA, recording storage, DNS, and :22
+# on the declared host networks only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: skquad-terminal-egress
+  namespace: {{ .Values.terminalService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: terminal-service
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: terminal-service
+  policyTypes:
+    - Egress
+  egress:
+    # SSH CA (same namespace)
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "skquad.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: ssh-ca
+      ports:
+        - protocol: TCP
+          port: {{ .Values.terminalService.stepCA.port }}
+    # Recording object storage (MinIO namespace)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.terminalService.recording.namespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.terminalService.recording.port }}
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- range .Values.terminalService.sshEgressNetworks }}
+    # Declared SSH target networks (admin-managed; ceiling hosts_allow is
+    # the fine-grained control above this coarse L4 fence).
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+      ports:
+        - protocol: TCP
+          port: 22
+    {{- end }}
+---
+# (d) SSH CA islander: ingress only from terminal-service; NO egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: skquad-ssh-ca-island
+  namespace: {{ .Values.terminalService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ssh-ca
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ssh-ca
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "skquad.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: terminal-service
+      ports:
+        - protocol: TCP
+          port: {{ .Values.terminalService.stepCA.port }}
+{{- end }}

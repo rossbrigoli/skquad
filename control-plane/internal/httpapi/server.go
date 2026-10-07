@@ -1094,6 +1094,9 @@ func registryTypeFromRequest(w http.ResponseWriter, r *http.Request) (domain.Res
 		return domain.ResMCP, true
 	case "git":
 		return domain.ResGit, true
+	case "ssh":
+		// TG-10: Terminal-as-a-Service (§6.6).
+		return domain.ResSSH, true
 	case "knowledge-bases":
 		return domain.ResKnowledgeBase, true
 	case "project-workspaces":
@@ -1111,7 +1114,7 @@ func registryTypeFromRequest(w http.ResponseWriter, r *http.Request) (domain.Res
 func resourceTypeFromString(value string) (domain.ResourceType, bool) {
 	switch domain.ResourceType(value) {
 	case domain.ResSkill, domain.ResTool, domain.ResAPI, domain.ResWeb, domain.ResRest,
-		domain.ResMCP, domain.ResGit, domain.ResKnowledgeBase, domain.ResProjectWorkspace:
+		domain.ResMCP, domain.ResGit, domain.ResSSH, domain.ResKnowledgeBase, domain.ResProjectWorkspace:
 		// TG-2: 'api' canonicalizes to 'rest' so grant paths operate on
 		// migrated rows transparently.
 		return domain.CanonicalResourceType(domain.ResourceType(value)), true
@@ -4923,6 +4926,11 @@ func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPer
 	// ceiling ∧ grant). Non-rest typed resources gain no tools in v1.
 	if resource.Type == domain.ResRest {
 		rt.Tools = restCallToolSchema(resource.Name, resource.ID, resource.PolicyCeiling, perm.Constraints)
+	}
+	// TG-10: ssh grants publish the ssh_exec + ssh_session_* tool
+	// schemas (effective ceiling ∧ grant), mirroring the rest surface.
+	if resource.Type == domain.ResSSH {
+		rt.Tools = sshToolSchema(resource.Name, resource.ID, resource.PolicyCeiling, perm.Constraints)
 	}
 	return rt, true, nil
 }
