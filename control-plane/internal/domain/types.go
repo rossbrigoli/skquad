@@ -658,11 +658,16 @@ const (
 	ResSkill      ResourceType = "skill"
 	ResTool       ResourceType = "tool"
 	// ResAPI is the legacy type name; TG-2 canonicalizes it to ResRest.
-	ResAPI              ResourceType = "api"
-	ResWeb              ResourceType = "web"
-	ResRest             ResourceType = "rest"
-	ResMCP              ResourceType = "mcp"
-	ResGit              ResourceType = "git"
+	ResAPI  ResourceType = "api"
+	ResWeb  ResourceType = "web"
+	ResRest ResourceType = "rest"
+	ResMCP  ResourceType = "mcp"
+	ResGit  ResourceType = "git"
+	// ResSSH is the TG-10 Terminal-as-a-Service type (docs/tool-gateway.md
+	// §6.6): governed SSH diagnostics via the terminal-service. Credentials
+	// (CA-signed ephemeral certs or BYO static keys) live ONLY in the
+	// quarantine namespace; agents hold none.
+	ResSSH              ResourceType = "ssh"
 	ResKnowledgeBase    ResourceType = "knowledge_base"
 	ResProjectWorkspace ResourceType = "project_workspace"
 )

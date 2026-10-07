@@ -1,0 +1,19 @@
+{{- if .Values.terminalService.enabled }}
+{{- /*
+TG-10 (docs/tool-gateway.md §6.6): quarantine namespace for the
+Terminal-as-a-Service. ALL SSH credential material (CA signing path,
+BYO static keys at call time) lives here; agent pods hold none.
+Default-deny both directions (terminal-networkpolicy.yaml) + restricted
+Pod Security profile as a second floor.
+*/ -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.terminalService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: terminal-service
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+{{- end }}

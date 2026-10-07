@@ -151,7 +151,7 @@ var (
 	WebShapeKeys    = []string{"deny_domains", "deny_cidrs", "rate_per_min", "max_bytes", "timeout_seconds", "allow_private_network"}
 	RestConfigKeys  = []string{"base_url", "auth_kind", "header_name"}
 	RestCeilingKeys = []string{"methods", "path_allow", "path_deny", "max_request_bytes", "max_response_bytes", "rate_per_min", "egress_class"}
-	MCPConfigKeys = []string{"url", "auth_kind", "driver"}
+	MCPConfigKeys   = []string{"url", "auth_kind", "driver"}
 	// TG-5 slice B2a: egress_class joins the MCP ceiling shape — the
 	// gateway's mcp policy folds it into AllowPrivate (internal-class
 	// upstreams need allow_private at enumerate/call time), matching the
@@ -159,6 +159,11 @@ var (
 	MCPCeilingKeys = []string{"tools_allow", "tools_deny", "per_tool", "rate_per_min", "max_args_bytes", "egress_class"}
 	GitConfigKeys  = []string{"base_url"}
 	GitCeilingKeys = []string{"repos_allow", "allow_push", "rate_per_min"}
+	// TG-10 ssh (Terminal-as-a-Service, §6.6): endpoint_config carries
+	// the non-secret connection shape; the private key lives in credential
+	// custody (kind "ssh_key"), never in endpoint_config.
+	SSHConfigKeys  = []string{"ssh_user", "port", "known_hosts", "auth_mode"}
+	SSHCeilingKeys = []string{"hosts_allow", "hosts_deny", "command_allow", "command_deny", "cert_ttl_minutes", "max_concurrent_sessions", "exec_timeout_seconds", "egress_class"}
 )
 
 // ValidateEndpointConfig validates a resource's endpoint_config for its
@@ -177,6 +182,8 @@ func ValidateEndpointConfig(resourceType string, raw json.RawMessage) Violations
 		return validateMCPConfig(obj)
 	case "git":
 		return checkUnknownKeys("endpoint_config", obj, GitConfigKeys...)
+	case "ssh":
+		return validateSSHConfig(obj)
 	default:
 		return nil
 	}
@@ -197,9 +204,42 @@ func ValidateCeiling(resourceType string, raw json.RawMessage) Violations {
 		return validateMCPCeiling(obj)
 	case "git":
 		return validateGitCeiling(obj)
+	case "ssh":
+		return validateSSHCeiling(obj)
 	default:
 		return nil
 	}
+}
+
+// validateSSHConfig validates the ssh endpoint_config shape:
+//
+//	ssh_user    required, non-empty — the OS user the terminal-service connects as
+//	port        optional, 1..65535 (default 22 at the service)
+//	known_hosts required — host-key material; unverified host keys are never accepted
+//	auth_mode   optional, "ca" (default, ephemeral CA certs) | "static_key" (BYO key custody)
+func validateSSHConfig(obj map[string]json.RawMessage) Violations {
+	if v := checkUnknownKeys("endpoint_config", obj, SSHConfigKeys...); len(v) > 0 {
+		return v
+	}
+	var v Violations
+	var user string
+	v = append(v, stringField(obj, "ssh_user", "endpoint_config.ssh_user", &user, true, nil)...)
+	if strings.TrimSpace(user) == "" {
+		v = append(v, Violation{Field: "endpoint_config.ssh_user", Code: "required", Message: "ssh_user is required and must be non-empty"})
+	}
+	var port int
+	v = append(v, positiveIntField(obj, "port", "endpoint_config.port", &port)...)
+	if port > 65535 {
+		v = append(v, Violation{Field: "endpoint_config.port", Code: "invalid_value", Message: "port must be <= 65535"})
+	}
+	var kh string
+	v = append(v, stringField(obj, "known_hosts", "endpoint_config.known_hosts", &kh, true, nil)...)
+	if strings.TrimSpace(kh) == "" {
+		v = append(v, Violation{Field: "endpoint_config.known_hosts", Code: "required", Message: "known_hosts is required (host key verification is mandatory)"})
+	}
+	var authMode string
+	v = append(v, stringField(obj, "auth_mode", "endpoint_config.auth_mode", &authMode, false, map[string]bool{"ca": true, "static_key": true})...)
+	return sortByField(v)
 }
 
 func validateWebShape(field string, obj map[string]json.RawMessage) Violations {
@@ -343,5 +383,48 @@ func validateGitCeiling(obj map[string]json.RawMessage) Violations {
 	v = append(v, boolField(obj, "allow_push", "policy_ceiling.allow_push", &allowPush)...)
 	var rate int
 	v = append(v, positiveIntField(obj, "rate_per_min", "policy_ceiling.rate_per_min", &rate)...)
+	return sortByField(v)
+}
+
+// validateSSHCeiling validates the ssh policy_ceiling shape (§6.6):
+//
+//	hosts_allow  REQUIRED non-empty — default-deny host globs
+//	hosts_deny   optional globs, union, wins over allow
+//	command_allow optional globs; when set, a command must match one
+//	command_deny optional globs; deny wins over allow
+//	cert_ttl_minutes        15..60 (short-lived CA certs; §6.6)
+//	max_concurrent_sessions > 0, <= 16
+//	exec_timeout_seconds    > 0, <= 300
+//	egress_class one of the standard classes
+func validateSSHCeiling(obj map[string]json.RawMessage) Violations {
+	if v := checkUnknownKeys("policy_ceiling", obj, SSHCeilingKeys...); len(v) > 0 {
+		return v
+	}
+	var v Violations
+	var hostsAllow, hostsDeny, cmdAllow, cmdDeny []string
+	v = append(v, stringListField(obj, "hosts_allow", "policy_ceiling.hosts_allow", &hostsAllow)...)
+	if len(hostsAllow) == 0 {
+		v = append(v, Violation{Field: "policy_ceiling.hosts_allow", Code: "required", Message: "hosts_allow is required and must contain at least one host pattern (default-deny semantics)"})
+	}
+	v = append(v, stringListField(obj, "hosts_deny", "policy_ceiling.hosts_deny", &hostsDeny)...)
+	v = append(v, stringListField(obj, "command_allow", "policy_ceiling.command_allow", &cmdAllow)...)
+	v = append(v, stringListField(obj, "command_deny", "policy_ceiling.command_deny", &cmdDeny)...)
+	var ttl int
+	v = append(v, positiveIntField(obj, "cert_ttl_minutes", "policy_ceiling.cert_ttl_minutes", &ttl)...)
+	if ttl > 0 && (ttl < 15 || ttl > 60) {
+		v = append(v, Violation{Field: "policy_ceiling.cert_ttl_minutes", Code: "invalid_value", Message: "cert_ttl_minutes must be between 15 and 60"})
+	}
+	var maxSess int
+	v = append(v, positiveIntField(obj, "max_concurrent_sessions", "policy_ceiling.max_concurrent_sessions", &maxSess)...)
+	if maxSess > 16 {
+		v = append(v, Violation{Field: "policy_ceiling.max_concurrent_sessions", Code: "invalid_value", Message: "max_concurrent_sessions must be <= 16"})
+	}
+	var timeout int
+	v = append(v, positiveIntField(obj, "exec_timeout_seconds", "policy_ceiling.exec_timeout_seconds", &timeout)...)
+	if timeout > 300 {
+		v = append(v, Violation{Field: "policy_ceiling.exec_timeout_seconds", Code: "invalid_value", Message: "exec_timeout_seconds must be <= 300"})
+	}
+	var ec string
+	v = append(v, stringField(obj, "egress_class", "policy_ceiling.egress_class", &ec, false, egressClass)...)
 	return sortByField(v)
 }

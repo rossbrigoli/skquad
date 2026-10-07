@@ -61,7 +61,7 @@ func (v Violations) Error() string {
 // knowledge_base, project_workspace, ai_provider) do not.
 func IsTyped(resourceType string) bool {
 	switch resourceType {
-	case "web", "rest", "mcp", "git":
+	case "web", "rest", "mcp", "git", "ssh":
 		return true
 	default:
 		return false

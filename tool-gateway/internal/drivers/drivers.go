@@ -55,6 +55,12 @@ type Request struct {
 	// drivers (TG-4b git: "<org>/<repo>.git/<service>"). Empty for
 	// buffered drivers, which carry everything in Payload.
 	Path string
+	// ConfirmationID carries the X-Skquad-Confirmation-Id retry header
+	// (TG-8) when present, so drivers that run their OWN conditional
+	// gate (TG-10 ssh deny-pattern gate) can Consume an approval that
+	// was granted between Check calls. Empty when the client sent no
+	// header.
+	ConfirmationID string
 }
 
 // Response is what a driver returns on success.

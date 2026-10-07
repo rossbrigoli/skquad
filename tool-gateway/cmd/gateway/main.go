@@ -23,6 +23,7 @@ import (
 	gitdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/git"
 	mcpdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/mcp"
 	restdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/rest"
+	sshdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/ssh"
 	webdriver "github.com/rossbrigoli/skquad/tool-gateway/internal/drivers/web"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/httpapi"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/policy"
@@ -55,13 +56,7 @@ func main() {
 		Boundary:     boundary.NewVerifier(cfg.BoundaryVerifier),
 		Audit:        auditSink,
 		Enabled:      enabled,
-		Drivers: map[string]drivers.Driver{
-			"echo":    drivers.Echo{},
-			"web":     webdriver.New(),
-			"rest":    restdriver.New(credsClient),
-			"mcp":     mcpdriver.New(credsClient),
-			"browser": browserdriver.New(cfg.BrowserInternalToken),
-		},
+		Drivers: buildDrivers(cfg, auditSink, confirmClient, credsClient),
 		StreamDrivers: map[string]drivers.StreamingDriver{
 			"git": gitdriver.New(credsClient),
 		},
@@ -94,4 +89,22 @@ func main() {
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server: %v", err)
 	}
+}
+
+// buildDrivers assembles the driver registry. The TG-10 ssh driver is
+// registered only when the terminal-service URL + token are both
+// configured; otherwise ssh resource dispatch fails closed with
+// driver_not_found (never an unauthenticated/unaudited SSH path).
+func buildDrivers(cfg *config.Config, em audit.Emitter, conf *confirmation.Client, creds *credentials.Client) map[string]drivers.Driver {
+	d := map[string]drivers.Driver{
+		"echo":    drivers.Echo{},
+		"web":     webdriver.New(),
+		"rest":    restdriver.New(creds),
+		"mcp":     mcpdriver.New(creds),
+		"browser": browserdriver.New(cfg.BrowserInternalToken),
+	}
+	if cfg.TerminalServiceURL != "" && cfg.TerminalServiceToken != "" {
+		d["ssh"] = sshdriver.New(cfg.TerminalServiceURL, cfg.TerminalServiceToken, em, conf, creds)
+	}
+	return d
 }

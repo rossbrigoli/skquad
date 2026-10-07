@@ -329,6 +329,7 @@ func (s *Server) handleWebFetch(w http.ResponseWriter, r *http.Request) {
 		Operation: operation,
 		Payload:   body,
 		Grant:     grant,
+	ConfirmationID: strings.TrimSpace(r.Header.Get(ConfirmationIDHeader)),
 	})
 	if err != nil {
 		var denied *drivers.DeniedError
@@ -472,6 +473,7 @@ func (s *Server) handleRestCall(w http.ResponseWriter, r *http.Request) {
 		Operation: operation,
 		Payload:   body,
 		Grant:     grant,
+	ConfirmationID: strings.TrimSpace(r.Header.Get(ConfirmationIDHeader)),
 	})
 	if err != nil {
 		var denied *drivers.DeniedError
@@ -654,6 +656,7 @@ func (s *Server) handleMCPCall(w http.ResponseWriter, r *http.Request) {
 		Operation: operation,
 		Payload:   body,
 		Grant:     grant,
+	ConfirmationID: strings.TrimSpace(r.Header.Get(ConfirmationIDHeader)),
 	})
 	if err != nil {
 		var denied *drivers.DeniedError

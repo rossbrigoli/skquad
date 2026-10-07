@@ -138,6 +138,11 @@ jobs:
             image: skquad-embedder
             tag_suffix: -cuda
             extra_build_args: BASE_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b11347
+          # TG-10: terminal-service (Terminal-as-a-Service quarantine zone).
+          - component: terminal-service
+            context: terminal-service
+            dockerfile: terminal-service/Dockerfile
+            image: skquad-terminal-service
           # TG-6: browser-service (Playwright quarantine zone, TS app builds
           # in-image because dist/ is gitignored).
           - component: browser-service

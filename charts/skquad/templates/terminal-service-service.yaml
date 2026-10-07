@@ -1,0 +1,18 @@
+{{- if .Values.terminalService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "skquad.terminalServiceName" . }}
+  namespace: {{ .Values.terminalService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: terminal-service
+spec:
+  selector:
+    {{- include "skquad.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: terminal-service
+  ports:
+    - name: http
+      port: {{ .Values.terminalService.port }}
+      targetPort: http
+{{- end }}

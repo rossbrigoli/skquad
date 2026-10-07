@@ -77,6 +77,19 @@ spec:
                   key: {{ .Values.browserService.internalTokenSecret.key }}
                   optional: true
             {{- end }}
+            {{- if .Values.terminalService.enabled }}
+            # TG-10: gateway ssh driver → terminal-service channel.
+            # Empty token = driver fails closed (denial), never
+            # unauthenticated calls.
+            - name: SKQUAD_TERMINAL_SERVICE_URL
+              value: {{ printf "http://%s.%s.svc.cluster.local:%d" (include "skquad.terminalServiceName" .) .Values.terminalService.namespace (.Values.terminalService.port | int) | quote }}
+            - name: SKQUAD_TERMINAL_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "skquad.terminalInternalTokenSecretName" . }}
+                  key: {{ .Values.terminalService.internalTokenSecret.key }}
+                  optional: true
+            {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

@@ -1,0 +1,169 @@
+{{- if and .Values.terminalService.enabled .Values.terminalService.stepCA.enabled }}
+{{- /*
+TG-10 (§6.6): step-ca SSH Certificate Authority for short-lived,
+host-principal SSH certificates (TTL 15–60 min). Lives inside the
+terminal quarantine namespace; reachable ONLY from the terminal-service
+(see terminal-networkpolicy.yaml). No egress at all — the CA is an
+islander.
+
+Bootstrap: an init container runs `step ca init --ssh` once (idempotent
+via a marker file). The CA key material persists on the PVC. The
+provisioner used by the terminal-service is a OIDC-less REUSE_ADMIN token
+provisioner authenticated with the provisioner password.
+*/ -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "skquad.stepCAName" . }}-data
+  namespace: {{ .Values.terminalService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ssh-ca
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.terminalService.stepCA.storage }}
+  {{- if .Values.terminalService.stepCA.storageClass }}
+  storageClassName: {{ .Values.terminalService.stepCA.storageClass }}
+  {{- end }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "skquad.stepCAName" . }}-passwords
+  namespace: {{ .Values.terminalService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ssh-ca
+type: Opaque
+stringData:
+  ca-password.txt: {{ .Values.terminalService.stepCA.caPassword | quote }}
+  provisioner-password.txt: {{ .Values.terminalService.stepCA.provisionerPassword | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "skquad.stepCAName" . }}
+  namespace: {{ .Values.terminalService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ssh-ca
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ssh-ca
+  template:
+    metadata:
+      labels:
+        {{- include "skquad.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ssh-ca
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: ca-init
+          image: {{ include "skquad.stepCAImage" . | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              if [ -f /home/step/config/ca.json ]; then
+                echo "CA already initialized, skipping"
+                exit 0
+              fi
+              step ca init \
+                --name "skquad-terminal-ssh-ca" \
+                --ssh \
+                --provisioner "{{ .Values.terminalService.stepCA.provisioner }}" \
+                --dns "{{ include "skquad.stepCAName" . }}.{{ .Values.terminalService.namespace }}.svc.cluster.local" \
+                --address 0.0.0.0:{{ .Values.terminalService.stepCA.port }} \
+                --ca-address "https://{{ include "skquad.stepCAName" . }}.{{ .Values.terminalService.namespace }}.svc.cluster.local:{{ .Values.terminalService.stepCA.port }}" \
+                --ca-port {{ .Values.terminalService.stepCA.port }} \
+                --password-file /secrets/ca-password.txt \
+                --provisioner-password-file /secrets/provisioner-password.txt \
+                --with-ca-url "https://{{ include "skquad.stepCAName" . }}.{{ .Values.terminalService.namespace }}.svc.cluster.local:{{ .Values.terminalService.stepCA.port }}"
+              # Marker for idempotency is ca.json itself; fix ownership for the
+              # runtime container (same uid, but be explicit).
+              chown -R 1000:1000 /home/step
+              echo "CA initialized"
+          volumeMounts:
+            - name: step-data
+              mountPath: /home/step
+            - name: secrets
+              mountPath: /secrets
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+      containers:
+        - name: step-ca
+          image: {{ include "skquad.stepCAImage" . | quote }}
+          imagePullPolicy: IfNotPresent
+          args: ["/home/step/config/ca.json"]
+          ports:
+            - containerPort: {{ .Values.terminalService.stepCA.port }}
+              name: https
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.terminalService.stepCA.port }}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.terminalService.stepCA.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          volumeMounts:
+            - name: step-data
+              mountPath: /home/step
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: 64Mi
+            limits:
+              memory: 192Mi
+      volumes:
+        - name: step-data
+          persistentVolumeClaim:
+            claimName: {{ include "skquad.stepCAName" . }}-data
+        - name: secrets
+          secret:
+            secretName: {{ include "skquad.stepCAName" . }}-passwords
+            defaultMode: 0400
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "skquad.stepCAName" . }}
+  namespace: {{ .Values.terminalService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ssh-ca
+spec:
+  selector:
+    {{- include "skquad.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ssh-ca
+  ports:
+    - name: https
+      port: {{ .Values.terminalService.stepCA.port }}
+      targetPort: https
+{{- end }}
