@@ -54,6 +54,12 @@ type Config struct {
 	// docs/tg6-browser-protocol.md §1/§6). Empty (default) disables
 	// the browser driver fail-closed (denial, never unauthenticated calls).
 	BrowserInternalToken string // SKQUAD_BROWSER_INTERNAL_TOKEN
+	// TerminalServiceURL / TerminalServiceToken configure the TG-10
+	// ssh driver (gateway → terminal-service channel). The driver is
+	// registered only when BOTH are set; otherwise ssh dispatches fail
+	// closed with driver_not_found.
+	TerminalServiceURL   string // SKQUAD_TERMINAL_SERVICE_URL
+	TerminalServiceToken string // SKQUAD_TERMINAL_INTERNAL_TOKEN
 }
 
 // Load reads configuration from the process environment.
@@ -70,6 +76,8 @@ func Load() (*Config, error) {
 		AuditSink:            envString("SKQUAD_TOOL_GATEWAY_AUDIT_SINK", "stdout"),
 		InternalToken:        strings.TrimSpace(os.Getenv("SKQUAD_GATEWAY_INTERNAL_TOKEN")),
 		BrowserInternalToken: strings.TrimSpace(os.Getenv("SKQUAD_BROWSER_INTERNAL_TOKEN")),
+		TerminalServiceURL:   strings.TrimSpace(os.Getenv("SKQUAD_TERMINAL_SERVICE_URL")),
+		TerminalServiceToken: strings.TrimSpace(os.Getenv("SKQUAD_TERMINAL_INTERNAL_TOKEN")),
 	}
 	if cfg.CPBaseURL == "" {
 		return nil, fmt.Errorf("SKQUAD_CP_BASE_URL is required")
