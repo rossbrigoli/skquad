@@ -85,6 +85,10 @@ export default defineConfig({
         "src/components/StandingGrantsPanel.tsx",
   // TG-9 slice C: audit dashboard + per-resource metering rollups.
   "src/app/audit/page.tsx",
+      // S-241: tile toggle switch + tile grid + panel toggle wiring.
+      "src/components/ToggleSwitch.tsx",
+      "src/components/ToolTiles.tsx",
+      "src/components/ToolsPanel.tsx",
       ],
       exclude: [
         "src/**/*.test.ts",

@@ -13,12 +13,15 @@
 
 import { useMemo, useState } from "react";
 import type { RegistryResource } from "../lib/api";
-import { toolsFromList, type BuiltinToolsList } from "../lib/builtinTools";
+import { apiPatch } from "../lib/api";
+import { useAuth } from "../lib/auth";
+import { toolsFromList, type BuiltinTool, type BuiltinToolsList } from "../lib/builtinTools";
 import {
   builtinToolItems,
   filterToolItems,
   mergeToolItems,
   registryToolItem,
+  type ToolItem,
 } from "../lib/toolsPage";
 import { useApi } from "../lib/useApi";
 import { EmptyState } from "./EmptyState";
@@ -30,7 +33,15 @@ export function ToolsPanel({ isAdmin }: { readonly isAdmin: boolean }) {
   // roles the empty path makes useApi a no-op (same visible surface as
   // before S-204: the registry catalog).
   const builtins = useApi<BuiltinToolsList>(isAdmin ? "/admin/tools" : "", 0);
+  const { token, mode } = useAuth();
   const [query, setQuery] = useState("");
+  // S-241: tile-toggle state. `overrides` carries the optimistic
+  // enabled flips until the refreshed GET lands; `pendingToolId` keeps
+  // the switch disabled while the PATCH is in flight; `toggleError`
+  // surfaces failures in the standard notice style.
+  const [overrides, setOverrides] = useState<Record<string, boolean>>({});
+  const [pendingToolId, setPendingToolId] = useState("");
+  const [toggleError, setToggleError] = useState("");
 
   const items = useMemo(
     () =>
@@ -40,13 +51,42 @@ export function ToolsPanel({ isAdmin }: { readonly isAdmin: boolean }) {
           (registry.data ?? []).map(registryToolItem),
         ),
         query,
-      ),
-    [builtins.data, registry.data, query],
+      ).map((t) => (t.id in overrides ? { ...t, enabled: overrides[t.id] } : t)),
+    [builtins.data, registry.data, query, overrides],
   );
+
+  // S-241: enable/disable straight from the tile. Built-ins only — the
+  // registry API has no enable endpoint (deprecate is one-way), so
+  // ToolTiles renders those switches disabled and this guard is the
+  // belt-and-braces twin of that UI restriction.
+  function toggleTool(tool: ToolItem, next: boolean) {
+    if (tool.kind !== "builtin" || pendingToolId !== "") return;
+    setPendingToolId(tool.id);
+    setToggleError("");
+    setOverrides((o) => ({ ...o, [tool.id]: next }));
+    const authedToken = mode === "oidc" ? "" : token;
+    apiPatch<BuiltinTool>(`/admin/tools/${tool.name}`, authedToken, { enabled: next })
+      .then(() => {
+        builtins.refresh();
+      })
+      .catch((err: unknown) => {
+        // Revert the optimistic flip and surface the error like the
+        // other panels do.
+        setOverrides((o) => {
+          const nextOverrides = { ...o };
+          delete nextOverrides[tool.id];
+          return nextOverrides;
+        });
+        setToggleError(
+          `Could not ${next ? "enable" : "disable"} ${tool.name}: ${err instanceof Error ? err.message : "request failed"}`,
+        );
+      })
+      .finally(() => setPendingToolId(""));
+  }
 
   function renderToolList() {
     if (loading || items.length > 0) {
-      return <ToolTilesGrid items={items} />;
+      return <ToolTilesGrid items={items} onToggle={toggleTool} pendingToolId={pendingToolId} />;
     }
     if (query.trim() !== "") {
       return (
@@ -82,6 +122,11 @@ export function ToolsPanel({ isAdmin }: { readonly isAdmin: boolean }) {
       {registry.error ? <div className="notice error">{registry.error}</div> : null}
       {isAdmin && builtins.error ? (
         <div className="notice error">{builtins.error}</div>
+      ) : null}
+      {toggleError ? (
+        <div className="notice error" role="alert">
+          {toggleError}
+        </div>
       ) : null}
       {renderToolList()}
     </>

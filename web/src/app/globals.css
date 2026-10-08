@@ -3590,6 +3590,75 @@ button.squad-tab.active {
   padding: 1px var(--space-2);
 }
 
+/* S-241: tile wrapper so the enable/disable toggle can sit beside the
+   <Link> (interactive elements must not nest inside <a>). The tile fills
+   the wrapper so grid rows stay even. */
+.tool-tile-wrap {
+  position: relative;
+  display: flex;
+}
+
+.tool-tile-wrap .tool-tile {
+  flex: 1;
+}
+
+.tool-tile-toggle {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+  z-index: 1;
+  display: inline-flex;
+}
+
+/* S-241: shared enable/disable switch (tool tiles + built-in tool
+   config page). Same visual language as the S-195 dashboard switch:
+   pill track, sliding knob, --accent when on; theme variables keep it
+   correct in dark and light. */
+.toggle-switch {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  cursor: pointer;
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
+}
+
+.toggle-switch.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle-switch:focus-visible {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
+}
+
+.toggle-switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toggle-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+
+.toggle-switch.on .toggle-switch-knob {
+  transform: translateX(18px);
+}
+
 /* S-211: agent tiles on the squad Overview screen. Robot icon left,
    name + role, status chip. Running agents pulse a soft blue halo;
    failed/error agents get a static red outline. */
