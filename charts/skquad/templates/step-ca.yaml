@@ -81,6 +81,15 @@ spec:
           args:
             - |
               set -eu
+              # Runtime step-ca reads its key password from
+              # $PWDPATH=/home/step/secrets/password (image default CMD).
+              # `step ca init --password-file` does NOT place it there, so
+              # copy it in (also self-heals PVCs initialized without it).
+              if [ ! -f /home/step/secrets/password ]; then
+                mkdir -p /home/step/secrets
+                cp /secrets/ca-password.txt /home/step/secrets/password
+                chmod 600 /home/step/secrets/password
+              fi
               if [ -f /home/step/config/ca.json ]; then
                 echo "CA already initialized, skipping"
                 exit 0
@@ -114,7 +123,10 @@ spec:
         - name: step-ca
           image: {{ include "skquad.stepCAImage" . | quote }}
           imagePullPolicy: IfNotPresent
-          args: ["/home/step/config/ca.json"]
+          # No command/args override: the image's default CMD runs
+          # `step-ca --password-file $PWDPATH $CONFIGPATH` (PWDPATH and
+          # CONFIGPATH are image env vars). Overriding args with a bare
+          # config path makes the entrypoint exec the JSON file itself.
           ports:
             - containerPort: {{ .Values.terminalService.stepCA.port }}
               name: https
