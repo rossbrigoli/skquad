@@ -15,6 +15,7 @@ import { useId, useMemo, useState } from "react";
 import { apiPatch, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { useApi } from "../lib/useApi";
+import { ToggleSwitch } from "./ToggleSwitch";
 import {
   buildToolPayload,
   SEARCH_PROVIDERS,
@@ -161,16 +162,20 @@ export function ToolCard({
             ({form.enabled ? "status: ENABLED" : "status: disabled"})
           </span>
         </h3>
-        <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <input
-            type="checkbox"
+        <div
+          className="field"
+          style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+        >
+          {/* S-241: the old bare checkbox is replaced by the shared
+              ToggleSwitch — same component as the tool tiles. */}
+          <ToggleSwitch
             checked={form.enabled}
             disabled={busy}
-            onChange={(e) => setField("enabled", e.target.checked)}
-            aria-label={`Enable ${tool.name}`}
+            label={`Enable ${tool.name}`}
+            onToggle={(next) => setField("enabled", next)}
           />
           <span>Enable this tool</span>
-        </label>
+        </div>
       </div>
       <p className="entity-meta" style={{ marginTop: 0 }}>
         {TOOL_HINTS[tool.name]}

@@ -46,10 +46,43 @@ describe("ToolTilesGrid (S-204)", () => {
     expect(html).toContain('href="/settings/resources/tools/rt-2"');
   });
 
-  it("built-in tiles wear the Skquad logo and a Built-in badge", () => {
+  it("built-in tiles wear the tool (wrench) icon, not the Skquad logo (S-241)", () => {
     const execTile = html.split('class="tool-tile"')[1];
-    expect(execTile).toContain("skquad-logo-64.png");
+    expect(execTile).not.toContain("skquad-logo");
+    expect(execTile).toContain("<svg");
     expect(execTile).toContain(">Built-in<");
+  });
+
+  it("every tile carries an enable/disable switch beside the link (S-241)", () => {
+    // One switch per tile, as a sibling of the <a> (never nested inside it).
+    expect((html.match(/role="switch"/g) ?? []).length).toBe(3);
+    expect(html).toContain('class="tool-tile-toggle"');
+    // The toggle span follows the closed <a> — it is a sibling, not nested.
+    expect(html).toContain("</a><span class=\"tool-tile-toggle\">");
+  });
+
+  it("switch aria-checked mirrors the tool's enabled state (S-241)", () => {
+    const toggleHtml = renderToStaticMarkup(
+      createElement(ToolTilesGrid, { items, onToggle: () => {} }),
+    );
+    const execSwitch = toggleHtml.split('role="switch"')[1];
+    expect(execSwitch.startsWith(' aria-checked="true"')).toBe(true);
+    expect(execSwitch).toContain('aria-label="Disable exec"');
+    const legacySwitch = toggleHtml.split('role="switch"')[3];
+    expect(legacySwitch.startsWith(' aria-checked="false"')).toBe(true);
+    // Legacy is a registry tool — it gets the registry label, not "Enable …".
+    expect(legacySwitch).toContain('aria-label="Legacy: enable/disable is managed on the registry');
+  });
+
+  it("registry tiles render the switch disabled — no per-tile enable API (S-241)", () => {
+    const toggleHtml = renderToStaticMarkup(
+      createElement(ToolTilesGrid, { items, onToggle: () => {} }),
+    );
+    const jiraSwitch = toggleHtml.split('role="switch"')[2];
+    expect(jiraSwitch).toContain('disabled=""');
+    expect(jiraSwitch).toContain("registry");
+    const execSwitch = toggleHtml.split('role="switch"')[1];
+    expect(execSwitch).not.toContain('disabled=""');
   });
 
   it("registered tiles use the placeholder glyph, not the Skquad logo", () => {

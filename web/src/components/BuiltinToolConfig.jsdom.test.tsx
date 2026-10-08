@@ -4,7 +4,7 @@
 // failure paths (client validation, 403, 400), and the denied-pattern
 // row editor.
 import React from "react";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../lib/api";
@@ -79,7 +79,11 @@ describe("BuiltinToolConfig load states", () => {
     env.apiPatch = vi.fn().mockResolvedValue(updated);
     const user = userEvent.setup();
     render(<BuiltinToolConfig name="exec" />);
-    await user.click(screen.getByRole("checkbox", { name: "Enable exec" }));
+    // S-241: the enable control is the shared ToggleSwitch (role=switch),
+    // not a bare checkbox.
+    expect(screen.queryByRole("checkbox", { name: "Enable exec" })).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Enable exec" })).toBeChecked();
+    await user.click(screen.getByRole("switch", { name: "Enable exec" }));
     await user.click(screen.getByRole("button", { name: "Save exec" }));
     await vi.waitFor(() =>
       expect(env.apiPatch).toHaveBeenCalledWith("/admin/tools/exec", "tok", {
