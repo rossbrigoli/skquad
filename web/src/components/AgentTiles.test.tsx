@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AgentTile, AgentTilesGrid, agentTileClass } from "./AgentTiles";
+import { AgentTile, AgentTilesGrid, agentTaskLine, agentTileClass } from "./AgentTiles";
 import type { Agent } from "../lib/api";
 
 const agents: Agent[] = [
@@ -27,6 +27,40 @@ describe("agentTileClass (S-211)", () => {
   it("idle/paused tiles carry no state modifier", () => {
     expect(agentTileClass("idle")).toBe("agent-tile");
     expect(agentTileClass("paused")).toBe("agent-tile");
+  });
+
+  it("S-242: variant appends a contextual modifier class", () => {
+    expect(agentTileClass("idle", "dashboard")).toBe("agent-tile agent-tile--dashboard");
+    expect(agentTileClass("running", "dashboard")).toBe("agent-tile agent-tile--dashboard agent-tile--running");
+  });
+});
+
+describe("agentTaskLine (S-242)", () => {
+  it("prefers current_task over last_task", () => {
+    const line = agentTaskLine({
+      current_task: { id: "t2", ref: "S-102", title: "Fix the login bug" },
+      last_task: { id: "t1", ref: "S-101", title: "Old work" },
+    });
+    expect(line).toBe("S-102 · Fix the login bug");
+  });
+
+  it("falls back to last_task when nothing is running", () => {
+    const line = agentTaskLine({ last_task: { id: "t1", ref: "S-7", title: "Ship tiles" } });
+    expect(line).toBe("S-7 · Ship tiles");
+  });
+
+  it("falls back to a short id prefix when no ref is set", () => {
+    const line = agentTaskLine({ last_task: { id: "abcdef123456", title: "No ref here" } });
+    expect(line).toBe("abcdef12 · No ref here");
+  });
+
+  it("renders just the ref when the title is blank", () => {
+    expect(agentTaskLine({ current_task: { id: "t9", ref: "S-9" } })).toBe("S-9");
+  });
+
+  it("returns null when neither task exists", () => {
+    expect(agentTaskLine({})).toBeNull();
+    expect(agentTaskLine({ current_task: null, last_task: null })).toBeNull();
   });
 });
 
@@ -61,14 +95,44 @@ function tileClassFor(markup: string, agentId: string): string {
     expect(cls).toBe("agent-tile");
   });
 
-  it("S-230: costLabel renders a cost line; omitted means no cost element", () => {
+  it("S-230/S-242: costLabel renders a plain-amount cost line; omitted means no cost element", () => {
     const withCost = renderToStaticMarkup(
-      createElement(AgentTile, { agent: agents[0], href: "/squads/s1/agents/a1", costLabel: "last 30 days USD 1.2500" }),
+      createElement(AgentTile, { agent: agents[0], href: "/squads/s1/agents/a1", costLabel: "USD 1.2500" }),
     );
     expect(withCost).toContain('class="agent-tile-cost mono"');
-    expect(withCost).toContain("last 30 days USD 1.2500");
+    expect(withCost).toContain("USD 1.2500");
+    // S-242 req 2: the tile never says "last 30 days".
+    expect(withCost).not.toContain("last 30 days");
     const withoutCost = renderToStaticMarkup(createElement(AgentTile, { agent: agents[0], href: "/squads/s1/agents/a1" }));
     expect(withoutCost).not.toContain("agent-tile-cost");
+  });
+
+  it("S-242 req 3: model renders as a muted truncated line, hidden when absent", () => {
+    const withModel = renderToStaticMarkup(
+      createElement(AgentTile, { agent: { ...agents[0], model: "claude-sonnet-4.5" }, href: "/squads/s1/agents/a1" }),
+    );
+    expect(withModel).toContain('class="agent-tile-model"');
+    expect(withModel).toContain("claude-sonnet-4.5");
+    const withoutModel = renderToStaticMarkup(createElement(AgentTile, { agent: agents[0], href: "/squads/s1/agents/a1" }));
+    expect(withoutModel).not.toContain("agent-tile-model");
+  });
+
+  it("S-242 req 4: task line carries the truncation classes and prefers current over last", () => {
+    const htmlTile = renderToStaticMarkup(
+      createElement(AgentTile, {
+        agent: {
+          ...agents[0],
+          current_task: { id: "t2", ref: "S-102", title: "Fix the login bug" },
+          last_task: { id: "t1", ref: "S-101", title: "Old work" },
+        },
+        href: "/squads/s1/agents/a1",
+      }),
+    );
+    expect(htmlTile).toContain('class="agent-tile-task mono"');
+    expect(htmlTile).toContain("S-102 · Fix the login bug");
+    expect(htmlTile).not.toContain("Old work");
+    const noTasks = renderToStaticMarkup(createElement(AgentTile, { agent: agents[0], href: "/squads/s1/agents/a1" }));
+    expect(noTasks).not.toContain("agent-tile-task");
   });
 
   it("each tile shows the robot icon, name, role and status chip", () => {

@@ -19,6 +19,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -53,6 +54,18 @@ type DashboardCost struct {
 	Currency     string  `json:"currency,omitempty"`
 }
 
+// DashboardAgentTask is the compact task reference shown on a squad's
+// agent tiles (S-242): the task the agent is working on right now and/or
+// the one it last touched. Ref is the human display reference the web UI
+// renders elsewhere ("T-<task_number>"); omitted when the task predates
+// numbering (task_number == 0).
+type DashboardAgentTask struct {
+	ID     string `json:"id"`
+	Ref    string `json:"ref,omitempty"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
 type DashboardAgent struct {
 	ID      string             `json:"id"`
 	SquadID string             `json:"squad_id"`
@@ -60,6 +73,17 @@ type DashboardAgent struct {
 	Role    string             `json:"role,omitempty"`
 	Status  domain.AgentStatus `json:"status"`
 	Cost    *DashboardCost     `json:"cost,omitempty"`
+	// Model is the display label of the agent's bound AI model
+	// (display_name, falling back to model_name). Omitted when the agent
+	// has no bound model or the model row is missing.
+	Model string `json:"model,omitempty"`
+	// CurrentTask is the task the agent is actively working (status
+	// "in-progress", most recently updated). Omitted when none.
+	CurrentTask *DashboardAgentTask `json:"current_task,omitempty"`
+	// LastTask is the agent's most recently completed ("done") task; if
+	// it has none, the most recently updated "in-review"/"blocked" task.
+	// Omitted when none.
+	LastTask *DashboardAgentTask `json:"last_task,omitempty"`
 }
 
 type DashboardSquad struct {
@@ -114,6 +138,9 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ownerNames := map[string]string{}
+	// S-242: resolve model labels once per request (one ListAIModels
+	// query) so per-agent model lookup never fans out into N+1 gets.
+	modelLabels := s.dashboardModelLabels(r.Context())
 
 	payload := DashboardPayload{Scope: "personal"}
 	if isAdmin {
@@ -122,7 +149,7 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 	payload.Squads = make([]DashboardSquad, 0, len(squads))
 
 	for _, squad := range squads {
-		entry, err := s.dashboardSquadEntry(r.Context(), squad, ownerNames)
+		entry, err := s.dashboardSquadEntry(r.Context(), squad, ownerNames, modelLabels)
 		if err != nil {
 			writeStorageError(w, err)
 			return
@@ -169,9 +196,10 @@ func (s *Server) dashboardOwnerName(ctx context.Context, cache map[string]string
 }
 
 // dashboardSquadEntry builds the dashboard row for one squad: task status
-// counts, cost aggregate, and its agents with per-agent cost. Extracted
-// from getDashboard for cognitive complexity (S-126 / S3776).
-func (s *Server) dashboardSquadEntry(ctx context.Context, squad *domain.Squad, ownerNames map[string]string) (DashboardSquad, error) {
+// counts, cost aggregate, and its agents with per-agent cost, bound model
+// and current/last task (S-242). The per-agent task picks are computed
+// from the squad's already-fetched task list — no extra queries per agent.
+func (s *Server) dashboardSquadEntry(ctx context.Context, squad *domain.Squad, ownerNames map[string]string, modelLabels map[string]string) (DashboardSquad, error) {
 	entry := DashboardSquad{
 		ID:         squad.ID,
 		Name:       squad.Name,
@@ -182,11 +210,13 @@ func (s *Server) dashboardSquadEntry(ctx context.Context, squad *domain.Squad, o
 		Agents:     []DashboardAgent{},
 	}
 
+	var squadTasks []*domain.Task
 	if board, err := s.store.GetBoard(ctx, squad.ID); err == nil && board != nil {
 		tasks, err := s.store.ListTasks(ctx, board.ID, "")
 		if err != nil {
 			return entry, err
 		}
+		squadTasks = tasks
 		for _, t := range tasks {
 			entry.TaskCounts[string(t.Status)]++
 		}
@@ -200,6 +230,7 @@ func (s *Server) dashboardSquadEntry(ctx context.Context, squad *domain.Squad, o
 	if err != nil {
 		return entry, err
 	}
+	picks := pickAgentTasks(squadTasks)
 	for _, agent := range agents {
 		da := DashboardAgent{
 			ID:      agent.ID,
@@ -208,12 +239,127 @@ func (s *Server) dashboardSquadEntry(ctx context.Context, squad *domain.Squad, o
 			Role:    agent.Role,
 			Status:  agent.Status,
 		}
+		if agent.AIModelID != "" {
+			da.Model = modelLabels[agent.AIModelID]
+		}
+		if p, ok := picks[agent.ID]; ok {
+			da.CurrentTask = toDashboardAgentTask(p.current)
+			da.LastTask = toDashboardAgentTask(p.last)
+		}
 		if usage, err := s.store.SumMetering(ctx, "", agent.ID, time.Time{}); err == nil && usage != nil {
 			da.Cost = costFromMetering(usage)
 		}
 		entry.Agents = append(entry.Agents, da)
 	}
 	return entry, nil
+}
+
+// dashboardModelLabels maps AI model id -> display label for the whole
+// registry in one query. Labels prefer display_name and fall back to
+// model_name (matching the web model pickers). A registry read failure is
+// non-fatal for the dashboard: agents simply render without a model.
+func (s *Server) dashboardModelLabels(ctx context.Context) map[string]string {
+	out := map[string]string{}
+	models, err := s.store.ListAIModels(ctx, "")
+	if err != nil {
+		return out
+	}
+	for _, m := range models {
+		label := strings.TrimSpace(m.DisplayName)
+		if label == "" {
+			label = m.ModelName
+		}
+		out[m.ID] = label
+	}
+	return out
+}
+
+// agentTaskPick holds one agent's current/last task as selected from a
+// bulk-fetched task list. `fallback` carries the latest in-review/blocked
+// candidate; it surfaces as `last` only when the agent has no done task.
+type agentTaskPick struct {
+	current  *domain.Task
+	last     *domain.Task
+	fallback *domain.Task
+}
+
+// resolve folds the fallback candidate into last when nothing done exists.
+func (p agentTaskPick) resolved() agentTaskPick {
+	if p.last == nil {
+		p.last = p.fallback
+	}
+	return p
+}
+
+// pickAgentTasks selects each agent's current and last task from an
+// already-fetched task list, in a single pass (S-242: bulk, no per-agent
+// queries). current = latest-updated in-progress task; last = latest-updated
+// done task, falling back to the latest-updated in-review/blocked task
+// when the agent has nothing done. Ties on updated_at break on created_at
+// then task_number (higher = newer) so output is deterministic.
+func pickAgentTasks(tasks []*domain.Task) map[string]agentTaskPick {
+	picks := map[string]agentTaskPick{}
+	for _, t := range tasks {
+		if t.AssigneeAgentID == "" {
+			continue
+		}
+		p := picks[t.AssigneeAgentID]
+		switch t.Status {
+		case domain.TaskInProgress:
+			if taskNewerThan(t, p.current) {
+				p.current = t
+			}
+		case domain.TaskDone:
+			if taskNewerThan(t, p.last) {
+				p.last = t
+			}
+		case domain.TaskInReview, domain.TaskBlocked:
+			if p.last == nil && taskNewerThan(t, p.fallback) {
+				p.fallback = t
+			}
+		}
+		picks[t.AssigneeAgentID] = p
+	}
+	for id, p := range picks {
+		picks[id] = p.resolved()
+	}
+	return picks
+}
+
+// taskNewerThan orders tasks by updated_at, breaking ties on created_at
+// then task_number (higher = newer) so picks are deterministic even when
+// timestamps collide.
+func taskNewerThan(a, b *domain.Task) bool {
+	if a == nil {
+		return false
+	}
+	if b == nil {
+		return true
+	}
+	if !a.UpdatedAt.Equal(b.UpdatedAt) {
+		return a.UpdatedAt.After(b.UpdatedAt)
+	}
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.After(b.CreatedAt)
+	}
+	return a.TaskNumber > b.TaskNumber
+}
+
+// toDashboardAgentTask maps a domain task to the compact tile shape.
+func toDashboardAgentTask(t *domain.Task) *DashboardAgentTask {
+	if t == nil {
+		return nil
+	}
+	ref := ""
+	if t.TaskNumber > 0 {
+		ref = fmt.Sprintf("T-%d", t.TaskNumber)
+	}
+	return &DashboardAgentTask{
+		ID:     t.ID,
+		Ref:    ref,
+		Title:  t.Title,
+		Status: string(t.Status),
+	}
 }
 
 // dashboardResources collects the generic registry resources surfaced in

@@ -171,7 +171,7 @@ function SquadBlock({
           {squad.name}
         </Link>
         {anyRunning ? <StatusChip status="running" /> : null}
-        <span className="squad-block-cost mono">{formatMoney(squadCost30d, currency)} · last 30 days</span>
+        <span className="squad-block-cost mono">{formatMoney(squadCost30d, currency)}</span>
       </div>
       <div className="entity-meta">
         {taskCount(squad, "todo")} todo · {taskCount(squad, "in-progress")} in progress
@@ -182,9 +182,10 @@ function SquadBlock({
           {squad.agents!.map((agent) => (
             <AgentTile
               key={agent.id}
-              agent={{ id: agent.id, squad_id: agent.squad_id, name: agent.name, role: agent.role, status: agent.status }}
+              agent={agent}
               href={`/squads/${squad.id}/agents/${agent.id}`}
-              costLabel={`last 30 days ${formatMoney(agentCost.get(agent.id) ?? 0, currency)}`}
+              costLabel={formatMoney(agentCost.get(agent.id) ?? 0, currency)}
+              variant="dashboard"
             />
           ))}
         </div>

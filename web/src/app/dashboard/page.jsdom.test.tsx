@@ -59,7 +59,7 @@ const memberDashboard = {
       owner_name: "Ross",
       task_counts: { todo: 2, "in-progress": 1, done: 5 },
       agents: [
-        { id: "ag1", squad_id: "sq1", name: "coder", status: "busy", cost: { cost: 1, currency: "USD", tokens: 10 } },
+        { id: "ag1", squad_id: "sq1", name: "coder", status: "busy", cost: { cost: 1, currency: "USD", tokens: 10 }, model: "claude-sonnet-4.5", current_task: { id: "t2", ref: "S-102", title: "Fix the login bug", status: "in-progress" }, last_task: { id: "t1", ref: "S-101", title: "Old work", status: "done" } },
         { id: "ag2", squad_id: "sq1", name: "broken", status: "error" },
       ],
     },
@@ -194,13 +194,22 @@ describe("DashboardPage sections", () => {
     expect(block).toHaveTextContent("owner: Ross");
     // S-230 req 3: a running (busy) agent puts a running chip next to the name.
     expect(block.querySelector(".chip.chip-running")).not.toBeNull();
-    // S-230 req 1: squad block shows the rolling 30-day cost (0.5 + 1.5).
+    // S-230 req 1: squad block shows the rolling cost. S-242 req 2:
+    // plain amount — the "last 30 days" wording is gone from the block.
     expect(block.querySelector(".squad-block-cost")).toHaveTextContent("USD 2.0000");
-    // Agents render as the shared overview tiles with per-agent 30-day cost.
+    expect(block.textContent).not.toContain("last 30 days");
+    // Agents render as the shared overview tiles with per-agent cost.
     const agentTile = screen.getByRole("link", { name: /coder/ });
     expect(agentTile).toHaveAttribute("href", "/squads/sq1/agents/ag1");
-    expect(agentTile).toHaveClass("agent-tile", "agent-tile--running");
-    expect(agentTile.querySelector(".agent-tile-cost")).toHaveTextContent("last 30 days USD 1.0000");
+    expect(agentTile).toHaveClass("agent-tile", "agent-tile--running", "agent-tile--dashboard");
+    expect(agentTile.querySelector(".agent-tile-cost")).toHaveTextContent("USD 1.0000");
+    // S-242 req 3: model line on the dashboard tile.
+    expect(agentTile.querySelector(".agent-tile-model")).toHaveTextContent("claude-sonnet-4.5");
+    // S-242 req 4: current task preferred over last, truncation class present.
+    const taskLine = agentTile.querySelector(".agent-tile-task");
+    expect(taskLine).toHaveTextContent("S-102 · Fix the login bug");
+    expect(taskLine).toHaveClass("mono");
+    expect(agentTile.textContent).not.toContain("Old work");
     // S-230 req 2: failed agent tile carries the red-outline modifier.
     expect(screen.getByRole("link", { name: /broken/ })).toHaveClass("agent-tile--failed");
   });
