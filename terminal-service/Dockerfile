@@ -1,15 +1,17 @@
-# TG-10: terminal-service (Terminal-as-a-Service). Build from repo root:
-#   docker build -f terminal-service/Dockerfile .
+# TG-10: terminal-service (Terminal-as-a-Service). Build from THIS directory's
+# context (matches images.yml `context: terminal-service`); the module is
+# self-contained (no replace of ../shared):
+#   docker build -t skquad-terminal-service terminal-service
 ARG GO_VERSION=1.26.8
 
 FROM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
 
-COPY terminal-service/go.mod terminal-service/go.sum ./terminal-service/
-RUN cd terminal-service && go mod download
+COPY go.mod go.sum ./
+RUN go mod download
 
-COPY terminal-service ./terminal-service
-RUN cd terminal-service && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/skquad-terminal-service ./cmd/terminal
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/skquad-terminal-service ./cmd/terminal
 
 # Hardened minimal runtime: no shell, no SSH client binaries — the service
 # speaks SSH via its compiled Go library only. Read-only rootfs enforced

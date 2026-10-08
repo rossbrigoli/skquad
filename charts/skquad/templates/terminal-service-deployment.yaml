@@ -8,6 +8,7 @@ signing/credential path; agents never see any of it.
 Storage: session recordings go to S3-compatible object storage
 (MinIO in this cluster, path-style).
 */ -}}
+{{- if not .Values.terminalService.recording.existingSecret }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -20,6 +21,7 @@ type: Opaque
 stringData:
   access-key: {{ .Values.terminalService.recording.accessKey | quote }}
   secret-key: {{ .Values.terminalService.recording.secretKey | quote }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -75,12 +77,12 @@ spec:
             - name: SKQUAD_RECORDING_S3_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "skquad.terminalServiceName" . }}-recording
+                  name: {{ .Values.terminalService.recording.existingSecret | default (printf "%s-recording" (include "skquad.terminalServiceName" .)) }}
                   key: access-key
             - name: SKQUAD_RECORDING_S3_SECRET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "skquad.terminalServiceName" . }}-recording
+                  name: {{ .Values.terminalService.recording.existingSecret | default (printf "%s-recording" (include "skquad.terminalServiceName" .)) }}
                   key: secret-key
             - name: SKQUAD_RECORDING_S3_FORCE_PATH_STYLE
               value: "true"

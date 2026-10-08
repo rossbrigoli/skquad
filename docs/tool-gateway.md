@@ -391,6 +391,15 @@ browser: put the privileged protocol behind a service.
   `SKQUAD_TERMINAL_SERVICE_URL` + `SKQUAD_TERMINAL_INTERNAL_TOKEN`
   are both set; every terminal call carries the bearer token; terminal
   errors map to stable client-safe codes.
+- **Secret wiring (no plaintext in git):** all terminal secrets are
+  SealedSecrets referenced by the chart via `existingSecret` values —
+  `skquad-terminal-service-internal-token` (both ns, key `token`),
+  `skquad-step-ca-passwords` (`ca-password.txt` /
+  `provisioner-password.txt`), `skquad-terminal-service-recording`
+  (`access-key` / `secret-key`). The recordings MinIO service account
+  is registered by a one-shot idempotent job
+  (`k3s-cluster/manifests/minio/09-terminal-recording-setup-job.yaml`)
+  with a bucket-scoped policy `skquad-terminal-rw`.
 - **Deferred (M2):** recording replay UI + CP read API, live step-ca
   provisioner (JWS/OTT) integration validation, bypass drill.
 

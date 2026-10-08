@@ -29,6 +29,7 @@ spec:
   storageClassName: {{ .Values.terminalService.stepCA.storageClass }}
   {{- end }}
 ---
+{{- if not .Values.terminalService.stepCA.existingSecret }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -41,6 +42,7 @@ type: Opaque
 stringData:
   ca-password.txt: {{ .Values.terminalService.stepCA.caPassword | quote }}
   provisioner-password.txt: {{ .Values.terminalService.stepCA.provisionerPassword | quote }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -147,7 +149,7 @@ spec:
             claimName: {{ include "skquad.stepCAName" . }}-data
         - name: secrets
           secret:
-            secretName: {{ include "skquad.stepCAName" . }}-passwords
+            secretName: {{ .Values.terminalService.stepCA.existingSecret | default (printf "%s-passwords" (include "skquad.stepCAName" .)) }}
             defaultMode: 0400
 ---
 apiVersion: v1
