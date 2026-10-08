@@ -214,7 +214,7 @@ func TestS216InboxListEnrichmentAndCascade(t *testing.T) {
 
 	rec := doAgentMultipart(t, handler, agent.ID, credential,
 		map[string]string{"message": "two files"},
-		[][2]string{{"a.txt", "aaa"}, {"b.csv", "x,y\n1,2\n"}})
+		[][2]string{{"a.txt", "ZZ-not-leaked-zz"}, {"b.csv", "x,y\n1,2\n"}})
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 	var created domain.InboxMessage
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
@@ -225,9 +225,11 @@ func TestS216InboxListEnrichmentAndCascade(t *testing.T) {
 	require.Len(t, msgs, 1)
 	require.Len(t, msgs[0].Attachments, 2)
 	require.NotEmpty(t, msgs[0].Attachments[0].URL)
-	// Listing never leaks bytes.
+	// Listing never leaks bytes. The marker uses non-hex characters so it can
+	// never collide with a randomly generated UUID in the marshalled JSON
+	// (a previous "aaa" marker flaked by matching inside an attachment id).
 	raw, _ := json.Marshal(msgs)
-	require.NotContains(t, string(raw), "aaa")
+	require.NotContains(t, string(raw), "ZZ-not-leaked-zz")
 
 	// Deleting the message cascades the attachments away.
 	del := httptest.NewRequest(http.MethodDelete, "/api/v1/inbox/"+created.ID, nil)
