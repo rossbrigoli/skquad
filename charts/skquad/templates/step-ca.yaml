@@ -147,6 +147,13 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+              # The step-ca binary ships with file capabilities
+              # (security.capability xattr: NET_BIND_SERVICE permitted+
+              # inheritable). execve() returns EPERM when the file's
+              # permitted caps are not a subset of the process bounding
+              # set, so drop-ALL alone breaks it. NET_BIND_SERVICE in the
+              # bounding set fixes exec; the CA serves on :9000 anyway.
+              add: ["NET_BIND_SERVICE"]
             readOnlyRootFilesystem: true
           resources:
             requests:
