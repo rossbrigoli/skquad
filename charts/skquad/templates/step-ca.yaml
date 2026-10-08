@@ -88,11 +88,10 @@ spec:
               step ca init \
                 --name "skquad-terminal-ssh-ca" \
                 --ssh \
+                --deployment-type standalone \
                 --provisioner "{{ .Values.terminalService.stepCA.provisioner }}" \
                 --dns "{{ include "skquad.stepCAName" . }}.{{ .Values.terminalService.namespace }}.svc.cluster.local" \
                 --address 0.0.0.0:{{ .Values.terminalService.stepCA.port }} \
-                --ca-address "https://{{ include "skquad.stepCAName" . }}.{{ .Values.terminalService.namespace }}.svc.cluster.local:{{ .Values.terminalService.stepCA.port }}" \
-                --ca-port {{ .Values.terminalService.stepCA.port }} \
                 --password-file /secrets/ca-password.txt \
                 --provisioner-password-file /secrets/provisioner-password.txt \
                 --with-ca-url "https://{{ include "skquad.stepCAName" . }}.{{ .Values.terminalService.namespace }}.svc.cluster.local:{{ .Values.terminalService.stepCA.port }}"
