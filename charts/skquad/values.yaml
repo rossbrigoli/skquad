@@ -607,7 +607,7 @@ terminalService:
   enabled: false
   namespace: skquad-terminal
   image:
-    repository: docker.io/brigss007/skquad-terminal-service
+    repository: ghcr.io/rossbrigoli/skquad-terminal-service
     tag: "0.1.0"
   imagePullPolicy: IfNotPresent
   port: 8091
