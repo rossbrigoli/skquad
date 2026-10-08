@@ -1642,6 +1642,33 @@ button.squad-tab.active {
   overflow-wrap: normal;
 }
 
+/* S-246: mermaid diagrams in chat bubbles. The rendered SVG is bounded so a
+   wide graph scrolls instead of blowing out the bubble layout. */
+.mermaid-diagram {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: var(--space-2) 0;
+}
+
+.mermaid-diagram svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  max-height: 480px;
+  margin: 0 auto;
+}
+
+.mermaid-diagram.mermaid-pending {
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+  padding: var(--space-2) var(--space-3);
+}
+
+/* Parse-failure fallback: styled like a normal fenced code block. */
+.chat-markdown pre.mermaid-fallback {
+  /* inherits .chat-markdown pre styles */
+}
+
 .chat-markdown blockquote {
   margin: var(--space-2) 0;
   padding-left: var(--space-3);

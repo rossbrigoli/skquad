@@ -3,10 +3,18 @@
 // the component to a static HTML string with react-dom/server and assert on
 // the markup — no jsdom needed, and sanitization behaviour is fully
 // observable in the output.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MarkdownMessage } from "./MarkdownMessage";
+
+// S-246: the mermaid renderer lazy-loads a ~2 MB library, so this node-project
+// test mocks the component and asserts ROUTING only (which fences become
+// diagrams). MermaidDiagram's own behaviour lives in its jsdom suite.
+vi.mock("./MermaidDiagram", () => ({
+  MermaidDiagram: ({ code }: { readonly code: string }) =>
+    createElement("div", { "data-testid": "mermaid-mock" }, code),
+}));
 
 function render(markdown: string): string {
   return renderToStaticMarkup(createElement(MarkdownMessage, { text: markdown }));
@@ -96,5 +104,30 @@ describe("MarkdownMessage", () => {
     expect(html).toContain("&lt;");
     expect(html).toContain("&amp;");
     expect(html).not.toContain("< b");
+  });
+
+  // S-246: mermaid fence routing
+  it("routes ```mermaid fences to MermaidDiagram (not a code block)", () => {
+    const html = render("```mermaid\ngraph TD; A-->B;\n```");
+    expect(html).toContain('data-testid="mermaid-mock"');
+    expect(html).toContain("graph TD; A--&gt;B;");
+    expect(html).not.toContain("<pre>");
+  });
+
+  it("trims exactly one trailing newline from mermaid source", () => {
+    const html = render("```mermaid\ngraph TD; A-->B;\n```");
+    expect(html).toContain('data-testid="mermaid-mock">graph TD; A--&gt;B;<');
+  });
+
+  it("does NOT route non-mermaid fences", () => {
+    const html = render("```javascript\nlet mermaidish = 1;\n```");
+    expect(html).not.toContain('data-testid="mermaid-mock"');
+    expect(html).toContain("<pre>");
+  });
+
+  it("does NOT route inline code mentioning mermaid", () => {
+    const html = render("use `mermaid` for diagrams");
+    expect(html).not.toContain('data-testid="mermaid-mock"');
+    expect(html).toContain("<code>mermaid</code>");
   });
 });
