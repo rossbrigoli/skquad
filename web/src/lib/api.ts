@@ -19,6 +19,16 @@ export type Squad = {
   created_at?: string;
 };
 
+// S-242: minimal task summary embedded on agent payloads (dashboard +
+// squad agent lists). Optional by contract — the UI must degrade
+// gracefully when the backend has not populated them yet.
+export type AgentTaskBrief = {
+  id: string;
+  ref?: string;
+  title?: string;
+  status?: string;
+};
+
 export type Agent = {
   id: string;
   squad_id: string;
@@ -39,6 +49,11 @@ export type Agent = {
   storage_enabled?: boolean;
   storage_size?: string;
   status?: string;
+  // S-242: AI model name + current/last task shown on the reusable
+  // agent tile. Optional: absent payloads simply hide those lines.
+  model?: string;
+  current_task?: AgentTaskBrief | null;
+  last_task?: AgentTaskBrief | null;
   created_at?: string;
   updated_at?: string;
 };

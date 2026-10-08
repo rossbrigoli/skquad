@@ -22,8 +22,8 @@ const env = vi.hoisted(() => ({
 }));
 
 vi.mock("next/link", () => ({
-  default: ({ href, children }: { href: string; children: React.ReactNode }) => (
-    <a href={href}>{children}</a>
+  default: ({ href, className, children }: { href: string; className?: string; children: React.ReactNode }) => (
+    <a href={href} className={className}>{children}</a>
   ),
 }));
 
@@ -94,9 +94,9 @@ const past = new Date(Date.now() - 600_000).toISOString();
 beforeEach(() => {
   env.squad = { id: "sq1", name: "Alpha Squad" };
   env.agents = [
-    { id: "ag1", name: "coder", status: "busy" },
-    { id: "ag2", name: "reviewer", status: "idle" },
-    { id: "ag3", name: "broken", status: "error" },
+    { id: "ag1", squad_id: "sq1", name: "coder", status: "busy", model: "llama-3.3-70b", current_task: { id: "t1", ref: "T-1", title: "running task", status: "in-progress" } },
+    { id: "ag2", squad_id: "sq1", name: "reviewer", status: "idle", last_task: { id: "t3", ref: "T-3", title: "done task", status: "done" } },
+    { id: "ag3", squad_id: "sq1", name: "broken", status: "error" },
   ];
   env.tasks = [
     { id: "t1", title: "running task", status: "in_progress", assignee_agent_id: "ag1", execution_id: "e1", lease_expires_at: future },
@@ -205,6 +205,30 @@ describe("SquadCockpitPage metrics", () => {
     env.modelsNull = true;
     render(<SquadCockpitPage />);
     expect(screen.getByRole("button", { name: "+ New agent" })).toBeInTheDocument();
+  });
+});
+
+describe("SquadCockpitPage agents section (S-242 shared tile)", () => {
+  it("renders the Agents listing with the shared AgentTiles grid component", () => {
+    render(<SquadCockpitPage />);
+    const grid = document.querySelector(".agent-tile-grid");
+    expect(grid).not.toBeNull();
+    // Same tile classes the dashboard uses — one reusable component.
+    // Scoped to the grid: the stalled-task row also mentions "reviewer".
+    const coderTile = within(grid as HTMLElement).getByRole("link", { name: /coder/ });
+    expect(coderTile).toHaveClass("agent-tile", "agent-tile--running");
+    expect(coderTile).toHaveAttribute("href", "/squads/sq1/agents/ag1");
+    // Model + current task lines come from the shared tile.
+    expect(coderTile.querySelector(".agent-tile-model")).toHaveTextContent("llama-3.3-70b");
+    expect(coderTile.querySelector(".agent-tile-task")).toHaveTextContent("T-1 · running task");
+    // Reviewer falls back to last_task; broken agent has neither line.
+    const reviewerTile = within(grid as HTMLElement).getByRole("link", { name: /reviewer/ });
+    expect(reviewerTile.querySelector(".agent-tile-task")).toHaveTextContent("T-3 · done task");
+    const brokenTile = within(grid as HTMLElement).getByRole("link", { name: /broken/ });
+    expect(brokenTile.querySelector(".agent-tile-task")).toBeNull();
+    expect(brokenTile).toHaveClass("agent-tile--failed");
+    // S-242 req 2: no "last 30 days" wording anywhere on the squad page.
+    expect(document.body.textContent).not.toContain("last 30 days");
   });
 });
 

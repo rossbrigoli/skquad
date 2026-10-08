@@ -3664,7 +3664,7 @@ button.squad-tab.active {
    failed/error agents get a static red outline. */
 .agent-tile-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: var(--space-3);
 }
 
@@ -3769,11 +3769,50 @@ button.squad-tab.active {
   }
 }
 
-/* S-230: cost line on agent tiles (rolling 30-day cost on the dashboard). */
+/* S-230: cost line on agent tiles (rolling cost on the dashboard). */
 .agent-tile-cost {
   font-size: var(--text-sm);
   color: var(--ink-muted);
   overflow-wrap: anywhere;
+}
+
+/* S-242: bigger, taller reusable agent tiles (~4:3, almost square).
+   Applies to .agent-tile only — provider tiles keep their own shape. */
+.agent-tile {
+  flex-direction: column;
+  align-items: stretch;
+  aspect-ratio: 4 / 3;
+  padding: var(--space-4);
+  gap: var(--space-2);
+}
+
+/* Icon top-left, status chip top-right; the text stack fills the rest. */
+.agent-tile-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.agent-tile .agent-tile-icon {
+  width: 52px;
+  height: 52px;
+}
+
+/* S-242: model + task lines — single line, never wrap, ellipsize. */
+.agent-tile-model,
+.agent-tile-task {
+  display: block;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.agent-tile-task {
+  color: var(--ink-faint);
 }
 
 /* S-230: AI provider tiles. Same anatomy as the agent tiles above

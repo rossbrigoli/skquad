@@ -2,7 +2,7 @@
 // The page renders GET /api/v1/dashboard; every derived value lives here so
 // it can be unit-tested without React.
 
-import type { MeteringSummary } from "./api";
+import type { AgentTaskBrief, MeteringSummary } from "./api";
 import { agentStatus } from "./status";
 
 export type DashboardAgent = {
@@ -12,6 +12,10 @@ export type DashboardAgent = {
   role?: string;
   status: string;
   cost?: MeteringSummary | null;
+  // S-242: model + current/last task for the reusable agent tile.
+  model?: string;
+  current_task?: AgentTaskBrief | null;
+  last_task?: AgentTaskBrief | null;
 };
 
 export type DashboardSquad = {
