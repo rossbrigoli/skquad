@@ -618,6 +618,10 @@ terminalService:
     key: token
   stepCA:
     enabled: true
+    # existingSecret: name of a pre-created (Sealed)Secret in the terminal
+    # namespace with keys ca-password.txt and provisioner-password.txt.
+    # When set, the chart renders no plaintext passwords Secret.
+    existingSecret: ""
     image:
       repository: smallstep/step-ca
       tag: "0.28.2"
@@ -628,6 +632,10 @@ terminalService:
     storage: 1Gi
     storageClass: ""
   recording:
+    # existingSecret: name of a pre-created (Sealed)Secret in the terminal
+    # namespace with keys access-key and secret-key. When set, the chart
+    # renders no plaintext recording credentials Secret.
+    existingSecret: ""
     # MinIO (path-style) in this cluster; override per environment.
     endpoint: "http://minio.minio.svc.cluster.local:9000"
     namespace: minio
