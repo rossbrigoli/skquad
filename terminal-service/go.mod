@@ -1,10 +1,10 @@
 module github.com/rossbrigoli/skquad/terminal-service
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/minio/minio-go/v7 v7.0.81
-	golang.org/x/crypto v0.41.0
+	golang.org/x/crypto v0.56.0
 )
 
 require (
@@ -18,8 +18,8 @@ require (
 	github.com/minio/md5-simd v1.1.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rs/xid v1.6.0 // indirect
-	golang.org/x/net v0.42.0 // indirect
-	golang.org/x/sys v0.35.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

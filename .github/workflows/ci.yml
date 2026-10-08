@@ -580,6 +580,10 @@ jobs:
           cache-dependency-path: |
             control-plane/go.sum
             operator/go.sum
+            shared/go.sum
+            tool-gateway/go.sum
+            browser-proxy/go.sum
+            terminal-service/go.sum
           # Go 1.26.8 is pre-seeded in the runner image tool cache (K-37);
           # skip setup-go's own distribution+cache handling (~4 min/job).
           cache: false
@@ -600,6 +604,19 @@ jobs:
       - name: govulncheck operator
         working-directory: operator
         run: $(go env GOPATH)/bin/govulncheck ./...
+      # S-217: extend govulncheck to every Go module in the repo.
+      - name: govulncheck shared
+        working-directory: shared
+        run: $(go env GOPATH)/bin/govulncheck ./...
+      - name: govulncheck tool-gateway
+        working-directory: tool-gateway
+        run: $(go env GOPATH)/bin/govulncheck ./...
+      - name: govulncheck browser-proxy
+        working-directory: browser-proxy
+        run: $(go env GOPATH)/bin/govulncheck ./...
+      - name: govulncheck terminal-service
+        working-directory: terminal-service
+        run: $(go env GOPATH)/bin/govulncheck ./...
       - name: pip-audit agent-runtime
         run: |
           # The self-hosted runner image lacks python3-venv (ensurepip), so run
@@ -617,13 +634,50 @@ jobs:
             pip install --quiet --upgrade "setuptools>=83.0.0"
             pip-audit
           '
-      - name: npm audit web prod deps (high+ critical)
+      # S-217: llm-gateway was previously un-audited. Same container method as
+      # agent-runtime (read-only mount, copy into container FS before pip).
+      - name: pip-audit llm-gateway
+        run: |
+          docker run --rm -v "$PWD:/w:ro,z" python:3.11-slim bash -c '
+            set -e
+            cp -r /w /tmp/audit
+            cd /tmp/audit
+            pip install --quiet --upgrade pip pip-audit
+            pip install --quiet ./llm-gateway
+            pip install --quiet --upgrade "setuptools>=83.0.0"
+            pip-audit
+          '
+      - name: npm audit web (all deps incl. dev, high+ critical)
         working-directory: web
-        # --omit=dev: the only high+ advisory (GHSA-vfj7-8cjw-p6xm, braces
-        # <=3.0.3, no patched release yet) lives in the eslint-config-next
-        # dev toolchain and never ships in the runtime image. Prod deps are
-        # clean; revisit once a braces patch lands.
-        run: npm audit --omit=dev --audit-level=high --package-lock-only
+        # S-217: full audit including dev deps. One documented exclusion:
+        # GHSA-vfj7-8cjw-p6xm (braces <=3.0.3, stack-exhaustion DoS) has NO
+        # patched release as of 2026-10-08 — every version of eslint-config-next
+        # (through 16.5.0-canary.3) pulls fast-glob -> micromatch 4.0.8 ->
+        # braces ^3.0.3, and braces' latest release (3.0.3) is itself in the
+        # vulnerable range, so no bump or override can fix it. Dev-only chain,
+        # never ships in the runtime image. REMOVE this exclusion as soon as a
+        # patched braces lands upstream.
+        run: |
+          npm audit --audit-level=high --package-lock-only --json > /tmp/npm-audit-s217.json || true
+          node -e '
+            const a = require("/tmp/npm-audit-s217.json");
+            const IGNORE = ["GHSA-vfj7-8cjw-p6xm"]; // braces, unpatched (S-217)
+            const bad = [];
+            for (const v of Object.values(a.vulnerabilities || {})) {
+              for (const via of (v.via || [])) {
+                if (typeof via === "object" && ["high", "critical"].includes(via.severity)
+                    && !IGNORE.some(id => (via.url || "").includes(id))) {
+                  bad.push(`${v.name}: ${via.title} ${via.url}`);
+                }
+              }
+            }
+            if (bad.length) {
+              console.error("Un-excluded high/critical advisories:");
+              bad.forEach(b => console.error("  " + b));
+              process.exit(1);
+            }
+            console.log("npm audit: clean (high+) apart from documented S-217 exclusion");
+          '
 
   security-sast:
     name: Security — SAST (gosec)
