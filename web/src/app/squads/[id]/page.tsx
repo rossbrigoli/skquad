@@ -71,13 +71,9 @@ export default function SquadCockpitPage() {
           <h1 className="page-title" style={{ margin: 0 }}>
             {squad?.name ?? "Squad"}
           </h1>
-          <div style={{ display: "flex", gap: "var(--space-2)" }}>
-            {/* S-179: the Edit dialog is gone — the mission now lives in
-                the inline Configuration section below. Delete stays. */}
-            <button type="button" className="btn btn-sm btn-danger" onClick={() => setDeleting(true)} disabled={!squad}>
-              Delete
-            </button>
-          </div>
+          {/* S-243: the Delete button moved out of the header into the
+              "Danger zone" section at the bottom of the page, matching
+              the agent page's S-178 pattern. */}
         </div>
 
         <div className="metric-grid">
@@ -138,7 +134,9 @@ export default function SquadCockpitPage() {
             <h2>Agents</h2>
             {/* S-211: "Manage agents" is gone — the Agents tab was folded
                 into Overview, so the create-agent affordance moved here. */}
-            <button type="button" className="btn btn-sm btn-primary" onClick={() => setCreating(true)}>
+            {/* S-243: sized like the "+ New squad" button on the Squads
+                list page (btn btn-primary, no btn-sm). */}
+            <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
               + New agent
             </button>
           </div>
@@ -154,6 +152,25 @@ export default function SquadCockpitPage() {
             nameFor={auditName}
           />
         </Collapsible>
+
+        {/* S-243: Danger zone — destructive delete lives here at the
+            bottom of the page, reusing the agent page's S-178 pattern
+            (.danger-zone / .danger-zone-row / .danger-zone-title). */}
+        <section className="danger-zone" aria-label="Danger zone">
+          <h2>Danger zone</h2>
+          <div className="danger-zone-row">
+            <div>
+              <div className="danger-zone-title">Delete this squad</div>
+              <p className="field-hint" style={{ margin: 0 }}>
+                Removes the squad, its agents, board, tasks, grants and Kubernetes namespace.
+                This cannot be undone.
+              </p>
+            </div>
+            <button type="button" className="btn btn-danger" onClick={() => setDeleting(true)} disabled={!squad}>
+              Delete squad
+            </button>
+          </div>
+        </section>
 
         {creating ? (
           <AgentFormModal
