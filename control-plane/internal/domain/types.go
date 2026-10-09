@@ -618,6 +618,22 @@ type InboxMessage struct {
 // IsRead reports whether the owner has acknowledged the notification.
 func (m *InboxMessage) IsRead() bool { return m.ReadAt != nil }
 
+// DriftReport is one artifact drift-check outcome (TG-11 §6.7), stored
+// per (resource, host_group, playbook, rev) check run. DriftedHosts
+// lists the hosts whose check-mode (`ansible-playbook --check`) run
+// reported changed/failed/unreachable — i.e. hosts that are off the
+// approved state. InSync is the derived complement (no drifted hosts).
+type DriftReport struct {
+	ID           string    `json:"id"`
+	ResourceID   string    `json:"resource_id"`
+	HostGroup    string    `json:"host_group"`
+	Playbook     string    `json:"playbook"`
+	GitRev       string    `json:"git_rev"`
+	CheckedAt    time.Time `json:"checked_at"`
+	DriftedHosts []string  `json:"drifted_hosts"`
+	InSync       bool      `json:"in_sync"`
+}
+
 // InboxAttachment (S-216) is one file attached to an inbox message.
 // Metadata (filename, sniffed content type, size, sha256) is always
 // safe to serialize; Data carries the raw bytes only on the download

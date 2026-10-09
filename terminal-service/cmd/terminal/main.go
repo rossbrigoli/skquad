@@ -22,6 +22,7 @@ import (
 
 	"github.com/rossbrigoli/skquad/terminal-service/internal/apply"
 	"github.com/rossbrigoli/skquad/terminal-service/internal/caclient"
+	"github.com/rossbrigoli/skquad/terminal-service/internal/drift"
 	"github.com/rossbrigoli/skquad/terminal-service/internal/httpapi"
 	"github.com/rossbrigoli/skquad/terminal-service/internal/recorder"
 )
@@ -45,6 +46,17 @@ func envInt(k string, def int) int {
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+
+	// TG-11 slice D: drift-check mode — the CronJob entrypoint in the
+	// SAME image (no new container image). Runs one read-only sweep and
+	// exits; the long-running server path below is untouched.
+	if len(os.Args) > 1 && os.Args[1] == "drift-check" {
+		if err := runDriftCheck(context.Background(), logger); err != nil {
+			logger.Error("drift-check failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	token := os.Getenv("SKQUAD_TERMINAL_INTERNAL_TOKEN")
 	if token == "" {
@@ -100,6 +112,66 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+// runDriftCheck executes one drift sweep (TG-11 slice D). It reuses
+// the apply engine (CheckOnly via the runner), the recording sink and
+// the CA minter from this image, and talks to the CP drift surface
+// with the direction-scoped SKQUAD_DRIFT_INGEST_TOKEN.
+//
+// Exit policy: the sweep only fails when the resource listing fails or
+// the context dies — per-resource/per-group problems are logged and
+// skipped by the runner, and DRIFT ITSELF is data, not a failure.
+func runDriftCheck(ctx context.Context, logger *slog.Logger) error {
+	cpURL := env("SKQUAD_CP_URL", "")
+	ingestToken := env("SKQUAD_DRIFT_INGEST_TOKEN", "")
+	if cpURL == "" || ingestToken == "" {
+		return fmt.Errorf("SKQUAD_CP_URL and SKQUAD_DRIFT_INGEST_TOKEN are required for drift-check")
+	}
+	// Recording is best-effort here too: a check run should be auditable
+	// when a sink exists, but a missing sink never blocks drift checks.
+	sinkFactory, _ := buildSinkFactory(logger)
+	engine := &apply.Engine{NewRecorder: applyRecorderFactory(sinkFactory)}
+	client := &drift.CPClient{BaseURL: cpURL, Token: ingestToken}
+	runner := &drift.Runner{
+		Resources:       client,
+		Poster:          client,
+		Engine:          engine,
+		Tips:            &drift.GitTipResolver{},
+		CAMint:          applyCAMinter{inner: &caminter{}},
+		DefaultPlaybook: env("SKQUAD_DRIFT_PLAYBOOK", "site.yml"),
+		CheckTimeout:    time.Duration(envInt("SKQUAD_DRIFT_CHECK_TIMEOUT_SECONDS", 600)) * time.Second,
+		CertTTL:         time.Duration(envInt("SKQUAD_DRIFT_CERT_TTL_SECONDS", 900)) * time.Second,
+		Logger:          logger,
+	}
+	// Static-key deployments: the drift identity key is read from a
+	// mounted file (SealedSecret), never from values or env literals.
+	if kf := env("SKQUAD_DRIFT_SSH_KEY_FILE", ""); kf != "" {
+		keyPEM, err := os.ReadFile(kf)
+		if err != nil {
+			return fmt.Errorf("drift: read SSH key file: %w", err)
+		}
+		runner.SSHKeyPEM = string(keyPEM)
+	}
+	sum, err := runner.Run(ctx)
+	logger.Info("drift-check complete",
+		"resources", sum.Resources,
+		"checks_posted", sum.Checks,
+		"drifted", sum.Drifted,
+		"skipped", sum.Skipped)
+	return err
+}
+
+// applyCAMinter adapts the session-side caminter (*caclient.Cert) to
+// the apply engine's CAMinter shape (raw cert PEM bytes).
+type applyCAMinter struct{ inner *caminter }
+
+func (a applyCAMinter) Mint(ctx context.Context, user, host string, ttl time.Duration) ([]byte, error) {
+	cert, err := a.inner.Mint(ctx, user, host, ttl)
+	if err != nil {
+		return nil, err
+	}
+	return cert.CertPEM, nil
 }
 
 // caminter mints CA certs via the step-ca HTTP contract.

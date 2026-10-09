@@ -261,7 +261,7 @@ func validateArtifactConfig(raw json.RawMessage) Violations {
 	if len(v) > 0 {
 		return v
 	}
-	if v := checkUnknownKeys("endpoint_config.artifact", obj, "git_url", "default_branch", "playbooks_path"); len(v) > 0 {
+	if v := checkUnknownKeys("endpoint_config.artifact", obj, "git_url", "default_branch", "playbooks_path", "drift_playbook"); len(v) > 0 {
 		return v
 	}
 	var gitURL string
@@ -279,6 +279,17 @@ func validateArtifactConfig(raw json.RawMessage) Violations {
 	if _, ok := obj["playbooks_path"]; ok {
 		if strings.TrimSpace(path) == "" || strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
 			v = append(v, Violation{Field: "endpoint_config.artifact.playbooks_path", Code: "invalid_value", Message: "playbooks_path must be a relative, traversal-free path"})
+		}
+	}
+	// TG-11 slice D: optional drift_playbook — the entry playbook the
+	// periodic drift-check runs for this resource (falls back to the
+	// runner's SKQUAD_DRIFT_PLAYBOOK default when unset). Same relative,
+	// traversal-free rule as playbooks_path.
+	var driftPB string
+	v = append(v, stringField(obj, "drift_playbook", "endpoint_config.artifact.drift_playbook", &driftPB, false, nil)...)
+	if _, ok := obj["drift_playbook"]; ok {
+		if strings.TrimSpace(driftPB) == "" || strings.HasPrefix(driftPB, "/") || strings.Contains(driftPB, "..") {
+			v = append(v, Violation{Field: "endpoint_config.artifact.drift_playbook", Code: "invalid_value", Message: "drift_playbook must be a relative, traversal-free path"})
 		}
 	}
 	return sortByField(v)

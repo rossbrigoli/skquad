@@ -651,3 +651,32 @@ terminalService:
   sshEgressNetworks: []
   nodeSelector: {}
   tolerations: []
+  # TG-11 slice D: periodic drift detection (docs/tool-gateway.md §6.7).
+  # A CronJob in the terminal quarantine namespace runs
+  # `ansible-playbook --check` (check mode, NO mutation) for every
+  # artifact-enabled ssh resource × host_group at the pinned
+  # default-branch tip rev and POSTs reports to the CP drift ingest;
+  # the CP files the batched owner Inbox digest. Disabled by default.
+  drift:
+    enabled: false
+    schedule: "0 3 * * *"
+    # Entry playbook used when a resource carries no drift_playbook.
+    playbook: "site.yml"
+    checkTimeoutSeconds: 600
+    certTTLSeconds: 900
+    # Control-plane URL for the drift surface. Empty = in-cluster
+    # api-server service in the release namespace.
+    controlPlaneURL: ""
+    # Bearer token for POST /internal/v1/drift-reports (must match the
+    # CP's SKQUAD_DRIFT_INGEST_TOKEN). SECRET: prefer the SealedSecret.
+    ingestToken: ""
+    ingestTokenSecret:
+      name: ""
+      key: token
+    # Static-key deployments: name of a pre-created Secret in the
+    # terminal namespace holding the drift SSH identity key. When set it
+    # is mounted read-only and SKQUAD_DRIFT_SSH_KEY_FILE points at it.
+    sshKeySecret: ""
+    # Coarse L4 fence for the registered git hosts (https only —
+    # ls-remote/clone). MUST cover every artifact git_url host.
+    gitEgressNetworks: []
