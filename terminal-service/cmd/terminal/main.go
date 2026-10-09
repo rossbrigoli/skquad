@@ -20,6 +20,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
+	"github.com/rossbrigoli/skquad/terminal-service/internal/apply"
 	"github.com/rossbrigoli/skquad/terminal-service/internal/caclient"
 	"github.com/rossbrigoli/skquad/terminal-service/internal/httpapi"
 	"github.com/rossbrigoli/skquad/terminal-service/internal/recorder"
@@ -66,6 +67,11 @@ func main() {
 	}
 	cfg.RecorderSinkFactory = sinkFactory
 
+	// Artifact apply engine (TG-11 §6.7). Recording is best-effort:
+	// a sink failure downgrades auditability, never the apply itself.
+	cfg.ApplyEngine = &apply.Engine{NewRecorder: applyRecorderFactory(sinkFactory)}
+	cfg.MaxApplies = envInt("SKQUAD_TERMINAL_MAX_APPLIES", 16)
+
 	handler, err := httpapi.NewServer(cfg, logger)
 	if err != nil {
 		logger.Error("server config invalid", "err", err)
@@ -109,6 +115,32 @@ func (c *caminter) Mint(ctx context.Context, user, host string, ttl time.Duratio
 		return nil, fmt.Errorf("ca_unavailable")
 	}
 	return caclient.MintCertWithRequest(ctx, endpoint, token, nil, user, host, ttl)
+}
+
+func applyRecorderFactory(sinkFactory func(context.Context, string) (recorder.Sink, error)) func(applyID string, meta map[string]any) (apply.Recorder, error) {
+	if sinkFactory == nil {
+		return nil
+	}
+	return func(applyID string, meta map[string]any) (apply.Recorder, error) {
+		sink, err := sinkFactory(context.Background(), applyID)
+		if err != nil {
+			return nil, err
+		}
+		m := recorder.Meta{}
+		if v, ok := meta["resource_id"].(string); ok {
+			m.ResourceID = v
+		}
+		if v, ok := meta["agent_id"].(string); ok {
+			m.AgentID = v
+		}
+		if v, ok := meta["host_group"].(string); ok {
+			m.Host = v
+		}
+		if v, ok := meta["playbook"].(string); ok {
+			m.Command = v
+		}
+		return recorder.New(sink, applyID, m)
+	}
 }
 
 func buildSinkFactory(logger *slog.Logger) (func(context.Context, string) (recorder.Sink, error), error) {

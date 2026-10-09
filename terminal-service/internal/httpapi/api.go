@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rossbrigoli/skquad/terminal-service/internal/apply"
 	"github.com/rossbrigoli/skquad/terminal-service/internal/recorder"
 	"github.com/rossbrigoli/skquad/terminal-service/internal/sshexec"
 )
@@ -54,6 +55,11 @@ type Config struct {
 	RecorderSinkFactory func(ctx context.Context, recordingID string) (recorder.Sink, error)
 	CAMint              sshexec.CAMinter
 	Sessions            SessionStarter
+	// ApplyEngine runs artifact applies; production wiring uses
+	// *apply.Engine (mirrors the Sessions pattern).
+	ApplyEngine ApplyEngine
+	// MaxApplies bounds the async apply registry.
+	MaxApplies int
 }
 
 // Server is the HTTP handler set.
@@ -61,6 +67,7 @@ type Server struct {
 	cfg      Config
 	logger   *slog.Logger
 	sessions *registry
+	applies  *applyRegistry
 }
 
 // NewServer validates config and returns the server.
@@ -74,13 +81,20 @@ func NewServer(cfg Config, logger *slog.Logger) (http.Handler, error) {
 	if cfg.SessionIdleTimeout <= 0 {
 		cfg.SessionIdleTimeout = 30 * time.Minute
 	}
+	if cfg.MaxApplies <= 0 {
+		cfg.MaxApplies = 16
+	}
 	s := &Server{
 		cfg:      cfg,
 		logger:   logger,
 		sessions: newRegistry(cfg.MaxSessions, cfg.SessionIdleTimeout),
+		applies:  newApplyRegistry(cfg.MaxApplies),
 	}
 	if cfg.Sessions == nil {
 		cfg.Sessions = sshStarter{}
+	}
+	if cfg.ApplyEngine == nil {
+		cfg.ApplyEngine = &apply.Engine{}
 	}
 	s.cfg = cfg
 	mux := http.NewServeMux()
@@ -89,6 +103,8 @@ func NewServer(cfg Config, logger *slog.Logger) (http.Handler, error) {
 	mux.Handle("/v1/exec", s.auth(http.HandlerFunc(s.handleExec)))
 	mux.Handle("/v1/sessions", s.auth(http.HandlerFunc(s.handleSessionOpen)))
 	mux.Handle("/v1/sessions/", s.auth(http.HandlerFunc(s.handleSessionRoutes)))
+	mux.Handle("/v1/applies", s.auth(http.HandlerFunc(s.handleApplyCreate)))
+	mux.Handle("/v1/applies/", s.auth(http.HandlerFunc(s.handleApplyRoutes)))
 	return mux, nil
 }
 

@@ -41,8 +41,8 @@ func LintPlaybook(playbookYAML []byte, mirrorsAllow, denyPatterns []string) ([]L
 }
 
 type linter struct {
-	mirrors map[string]bool
-	denies  []string
+	mirrors  map[string]bool
+	denies   []string
 	findings []LintFinding
 }
 

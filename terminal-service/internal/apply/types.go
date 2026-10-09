@@ -12,13 +12,13 @@ import (
 
 // Refusal codes are stable, client-safe strings recorded on refused applies.
 const (
-	RefusalRevNotFound   = "rev_not_found"
-	RefusalNotMerged     = "artifact_not_merged"
-	RefusalNotTip        = "not_default_branch_tip"
-	RefusalLintFailed    = "lint_failed"
-	RefusalBadPlaybook   = "playbook_not_found"
-	RefusalEmptyHosts    = "empty_host_group"
-	RefusalCertMint      = "cert_mint_failed"
+	RefusalRevNotFound = "rev_not_found"
+	RefusalNotMerged   = "artifact_not_merged"
+	RefusalNotTip      = "not_default_branch_tip"
+	RefusalLintFailed  = "lint_failed"
+	RefusalBadPlaybook = "playbook_not_found"
+	RefusalEmptyHosts  = "empty_host_group"
+	RefusalCertMint    = "cert_mint_failed"
 )
 
 // Status values for an apply job.
@@ -32,13 +32,13 @@ const (
 // Request is one artifact apply. GitURL comes from the RESOURCE registration
 // only — the tool call cannot point the executor at an arbitrary repo.
 type Request struct {
-	ApplyID      string
-	ResourceID   string
-	AgentID      string
-	Playbook     string // path relative to PlaybooksPath, no traversal
-	GitRev       string // full 40-char lowercase SHA (validated upstream)
-	HostGroup    string
-	Hosts        []string // resolved from the ceiling's host_group
+	ApplyID    string
+	ResourceID string
+	AgentID    string
+	Playbook   string // path relative to PlaybooksPath, no traversal
+	GitRev     string // full 40-char lowercase SHA (validated upstream)
+	HostGroup  string
+	Hosts      []string // resolved from the ceiling's host_group
 	CheckOnly  bool
 	RequireTip bool
 
@@ -48,11 +48,11 @@ type Request struct {
 	PlaybooksPath string
 
 	// SSH transport (mirrors the TG-10 exec substrate)
-	SSHUser        string
-	KnownHosts     string
-	CertTTL        time.Duration
+	SSHUser    string
+	KnownHosts string
+	CertTTL    time.Duration
 	// CAMint mints a per-host short-lived cert; nil ⇒ StaticKeyPEM used.
-	CAMint CAMinter
+	CAMint       CAMinter
 	StaticKeyPEM string
 
 	// Lint inputs
@@ -82,14 +82,14 @@ type LintFinding struct {
 
 // Result is the terminal outcome of an apply (or refusal).
 type Result struct {
-	Status        string              `json:"status"`
-	RefusalReason string              `json:"refusal_reason,omitempty"`
+	Status        string                `json:"status"`
+	RefusalReason string                `json:"refusal_reason,omitempty"`
 	PerHost       map[string]HostResult `json:"per_host,omitempty"`
-	LintFindings  []LintFinding       `json:"lint_findings,omitempty"`
-	RecordingID   string              `json:"recording_id,omitempty"`
-	ExitCode      int                 `json:"exit_code"`
-	StartedAt     time.Time           `json:"started_at"`
-	FinishedAt    time.Time           `json:"finished_at"`
+	LintFindings  []LintFinding         `json:"lint_findings,omitempty"`
+	RecordingID   string                `json:"recording_id,omitempty"`
+	ExitCode      int                   `json:"exit_code"`
+	StartedAt     time.Time             `json:"started_at"`
+	FinishedAt    time.Time             `json:"finished_at"`
 }
 
 // CAMinter matches sshexec.CAMinter's shape (per-host ephemeral certs).
