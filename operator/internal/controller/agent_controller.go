@@ -654,7 +654,18 @@ func workspaceConfig(agent *skquadv1.Agent) *skquadv1.AgentStorage {
 	return &cfg
 }
 
+// workspacePVCName returns the name of the agent's durable workspace PVC.
+// S-261: the control plane fixes a friendly name
+// (<owner>-<squad>-<agent>-workspace-<guid>) in spec.workspacePVCName at
+// agent creation; the operator uses it verbatim everywhere the claim is
+// referenced (pod volume, create, delete) so the name can never drift.
+// CRs written before S-261 leave the field empty and keep the legacy
+// agent-<cr-name>-workspace derivation — existing volumes are never
+// renamed.
 func workspacePVCName(agent *skquadv1.Agent) string {
+	if name := strings.TrimSpace(agent.Spec.WorkspacePVCName); name != "" {
+		return name
+	}
 	return fmt.Sprintf("agent-%s-workspace", agent.Name)
 }
 

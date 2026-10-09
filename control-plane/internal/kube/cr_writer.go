@@ -115,8 +115,8 @@ func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identit
 		// S-178: per-agent reasoning effort; the operator injects it as
 		// SKQUAD_THINKING_LEVEL and the runtime maps it to the LLM
 		// request's reasoning_effort parameter.
-		"thinkingLevel":     agent.ThinkingLevel,
-		"desiredActive":     agent.Status == domain.AgentBusy,
+		"thinkingLevel": agent.ThinkingLevel,
+		"desiredActive": agent.Status == domain.AgentBusy,
 	}
 	// S-156: deterministic Deployment name (skquad-<owner>-agent-<agent>).
 	// Older agents without one keep the operator's CR-name fallback.
@@ -129,6 +129,13 @@ func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identit
 	// an explicit, reviewable payload.
 	if agent.StorageEnabled {
 		spec["storage"] = agentStorageSpec(agent.StorageSize, w.defaultStorageSize, w.storageClass)
+		// S-261: friendly workspace PVC name fixed at agent creation
+		// (<owner>-<squad>-<agent>-workspace-<guid>). Emitted only with
+		// storage enabled; agents without a persisted name (pre-S-261)
+		// keep the operator's legacy agent-<cr-name>-workspace fallback.
+		if name := strings.TrimSpace(agent.WorkspacePVCName); name != "" {
+			spec["workspacePVCName"] = name
+		}
 	}
 	if w.controlPlaneURL != "" {
 		spec["controlPlaneUrl"] = w.controlPlaneURL

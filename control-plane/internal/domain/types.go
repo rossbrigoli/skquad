@@ -103,6 +103,13 @@ type Agent struct {
 	// at creation (names are immutable) and persisted; the operator uses it
 	// instead of the CR name when present.
 	DeploymentName string `json:"deployment_name,omitempty"`
+	// WorkspacePVCName (S-261) is the durable workspace PVC name fixed at
+	// agent creation: <owner>-<squad>-<agent>-workspace-<agent-guid>.
+	// Persisted once (immutable like DeploymentName) and mirrored to the
+	// Agent CR's spec.workspacePVCName when storage is enabled. Agents
+	// created before S-261 keep '' forever and the operator falls back to
+	// the legacy agent-<cr-name>-workspace derivation — no renames.
+	WorkspacePVCName string `json:"workspace_pvc_name,omitempty"`
 	// ChatResetAt (S-162) marks the instant the user reset the chat
 	// thread. Messages created at or before it are excluded from the
 	// chat history and the runtime context; the transcript is archived

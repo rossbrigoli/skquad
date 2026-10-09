@@ -55,6 +55,9 @@ spec:
                 deploymentName:
                   type: string
                   description: "S-156 deterministic Deployment name (skquad-<owner>-agent-<agent>); operator falls back to the CR name when absent."
+                workspacePVCName:
+                  type: string
+                  description: "S-261 durable workspace PVC name fixed by the control plane at agent creation (<owner>-<squad>-<agent>-workspace-<guid>); operator falls back to the legacy agent-<cr-name>-workspace derivation when absent (pre-S-261 CRs)."
                 credentialSecret:
                   type: string
                 virtualKeySecret:
