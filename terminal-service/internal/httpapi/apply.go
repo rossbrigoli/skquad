@@ -45,14 +45,40 @@ func newApplyRegistry(max int) *applyRegistry {
 	return &applyRegistry{byID: map[string]*applyJob{}, max: max}
 }
 
+// add inserts j. When the registry is full it evicts the oldest FINISHED
+// job so the bound applies to concurrent+recently-finished work, not to
+// the process lifetime (the recorder is the durable audit trail; evicted
+// jobs 404 on GET). If every tracked job is still active the add is
+// rejected with apply_limit.
 func (r *applyRegistry) add(j *applyJob) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.byID) >= r.max {
-		return errors.New("apply_limit")
+		if !r.evictOldestFinishedLocked() {
+			return errors.New("apply_limit")
+		}
 	}
 	r.byID[j.id] = j
 	return nil
+}
+
+// evictOldestFinishedLocked removes and returns true if any finished job
+// exists; false when all jobs are still active.
+func (r *applyRegistry) evictOldestFinishedLocked() bool {
+	var oldest *applyJob
+	for _, j := range r.byID {
+		j.mu.Lock()
+		finished := !j.finishedAt.IsZero()
+		j.mu.Unlock()
+		if finished && (oldest == nil || j.finishedAt.Before(oldest.finishedAt)) {
+			oldest = j
+		}
+	}
+	if oldest == nil {
+		return false
+	}
+	delete(r.byID, oldest.id)
+	return true
 }
 
 func (r *applyRegistry) get(id string) (*applyJob, bool) {

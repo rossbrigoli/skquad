@@ -170,6 +170,50 @@ func TestApplyRegistryFull429(t *testing.T) {
 	resp2.Body.Close()
 }
 
+func TestApplyRegistryEvictsOldestFinished(t *testing.T) {
+	eng := &stubApplyEngine{fn: func(_ context.Context, _ apply.Request) (*apply.Result, error) {
+		return &apply.Result{Status: apply.StatusSucceeded}, nil
+	}}
+	srv := testServer(t, Config{MaxApplies: 1, ApplyEngine: eng})
+	defer srv.Close()
+
+	resp := doReq(t, "POST", srv.URL+"/v1/applies", "test-token", validApplyBody())
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("first apply: want 202, got %d", resp.StatusCode)
+	}
+	var first map[string]string
+	json.NewDecoder(resp.Body).Decode(&first)
+	resp.Body.Close()
+
+	// Wait for the first job to finish so it becomes evictable.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		r := doReq(t, "GET", srv.URL+"/v1/applies/"+first["id"], "test-token", "")
+		var got map[string]any
+		json.NewDecoder(r.Body).Decode(&got)
+		r.Body.Close()
+		if got["status"] == apply.StatusSucceeded {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Registry is at its bound but the only job is finished: the next
+	// apply must succeed by evicting it, not 429.
+	resp2 := doReq(t, "POST", srv.URL+"/v1/applies", "test-token", validApplyBody())
+	if resp2.StatusCode != http.StatusAccepted {
+		t.Fatalf("second apply after finished job: want 202, got %d", resp2.StatusCode)
+	}
+	resp2.Body.Close()
+
+	// The evicted job is no longer queryable.
+	r := doReq(t, "GET", srv.URL+"/v1/applies/"+first["id"], "test-token", "")
+	if r.StatusCode != http.StatusNotFound {
+		t.Errorf("evicted job: want 404, got %d", r.StatusCode)
+	}
+	r.Body.Close()
+}
+
 func TestApplyEngineErrorSurfacesAsFailed(t *testing.T) {
 	eng := &stubApplyEngine{fn: func(_ context.Context, _ apply.Request) (*apply.Result, error) {
 		return nil, context.DeadlineExceeded
