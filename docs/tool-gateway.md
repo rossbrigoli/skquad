@@ -413,6 +413,194 @@ browser: put the privileged protocol behind a service.
    out of the box but is a heavyweight auth/UI universe; viable substitute
    backend behind the same tool surface (build-vs-buy call for Ross).
 
+### 6.7 Artifact executor — sysadmin mutation lane (Ross, 2026-10-06; S-257)
+
+**Core principle:** mutation happens through **approved change artifacts**,
+not keystrokes. The agent authors an Ansible playbook, opens a git PR, and
+**merge = human approval**. The executor refuses to run anything that is
+not a merged, fully-pinned git revision. `ssh_exec` stays the diagnostic
+path (§6.6); `ssh_apply` is the governed mutation path.
+
+**Why artifacts beat a command lane:** the reviewable unit is a diff, not a
+transcript. CI can lint the playbook before merge, review is async, and
+revert is `git revert` + re-apply — no bespoke rollback machinery.
+
+#### Resource model
+
+The **ssh resource type is extended** (not a new type): playbook apply
+shares the TG-10 trust domain — same hosts, same SSH CA, same known_hosts,
+same quarantine service. A separate type would duplicate the ceiling
+machinery for zero isolation gain (isolation comes from the quarantine ns,
+which is already shared).
+
+```jsonc
+// ssh resource endpoint_config additions
+"artifact": {
+  "git_url": "https://github.com/rossbrigoli/infra-playbooks.git",
+  "default_branch": "main",
+  "playbooks_path": "playbooks/"
+}
+
+// ssh ceiling additions
+"host_groups": {
+  "staging": { "hosts": ["web1.staging.lab"], "tier": "medium" },
+  "prod":    { "hosts": ["web1.lab", "web2.lab"], "tier": "high" }
+},
+"mirrors_allow": ["pypi.internal.lab", "rpm.lab"],   // package source allowlist
+"require_tip": { "high": true }                     // high-tier must apply default-branch tip
+```
+
+`host_groups` are **admin-managed and versioned** — they live in the
+ceiling, which only the resource owner/admin can edit; agents cannot
+self-author inventory. Tier defaults: staging=medium, prod=high.
+
+#### Approval = merged revision
+
+`ssh_apply(resource_id, playbook, git_rev, host_group, check_only?, timeout_seconds?)`
+
+* `git_rev` must be a **full 40-char SHA**. Branch names and short SHAs
+  are rejected — mutable or ambiguous refs break the approval binding.
+* The executor clones the registered repo and verifies
+  `git merge-base --is-ancestor <rev> origin/<default_branch>`. Not
+  reachable ⇒ **not merged ⇒ refused** (`artifact_not_merged`). The agent
+  cannot run an unmerged or self-authored-on-a-branch playbook.
+* `require_tip` (default true for high tier): the rev must equal the
+  current default-branch tip, so a merged-but-superseded revision cannot
+  be applied to prod.
+* The repo URL comes ONLY from the resource's `endpoint_config` — the tool
+  call cannot point the executor at an arbitrary repo.
+
+#### Playbook lint gate (pre-run, fail-closed)
+
+Before execution the executor lints the playbook YAML (it is untrusted,
+agent-authored content):
+
+1. **Package pinning:** `apt`/`yum`/`dnf`/`zypper`/`package` tasks must
+   pin explicit versions (`name=1.2.3` / `name: 1.2.3`). Unpinned
+   installs are refused — a merged PR must describe the SAME package state
+   that gets applied (no "install latest" time-bombs).
+2. **Mirror allowlist:** package tasks must restrict sources to
+   `mirrors_allow` from the ceiling.
+3. **Deny-pattern reuse:** `command:`/`shell:` tasks are matched against
+   the same TG-10 deny globs (`rm -rf *`, `dd of=`, `mkfs`, …). A
+   playbook needing them is refused — such needs go through the emergency
+   interactive lane (§6.6) instead.
+4. Lint findings are stored on the apply record regardless of outcome.
+
+#### Execution engine (terminal-service)
+
+New `internal/apply` module in the terminal-service (ansible installed in
+the image). Runs `ansible-playbook` with an inventory generated from the
+selected `host_group` (CA cert + known_hosts wired via
+`ansible_ssh_common_args`, reusing the TG-10 `caclient`/`sshexec`).
+
+* **Async job API:** `POST /v1/applies` → `apply_id`; the gateway tool
+  waits up to `timeout_seconds` (default 120s, ceiling max 900s) and
+  otherwise returns the `apply_id` for `ssh_apply_status` continuation.
+  Long applies must not pin a gateway dispatch slot.
+* **Per-host results** parsed from the ansible JSON callback
+  (`ANSIBLE_STDOUT_CALLBACK=json`) → `{host: {ok, changed, failed,
+  unreachable, skipped}}`.
+* **Full recording:** stdout/stderr captured into the same framed-JSONL
+  recording format (§6.6 M1) in the same MinIO bucket; the apply record
+  links the `recording_id`. Recording failure never kills the apply.
+* **Idempotency:** ansible is idempotent by design; the apply record is
+  keyed on `(resource, playbook, git_rev, host_group, check_only)`. A
+  duplicate request while one is running/succeeded returns the existing
+  record (ceiling may allow `force` to re-run).
+
+#### Drift detection
+
+A chart-gated **CronJob** in `skquad-terminal` periodically runs
+`ansible-playbook --check` (check mode, no mutation) for each
+artifact-enabled resource × host_group at the pinned tip rev. Hosts
+reporting `changed` are **off the approved state** → drift report row in
+CP → owner Inbox digest (batched, not per-host spam). Drift state:
+`(resource, host_group, playbook, rev) → {in_sync_hosts, drifted_hosts,
+last_check}`.
+
+#### Revert
+
+No special machinery: `git revert` the playbook PR → merge →
+`ssh_apply(new_rev)`. The apply record carries an advisory `revert_of`
+(the prior rev) for traceability.
+
+#### Emergency interactive lane
+
+For incidents where the playbook lane is too slow: TG-10
+`ssh_session_open` gains `emergency: true` + `incident_id` (required
+pair). Policy in the emergency lane:
+
+* session TTL forced ≤ **30 minutes**;
+* **standing grants are NOT consulted** — every deny-pattern command
+  needs a one-time approval (§6.6 gate, no "approve this and future");
+* live-view mandatory (owner can watch the session; CP UI is M2);
+* `incident_id` stamped on the recording + every audit event.
+
+This is a policy fold on the existing session path, not new infra.
+
+#### Tool surface & grants
+
+`ssh_apply` / `ssh_apply_status` appear in fetch-at-wake discovery only
+when the resource has `artifact` config AND the grant carries the apply
+capability. Grant constraints may narrow:
+
+* `playbooks_allow: ["web/*"]` — path globs within `playbooks_path`;
+* `host_groups_allow: ["staging"]` — least-privilege by group;
+* `check_only: true` — dry-run-only grants (great for audit agents).
+
+Confirmation-gate identity (TG-8 fold): `ssh_apply#<host_group>#<playbook>`
+— tier drives approvers: medium = resource owner; high = owner + admin
+co-sign (existing grant co-sign machinery).
+
+#### Data model (CP migration 0052)
+
+```sql
+artifact_applies(
+  id TEXT PK, resource_id TEXT, agent_id TEXT,
+  playbook TEXT, git_rev TEXT, host_group TEXT,
+  check_only BOOL, force BOOL,
+  status TEXT,          -- queued|running|succeeded|failed|refused
+  refusal_reason TEXT,  -- artifact_not_merged|lint_failed|...
+  per_host JSONB, lint_findings JSONB, recording_id TEXT,
+  revert_of TEXT NULL, emergency BOOL,
+  requested_at TIMESTAMPTZ, started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ
+)
+CREATE UNIQUE INDEX ... ON artifact_applies (resource_id, playbook, git_rev, host_group, check_only);
+
+drift_reports(
+  id TEXT PK, resource_id TEXT, host_group TEXT,
+  playbook TEXT, git_rev TEXT, checked_at TIMESTAMPTZ,
+  drifted_hosts JSONB, in_sync BOOL
+)
+```
+
+#### Security notes
+
+* Executor egress netpol: registered git host + inventory hosts `:22`
+  only. Package mirrors are fetched by the TARGET hosts, not the
+  executor — the mirror allowlist is a content policy, not an executor
+  egress need.
+* Executor pod: PSA restricted, **no cluster SA token**
+  (`automountServiceAccountToken: false`), read-only rootfs, tmp workdir
+  only; repo clones are wiped after apply.
+* Playbook content is untrusted until merge; after merge it is trusted
+  only as much as its reviewers — hence lint still runs at apply time
+  (defense in depth against review fatigue).
+* `git_rev` full-SHA + ancestor check closes: unmerged code, branch
+  drift between approval and apply, and repo substitution.
+
+#### Build slices
+
+* **A** — this doc + domain types + migration 0052 + ceiling/host_group
+  validation (CP).
+* **B** — terminal-service apply engine: clone/verify/lint/run/parse/
+  record + `/v1/applies` API + tests.
+* **C** — gateway `ssh_apply`/`ssh_apply_status` driver + CP discovery
+  surface + confirmation-gate identity + tests.
+* **D** — drift CronJob + CP drift-report ingest + Inbox digest.
+* **E** — emergency lane policy + chart wiring + deploy + docs closeout.
+
 ## 7. Data model (Postgres, embedded migrations)
 
 Extends the existing registry rather than forking it:
