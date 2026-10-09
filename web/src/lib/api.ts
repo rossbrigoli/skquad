@@ -146,6 +146,26 @@ export type InboxMessage = {
   body?: string;
   read_at?: string;
   created_at: string;
+  // S-258: attachment metadata (S-216 backend). GET /inbox already
+  // batch-enriches each message via enrichInboxAttachments, so the UI
+  // needs no per-message fetch to render the attachment list; bytes are
+  // only pulled on demand (preview/download) from the serve endpoint.
+  attachments?: InboxAttachmentMeta[];
+};
+
+// S-258: one inbox attachment as serialized by the control plane
+// (control-plane/internal/httpapi inboxAttachmentMeta). Shape-compatible
+// with uploads.UploadRef so AttachmentThumbs can render image previews.
+export type InboxAttachmentMeta = {
+  id: string;
+  message_id: string;
+  squad_id?: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  sha256?: string;
+  url: string;
+  created_at?: string;
 };
 
 // S-193: recipient-scoped "something went wrong" alerts for the bell.
