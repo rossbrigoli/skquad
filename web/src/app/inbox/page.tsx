@@ -36,6 +36,7 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { ConfirmationDecisionCard } from "../../components/ConfirmationDecisionCard";
 import { EmptyState } from "../../components/EmptyState";
 import { IconEnvelopeRead, IconEnvelopeUnread } from "../../components/icons";
+import { InboxAttachments } from "../../components/InboxAttachments";
 import { apiDelete, apiGet, apiGetWithTotal, type ApiUser, type InboxMessage } from "../../lib/api";
 import { DEFAULT_PAGE_SIZE, Pager, pageCount } from "../../components/Pager";
 import { useAuth } from "../../lib/auth";
@@ -495,6 +496,13 @@ function InboxRow({
           {inboxPreview(body) ? (
             <span className="inbox-preview">{" — " + inboxPreview(body)}</span>
           ) : null}
+          {/* S-258: cheap paperclip so attachment-carrying messages are
+              findable in the list before opening. */}
+          {(message.attachments?.length ?? 0) > 0 ? (
+            <span className="inbox-attachment-flag" aria-label={`${message.attachments?.length} attachment(s)`}>
+              📎 {message.attachments?.length}
+            </span>
+          ) : null}
         </span>
         <span className={`chip ${kind.className}`}>{kind.label}</span>
         <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
@@ -546,6 +554,9 @@ function InboxDetail({
         <div className="inbox-detail-body">
           <p className="inbox-body-text">{body}</p>
         </div>
+        {/* S-258: attachment previews (images) + download list (all
+            other types). Renders nothing when the message has none. */}
+        <InboxAttachments attachments={message.attachments} />
         {/* TG-8 slice D: gated-call confirmations ride the action_required
             kind; the card joins the confirmation via its inbox_message_id
             and renders the owner's 3 decision buttons inline. */}

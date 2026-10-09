@@ -527,3 +527,60 @@ describe("confirmation cards in the inbox (TG-8 slice D)", () => {
     expect(env.getCalls.some((c) => c.startsWith("/confirmations"))).toBe(false);
   });
 });
+
+describe("attachments in the inbox (S-258)", () => {
+  it("flags rows carrying attachments and offers download in the reading view", async () => {
+    const attachment = {
+      id: "a1",
+      message_id: "m1",
+      filename: "report.pdf",
+      content_type: "application/pdf",
+      size_bytes: 2048,
+      url: "/api/v1/inbox/m1/attachments/a1",
+    };
+    env.messages = [msg("m1", { attachments: [attachment] })];
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      blob: async () => new Blob(["bytes"]),
+      json: async () => ({}),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const urlShim = URL as unknown as { createObjectURL: (b: unknown) => string; revokeObjectURL: (u: string) => void };
+    urlShim.createObjectURL = () => "blob:dl";
+    urlShim.revokeObjectURL = () => undefined;
+    const downloads: string[] = [];
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        downloads.push(this.getAttribute("download") ?? "");
+      });
+    try {
+      render(<InboxPage />);
+      // List row carries a paperclip count.
+      expect(await screen.findByText("📎 1")).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Open message: Subject m1" }));
+      // Reading view shows the attachment with a download affordance.
+      expect(await screen.findByText("📎 report.pdf")).toBeInTheDocument();
+      expect(screen.getByText(/2 KB · application\/pdf/)).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Download report.pdf" }));
+      await vi.waitFor(() => expect(downloads).toEqual(["report.pdf"]));
+      // Bytes came through the authenticated blob client (fetch was hit).
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      clickSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("messages without attachments render no attachment UI", async () => {
+    env.messages = [msg("m1")];
+    render(<InboxPage />);
+    await screen.findByText("Subject m1");
+    expect(screen.queryByText(/📎/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open message: Subject m1" }));
+    await screen.findByText("Body of message m1");
+    expect(screen.queryByText(/📎/)).not.toBeInTheDocument();
+  });
+});

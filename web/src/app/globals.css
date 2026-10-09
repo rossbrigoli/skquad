@@ -3493,6 +3493,64 @@ button.squad-tab.active {
   line-height: 1.6;
 }
 
+/* S-258: attachments in the Inbox reading view. Image previews reuse
+   .chat-attachments/.chat-attachment; non-image files get a compact
+   download row. */
+.inbox-attachments {
+  margin-top: var(--space-3);
+}
+
+.inbox-attachment-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.inbox-attachment-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  padding: var(--space-2);
+  min-width: 0;
+}
+
+.inbox-attachment-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inbox-attachment-size {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+
+.inbox-attachment-error {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  color: var(--danger, #c0392b);
+}
+
+/* S-258: paperclip count on inbox list rows. */
+.inbox-attachment-flag {
+  flex: 0 0 auto;
+  margin-left: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
 .inbox-detail-footer {
   margin-top: var(--space-4);
   padding-top: var(--space-3);
