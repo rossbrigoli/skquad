@@ -6,6 +6,7 @@ import {
   chatToolCalls,
   CHAT_TURN_LOCK_MS,
   formatContextTokens,
+  isInterimChatReply,
   parseSubagent,
   prettyToolArgs,
   sortChatMessages,
@@ -284,6 +285,92 @@ describe("agentTurnPending", () => {
     expect(
       agentTurnPending([message({ from_type: "user", status: "delivered", created_at: "2026-09-28T00:04:30Z" })], now),
     ).toBe(true);
+  });
+
+  // S-262: multi-message turns — an interim progress reply does NOT end
+  // the turn; the indicator/lock must survive the first agent chunk.
+  it("is true when the newest message is a recent interim agent reply", () => {
+    const msgs = [
+      message({ id: "u1", from_type: "user", created_at: "2026-09-28T00:01:00Z" }),
+      message({
+        id: "a1",
+        from_type: "agent",
+        status: "sent",
+        created_at: "2026-09-28T00:04:30Z",
+        payload: { message: "still working…", interim: true },
+      }),
+    ];
+    expect(agentTurnPending(msgs, now)).toBe(true);
+  });
+
+  it("releases the interim-reply lock once the interim note is older than the window", () => {
+    const msgs = [
+      message({
+        id: "a1",
+        from_type: "agent",
+        status: "sent",
+        created_at: "2026-09-28T00:00:00Z",
+        payload: { message: "still working…", interim: true },
+      }),
+    ];
+    // Dropped final reply: expires from the interim message like the user case.
+    expect(agentTurnPending(msgs, now, CHAT_TURN_LOCK_MS)).toBe(false);
+    expect(agentTurnPending(msgs, now - 1000, CHAT_TURN_LOCK_MS)).toBe(true);
+  });
+
+  it("is false when the newest agent reply is the turn_error closure", () => {
+    const msgs = [
+      message({ id: "u1", from_type: "user", created_at: "2026-09-28T00:01:00Z" }),
+      message({
+        id: "a1",
+        from_type: "agent",
+        status: "sent",
+        created_at: "2026-09-28T00:04:50Z",
+        payload: { message: "couldn't finish", turn_error: true },
+      }),
+    ];
+    expect(agentTurnPending(msgs, now)).toBe(false);
+  });
+
+  it("releases when a newest interim agent reply is dead or cancelled", () => {
+    const base = {
+      from_type: "agent",
+      created_at: "2026-09-28T00:04:30Z",
+      payload: { message: "still working…", interim: true },
+    };
+    expect(agentTurnPending([message({ ...base, status: "dead" })], now)).toBe(false);
+    expect(agentTurnPending([message({ ...base, status: "cancelled" })], now)).toBe(false);
+  });
+
+  it("re-pends from the newest interim when multiple interim replies exist", () => {
+    const msgs = [
+      message({
+        id: "a1",
+        from_type: "agent",
+        status: "sent",
+        created_at: "2026-09-28T00:00:30Z",
+        payload: { message: "first progress note", interim: true },
+      }),
+      message({
+        id: "a2",
+        from_type: "agent",
+        status: "sent",
+        created_at: "2026-09-28T00:04:50Z",
+        payload: { message: "second progress note", interim: true },
+      }),
+    ];
+    // The later interim refreshes the window even though the first is stale.
+    expect(agentTurnPending(msgs, now)).toBe(true);
+  });
+});
+
+describe("isInterimChatReply", () => {
+  it("is true only for agent messages with payload.interim === true", () => {
+    expect(isInterimChatReply(message({ from_type: "agent", payload: { interim: true } }))).toBe(true);
+    expect(isInterimChatReply(message({ from_type: "agent", payload: { message: "hi" } }))).toBe(false);
+    expect(isInterimChatReply(message({ from_type: "agent", payload: undefined }))).toBe(false);
+    expect(isInterimChatReply(message({ from_type: "agent", payload: { interim: "true" } }))).toBe(false);
+    expect(isInterimChatReply(message({ from_type: "user", payload: { interim: true } }))).toBe(false);
   });
 });
 

@@ -929,9 +929,12 @@ function ChatThread({
   const sorted = useMemo(() => sortChatMessages(messages), [messages]);
   // S-154: while the newest message is the user's (no agent reply yet),
   // the agent's turn is still in flight — lock the composer and show the
-  // "Combobulating…" indicator. The lock self-expires (CHAT_TURN_LOCK_MS)
-  // so a crashed agent can't disable the box forever; the interval
-  // re-checks so the box unlocks even without a fresh poll.
+  // "Combobulating…" indicator. S-262: the turn stays pending through
+  // interim progress replies too (agentTurnPending), so the indicator
+  // survives the first chunk and only clears on the final reply. The lock
+  // self-expires (CHAT_TURN_LOCK_MS) so a crashed agent can't disable the
+  // box forever; the interval re-checks so the box unlocks even without a
+  // fresh poll.
   const [generating, setGenerating] = useState(false);
   useEffect(() => {
     const check = () =>

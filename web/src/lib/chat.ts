@@ -216,11 +216,23 @@ export const CHAT_TURN_LOCK_MS = 5 * 60 * 1000;
 // never answered either.
 const TURN_TERMINAL_STATUSES = new Set(["cancelled", "dead", "expired"]);
 
-/** True while the agent's turn for the newest user message is still in
- *  flight: the chronologically-last message is from a user (no agent
- *  reply after it), it is younger than `lockWindowMs`, and it has not
- *  been cancelled/dead-lettered. Pure so it is unit-testable; callers
- *  pass `Date.now()` explicitly. */
+/** S-262: an *interim* progress reply (S-195 `payload.interim` flag) is
+ *  not the end of the agent's turn — more messages are still coming.
+ *  Strict boolean check: anything else (missing flag, non-`true` values,
+ *  user-authored messages) counts as not interim. */
+export function isInterimChatReply(msg: Message): boolean {
+  return msg.from_type === "agent" && msg.payload?.interim === true;
+}
+
+/** True while the agent's turn is still in flight. S-154 baseline: the
+ *  chronologically-last message is from a user (no agent reply after it).
+ *  S-262 extends this through multi-message turns: a last message that is
+ *  an *interim* agent progress note (S-195) also keeps the turn pending —
+ *  the turn completes only on the final (non-interim) reply or the
+ *  `turn_error` closure the runtime posts when the turn dies. In both cases
+ *  the lock window is measured from the last message's `created_at` and
+ *  terminal statuses release immediately, so a dropped final reply can
+ *  never lock the composer forever (existing expiry fail-safe reused). */
 export function agentTurnPending(
   messages: Message[],
   nowMs: number,
@@ -228,7 +240,9 @@ export function agentTurnPending(
 ): boolean {
   const sorted = sortChatMessages(messages);
   const last = sorted[sorted.length - 1];
-  if (!last || last.from_type !== "user") return false;
+  if (!last) return false;
+  const turnInFlight = last.from_type === "user" || isInterimChatReply(last);
+  if (!turnInFlight) return false;
   if (TURN_TERMINAL_STATUSES.has(last.status)) return false;
   const sentAt = Date.parse(last.created_at ?? "");
   if (!Number.isFinite(sentAt)) return false;
