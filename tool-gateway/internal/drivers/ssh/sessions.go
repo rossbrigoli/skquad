@@ -12,15 +12,24 @@ package ssh
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
+	"github.com/rossbrigoli/skquad/tool-gateway/internal/confirmation"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/drivers"
 )
+
+// EmergencyMaxTTLMinutes caps emergency-lane session credentials
+// (docs/tool-gateway.md §6.7: TTL forced ≤ 30 minutes). The
+// terminal-service enforces the matching hard session deadline.
+const EmergencyMaxTTLMinutes = 30
 
 type sshSession struct {
 	agentID     string
@@ -28,6 +37,14 @@ type sshSession struct {
 	sessionID   string
 	recordingID string
 	lastActive  time.Time
+	// TG-11 emergency lane: when set, every deny-pattern line typed
+	// into the session requires a ONE-TIME approval; standing grants
+	// are bypassed (fail closed) and the incident id rides every
+	// audit event.
+	emergency    bool
+	incidentID   string
+	host         string
+	pendingStdin []byte // gated bytes not yet released to the PTY
 }
 
 type sessionRegistry struct {
@@ -86,10 +103,17 @@ func (d *Driver) sessionOpen(ctx context.Context, req *drivers.Request) (*driver
 		return nil, drivers.Denied("terminal_service_unconfigured")
 	}
 	var p struct {
-		Host string `json:"host"`
+		Host       string `json:"host"`
+		Emergency  *bool  `json:"emergency"`
+		IncidentID string `json:"incident_id"`
 	}
 	if err := json.Unmarshal(req.Payload, &p); err != nil || p.Host == "" {
 		return nil, drivers.Denied("bad_request")
+	}
+	emergency := p.Emergency != nil && *p.Emergency
+	if code := validateEmergencyPair(emergency, p.IncidentID); code != "" {
+		d.emitAudit(req, "", "ssh_session_open_refused", map[string]any{"host": p.Host, "error": code})
+		return nil, drivers.Denied(code)
 	}
 	pol, err := EffectivePolicy(req.Grant.Ceiling, req.Grant.Constraints)
 	if err != nil {
@@ -109,11 +133,36 @@ func (d *Driver) sessionOpen(ctx context.Context, req *drivers.Request) (*driver
 	if err != nil {
 		return nil, drivers.Denied("resource_config_invalid")
 	}
+	// Emergency lane: force the ephemeral-cert TTL down to ≤ 30 min
+	// regardless of what the ceiling/grant negotiated.
+	if emergency && pol.CertTTLMinutes > EmergencyMaxTTLMinutes {
+		clamped := *pol
+		clamped.CertTTLMinutes = EmergencyMaxTTLMinutes
+		pol = &clamped
+	}
 	body, err := d.buildExecBody(req, execPayload{Host: p.Host}, cfg, pol, agentID)
 	if err != nil {
 		return nil, err
 	}
-	d.emitAudit(req, agentID, "ssh_session_open_attempt", map[string]any{"host": p.Host, "user": cfg.SSHUser})
+	if emergency {
+		var m map[string]any
+		if err := json.Unmarshal(body, &m); err != nil {
+			return nil, drivers.Denied("terminal_request_failed")
+		}
+		m["emergency"] = true
+		m["incident_id"] = p.IncidentID
+		if body, err = json.Marshal(m); err != nil {
+			return nil, drivers.Denied("terminal_request_failed")
+		}
+	}
+	auditDetail := func(extra map[string]any) map[string]any {
+		if emergency {
+			extra["emergency"] = true
+			extra["incident_id"] = p.IncidentID
+		}
+		return extra
+	}
+	d.emitAudit(req, agentID, "ssh_session_open_attempt", auditDetail(map[string]any{"host": p.Host, "user": cfg.SSHUser}))
 
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -123,7 +172,7 @@ func (d *Driver) sessionOpen(ctx context.Context, req *drivers.Request) (*driver
 	}
 	if status < 200 || status >= 300 {
 		reason := safeTerminalError(raw)
-		d.emitAudit(req, agentID, "ssh_session_open_result", map[string]any{"host": p.Host, "error": reason})
+		d.emitAudit(req, agentID, "ssh_session_open_result", auditDetail(map[string]any{"host": p.Host, "error": reason}))
 		return nil, drivers.Denied(reason)
 	}
 	var out struct {
@@ -136,13 +185,20 @@ func (d *Driver) sessionOpen(ctx context.Context, req *drivers.Request) (*driver
 	d.sessions.bind(&sshSession{
 		agentID: agentID, resourceID: req.Grant.ResourceID,
 		sessionID: out.SessionID, recordingID: out.RecordingID, lastActive: time.Now(),
+		emergency: emergency, incidentID: p.IncidentID, host: p.Host,
 	})
-	d.emitAudit(req, agentID, "ssh_session_open", map[string]any{
+	d.emitAudit(req, agentID, "ssh_session_open", auditDetail(map[string]any{
 		"host": p.Host, "session_id": out.SessionID, "recording_id": out.RecordingID,
-	})
-	return &drivers.Response{StatusCode: 200, Body: map[string]any{
+	}))
+	respBody := map[string]any{
 		"session_id": out.SessionID, "recording_id": out.RecordingID,
-	}}, nil
+	}
+	if emergency {
+		respBody["emergency"] = true
+		respBody["incident_id"] = p.IncidentID
+		respBody["max_ttl_minutes"] = EmergencyMaxTTLMinutes
+	}
+	return &drivers.Response{StatusCode: 200, Body: respBody}, nil
 }
 
 func (d *Driver) sessionSend(ctx context.Context, req *drivers.Request) (*drivers.Response, error) {
@@ -161,7 +217,18 @@ func (d *Driver) sessionSend(ctx context.Context, req *drivers.Request) (*driver
 	if !ok {
 		return nil, drivers.Denied("session_not_found")
 	}
-	body, _ := json.Marshal(map[string]string{"stdin_b64": p.StdinB64})
+	var body []byte
+	if sess.emergency {
+		var err error
+		if body, err = d.gateEmergencySend(ctx, req, sess, p.StdinB64); err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		if body, err = json.Marshal(map[string]string{"stdin_b64": p.StdinB64}); err != nil {
+			return nil, drivers.Denied("bad_request")
+		}
+	}
 	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	status, raw, err := d.terminalPOST(callCtx, "/v1/sessions/"+sess.sessionID+"/send", body)
@@ -210,9 +277,9 @@ func (d *Driver) sessionEvents(ctx context.Context, req *drivers.Request) (*driv
 	}
 	if out.Closed {
 		d.sessions.drop(sess.sessionID)
-		d.emitAudit(req, agentID, "ssh_session_closed", map[string]any{
+		d.emitAudit(req, agentID, "ssh_session_closed", incidentDetail(sess, map[string]any{
 			"session_id": sess.sessionID, "recording_id": sess.recordingID,
-		})
+		}))
 	}
 	return &drivers.Response{StatusCode: 200, Body: map[string]any{
 		"cursor": out.Cursor, "events": out.Events, "closed": out.Closed,
@@ -244,10 +311,171 @@ func (d *Driver) sessionClose(ctx context.Context, req *drivers.Request) (*drive
 		return nil, drivers.Denied(safeTerminalError(raw))
 	}
 	d.sessions.drop(sess.sessionID)
-	d.emitAudit(req, agentID, "ssh_session_close", map[string]any{
+	d.emitAudit(req, agentID, "ssh_session_close", incidentDetail(sess, map[string]any{
 		"session_id": sess.sessionID, "recording_id": sess.recordingID,
-	})
+	}))
 	return &drivers.Response{StatusCode: 200, Body: map[string]any{}}, nil
+}
+
+// incidentDetail stamps the incident id (and the emergency flag) onto
+// session audit detail so every audit event for an emergency session
+// carries the incident reference (docs §6.7).
+func incidentDetail(sess *sshSession, detail map[string]any) map[string]any {
+	if sess != nil && sess.emergency {
+		detail["emergency"] = true
+		detail["incident_id"] = sess.incidentID
+	}
+	return detail
+}
+
+// validateEmergencyPair mirrors the terminal-service check (each module
+// is self-contained; both must agree on the codes). Returns "" when
+// valid, else the stable refusal code.
+//
+// DECISION: incident_id WITHOUT emergency is REFUSED (not ignored) —
+// silently dropping a security-relevant field could hide an attempted
+// emergency that lost its guardrails; failing closed forces the caller
+// to state intent explicitly.
+func validateEmergencyPair(emergency bool, incidentID string) string {
+	switch {
+	case emergency && incidentID == "":
+		return "emergency_without_incident_id"
+	case !emergency && incidentID != "":
+		return "incident_id_without_emergency"
+	case emergency:
+		if utf8Len(incidentID) > 120 || containsControl(incidentID) {
+			return "invalid_incident_id"
+		}
+	}
+	return ""
+}
+
+func utf8Len(s string) int {
+	n := 0
+	for range s {
+		n++
+	}
+	return n
+}
+
+func containsControl(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// firstDenyLine scans the complete lines of a PTY input buffer and
+// returns the first deny-pattern hit. Only CommandGate is enforced on
+// interactive stdin; a CommandDeny verdict (allow-list miss) is NOT
+// enforced here — interactive shells run builtins/prompt chatter that
+// no allow-list covers, and the emergency lane doc scopes the gate to
+// deny patterns. Partial lines (no terminator) cannot execute, so
+// they are not gated on their own; the terminator arrives with a
+// later chunk and the whole buffered candidate is checked then.
+func firstDenyLine(pol *Policy, buf []byte) (string, bool) {
+	for _, line := range strings.Split(string(buf), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if verdict, pattern := pol.CheckCommand(line); verdict == CommandGate {
+			return pattern, true
+		}
+	}
+	return "", false
+}
+
+// gateEmergencySend inspects one interactive send for an emergency
+// session. Clean input passes through (with any previously-buffered
+// gated bytes). A deny-pattern hit holds the bytes and drives the
+// TG-8 gate with a SESSION-SCOPED tool identity:
+//
+//	tool     = "ssh_session#<session_id>#deny:<pattern>"
+//	argsHash = ArgsHash(resource, "ssh_session_send", canonical{session_id, stdin_b64})
+//
+// The session id is unique per session, so pre-existing standing
+// grants (issued as `ssh_exec#<host>#deny:<pattern>`, or "approve
+// this and future" under any other identity) can never match —
+// standing lookup is effectively bypassed. Defense in depth on top:
+// a Check that still answers "auto" (standing short-circuit) and a
+// Consume that returns mode "standing" are both DENIED with
+// standing_grant_not_allowed_in_emergency. Only a one-time approval
+// (consume mode "once") releases the bytes.
+func (d *Driver) gateEmergencySend(ctx context.Context, req *drivers.Request, sess *sshSession, stdinB64 string) ([]byte, error) {
+	if d.conf == nil {
+		return nil, drivers.Denied("confirmation_unavailable")
+	}
+	pol, err := EffectivePolicy(req.Grant.Ceiling, req.Grant.Constraints)
+	if err != nil {
+		return nil, drivers.Denied("ceiling_exceeded")
+	}
+	data, err := base64.StdEncoding.DecodeString(stdinB64)
+	if err != nil {
+		return nil, drivers.Denied("bad_base64")
+	}
+	candidate := make([]byte, 0, len(sess.pendingStdin)+len(data))
+	// Approval-retry dedupe: the agent retries the byte-identical
+	// request after approval, but those bytes already sit in
+	// pendingStdin from the gated pass — don't append them twice.
+	if bytes.HasSuffix(sess.pendingStdin, data) {
+		candidate = append(candidate, sess.pendingStdin...)
+	} else {
+		candidate = append(candidate, sess.pendingStdin...)
+		candidate = append(candidate, data...)
+	}
+
+	pattern, hit := firstDenyLine(pol, candidate)
+	if !hit {
+		sess.pendingStdin = nil
+		return json.Marshal(map[string]string{"stdin_b64": base64.StdEncoding.EncodeToString(candidate)})
+	}
+
+	canonical, err := json.Marshal(map[string]string{"session_id": sess.sessionID, "stdin_b64": stdinB64})
+	if err != nil {
+		return nil, drivers.Denied("confirmation_failed")
+	}
+	argsHash := confirmation.ArgsHash(req.Grant.ResourceID, "ssh_session_send", canonical)
+	tool := "ssh_session#" + sess.sessionID + "#deny:" + pattern
+
+	if req.ConfirmationID != "" {
+		res, err := d.conf.Consume(ctx, req.ConfirmationID, argsHash)
+		if err != nil {
+			return nil, drivers.Denied("confirmation_unavailable")
+		}
+		if !res.Allowed {
+			return nil, drivers.Denied("confirmation_denied")
+		}
+		if res.Mode == "standing" {
+			// A standing approval must never unlock an emergency
+			// deny-pattern line. Fail closed.
+			return nil, drivers.Denied("standing_grant_not_allowed_in_emergency")
+		}
+		sess.pendingStdin = nil
+		d.emitAudit(req, sess.agentID, "ssh_session_send_approved", incidentDetail(sess, map[string]any{
+			"session_id": sess.sessionID, "deny_pattern": pattern,
+		}))
+		return json.Marshal(map[string]string{"stdin_b64": base64.StdEncoding.EncodeToString(candidate)})
+	}
+
+	res, err := d.conf.Check(ctx, req.Grant.ResourceID, sess.agentID, tool, argsHash)
+	if err != nil {
+		return nil, drivers.Denied("confirmation_unavailable")
+	}
+	if res.Mode != "pending" {
+		// "auto" means some standing grant matched the emergency
+		// identity — should be impossible with the session-scoped
+		// tool, but emergency sessions do not trust standing grants:
+		// fail closed.
+		return nil, drivers.Denied("standing_grant_not_allowed_in_emergency")
+	}
+	sess.pendingStdin = candidate
+	d.emitAudit(req, sess.agentID, "ssh_session_send_gated", incidentDetail(sess, map[string]any{
+		"session_id": sess.sessionID, "deny_pattern": pattern, "confirmation_id": res.ConfirmationID,
+	}))
+	return nil, drivers.Denied("confirmation_required:" + res.ConfirmationID)
 }
 
 func (d *Driver) terminalPOST(ctx context.Context, path string, body []byte) (int, []byte, error) {

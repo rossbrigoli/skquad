@@ -490,9 +490,12 @@ agent-authored content):
 #### Execution engine (terminal-service)
 
 New `internal/apply` module in the terminal-service (ansible installed in
-the image). Runs `ansible-playbook` with an inventory generated from the
-selected `host_group` (CA cert + known_hosts wired via
-`ansible_ssh_common_args`, reusing the TG-10 `caclient`/`sshexec`).
+the image — slice E pinned `ansible-core==2.21.5` + `community.general==13.5.0`
+for `zypper`; `apt`/`yum`/`dnf`/`package` are core builtins; runtime base
+moved from distroless/static to `python:3.12-slim-bookworm` because
+ansible-core 2.21 requires Python ≥ 3.12). Runs `ansible-playbook` with an
+inventory generated from the selected `host_group` (CA cert + known_hosts
+wired via `ansible_ssh_common_args`, reusing the TG-10 `caclient`/`sshexec`).
 
 * **Async job API:** `POST /v1/applies` → `apply_id`; the gateway tool
   waits up to `timeout_seconds` (default 120s, ceiling max 900s) and
@@ -519,6 +522,12 @@ CP → owner Inbox digest (batched, not per-host spam). Drift state:
 `(resource, host_group, playbook, rev) → {in_sync_hosts, drifted_hosts,
 last_check}`.
 
+**Digest semantics (slice D, implemented):** *first-drift-of-day*
+notification — the first drifted report for a resource on a given day
+creates one owner Inbox digest; further drift the same day is recorded
+(report rows) but does **not** re-notify. Day boundary is the CP's
+local-midnight window (see `drift_ingest.go`).
+
 #### Revert
 
 No special machinery: `git revert` the playbook PR → merge →
@@ -538,6 +547,36 @@ pair). Policy in the emergency lane:
 * `incident_id` stamped on the recording + every audit event.
 
 This is a policy fold on the existing session path, not new infra.
+
+**Implemented (TG-11 slice E, 2026-10-09) — actual semantics:**
+
+* Refusal codes (gateway and terminal-service both validate the pair,
+  fail-closed): `emergency_without_incident_id`,
+  `incident_id_without_emergency` (DECISION: refused, not ignored —
+  silently dropping a security-relevant field could hide an emergency
+  that lost its guardrails), `invalid_incident_id` (must be non-empty,
+  ≤ 120 chars, no control characters).
+* TTL: gateway clamps the ephemeral-cert TTL to ≤ 30 min; the
+  terminal-service enforces a **hard 30-minute deadline from open**
+  (activity does not extend it) and also clamps a requested cert TTL
+  > 30 min.
+* Standing-grant bypass: the emergency gate uses a **session-scoped
+  tool identity** `ssh_session#<session_id>#deny:<pattern>` with
+  `args_hash = ArgsHash(resource, "ssh_session_send",
+  canonical{session_id, stdin_b64})` — pre-existing standing grants
+  (`ssh_exec#<host>#deny:<pattern>`) can never match. Defense in
+  depth: a check answering `auto` or a consume returning mode
+  `standing` is refused with `standing_grant_not_allowed_in_emergency`.
+  Only a one-time approval (consume mode `once`) releases the bytes.
+* Deny-pattern inspection covers **complete lines** of interactive
+  stdin (deny globs, same TG-10 semantics); gated bytes are held in
+  the gateway and released only after approval. Allow-list misses
+  (`CommandDeny`) are not enforced on interactive stdin — the lane
+  doc scopes the gate to deny patterns.
+* `incident_id` propagation: recording meta frame
+  (`emergency` + `incident_id`) and every gateway session audit
+  event (`ssh_session_open_attempt/_result/_open`,
+  `ssh_session_send_gated/_approved`, `ssh_session_close(d)`).
 
 #### Tool surface & grants
 
@@ -593,13 +632,16 @@ drift_reports(
 #### Build slices
 
 * **A** — this doc + domain types + migration 0052 + ceiling/host_group
-  validation (CP).
+  validation (CP). ✅ DONE
 * **B** — terminal-service apply engine: clone/verify/lint/run/parse/
-  record + `/v1/applies` API + tests.
+  record + `/v1/applies` API + tests. ✅ DONE
 * **C** — gateway `ssh_apply`/`ssh_apply_status` driver + CP discovery
-  surface + confirmation-gate identity + tests.
-* **D** — drift CronJob + CP drift-report ingest + Inbox digest.
+  surface + confirmation-gate identity + tests. ✅ DONE
+* **D** — drift CronJob + CP drift-report ingest + Inbox digest. ✅ DONE
 * **E** — emergency lane policy + chart wiring + deploy + docs closeout.
+  ✅ DONE (2026-10-09: emergency lane shipped — see §6.7 emergency-lane
+  implementation notes; ansible pinned in the terminal-service image;
+  this docs closeout. Deploy/rollout performed with Ross via gitops.)
 
 ## 7. Data model (Postgres, embedded migrations)
 

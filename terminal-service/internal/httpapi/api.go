@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/rossbrigoli/skquad/terminal-service/internal/apply"
 	"github.com/rossbrigoli/skquad/terminal-service/internal/recorder"
@@ -139,12 +140,60 @@ type execRequest struct {
 	User           string `json:"user"`
 	Command        string `json:"command"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
-	Auth           struct {
+	// Emergency + IncidentID: TG-11 emergency interactive lane
+	// (docs/tool-gateway.md §6.7). Required pair: one without the
+	// other is refused fail-closed at open.
+	Emergency  bool   `json:"emergency"`
+	IncidentID string `json:"incident_id"`
+	Auth       struct {
 		Mode           string `json:"mode"`
 		PrivateKeyPEM  string `json:"private_key_pem"`
 		CertTTLMinutes int    `json:"cert_ttl_minutes"`
 		KnownHosts     string `json:"known_hosts"`
 	} `json:"auth"`
+}
+
+// EmergencyMaxSessionTTL is the hard cap on emergency-lane sessions
+// (docs §6.7: "session TTL forced ≤ 30 minutes"). Enforced here as a
+// hard deadline from open (not idle), so an emergency session cannot be
+// kept alive by poking it.
+const EmergencyMaxSessionTTL = 30 * time.Minute
+
+// validateEmergencyPair checks the emergency/incident_id pair and the
+// incident_id format. Returns "" when valid, else the stable refusal
+// code. DECISION (docs §6.7 closeout): incident_id WITHOUT emergency is
+// REFUSED, not ignored — silently dropping a security-relevant field is
+// the failure mode we must not have; if the caller meant emergency, the
+// pair must say so explicitly.
+func validateEmergencyPair(emergency bool, incidentID string) string {
+	switch {
+	case emergency && incidentID == "":
+		return "emergency_without_incident_id"
+	case !emergency && incidentID != "":
+		return "incident_id_without_emergency"
+	case emergency:
+		if utf8Len(incidentID) > 120 || stringsContainsControl(incidentID) {
+			return "invalid_incident_id"
+		}
+	}
+	return ""
+}
+
+func utf8Len(s string) int {
+	n := 0
+	for range s {
+		n++
+	}
+	return n
+}
+
+func stringsContainsControl(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
@@ -248,10 +297,21 @@ func (s *Server) handleSessionOpen(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "host and user are required")
 		return
 	}
+	if code := validateEmergencyPair(req.Emergency, req.IncidentID); code != "" {
+		writeErr(w, http.StatusBadRequest, code)
+		return
+	}
+	// Emergency lane: clamp the ephemeral-cert TTL too, so the SSH
+	// credential cannot outlive the 30-minute session ceiling even if
+	// the gateway's clamp were bypassed (defense in depth).
+	if req.Emergency && req.Auth.CertTTLMinutes > 30 {
+		req.Auth.CertTTLMinutes = 30
+	}
 	recID := newID()
 	rec, recErr := s.newRecorder(r.Context(), recID, recorder.Meta{
 		ResourceID: req.ResourceID, AgentID: req.AgentID, TaskID: req.TaskID,
 		Host: req.Host, User: req.User,
+		Emergency: req.Emergency, IncidentID: req.IncidentID,
 	})
 	sessID := newID()
 	sess := &session{
@@ -260,6 +320,11 @@ func (s *Server) handleSessionOpen(w http.ResponseWriter, r *http.Request) {
 		events:      &eventLog{},
 		lastActive:  time.Now(),
 		rec:         rec,
+		emergency:   req.Emergency,
+		incidentID:  req.IncidentID,
+	}
+	if req.Emergency {
+		sess.deadline = time.Now().Add(EmergencyMaxSessionTTL)
 	}
 	if err := s.sessions.add(sess); err != nil {
 		writeErr(w, http.StatusTooManyRequests, "session_limit")
@@ -308,6 +373,11 @@ func (s *Server) handleSessionOpen(w http.ResponseWriter, r *http.Request) {
 	out := map[string]string{
 		"session_id":   sessID,
 		"recording_id": recID,
+	}
+	if req.Emergency {
+		out["emergency"] = "true"
+		out["incident_id"] = req.IncidentID
+		out["expires_at"] = sess.deadline.UTC().Format(time.RFC3339)
 	}
 	if recErr != nil {
 		out["recording_error"] = recErr.Error()
@@ -418,7 +488,11 @@ type session struct {
 	lastActive  time.Time
 	ssh         LiveSession
 	rec         *recorder.Recorder
-	mu          sync.Mutex
+	// emergency lane (TG-11): hard deadline from open + incident stamp.
+	emergency  bool
+	incidentID string
+	deadline   time.Time // zero = no hard deadline
+	mu         sync.Mutex
 }
 
 func (s *session) attach(sshSess LiveSession) {
@@ -432,6 +506,20 @@ func (s *session) appendEvent(stream string, data []byte) {
 	s.mu.Lock()
 	s.lastActive = time.Now()
 	s.mu.Unlock()
+}
+
+// expiredAt reports idle expiry OR the emergency hard deadline
+// (TG-11 §6.7: TTL forced ≤ 30 min, counted from open, not reset by
+// activity). Session fields are guarded by s.mu; the sweeper holds no
+// session lock here, but lastActive/deadline writes happen under
+// session mu — read them via a locked snapshot helper instead.
+func (r *registry) expiredAt(s *session, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if now.Sub(s.lastActive) > r.idleTTL {
+		return true
+	}
+	return !s.deadline.IsZero() && !now.Before(s.deadline)
 }
 
 type registry struct {
@@ -490,8 +578,8 @@ func (r *registry) sweeper() {
 		case now := <-t.C:
 			r.mu.Lock()
 			for id, s := range r.byID {
+				expired := r.expiredAt(s, now)
 				s.mu.Lock()
-				expired := now.Sub(s.lastActive) > r.idleTTL
 				closed := s.ssh != nil && s.ssh.Closed()
 				s.mu.Unlock()
 				if expired || closed {
