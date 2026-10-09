@@ -1,6 +1,7 @@
 module github.com/rossbrigoli/skquad/tool-gateway
 
 go 1.26.8
+toolchain go1.26.9
 
 require (
 	github.com/rossbrigoli/skquad/shared v0.0.0

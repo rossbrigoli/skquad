@@ -2,7 +2,7 @@
 # context (matches images.yml `context: terminal-service`); the module is
 # self-contained (no replace of ../shared):
 #   docker build -t skquad-terminal-service terminal-service
-ARG GO_VERSION=1.26.8
+ARG GO_VERSION=1.26.9
 
 FROM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
