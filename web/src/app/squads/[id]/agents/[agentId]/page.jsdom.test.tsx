@@ -469,6 +469,64 @@ describe("chat thread", () => {
     );
   });
 
+  // S-262: the indicator must survive the first response chunk and stay
+  // until the turn-complete signal (final non-interim reply), with the
+  // composer locked the whole time.
+  it("multi-message turn: interim reply renders but Combobulating stays and send is disabled", async () => {
+    env.chat = [
+      chatMsg("c1", "user", "big task", { status: "delivered" }),
+      chatMsg("c2", "agent", "First I will check the logs", {
+        payload: { message: "First I will check the logs", interim: true },
+      }),
+    ];
+    render(<AgentProfilePage />);
+    // The interim progress note is rendered…
+    expect(await screen.findByText("First I will check the logs")).toBeInTheDocument();
+    // …but the turn is not over: indicator still showing, composer locked.
+    expect(screen.getByText("Combobulating…")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Waiting for coder to finish…")).toBeDisabled();
+    // Send is replaced by the stop control while the turn is in flight.
+    expect(screen.getByRole("button", { name: "Stop agent turn" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
+  });
+
+  it("turn completes on the final reply: indicator gone and send enabled", async () => {
+    env.chat = [
+      chatMsg("c1", "user", "big task", { status: "delivered" }),
+      chatMsg("c2", "agent", "First I will check the logs", {
+        payload: { message: "First I will check the logs", interim: true },
+      }),
+    ];
+    const { rerender } = render(<AgentProfilePage />);
+    await screen.findByText("Combobulating…");
+    // Final (non-interim) reply lands → turn complete.
+    env.chat = [
+      ...env.chat,
+      chatMsg("c3", "agent", "All done — summary here", {
+        payload: { message: "All done — summary here" },
+      }),
+    ];
+    rerender(<AgentProfilePage />);
+    await vi.waitFor(() => {
+      expect(screen.queryByText("Combobulating…")).not.toBeInTheDocument();
+    });
+    expect(screen.getByPlaceholderText("Message coder…")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument();
+  });
+
+  it("turn_error closure ends the turn: indicator gone and send enabled", async () => {
+    env.chat = [
+      chatMsg("c1", "user", "big task", { status: "delivered" }),
+      chatMsg("c2", "agent", "couldn't finish this turn", {
+        payload: { message: "couldn't finish this turn", turn_error: true },
+      }),
+    ];
+    render(<AgentProfilePage />);
+    expect(await screen.findByText("couldn't finish this turn")).toBeInTheDocument();
+    expect(screen.queryByText("Combobulating…")).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Message coder…")).toBeEnabled();
+  });
+
   it("reset chat archives via POST and shows the note", async () => {
     env.chat = [chatMsg("c1", "agent", "hi")];
     render(<AgentProfilePage />);
