@@ -46,6 +46,8 @@ export default defineConfig({
       include: [
         "src/lib/**/*.ts",
         "src/components/MarkdownMessage.tsx",
+        // S-246: mermaid chat renderer (jsdom behaviour suite).
+        "src/components/MermaidDiagram.tsx",
         "src/components/AgentTiles.tsx",
         "src/lib/auth.tsx",
         "src/components/ActivityFeed.tsx",

@@ -22,6 +22,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
 import type { Components } from "react-markdown";
+import { MermaidDiagram } from "./MermaidDiagram";
 
 /** External links open in a new tab; rel prevents opener/taber attacks. */
 const CHAT_COMPONENTS: Components = {
@@ -33,6 +34,41 @@ const CHAT_COMPONENTS: Components = {
       <a {...props} target="_blank" rel="noopener noreferrer">
         {children}
       </a>
+    );
+  },
+  // S-246: unwrap the <pre> wrapper when the fenced block is a mermaid
+  // diagram. react-markdown hands `pre` the still-unrendered <code> element
+  // (whose type is our `code` override below), so the detection is on the
+  // child's className, not element identity. The `code` override then swaps
+  // the content for <MermaidDiagram/>; every other fence keeps <pre>.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  pre({ node, children, ...props }) {
+    const only = Array.isArray(children) ? children[0] : children;
+    const childClassName =
+      typeof only === "object" && only !== null && "props" in only
+        ? ((only as { props?: { className?: string } }).props?.className ?? "")
+        : "";
+    if (/(?:^|\s)language-mermaid(?:\s|$)/.test(childClassName)) {
+      return <>{children}</>;
+    }
+    return <pre {...props}>{children}</pre>;
+  },
+  // S-246: ```mermaid fences render as SVG diagrams. Everything else
+  // (inline code, other languages) keeps react-markdown's default rendering.
+  // The sanitiser runs before this override, so `children` here is plain
+  // text — MermaidDiagram then applies mermaid strict mode + DOMPurify.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  code({ node, className, children, ...props }) {
+    if (
+      typeof children === "string" &&
+      /(?:^|\s)language-mermaid(?:\s|$)/.test(className ?? "")
+    ) {
+      return <MermaidDiagram code={children.replace(/\n$/, "")} />;
+    }
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
     );
   },
 };
