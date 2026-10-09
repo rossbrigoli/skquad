@@ -47,6 +47,19 @@ type Store interface {
 	BuiltinToolStore
 	UploadStore
 	BudgetStore
+	DriftStore
+}
+
+// DriftStore persists artifact drift-check reports (TG-11 §6.7,
+// migration 0052 drift_reports). Rows are an append-only history: every
+// check run inserts one row. The daily owner-digest dedup reads through
+// CountDriftReports rather than a row-level uniqueness constraint.
+type DriftStore interface {
+	CreateDriftReport(ctx context.Context, r *domain.DriftReport) (*domain.DriftReport, error)
+	// CountDriftReports counts reports for one resource checked at or
+	// after `since`. When driftedOnly is true only in_sync=false rows
+	// count — the batch-window probe used before filing a digest.
+	CountDriftReports(ctx context.Context, resourceID string, since time.Time, driftedOnly bool) (int, error)
 }
 
 // UploadStore persists image uploads (S-194). Uploads are squad-scoped:

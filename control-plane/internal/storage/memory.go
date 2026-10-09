@@ -59,7 +59,10 @@ type MemoryStore struct {
 	// S-216: inbox attachments, keyed by attachment id. Cascade with
 	// the message delete mirrors the Postgres ON DELETE CASCADE.
 	inboxAttachments map[string]*domain.InboxAttachment
-	notifications    map[string]*domain.Notification
+	// TG-11 slice D: drift-check report history (mirrors the Postgres
+	// drift_reports table). Append-only.
+	driftReports  []*domain.DriftReport
+	notifications map[string]*domain.Notification
 	// S-199: per-user notification mute lists, mirroring the Postgres
 	// user_notification_preferences table. Absent key ⇒ all enabled.
 	notifPrefs map[string][]domain.NotificationType
@@ -3609,4 +3612,41 @@ func (m *MemoryStore) GetUpload(_ context.Context, uploadID string) (*domain.Upl
 		return nil, ErrNotFound
 	}
 	return cloneUpload(u), nil
+}
+
+// --- TG-11 slice D: drift reports (mirrors the Postgres drift_reports table) ---
+
+func (m *MemoryStore) CreateDriftReport(_ context.Context, r *domain.DriftReport) (*domain.DriftReport, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	created := *r
+	if created.ID == "" {
+		created.ID = uuid.NewString()
+	}
+	if created.DriftedHosts == nil {
+		created.DriftedHosts = []string{}
+	}
+	created.CheckedAt = time.Now().UTC()
+	m.driftReports = append(m.driftReports, &created)
+	out := created
+	return &out, nil
+}
+
+func (m *MemoryStore) CountDriftReports(_ context.Context, resourceID string, since time.Time, driftedOnly bool) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, r := range m.driftReports {
+		if r.ResourceID != resourceID {
+			continue
+		}
+		if r.CheckedAt.Before(since) {
+			continue
+		}
+		if driftedOnly && r.InSync {
+			continue
+		}
+		n++
+	}
+	return n, nil
 }

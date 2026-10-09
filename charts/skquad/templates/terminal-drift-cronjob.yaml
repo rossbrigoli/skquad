@@ -1,0 +1,198 @@
+{{- if and .Values.terminalService.enabled .Values.terminalService.drift.enabled }}
+{{- /*
+TG-11 slice D (§6.7): drift-check CronJob. Runs the SAME terminal-service
+image in `drift-check` mode (no new image): read-only sweep of every
+artifact-enabled resource × host_group at the default-branch tip via
+`ansible-playbook --check`, reports POSTed to the CP drift ingest with
+the direction-scoped SKQUAD_DRIFT_INGEST_TOKEN.
+
+Pod conventions mirror terminal-service-deployment.yaml (restricted PSA,
+runAsNonRoot 10001, read-only rootfs, tmp emptyDir, step-ca provisioner
+secret). The pod carries component=terminal-service so the existing
+quarantine egress policy (CA, recording storage, DNS, :22 host networks)
+applies unchanged; the extra egress this job needs (control-plane, git
+over 443) is granted by skquad-terminal-drift-egress below, scoped to
+the drift-check job label. Per the §6.7 executor rules the pod gets NO
+cluster SA token.
+*/ -}}
+{{- $drift := .Values.terminalService.drift -}}
+{{- if not $drift.ingestTokenSecret.name }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "skquad.terminalServiceName" . }}-drift-token
+  namespace: {{ .Values.terminalService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: terminal-service
+type: Opaque
+stringData:
+  {{ $drift.ingestTokenSecret.key }}: {{ $drift.ingestToken | quote }}
+---
+{{- end }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "skquad.terminalServiceName" . }}-drift-check
+  namespace: {{ .Values.terminalService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: terminal-service
+    app.kubernetes.io/job: drift-check
+spec:
+  schedule: {{ $drift.schedule | quote }}
+  # One sweep at a time; a hung sweep is killed by activeDeadlineSeconds.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            {{- include "skquad.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: terminal-service
+            app.kubernetes.io/job: drift-check
+        spec:
+          restartPolicy: Never
+          # §6.7 executor rule: no cluster identity for the drift pod.
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: drift-check
+              image: {{ include "skquad.terminalServiceImage" . | quote }}
+              imagePullPolicy: {{ .Values.terminalService.imagePullPolicy }}
+              args: ["drift-check"]
+              env:
+                - name: SKQUAD_CP_URL
+                  value: {{ default (printf "http://%s.%s.svc.cluster.local" (include "skquad.apiServerName" .) .Release.Namespace) $drift.controlPlaneURL | quote }}
+                - name: SKQUAD_DRIFT_INGEST_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $drift.ingestTokenSecret.name | default (printf "%s-drift-token" (include "skquad.terminalServiceName" .)) }}
+                      key: {{ $drift.ingestTokenSecret.key }}
+                - name: SKQUAD_DRIFT_PLAYBOOK
+                  value: {{ $drift.playbook | quote }}
+                - name: SKQUAD_DRIFT_CHECK_TIMEOUT_SECONDS
+                  value: {{ $drift.checkTimeoutSeconds | quote }}
+                - name: SKQUAD_DRIFT_CERT_TTL_SECONDS
+                  value: {{ $drift.certTTLSeconds | quote }}
+                - name: SKQUAD_STEP_CA_URL
+                  value: {{ printf "https://%s.%s.svc.cluster.local:%d" (include "skquad.stepCAName" .) .Values.terminalService.namespace (.Values.terminalService.stepCA.port | int) | quote }}
+                - name: SKQUAD_STEP_CA_PROVISIONER
+                  value: {{ .Values.terminalService.stepCA.provisioner | quote }}
+                - name: SKQUAD_STEP_CA_PROVISIONER_PASSWORD_FILE
+                  value: /secrets/step/provisioner-password.txt
+                - name: SKQUAD_RECORDING_S3_ENDPOINT
+                  value: {{ .Values.terminalService.recording.endpoint | quote }}
+                - name: SKQUAD_RECORDING_S3_BUCKET
+                  value: {{ .Values.terminalService.recording.bucket | quote }}
+                - name: SKQUAD_RECORDING_S3_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.terminalService.recording.existingSecret | default (printf "%s-recording" (include "skquad.terminalServiceName" .)) }}
+                      key: access-key
+                - name: SKQUAD_RECORDING_S3_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.terminalService.recording.existingSecret | default (printf "%s-recording" (include "skquad.terminalServiceName" .)) }}
+                      key: secret-key
+                - name: SKQUAD_RECORDING_S3_FORCE_PATH_STYLE
+                  value: "true"
+                {{- if $drift.sshKeySecret }}
+                - name: SKQUAD_DRIFT_SSH_KEY_FILE
+                  value: /secrets/drift/key.pem
+                {{- end }}
+              volumeMounts:
+                - name: step-provisioner-secret
+                  mountPath: /secrets/step
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+                {{- if $drift.sshKeySecret }}
+                - name: drift-ssh-key
+                  mountPath: /secrets/drift
+                  readOnly: true
+                {{- end }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: 128Mi
+                  ephemeral-storage: 256Mi
+                limits:
+                  memory: 512Mi
+                  ephemeral-storage: 1Gi
+          volumes:
+            - name: step-provisioner-secret
+              secret:
+                secretName: {{ include "skquad.stepCAName" . }}-passwords
+                defaultMode: 0400
+            - name: tmp
+              emptyDir: {}
+            {{- if $drift.sshKeySecret }}
+            - name: drift-ssh-key
+              secret:
+                secretName: {{ $drift.sshKeySecret }}
+                defaultMode: 0400
+            {{- end }}
+---
+# Extra egress for the drift sweep ONLY (the pod's component label keeps
+# it inside the existing terminal quarantine policy; this adds the two
+# read paths the check needs and nothing else):
+#  1. control-plane drift surface (internal service, release namespace)
+#  2. registered git hosts over 443 (ls-remote/clone), fenced by the
+#     admin-declared gitEgressNetworks.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "skquad.terminalServiceName" . }}-drift-egress
+  namespace: {{ .Values.terminalService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: terminal-service
+    app.kubernetes.io/job: drift-check
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: terminal-service
+      app.kubernetes.io/job: drift-check
+  policyTypes:
+    - Egress
+  egress:
+    # Control-plane (api-server pods in the release namespace).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "skquad.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api-server
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- range $drift.gitEgressNetworks }}
+    # Registered git hosts (https clone / ls-remote only).
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+{{- end }}

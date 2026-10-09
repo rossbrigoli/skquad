@@ -4355,3 +4355,51 @@ func (p *PostgresStore) GetUpload(ctx context.Context, uploadID string) (*domain
 	}
 	return &out, nil
 }
+
+// --- TG-11 slice D: drift reports (migration 0052 drift_reports) ---
+
+// CreateDriftReport inserts one drift-check row. The id is generated
+// here (TEXT PK mirrors the other TEXT-keyed tables); checked_at is
+// server-assigned so the daily digest window cannot be skewed by a
+// client clock.
+func (p *PostgresStore) CreateDriftReport(ctx context.Context, r *domain.DriftReport) (*domain.DriftReport, error) {
+	hosts := r.DriftedHosts
+	if hosts == nil {
+		hosts = []string{}
+	}
+	hostsJSON, err := json.Marshal(hosts)
+	if err != nil {
+		return nil, err
+	}
+	id := r.ID
+	if id == "" {
+		id = uuid.NewString()
+	}
+	var checkedAt time.Time
+	err = p.pool.QueryRow(ctx, `
+		INSERT INTO drift_reports (id, resource_id, host_group, playbook, git_rev, drifted_hosts, in_sync)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+		RETURNING checked_at
+	`, id, r.ResourceID, r.HostGroup, r.Playbook, r.GitRev, hostsJSON, r.InSync).Scan(&checkedAt)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	created := *r
+	created.ID = id
+	created.DriftedHosts = hosts
+	created.CheckedAt = checkedAt
+	return &created, nil
+}
+
+// CountDriftReports implements the digest batch-window probe.
+func (p *PostgresStore) CountDriftReports(ctx context.Context, resourceID string, since time.Time, driftedOnly bool) (int, error) {
+	var n int
+	err := p.pool.QueryRow(ctx, `
+		SELECT count(*) FROM drift_reports
+		WHERE resource_id = $1 AND checked_at >= $2 AND ($3::boolean = FALSE OR in_sync = FALSE)
+	`, resourceID, since, driftedOnly).Scan(&n)
+	if err != nil {
+		return 0, mapPgErr(err)
+	}
+	return n, nil
+}

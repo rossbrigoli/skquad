@@ -93,6 +93,14 @@ type Config struct {
 	// same name. SECRET: never logged, never echoed.
 	GatewayInternalToken string // SKQUAD_GATEWAY_INTERNAL_TOKEN - SECRET
 
+	// TG-11 slice D: bearer token accepted on the CP internal drift
+	// surface (POST /internal/v1/drift-reports, GET
+	// /internal/v1/artifact-resources) by the terminal-service drift
+	// runner. Direction-scoped to drift ingest — separate from the
+	// gateway/browser/terminal tokens. Empty = surface unconfigured (503).
+	// SECRET: never logged, never echoed.
+	DriftIngestToken string // SKQUAD_DRIFT_INGEST_TOKEN - SECRET
+
 	// Built-in web_search providers (BT-2, ADR-0012 §3). SECRETS: they
 	// must come from a SealedSecret on the control-plane deployment and
 	// never cross to the agent runtime. Empty key = provider unavailable
@@ -176,6 +184,7 @@ func Load() (*Config, error) {
 		ToolGatewayURL:            strings.TrimRight(strings.TrimSpace(os.Getenv("SKQUAD_TOOL_GATEWAY_URL")), "/"),
 		WebFetchViaGateway:        envBool("SKQUAD_WEBFETCH_VIA_GATEWAY", true),
 		GatewayInternalToken:      strings.TrimSpace(os.Getenv("SKQUAD_GATEWAY_INTERNAL_TOKEN")),
+		DriftIngestToken:          strings.TrimSpace(os.Getenv("SKQUAD_DRIFT_INGEST_TOKEN")),
 		SearchBraveAPIKey:         strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_BRAVE_API_KEY")),
 		SearchPerplexityAPIKey:    strings.TrimSpace(os.Getenv("SKQUAD_SEARCH_PERPLEXITY_API_KEY")),
 		MemoryEmbeddingsEnabled:   envBool("SKQUAD_MEMORY_EMBEDDINGS_ENABLED", false),

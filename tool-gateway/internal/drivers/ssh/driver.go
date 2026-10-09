@@ -89,6 +89,10 @@ func (d *Driver) Handle(ctx context.Context, req *drivers.Request) (*drivers.Res
 		return d.sessionEvents(ctx, req)
 	case "ssh_session_close":
 		return d.sessionClose(ctx, req)
+	case "ssh_apply":
+		return d.apply(ctx, req)
+	case "ssh_apply_status":
+		return d.applyStatus(ctx, req)
 	default:
 		return nil, drivers.Denied("unknown_operation")
 	}

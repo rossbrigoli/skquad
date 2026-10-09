@@ -127,6 +127,7 @@ type Store interface {
 	storage.BudgetEnforcementStore
 	storage.AgentMirrorQueue
 	storage.UploadStore
+	storage.DriftStore
 }
 
 // Server owns HTTP routing and request-scoped dependencies.
@@ -591,6 +592,14 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 		// trust class as /policy — the gateway sends no app-layer auth.
 		r.Post("/confirmation/check", s.confirmationCheckHandler)
 		r.Post("/confirmation/consume", s.confirmationConsumeHandler)
+		// TG-11 slice D: artifact drift surface for the terminal-service
+		// drift runner. Unlike /policy, this IS token-authenticated
+		// (Bearer SKQUAD_DRIFT_INGEST_TOKEN): the runner is a scheduled
+		// batch job crossing the namespace boundary, so the ingest and
+		// the resource listing carry an explicit credential on top of
+		// the internal-only NetworkPolicy fence.
+		r.With(s.requireDriftIngestToken).Post("/drift-reports", s.handleDriftIngest)
+		r.With(s.requireDriftIngestToken).Get("/artifact-resources", s.listDriftArtifactResources)
 	})
 
 	r.Route("/api/v1", func(r chi.Router) {
@@ -4930,7 +4939,7 @@ func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPer
 	// TG-10: ssh grants publish the ssh_exec + ssh_session_* tool
 	// schemas (effective ceiling ∧ grant), mirroring the rest surface.
 	if resource.Type == domain.ResSSH {
-		rt.Tools = sshToolSchema(resource.Name, resource.ID, resource.PolicyCeiling, perm.Constraints)
+		rt.Tools = sshToolSchema(resource.Name, resource.ID, resource.PolicyCeiling, perm.Constraints, resource.EndpointConfig)
 	}
 	return rt, true, nil
 }

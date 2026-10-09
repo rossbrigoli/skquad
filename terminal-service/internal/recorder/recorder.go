@@ -60,6 +60,12 @@ type Meta struct {
 	Host       string `json:"host"`
 	User       string `json:"user"`
 	Command    string `json:"command,omitempty"`
+	// Emergency marks a TG-11 emergency-lane session (docs §6.7
+	// "Emergency interactive lane"). IncidentID is the incident
+	// reference stamped on the recording so every replay is tied to
+	// the incident it served.
+	Emergency  bool   `json:"emergency,omitempty"`
+	IncidentID string `json:"incident_id,omitempty"`
 }
 
 // Recorder buffers frames for one recording and flushes to a Sink.
