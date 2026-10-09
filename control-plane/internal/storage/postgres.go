@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
+	"github.com/rossbrigoli/skquad/control-plane/internal/k8sname"
 )
 
 const (
@@ -272,7 +273,7 @@ func (p *PostgresStore) enqueueAgentOutboxTx(ctx context.Context, tx pgx.Tx, ope
 func getAgentTx(ctx context.Context, tx pgx.Tx, id string) (*domain.Agent, error) {
 	row := tx.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, chat_reset_at, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -533,7 +534,7 @@ func (p *PostgresStore) DeleteSquad(ctx context.Context, id string) error {
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, chat_reset_at, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
 		FROM agents
 		WHERE squad_id = $1
 		ORDER BY name
@@ -620,8 +621,11 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 	// S-156: agent names are unique per user (across all their squads).
 	// The legacy per-squad DB constraint stays as a backstop; the per-owner
 	// rule needs the squads join, so it is checked here in-tx.
-	var squadOwner string
-	if err := tx.QueryRow(ctx, `SELECT owner_id::text FROM squads WHERE id = $1`, a.SquadID).Scan(&squadOwner); err != nil {
+	var squadOwner, squadName, ownerName, ownerEmail string
+	if err := tx.QueryRow(ctx, `
+		SELECT s.owner_id::text, s.name, coalesce(u.name, ''), coalesce(u.email, '')
+		FROM squads s LEFT JOIN users u ON u.id = s.owner_id
+		WHERE s.id = $1`, a.SquadID).Scan(&squadOwner, &squadName, &ownerName, &ownerEmail); err != nil {
 		return nil, mapPgErr(err)
 	}
 	var clashID string
@@ -639,11 +643,26 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 		INSERT INTO agents (squad_id, name, role, system_prompt, ai_model_id, fallback_ai_model_id, permissions, idle_timeout_sec, status, storage_enabled, storage_size, deployment_name, thinking_level)
 		VALUES ($1, $2, $3, $4, nullif($5, '')::uuid, nullif($6, '')::uuid, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, chat_reset_at, status, created_at, updated_at
+		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
 	`, a.SquadID, a.Name, a.Role, a.SystemPrompt, a.AIModelID, a.FallbackAIModelID, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status), a.StorageEnabled, defaultStorageSize(a.StorageSize), a.DeploymentName, a.ThinkingLevel)
 	created, err := scanAgent(row)
 	if err != nil {
 		return nil, err
+	}
+	// S-261: fix the friendly workspace PVC name at creation (immutable,
+	// same pattern as deployment_name). Pre-S-261 rows keep '' and the
+	// operator's legacy agent-<cr-name>-workspace fallback — live volumes
+	// are never renamed. Done in-tx so the outbox payload always carries it.
+	if created.WorkspacePVCName == "" {
+		created.WorkspacePVCName = k8sname.WorkspacePVCName(
+			k8sname.OwnerSlug(ownerName, ownerEmail, squadOwner),
+			squadName, created.Name, created.ID,
+		)
+		if created.WorkspacePVCName != "" {
+			if _, err := tx.Exec(ctx, `UPDATE agents SET workspace_pvc_name = $2 WHERE id = $1`, created.ID, created.WorkspacePVCName); err != nil {
+				return nil, mapPgErr(err)
+			}
+		}
 	}
 	// S-PROMPT WP2: an agent born with a prompt records its first revision
 	// in the same transaction as the row insert.
@@ -669,7 +688,7 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 func (p *PostgresStore) GetAgent(ctx context.Context, id string) (*domain.Agent, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, chat_reset_at, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -710,7 +729,7 @@ func (p *PostgresStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*doma
 		    updated_at = now()
 		WHERE id = $1
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, chat_reset_at, status, created_at, updated_at
+		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
 	`, a.ID, a.Name, a.Role, a.SystemPrompt, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status), a.AIModelID, a.FallbackAIModelID, a.StorageEnabled, defaultStorageSize(a.StorageSize), a.ThinkingLevel)
 	updated, err := scanAgent(row)
 	if err != nil {
@@ -737,7 +756,7 @@ func (p *PostgresStore) DeleteAgent(ctx context.Context, id string) error {
 
 	row := tx.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, chat_reset_at, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -764,7 +783,7 @@ func (p *PostgresStore) DeleteAgent(ctx context.Context, id string) error {
 func (p *PostgresStore) ListAgents(ctx context.Context, squadID string) ([]*domain.Agent, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, chat_reset_at, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
 		FROM agents
 		WHERE squad_id = $1
 		ORDER BY name
@@ -797,7 +816,7 @@ func (p *PostgresStore) SetAgentStatus(ctx context.Context, id string, status do
 		SET status = $2, updated_at = now()
 		WHERE id = $1
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, chat_reset_at, status, created_at, updated_at
+		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
 	`, id, status)
 	agent, err := scanAgent(row)
 	if err != nil {
@@ -916,7 +935,7 @@ func (p *PostgresStore) SetAgentIdentityGatewayKey(ctx context.Context, agentID 
 func (p *PostgresStore) ListAllAgents(ctx context.Context) ([]*domain.Agent, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, chat_reset_at, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
 		FROM agents
 		ORDER BY name
 	`)
@@ -3636,6 +3655,7 @@ func scanAgent(row scanner) (*domain.Agent, error) {
 		&a.StorageEnabled,
 		&a.StorageSize,
 		&a.DeploymentName,
+		&a.WorkspacePVCName,
 		&chatResetAt,
 		&a.Status,
 		&a.CreatedAt,

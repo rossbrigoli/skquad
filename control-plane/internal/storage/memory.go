@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
+	"github.com/rossbrigoli/skquad/control-plane/internal/k8sname"
 )
 
 const (
@@ -477,6 +478,13 @@ func (m *MemoryStore) CreateAgent(ctx context.Context, a *domain.Agent) (*domain
 	now := time.Now().UTC()
 	created := cloneAgent(a)
 	created.ID = uuid.NewString()
+	// S-261: fix the friendly workspace PVC name at creation (immutable,
+	// same pattern as DeploymentName). Pre-existing agents keep '' and the
+	// operator's legacy agent-<cr-name>-workspace fallback — live volumes
+	// are never renamed.
+	if created.WorkspacePVCName == "" {
+		created.WorkspacePVCName = m.deriveWorkspacePVCNameLocked(created)
+	}
 	if created.Status == "" {
 		created.Status = domain.AgentIdle
 	}
@@ -492,6 +500,26 @@ func (m *MemoryStore) CreateAgent(ctx context.Context, a *domain.Agent) (*domain
 	m.enqueueAgentOutboxLocked(domain.KubernetesOpUpsertAgent, created)
 	m.drainPendingAuditsLocked(ctx, created.ID)
 	return cloneAgent(created), nil
+}
+
+// deriveWorkspacePVCNameLocked builds the S-261 friendly workspace PVC
+// name (<owner>-<squad>-<agent>-workspace-<guid>) for a freshly created
+// agent. Returns "" when the squad is unknown or the pieces cannot form a
+// valid name — the operator's legacy fallback then applies. Callers must
+// hold m.mu.
+func (m *MemoryStore) deriveWorkspacePVCNameLocked(a *domain.Agent) string {
+	squad, ok := m.squads[a.SquadID]
+	if !ok {
+		return ""
+	}
+	var ownerName, ownerEmail string
+	if u, ok := m.users[squad.OwnerID]; ok {
+		ownerName, ownerEmail = u.Name, u.Email
+	}
+	return k8sname.WorkspacePVCName(
+		k8sname.OwnerSlug(ownerName, ownerEmail, squad.OwnerID),
+		squad.Name, a.Name, a.ID,
+	)
 }
 
 func (m *MemoryStore) GetAgent(_ context.Context, id string) (*domain.Agent, error) {
@@ -525,6 +553,9 @@ func (m *MemoryStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*domain
 	updated := cloneAgent(a)
 	updated.SquadID = existing.SquadID
 	updated.CreatedAt = existing.CreatedAt
+	// S-261: the workspace PVC name is fixed at creation — updates can
+	// never re-derive or clear it (renaming a live PVC is data loss).
+	updated.WorkspacePVCName = existing.WorkspacePVCName
 	updated.UpdatedAt = time.Now().UTC()
 	if intent := DrainPromptRevision(ctx); intent != nil && existing.SystemPrompt != updated.SystemPrompt {
 		m.appendPromptRevisionLocked(intent, updated.SystemPrompt)

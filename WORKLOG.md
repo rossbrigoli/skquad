@@ -1144,3 +1144,24 @@
 - Commands: `helm lint` clean (icon INFO only); `bash scripts/check_netpol_guard_template.sh` 15/15 PASS; `go build ./...` + `go vet` + `go test ./... -count=1` operator ALL GREEN (incl. 5 new guard tests); `bash -n` all drill scripts clean; LIVE `bypass_suite.sh` → `agent-guard-birth` PASS ("guard confirmed enforcement before workload start; first app-container probe blocked curl exit=7 — 0 pre-block internet hits"), raw race caught the race again this run (1/15 reached, probe #1, blocked from #2) now INFO. Remaining suite FAIL is only the known slice-A finding 2 (browser direct internet) — out of slice-B scope.
 - NOTE: guard takes effect for agent pods once the OPERATOR image carrying this code is deployed; until then the drill reads chart-default params via fallback and the real agent pods remain unguarded.
 - Result: committed on feat/tg9-audit-drills worktree (no push).
+
+## 2026-10-09 20:05 — S-261: friendly agent workspace PVC naming
+- Objective: rename per-agent workspace PVC from `agent-agent-<guid>-workspace` to `<owner>-<squad>-<agent>-workspace-<guid>` with NO renames of existing volumes.
+- Design: name is composed by the control plane at agent creation and fixed immutably in `agents.workspace_pvc_name` (DB) → mirrored to Agent CR `spec.workspacePVCName` (only when storage enabled). Operator prefers `spec.workspacePVCName`, falls back to legacy `agent-<cr-name>-workspace` when empty. Pre-S-261 rows keep '' forever → their live PVCs are never renamed.
+- Files changed:
+  - control-plane/internal/k8sname/k8sname.go (NEW): SanitizePart / OwnerSlug / WorkspacePVCName (lowercase, non-[a-z0-9-]→'-', collapse, trim; skip empty components; truncate prefix only, never the `-workspace-<GUID>` tail; 253-char RFC1123 cap; empty GUID ⇒ no name).
+  - control-plane/internal/k8sname/k8sname_test.go (NEW): 7 tests — unicode/spaces/uppercase/collapse/over-length truncation preserving GUID tail/empty components/RFC1123 validity.
+  - control-plane/internal/domain/types.go: Agent.WorkspacePVCName field.
+  - control-plane/internal/storage/migrations/0053_agent_workspace_pvc_name.sql (NEW): ADD COLUMN workspace_pvc_name TEXT NOT NULL DEFAULT ''.
+  - control-plane/internal/storage/memory.go: CreateAgent derives name post-GUID; UpdateAgent cannot change/clear it (immutability enforced).
+  - control-plane/internal/storage/postgres.go: CreateAgent in-tx: squad/owner join, derive after INSERT, fix UPDATE in same tx before outbox enqueue; workspace_pvc_name added to all agent SELECT lists + scanAgent. UpdateAgent never touches the column.
+  - control-plane/internal/kube/cr_writer.go: emits spec.workspacePVCName only inside the StorageEnabled block.
+  - control-plane/internal/kube/cr_writer_s261_test.go (NEW): 3 tests — emitted when storage+name, absent when storage off, absent when name unset.
+  - control-plane/internal/storage/workspace_pvc_name_test.go (NEW): 3 tests — derived name shape, update cannot rename/clear, GUID whole in tail.
+  - operator/internal/api/v1/types.go: AgentSpec.WorkspacePVCName (optional string).
+  - operator/internal/controller/agent_controller.go: workspacePVCName() prefers spec field (TrimSpace), legacy fallback otherwise — used by pod ClaimName, create, and delete paths (single function, no drift).
+  - operator/internal/controller/agent_controller_pvc_s261_test.go (NEW): 4 tests — prefer spec, legacy fallback, reconcile creates friendly PVC + pod ClaimName matches + no legacy shadow PVC + S-135 portability rule intact, delete removes friendly PVC.
+  - charts/skquad/crds/skquad.io_agents.yaml: added optional spec.workspacePVCName property (hand-edited; repo has no controller-gen/Makefile codegen — CRD is hand-maintained).
+- Commands run: go build ./... (CP+operator) OK; go vet ./... (CP+operator) clean; go test ./... control-plane ALL ok; go test ./... operator ALL ok. Package counts: k8sname 7, kube 54, storage 97, httpapi 571, operator/controller 75, operator/api/v1 16 — all passing.
+- Not verified offline: Postgres migration application (no live PG in test path — parity tests skip without DSN); ArgoCD/CRD apply on cluster (out of scope per task); end-to-end CP→operator with real GUIDs (covered by unit/integration pieces).
+- Result: committed on feat/s261-pvc-naming worktree (no push, no cluster contact).

@@ -115,6 +115,14 @@ type AgentSpec struct {
 	// the control plane: skquad-<owner>-agent-<agent-name>. When empty the
 	// operator falls back to the CR name (pre-S-156 agents).
 	DeploymentName   string               `json:"deploymentName,omitempty"`
+	// WorkspacePVCName (S-261) is the durable workspace PVC name chosen by
+	// the control plane at agent creation:
+	// <owner>-<squad>-<agent>-workspace-<agent-guid>. When non-empty the
+	// operator uses it verbatim for the PVC, the pod claim and the delete
+	// path; when empty (pre-S-261 CRs) it falls back to the legacy
+	// agent-<cr-name>-workspace derivation. Fixed at creation — never
+	// renamed under a live volume.
+	WorkspacePVCName string               `json:"workspacePVCName,omitempty"`
 	CredentialSecret string               `json:"credentialSecret,omitempty"`
 	VirtualKeySecret string               `json:"virtualKeySecret,omitempty"`
 	ControlPlaneURL  string               `json:"controlPlaneUrl,omitempty"`
