@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -162,8 +163,8 @@ var (
 	// TG-10 ssh (Terminal-as-a-Service, §6.6): endpoint_config carries
 	// the non-secret connection shape; the private key lives in credential
 	// custody (kind "ssh_key"), never in endpoint_config.
-	SSHConfigKeys  = []string{"ssh_user", "port", "known_hosts", "auth_mode"}
-	SSHCeilingKeys = []string{"hosts_allow", "hosts_deny", "command_allow", "command_deny", "cert_ttl_minutes", "max_concurrent_sessions", "exec_timeout_seconds", "egress_class"}
+	SSHConfigKeys  = []string{"ssh_user", "port", "known_hosts", "auth_mode", "artifact"}
+	SSHCeilingKeys = []string{"hosts_allow", "hosts_deny", "command_allow", "command_deny", "cert_ttl_minutes", "max_concurrent_sessions", "exec_timeout_seconds", "egress_class", "host_groups", "mirrors_allow", "require_tip"}
 )
 
 // ValidateEndpointConfig validates a resource's endpoint_config for its
@@ -239,6 +240,47 @@ func validateSSHConfig(obj map[string]json.RawMessage) Violations {
 	}
 	var authMode string
 	v = append(v, stringField(obj, "auth_mode", "endpoint_config.auth_mode", &authMode, false, map[string]bool{"ca": true, "static_key": true})...)
+	// TG-11 §6.7: optional artifact section turns this ssh resource into an
+	// artifact-executor target (approved-playbook apply).
+	if raw, ok := obj["artifact"]; ok {
+		v = append(v, validateArtifactConfig(raw)...)
+	}
+	return sortByField(v)
+}
+
+// validateArtifactConfig validates the TG-11 §6.7 artifact section of an
+// ssh endpoint_config:
+//
+//	git_url         required — the ONLY repo the executor may clone (tool
+//	                calls cannot point it elsewhere)
+//	default_branch  optional (default "main") — merge-approval anchor
+//	playbooks_path  optional (default "playbooks/") — subtree the agent
+//	                may reference; must be relative and traversal-free
+func validateArtifactConfig(raw json.RawMessage) Violations {
+	obj, v := object("endpoint_config.artifact", raw)
+	if len(v) > 0 {
+		return v
+	}
+	if v := checkUnknownKeys("endpoint_config.artifact", obj, "git_url", "default_branch", "playbooks_path"); len(v) > 0 {
+		return v
+	}
+	var gitURL string
+	v = append(v, stringField(obj, "git_url", "endpoint_config.artifact.git_url", &gitURL, true, nil)...)
+	if strings.TrimSpace(gitURL) == "" || !validHTTPURL(gitURL) {
+		v = append(v, Violation{Field: "endpoint_config.artifact.git_url", Code: "invalid_value", Message: "git_url is required and must be a valid http(s) URL"})
+	}
+	var branch string
+	v = append(v, stringField(obj, "default_branch", "endpoint_config.artifact.default_branch", &branch, false, nil)...)
+	if _, ok := obj["default_branch"]; ok && strings.TrimSpace(branch) == "" {
+		v = append(v, Violation{Field: "endpoint_config.artifact.default_branch", Code: "invalid_value", Message: "default_branch must be non-empty when present"})
+	}
+	var path string
+	v = append(v, stringField(obj, "playbooks_path", "endpoint_config.artifact.playbooks_path", &path, false, nil)...)
+	if _, ok := obj["playbooks_path"]; ok {
+		if strings.TrimSpace(path) == "" || strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
+			v = append(v, Violation{Field: "endpoint_config.artifact.playbooks_path", Code: "invalid_value", Message: "playbooks_path must be a relative, traversal-free path"})
+		}
+	}
 	return sortByField(v)
 }
 
@@ -426,5 +468,119 @@ func validateSSHCeiling(obj map[string]json.RawMessage) Violations {
 	}
 	var ec string
 	v = append(v, stringField(obj, "egress_class", "policy_ceiling.egress_class", &ec, false, egressClass)...)
+	// TG-11 §6.7: host_groups — admin-managed, versioned inventory. Every
+	// host in a group MUST be covered by hosts_allow: groups narrow the
+	// approved surface, they can never widen it past the ceiling.
+	if raw, ok := obj["host_groups"]; ok {
+		v = append(v, validateHostGroups(raw, hostsAllow)...)
+	}
+	var mirrors []string
+	v = append(v, stringListField(obj, "mirrors_allow", "policy_ceiling.mirrors_allow", &mirrors)...)
+	// require_tip: tier → bool (e.g. {"high": true}). High-tier applies
+	// must use the current default-branch tip, not a merged-but-superseded
+	// revision. Unknown tiers or non-bool values are refused.
+	if raw, ok := obj["require_tip"]; ok {
+		tipObj, tv := object("policy_ceiling.require_tip", raw)
+		if len(tv) > 0 {
+			return sortByField(append(v, tv...))
+		}
+		for k := range tipObj {
+			if k != "low" && k != "medium" && k != "high" {
+				v = append(v, Violation{Field: "policy_ceiling.require_tip." + k, Code: "invalid_value", Message: "require_tip keys must be low|medium|high"})
+			}
+			var b bool
+			v = append(v, boolField(tipObj, k, "policy_ceiling.require_tip."+k, &b)...)
+		}
+	}
 	return sortByField(v)
+}
+
+// validateHostGroups validates policy_ceiling.host_groups against the
+// ceiling's hosts_allow patterns. Semantics mirror the gateway's ssh
+// globMatch (tool-gateway/internal/drivers/ssh/policy.go): '*' matches
+// any run of characters, '?' exactly one; whole-string anchored.
+func validateHostGroups(raw json.RawMessage, hostsAllow []string) Violations {
+	groups, v := object("policy_ceiling.host_groups", raw)
+	if len(v) > 0 {
+		return v
+	}
+	if len(groups) == 0 {
+		return Violations{{Field: "policy_ceiling.host_groups", Code: "required", Message: "host_groups must contain at least one group when present"}}
+	}
+	for name, graw := range groups {
+		if name == "" || !hostGroupNameRe.MatchString(name) {
+			v = append(v, Violation{Field: "policy_ceiling.host_groups." + name, Code: "invalid_value", Message: "group name must match [a-z0-9_-]+"})
+		}
+		gobj, gv := object("policy_ceiling.host_groups."+name, graw)
+		if len(gv) > 0 {
+			v = append(v, gv...)
+			continue
+		}
+		if uv := checkUnknownKeys("policy_ceiling.host_groups."+name, gobj, "hosts", "tier"); len(uv) > 0 {
+			v = append(v, uv...)
+			continue
+		}
+		var hosts []string
+		v = append(v, stringListField(gobj, "hosts", "policy_ceiling.host_groups."+name+".hosts", &hosts)...)
+		if len(hosts) == 0 {
+			v = append(v, Violation{Field: "policy_ceiling.host_groups." + name + ".hosts", Code: "required", Message: "group must contain at least one host"})
+		}
+		var tier string
+		if tv := stringField(gobj, "tier", "policy_ceiling.host_groups."+name+".tier", &tier, true, map[string]bool{"low": true, "medium": true, "high": true}); len(tv) > 0 {
+			v = append(v, tv...)
+		}
+		for _, h := range hosts {
+			covered := false
+			for _, p := range hostsAllow {
+				if sshHostGlobMatch(p, h) {
+					covered = true
+					break
+				}
+			}
+			if !covered {
+				v = append(v, Violation{Field: "policy_ceiling.host_groups." + name + ".hosts", Code: "outside_hosts_allow", Message: "host " + h + " is not covered by any hosts_allow pattern — groups cannot widen the ceiling"})
+			}
+		}
+	}
+	return v
+}
+
+var hostGroupNameRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
+
+// sshHostGlobMatch mirrors the gateway's anchored glob semantics for
+// hosts_allow patterns (see tool-gateway/internal/drivers/ssh/policy.go
+// globMatch): '*' = any run, '?' = exactly one, whole-string anchored,
+// case-insensitive. Duplicated (not imported) so the control plane never
+// depends on the gateway module.
+func sshHostGlobMatch(pattern, host string) bool {
+	p := strings.ToLower(strings.TrimSpace(pattern))
+	h := strings.ToLower(strings.TrimSpace(host))
+	return anchoredGlob(p, h)
+}
+
+func anchoredGlob(pattern, s string) bool {
+	// Iterative wildcard match (no regex compile per call).
+	pi, si := 0, 0
+	star, starSi := -1, 0
+	for si < len(s) {
+		switch {
+		case pi < len(pattern) && (pattern[pi] == '?' || pattern[pi] == s[si]):
+			pi++
+			si++
+		case pi < len(pattern) && pattern[pi] == '*':
+			star = pi
+			starSi = si
+			pi++
+		case star >= 0:
+			pi = star + 1
+			starSi++
+			si = starSi
+		default:
+			return false
+		}
+	}
+	for pi < len(pattern) && pattern[pi] == '*' {
+		pi++
+	}
+	return pi == len(pattern)
 }

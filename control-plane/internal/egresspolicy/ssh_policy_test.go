@@ -125,3 +125,102 @@ func hasViolationField(v Violations, field string) bool {
 	}
 	return false
 }
+
+// --- TG-11 §6.7: artifact config + host_groups ceiling validation ---
+
+func TestValidateEndpointConfig_SSHArtifact(t *testing.T) {
+	ok := `{"ssh_user":"ops","known_hosts":"x","artifact":{"git_url":"https://github.com/org/playbooks.git","default_branch":"main","playbooks_path":"playbooks/"}}`
+	if v := ValidateEndpointConfig("ssh", json.RawMessage(ok)); len(v) != 0 {
+		t.Fatalf("valid artifact config rejected: %+v", v)
+	}
+	// minimal artifact: only git_url required
+	if v := ValidateEndpointConfig("ssh", json.RawMessage(`{"ssh_user":"ops","known_hosts":"x","artifact":{"git_url":"https://git.internal.lab/pb.git"}}`)); len(v) != 0 {
+		t.Fatalf("minimal artifact config rejected: %+v", v)
+	}
+	cases := []struct {
+		name  string
+		in    string
+		field string
+		code  string
+	}{
+		{"missing git_url", `{"ssh_user":"o","known_hosts":"x","artifact":{}}`, "endpoint_config.artifact.git_url", "required"},
+		{"non-https git_url", `{"ssh_user":"o","known_hosts":"x","artifact":{"git_url":"ftp://x/pb.git"}}`, "endpoint_config.artifact.git_url", "invalid_value"},
+		{"absolute playbooks_path", `{"ssh_user":"o","known_hosts":"x","artifact":{"git_url":"https://a.b/c.git","playbooks_path":"/etc"}}`, "endpoint_config.artifact.playbooks_path", "invalid_value"},
+		{"traversal playbooks_path", `{"ssh_user":"o","known_hosts":"x","artifact":{"git_url":"https://a.b/c.git","playbooks_path":"../secrets"}}`, "endpoint_config.artifact.playbooks_path", "invalid_value"},
+		{"unknown artifact key", `{"ssh_user":"o","known_hosts":"x","artifact":{"git_url":"https://a.b/c.git","auto_merge":true}}`, "endpoint_config.artifact.auto_merge", "unknown_key"},
+		{"artifact not object", `{"ssh_user":"o","known_hosts":"x","artifact":"playbooks"}`, "endpoint_config.artifact", "invalid_json"},
+	}
+	for _, tc := range cases {
+		v := ValidateEndpointConfig("ssh", json.RawMessage(tc.in))
+		if !hasViolation(v, tc.field, tc.code) {
+			t.Errorf("%s: want %s/%s, got %+v", tc.name, tc.field, tc.code, v)
+		}
+	}
+}
+
+func TestValidateCeiling_SSHHostGroups(t *testing.T) {
+	ok := `{"hosts_allow":["staging-*","prod-web-*"],
+		"host_groups":{
+			"staging":{"hosts":["staging-1.lab","staging-2.lab"],"tier":"medium"},
+			"prod":{"hosts":["prod-web-1.lab"],"tier":"high"}},
+		"mirrors_allow":["pypi.internal.lab"],
+		"require_tip":{"high":true}}`
+	if v := ValidateCeiling("ssh", json.RawMessage(ok)); len(v) != 0 {
+		t.Fatalf("valid host_groups ceiling rejected: %+v", v)
+	}
+	cases := []struct {
+		name  string
+		in    string
+		field string
+		code  string
+	}{
+		{"host outside ceiling", `{"hosts_allow":["staging-*"],"host_groups":{"prod":{"hosts":["evil.lab"],"tier":"high"}}}`, "policy_ceiling.host_groups.prod.hosts", "outside_hosts_allow"},
+		{"empty group", `{"hosts_allow":["a*"],"host_groups":{}}`, "policy_ceiling.host_groups", "required"},
+		{"group no hosts", `{"hosts_allow":["a*"],"host_groups":{"g":{"hosts":[],"tier":"low"}}}`, "policy_ceiling.host_groups.g.hosts", "required"},
+		{"bad tier", `{"hosts_allow":["a*"],"host_groups":{"g":{"hosts":["a1"],"tier":"ultra"}}}`, "policy_ceiling.host_groups.g.tier", "invalid_value"},
+		{"missing tier", `{"hosts_allow":["a*"],"host_groups":{"g":{"hosts":["a1"]}}}`, "policy_ceiling.host_groups.g.tier", "required"},
+		{"bad group name", `{"hosts_allow":["a*"],"host_groups":{"Prod-1":{"hosts":["a1"],"tier":"low"}}}`, "policy_ceiling.host_groups.Prod-1", "invalid_value"},
+		{"unknown group key", `{"hosts_allow":["a*"],"host_groups":{"g":{"hosts":["a1"],"tier":"low","auto":true}}}`, "policy_ceiling.host_groups.g.auto", "unknown_key"},
+		{"require_tip bad tier", `{"hosts_allow":["a*"],"require_tip":{"ultra":true}}`, "policy_ceiling.require_tip.ultra", "invalid_value"},
+		{"require_tip non-bool", `{"hosts_allow":["a*"],"require_tip":{"high":"yes"}}`, "policy_ceiling.require_tip.high", "invalid_type"},
+	}
+	for _, tc := range cases {
+		v := ValidateCeiling("ssh", json.RawMessage(tc.in))
+		if !hasViolation(v, tc.field, tc.code) {
+			t.Errorf("%s: want %s/%s, got %+v", tc.name, tc.field, tc.code, v)
+		}
+	}
+}
+
+func TestSSHHostGlobMatch(t *testing.T) {
+	yes := [][2]string{
+		{"staging-*", "staging-1.lab"},
+		{"*", "anything"},
+		{"prod-web-?.lab", "prod-web-1.lab"},
+		{"exact.host", "exact.host"},
+		{"PROD-*", "prod-web-1"}, // case-insensitive like the gateway
+	}
+	no := [][2]string{
+		{"staging-*", "prod-1.lab"},
+		{"prod-web-?.lab", "prod-web-12.lab"},
+		{"exact.host", "other.host"},
+		{"a*b", "axxb"}, // matches actually — see below
+	}
+	for _, p := range yes {
+		if !sshHostGlobMatch(p[0], p[1]) {
+			t.Errorf("want match %q ~ %q", p[0], p[1])
+		}
+	}
+	for _, p := range no {
+		if p[0] == "a*b" {
+			// sanity: this pair SHOULD match (glob semantics); guard the test itself
+			if !sshHostGlobMatch(p[0], p[1]) {
+				t.Errorf("glob semantics changed: %q should match %q", p[0], p[1])
+			}
+			continue
+		}
+		if sshHostGlobMatch(p[0], p[1]) {
+			t.Errorf("want NO match %q ~ %q", p[0], p[1])
+		}
+	}
+}
