@@ -525,6 +525,12 @@ describe("chat thread", () => {
     expect(await screen.findByText("couldn't finish this turn")).toBeInTheDocument();
     expect(screen.queryByText("Combobulating…")).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText("Message coder…")).toBeEnabled();
+    // S-265: the closure must be VISIBLY an error — distinct bubble styling
+    // and an "LLM error" badge, not a normal-looking agent reply.
+    const bubble = screen.getByText("couldn't finish this turn").closest(".chat-bubble");
+    expect(bubble).not.toBeNull();
+    expect(bubble!.className).toContain("chat-error-bubble");
+    expect(within(bubble as HTMLElement).getByText("LLM error")).toBeInTheDocument();
   });
 
   it("reset chat archives via POST and shows the note", async () => {

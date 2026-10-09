@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any, Mapping
 from urllib import error, request
 
@@ -83,6 +84,27 @@ class SkquadMeteringCallback(CustomLogger):
                 kwargs.get("model", ""),
             )
         await send_metering_event("failure", kwargs, response_obj, safe_error(response_obj), alert)
+
+    async def async_post_call_failure_hook(
+        self,
+        request_data: dict,
+        original_exception: Exception,
+        user_api_key_dict: Any,
+        traceback_str: str | None = None,
+    ):
+        """S-265: replace the client-facing error with a displayable,
+        classified OpenAI-compatible error (see the module comment above
+        build_failure_error for what litellm provides vs what we add).
+
+        Fail-safe: any error in our transformation returns None so the
+        client still gets litellm's default error rather than a crash.
+        """
+        try:
+            spec = build_failure_error(request_data or {}, original_exception)
+            return make_proxy_exception(spec)
+        except Exception as hook_exc:  # noqa: BLE001 - never mask the original failure
+            LOGGER.warning("skquad failure-shaping hook skipped: %s", hook_exc)
+            return None
 
 
 async def send_metering_event(
@@ -241,6 +263,220 @@ def safe_error(item: Any) -> str:
     if item is None:
         return ""
     return str(item)
+
+
+# ---------------------------------------------------------------------------
+# S-265: displayable, classified LLM failure errors
+#
+# What litellm ALREADY provides (verified against litellm 1.103.2 source):
+#   * The proxy serialises failures as OpenAI-compatible JSON —
+#     {"error": {"message", "type", "param", "code"}} — via
+#     litellm.proxy._types.ProxyException.to_dict().
+#   * CustomLogger.async_post_call_failure_hook(request_data,
+#     original_exception, user_api_key_dict) may return/raise an
+#     HTTPException (ProxyException included) to REPLACE the client-facing
+#     error; returning None keeps litellm's default. See the "call hooks"
+#     docs: https://docs.litellm.ai/docs/proxy/call_hooks
+#   * litellm maps upstream failures to typed exceptions carrying
+#     .status_code / .llm_provider / .model:
+#     https://docs.litellm.ai/docs/exception_mapping
+#
+# What we ADD here (litellm gives none of this):
+#   * a guaranteed machine-readable classification block under
+#     error.provider_specific_fields.skquad (retryable, category, model,
+#     provider, request_id) — ProxyException.provider_specific_fields is
+#     merged into the error dict by to_dict(), which is the sanctioned
+#     injection point for extra fields on the OpenAI error shape;
+#   * a clean human-readable message per category;
+#   * secret redaction: litellm's default message passes raw upstream text
+#     through, which can embed request fragments. We never forward the raw
+#     upstream message unredacted/truncated.
+# ---------------------------------------------------------------------------
+
+LLM_ERROR_CATEGORIES = (
+    "auth",
+    "rate_limit",
+    "no_credits",
+    "timeout",
+    "bad_request",
+    "provider_error",
+    "unknown",
+)
+
+# Chat-displayable message per category. Deliberately free of provider
+# internals; the technical detail is appended separately, redacted+truncated.
+LLM_ERROR_USER_MESSAGES = {
+    "auth": (
+        "The model provider rejected my credentials (authentication error). "
+        "The provider key needs to be rotated by an admin — retrying won't help."
+    ),
+    "no_credits": (
+        "The model provider account is out of credits/balance. "
+        "No model calls will succeed until the account is topped up."
+    ),
+    "rate_limit": (
+        "The model provider is rate-limiting us (too many requests). "
+        "A retry after a short wait should work."
+    ),
+    "timeout": (
+        "The model provider didn't respond in time (connection timeout). "
+        "This is usually transient — a retry may work."
+    ),
+    "bad_request": (
+        "The model provider rejected this request as invalid (bad request). "
+        "Retrying the same message won't help."
+    ),
+    "provider_error": (
+        "The model provider had a server-side error (5xx). "
+        "A retry after a short wait should work."
+    ),
+    "unknown": (
+        "The model call failed for an unexpected reason. Please retry; "
+        "if it keeps happening, check the gateway logs."
+    ),
+}
+
+# Categories the client may usefully retry. Overridden by the gateway's own
+# classification when it is present (skquad.retryable).
+LLM_ERROR_RETRYABLE = frozenset({"rate_limit", "timeout", "provider_error"})
+
+# Provider "you owe us money" signals — checked before plain rate-limit so an
+# exhausted-credits 429 is distinguishable from a throttling 429.
+_CREDITS_RE = re.compile(
+    r"credit|billing|payment|balance|insufficient[_ ]funds|out of funds|quota exceeded",
+    re.IGNORECASE,
+)
+_TIMEOUT_RE = re.compile(r"timed? out|timeout|connection (?:error|reset|refused|closed|aborted)", re.IGNORECASE)
+
+# Secret redaction: any of these surviving into a user-facing message is a bug.
+# Order matters only for readability; every pattern is applied to the whole text.
+_SECRET_PATTERNS = (
+    # Bearer values are scrubbed FIRST: the key:value pattern would
+    # otherwise consume only the word "Bearer" and strand the token.
+    re.compile(r"Bearer\s+[^\s,;'\"]+", re.IGNORECASE),  # Authorization values
+    re.compile(
+        r"(?i)(api[_-]?key|authorization|access[_-]?token|secret|password)"
+        r"\"?\s*[:=]\s*\"?[^\s,;'\"]+"
+    ),                                                    # key: value pairs
+    re.compile(r"sk-[A-Za-z0-9_\-]{6,}"),                # OpenAI/skquad-style keys
+    re.compile(r"AIza[0-9A-Za-z_\-]{8,}"),               # Google API keys
+    re.compile(r"gsk_[A-Za-z0-9]{8,}"),                  # Groq keys
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{8,}"),            # GitHub tokens
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Scrub credential-shaped substrings. Applied before any truncation."""
+    redacted = _SECRET_PATTERNS[0].sub("[REDACTED]", text)
+    redacted = _SECRET_PATTERNS[1].sub(lambda m: m.group(1) + "=[REDACTED]", redacted)
+    for pattern in _SECRET_PATTERNS[2:]:
+        redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted
+
+
+def classify_llm_error(exc: BaseException) -> tuple[str, bool]:
+    """Map an exception to (category, retryable).
+
+    Status-code driven with keyword fallbacks so it works for litellm typed
+    exceptions (which carry .status_code) AND bare exceptions from tests or
+    non-litellm failure paths. ``no_credits`` is checked before
+    ``rate_limit`` because providers report exhausted billing as 429 too.
+    """
+    status = getattr(exc, "status_code", None)
+    try:
+        status = int(status)
+    except (TypeError, ValueError):
+        status = None
+    message = str(exc)
+    if status in (401, 403):
+        return "auth", False
+    if status == 402 or (status == 429 and _CREDITS_RE.search(message)):
+        return "no_credits", False
+    if status == 429:
+        return "rate_limit", True
+    if status == 400:
+        return "bad_request", False
+    if status == 408 or _TIMEOUT_RE.search(message):
+        return "timeout", True
+    if status is not None and status >= 500:
+        return "provider_error", True
+    if _CREDITS_RE.search(message):
+        return "no_credits", False
+    return "unknown", False
+
+
+def _request_id_from(exc: BaseException) -> str:
+    for attr in ("request_id", "request_uuid"):
+        value = getattr(exc, attr, None)
+        if value:
+            return str(value)[:64]
+    match = re.search(r"request[_-]id[\"']?\s*[:=]\s*[\"']?([A-Za-z0-9\-]{6,64})", str(exc))
+    return match.group(1) if match else ""
+
+
+def skquad_error_block(request_data: Mapping[str, Any], exc: BaseException, category: str, retryable: bool) -> dict:
+    """Machine-readable classification carried alongside the OpenAI error."""
+    return {
+        "retryable": bool(retryable),
+        "category": category,
+        "model": str(request_data.get("model") or getattr(exc, "model", "") or ""),
+        "provider": str(getattr(exc, "llm_provider", "") or ""),
+        "request_id": _request_id_from(exc),
+    }
+
+
+def build_failure_error(request_data: Mapping[str, Any], exc: BaseException) -> dict:
+    """Compose the client-facing error pieces (never raw upstream text).
+
+    The human message is the category's friendly text plus a redacted,
+    truncated technical detail (≤160 chars) so a chat window can show
+    something actionable without leaking request fragments.
+    """
+    category, retryable = classify_llm_error(exc)
+    detail = redact_secrets(str(exc)).strip().replace("\n", " ")
+    if len(detail) > 160:
+        detail = detail[:157] + "..."
+    message = LLM_ERROR_USER_MESSAGES.get(category, LLM_ERROR_USER_MESSAGES["unknown"])
+    if detail:
+        message = f"{message} (details: {detail})"
+    type_by_category = {
+        "auth": "authentication_error",
+        "bad_request": "invalid_request_error",
+        "rate_limit": "rate_limit_error",
+        "no_credits": "insufficient_quota",
+    }
+    status = getattr(exc, "status_code", None)
+    try:
+        code = str(int(status))
+    except (TypeError, ValueError):
+        code = "500"
+    return {
+        "message": message,
+        "type": type_by_category.get(category, "api_error"),
+        "param": None,
+        "code": code,
+        "category": category,
+        "retryable": retryable,
+        "skquad": skquad_error_block(request_data, exc, category, retryable),
+    }
+
+
+def make_proxy_exception(spec: Mapping[str, Any]):
+    """Build litellm's ProxyException from a failure spec (lazy import).
+
+    ProxyException is what the proxy re-raises verbatim from the failure
+    hook, and its to_dict() merges provider_specific_fields into the
+    OpenAI-compatible error object — our skquad block rides along.
+    """
+    from litellm.proxy._types import ProxyException  # lazy: keeps stdlib-only tests green
+
+    return ProxyException(
+        message=spec["message"],
+        type=spec["type"],
+        param=spec["param"],
+        code=spec["code"],
+        provider_specific_fields={"skquad": spec["skquad"]},
+    )
 
 
 proxy_handler_instance = SkquadMeteringCallback()

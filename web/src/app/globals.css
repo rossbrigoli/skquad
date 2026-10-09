@@ -1528,6 +1528,17 @@ button.squad-tab.active {
   background: var(--accent-soft);
 }
 
+/* S-265: LLM turn-failure closure — visibly an error, not a normal reply. */
+.chat-row.theirs .chat-bubble.chat-error-bubble {
+  background: var(--status-error-bg);
+  border: 1px solid color-mix(in srgb, var(--status-error) 45%, transparent);
+}
+
+.chat-status.error {
+  color: var(--status-error);
+  font-weight: 700;
+}
+
 .chat-head {
   display: flex;
   align-items: baseline;

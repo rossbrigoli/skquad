@@ -2038,7 +2038,11 @@ class LLMMessageHandlerTest(unittest.TestCase):
             result = handler.handle_message(user_msg("m-1", "   "), config)
 
             self.assertFalse(result.ok)
-            self.assertEqual(client.replies, [])
+            # S-265: the failure is no longer silent — the user gets a
+            # visible turn_error closure (this path reaches the LLM and
+            # fails there).
+            self.assertEqual(len(client.replies), 1)
+            self.assertTrue(client.replies[0][3]["turn_error"])
 
     def test_llm_error_fails_message(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2054,7 +2058,11 @@ class LLMMessageHandlerTest(unittest.TestCase):
 
             self.assertFalse(result.ok)
             self.assertIn("LLM call failed", result.summary)
-            self.assertEqual(client.replies, [])
+            # S-265: a first-step LLM failure must be visible in the chat,
+            # not silent (was: self.assertEqual(client.replies, [])).
+            self.assertEqual(len(client.replies), 1)
+            self.assertTrue(client.replies[0][3]["turn_error"])
+            self.assertIn("gateway down", client.replies[0][0])
 
     def test_chat_tool_calls_recorded_in_reply_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3045,7 +3053,10 @@ class TurnDecisionS195dTest(unittest.TestCase):
             self.assertEqual(len(client.replies), 1)
             self.assertTrue(client.replies[0][3]["interim"])
 
-    def test_failure_without_interim_posts_no_closure(self):
+    def test_first_step_failure_without_interim_still_posts_closure(self):
+        # S-265: the old `interim_delivered <= 0` early return left the
+        # chat dead-silent when the very FIRST LLM call failed. On the
+        # final attempt a closure must post even with zero interim progress.
         with tempfile.TemporaryDirectory() as tmp:
             config = self._config(tmp)
 
@@ -3057,7 +3068,145 @@ class TurnDecisionS195dTest(unittest.TestCase):
             msg = replace(user_msg("m-1", "hello"), attempts=2, max_attempts=3)
             result = handler.handle_message(msg, config)
             self.assertFalse(result.ok)
+            self.assertEqual(len(client.replies), 1)
+            text, extra = client.replies[0][0], client.replies[0][3]
+            self.assertTrue(extra["turn_error"])
+            self.assertIn("couldn't finish this turn", text)
+            self.assertIn("hadn't produced any progress", text)
+            self.assertIn("provider down from the start", text)
+
+    def test_first_step_failure_before_final_attempt_posts_nothing(self):
+        # S-265 keeps the S-195d retry-suppression rule: a non-final
+        # attempt must not spam the thread — the closure waits for the
+        # final attempt even when there was no interim progress.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+
+            def completion(**kwargs):
+                raise RuntimeError("provider down from the start")
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=completion, client=client)
+            msg = replace(user_msg("m-1", "hello"), attempts=0, max_attempts=3)
+            result = handler.handle_message(msg, config)
+            self.assertFalse(result.ok)
             self.assertEqual(client.replies, [])
+
+    def test_closure_carries_category_and_retryability(self):
+        # S-265: the web styles per category, so the extra block must
+        # carry error_category + retryable alongside turn_error.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+
+            def completion(**kwargs):
+                exc = RuntimeError("Invalid API key provided")
+                exc.status_code = 401
+                raise exc
+
+            client = FakeChatClient(claimed_task=None, messages=[])
+            handler = LLMMessageHandler(completion=completion, client=client)
+            msg = replace(user_msg("m-1", "hello"), attempts=2, max_attempts=3)
+            handler.handle_message(msg, config)
+            extra = client.replies[0][3]
+            self.assertEqual(extra["error_category"], "auth")
+            self.assertFalse(extra["retryable"])
+            self.assertIn("credentials", client.replies[0][0])
+            self.assertIn("Automatic retries won't help", client.replies[0][0])
+
+
+class LLMFailureClassificationS265Test(unittest.TestCase):
+    """S-265: category → user-message table + redaction + gateway fields."""
+
+    def _exc(self, message, status=None, **attrs):
+        exc = RuntimeError(message)
+        if status is not None:
+            exc.status_code = status
+        for key, value in attrs.items():
+            setattr(exc, key, value)
+        return exc
+
+    def test_category_table(self):
+        cases = [
+            (self._exc("bad credentials", 401), "auth", False),
+            (self._exc("forbidden", 403), "auth", False),
+            (self._exc("RateLimitError: credit_balance_exhausted", 429), "no_credits", False),
+            (self._exc("insufficient balance", 402), "no_credits", False),
+            (self._exc("Too many requests", 429), "rate_limit", True),
+            (self._exc("invalid request schema", 400), "bad_request", False),
+            (self._exc("Request timed out", 408), "timeout", True),
+            (self._exc("connection reset by peer"), "timeout", True),
+            (self._exc("Bad gateway", 502), "provider_error", True),
+            (self._exc("something deeply weird"), "unknown", False),
+        ]
+        for exc, category, retryable in cases:
+            self.assertEqual(rt.classify_llm_failure(exc), (category, retryable), str(exc))
+
+    def test_gateway_structured_fields_win(self):
+        payload = {
+            "error": {
+                "message": "whatever litellm surfaced",
+                "type": "api_error",
+                "provider_specific_fields": {
+                    "skquad": {
+                        "retryable": False,
+                        "category": "no_credits",
+                        "model": "gpt-4o",
+                        "provider": "openai",
+                        "request_id": "req-123",
+                    }
+                },
+            }
+        }
+        exc = self._exc(json.dumps(payload), 500)
+        self.assertEqual(rt.classify_llm_failure(exc), ("no_credits", False))
+
+    def test_structured_unknown_category_falls_back_to_local(self):
+        payload = {"error": {"provider_specific_fields": {"skquad": {"category": "bogus"}}}}
+        exc = self._exc(json.dumps(payload), 429)
+        self.assertEqual(rt.classify_llm_failure(exc), ("rate_limit", True))
+
+    def test_redaction_scrubs_keys_tokens_from_detail(self):
+        exc = self._exc(
+            "upstream rejected request with api_key=sk-supersecret12345 "
+            "Authorization: Bearer eyJhbGciOi and sk-anotherkey99"
+        )
+        detail = rt.llm_failure_detail(exc)
+        self.assertNotIn("supersecret", detail)
+        self.assertNotIn("eyJhbGciOi", detail)
+        self.assertNotIn("anotherkey", detail)
+        self.assertIn("[REDACTED]", detail)
+
+    def test_detail_truncation(self):
+        detail = rt.llm_failure_detail(self._exc("x" * 500), limit=200)
+        self.assertEqual(len(detail), 200)
+        self.assertTrue(detail.endswith("..."))
+
+    def test_user_message_is_human_readable_per_category(self):
+        for category, message in rt.LLM_ERROR_USER_MESSAGES.items():
+            self.assertTrue(message.strip(), category)
+            self.assertNotIn("Traceback", message, category)
+        msg = rt.llm_failure_message(self._exc("timed out", 408), interim_delivered=2)
+        self.assertIn("usually transient", msg)
+        self.assertIn("progress notes above", msg)
+
+    def test_task_path_llm_failure_blocks_with_category(self):
+        # S-265 on the TASK path: an LLM failure ends with a visible,
+        # classified blocked summary — distinct from S-263 tool failures.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = s263_config(tmp)
+
+            def completion(**kwargs):
+                exc = RuntimeError("AuthenticationError: invalid api key sk-abcdef123456")
+                exc.status_code = 401
+                raise exc
+
+            handler = LiteLLMTaskHandler(completion=completion, discover_resources=False)
+            result = handler.handle_task(fake_task("task-1"), config)
+            self.assertEqual(result.status, "blocked")
+            self.assertIn("LLM call failed (auth)", result.summary)
+            self.assertIn("credentials", result.summary)
+            self.assertNotIn("sk-abcdef123456", result.summary)
+
 
 
 class MultiReplyChatTurnS195Test(unittest.TestCase):
