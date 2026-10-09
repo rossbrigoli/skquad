@@ -1,6 +1,7 @@
 module github.com/rossbrigoli/skquad/control-plane
 
 go 1.26.8
+toolchain go1.26.9
 
 require (
 	github.com/coreos/go-oidc/v3 v3.11.0

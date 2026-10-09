@@ -73,7 +73,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version-file: control-plane/go.mod
+          go-version: '1.26.9' # GO-2026-66xx fix; modules also carry 'toolchain go1.26.9'
           cache-dependency-path: control-plane/go.sum
       - name: Go vet
         working-directory: control-plane
@@ -112,7 +112,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version-file: shared/go.mod
+          go-version: '1.26.9' # GO-2026-66xx fix; modules also carry 'toolchain go1.26.9'
           cache-dependency-path: shared/go.sum
       - name: Go vet
         working-directory: shared
@@ -130,7 +130,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version-file: tool-gateway/go.mod
+          go-version: '1.26.9' # GO-2026-66xx fix; modules also carry 'toolchain go1.26.9'
           cache-dependency-path: |
             tool-gateway/go.sum
             shared/go.sum
@@ -148,7 +148,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version-file: operator/go.mod
+          go-version: '1.26.9' # GO-2026-66xx fix; modules also carry 'toolchain go1.26.9'
           cache-dependency-path: operator/go.sum
       - name: Go vet
         working-directory: operator
@@ -361,7 +361,7 @@ jobs:
           # This job builds both Go modules. operator/go.mod requires a newer
           # language version than control-plane/go.mod, and setup-go v7 pins
           # GOTOOLCHAIN=local, so the toolchain has to be the higher of the two.
-          go-version-file: operator/go.mod
+          go-version: '1.26.9' # GO-2026-66xx fix; modules also carry 'toolchain go1.26.9'
           cache-dependency-path: |
             control-plane/go.sum
             operator/go.sum
@@ -576,7 +576,7 @@ jobs:
           node-version: "22"
       - uses: actions/setup-go@v7
         with:
-          go-version-file: operator/go.mod
+          go-version: '1.26.9' # GO-2026-66xx fix; modules also carry 'toolchain go1.26.9'
           cache-dependency-path: |
             control-plane/go.sum
             operator/go.sum
@@ -584,8 +584,9 @@ jobs:
             tool-gateway/go.sum
             browser-proxy/go.sum
             terminal-service/go.sum
-          # Go 1.26.8 is pre-seeded in the runner image tool cache (K-37);
-          # skip setup-go's own distribution+cache handling (~4 min/job).
+          # GO-2026-66xx (net/http HPACK race, crypto/tls) fixed in go1.26.9 —
+          # toolchain directive in go.mod now selects 1.26.9 (runner cache has
+          # 1.26.8 pre-seeded per K-37; setup-go downloads 1.26.9, ~1 min).
           cache: false
       - name: Cache Go security tools
         id: sec-tools
@@ -688,12 +689,13 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version-file: operator/go.mod
+          go-version: '1.26.9' # GO-2026-66xx fix; modules also carry 'toolchain go1.26.9'
           cache-dependency-path: |
             control-plane/go.sum
             operator/go.sum
-          # Go 1.26.8 is pre-seeded in the runner image tool cache (K-37);
-          # skip setup-go's own distribution+cache handling (~4 min/job).
+          # GO-2026-66xx (net/http HPACK race, crypto/tls) fixed in go1.26.9 —
+          # toolchain directive in go.mod now selects 1.26.9 (runner cache has
+          # 1.26.8 pre-seeded per K-37; setup-go downloads 1.26.9, ~1 min).
           cache: false
       - name: Cache Go security tools
         id: sec-tools

@@ -2,7 +2,7 @@
 # context (matches images.yml `context: terminal-service`); the module is
 # self-contained (no replace of ../shared):
 #   docker build -t skquad-terminal-service terminal-service
-ARG GO_VERSION=1.26.8
+ARG GO_VERSION=1.26.9
 # TG-11: ansible pins for the artifact apply engine. ansible-core 2.21.5
 # (latest stable, released 2026-10-05; requires Python >= 3.12) plus ONLY
 # the collection the lint gate's package modules need beyond builtins:
