@@ -40,6 +40,7 @@ import {
   chatContextTokens,
   chatToolCalls,
   formatContextTokens,
+  isTurnErrorMessage,
   prettyToolArgs,
   sortChatMessages,
   subagentSummary,
@@ -980,6 +981,8 @@ function ChatThread({
         ) : (
           sorted.map((msg) => {
             const fromUser = msg.from_type === "user";
+            // S-265: LLM turn-failure closure gets distinct error styling.
+            const turnError = !fromUser && isTurnErrorMessage(msg);
             const toolCalls = fromUser ? [] : chatToolCalls(msg);
             // S-194: image attachments render under the message text.
             const attachments = messageAttachments(msg);
@@ -1000,10 +1003,13 @@ function ChatThread({
                 <div className={`chat-avatar ${fromUser ? "me" : "agent"}`} aria-hidden="true">
                   {fromUser ? initials(user?.name ?? "You") : initials(agentName)}
                 </div>
-                <div className="chat-bubble">
+                <div className={`chat-bubble${turnError ? " chat-error-bubble" : ""}`}>
                   <div className="chat-head">
                     <span className="chat-name">{fromUser ? "You" : agentName}</span>
                     <span className="chat-time">{formatRelativeTime(msg.created_at)}</span>
+                    {turnError ? (
+                      <span className="chat-status mono error">LLM error</span>
+                    ) : null}
                     {!fromUser && msg.status ? <span className="chat-status mono">{msg.status}</span> : null}
                     {/* S-175: surface cancelled user turns; other user statuses stay quiet. */}
                     {fromUser && msg.status === "cancelled" ? (

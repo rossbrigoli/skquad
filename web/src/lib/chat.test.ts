@@ -7,6 +7,7 @@ import {
   CHAT_TURN_LOCK_MS,
   formatContextTokens,
   isInterimChatReply,
+  isTurnErrorMessage,
   parseSubagent,
   prettyToolArgs,
   sortChatMessages,
@@ -28,6 +29,24 @@ function message(overrides: Partial<Message> = {}): Message {
     ...overrides,
   };
 }
+
+// S-265: the runtime posts a terminal closure with payload.turn_error
+// when the LLM call fails — renderers key the error styling off this.
+describe("isTurnErrorMessage", () => {
+  it("is true for an agent message flagged turn_error", () => {
+    expect(
+      isTurnErrorMessage(message({ from_type: "agent", payload: { message: "failed", turn_error: true } })),
+    ).toBe(true);
+  });
+
+  it("is false for user messages, missing payloads, and non-true flags", () => {
+    expect(isTurnErrorMessage(message({ from_type: "user", payload: { turn_error: true } }))).toBe(false);
+    expect(isTurnErrorMessage(message({ from_type: "agent" }))).toBe(false);
+    expect(isTurnErrorMessage(message({ from_type: "agent", payload: { message: "ok" } }))).toBe(false);
+    expect(isTurnErrorMessage(message({ from_type: "agent", payload: { turn_error: "yes" } }))).toBe(false);
+    expect(isTurnErrorMessage(message({ from_type: "agent", payload: { interim: true } }))).toBe(false);
+  });
+});
 
 describe("sortChatMessages", () => {
   it("sorts chronologically (oldest first)", () => {

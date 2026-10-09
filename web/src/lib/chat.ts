@@ -224,6 +224,14 @@ export function isInterimChatReply(msg: Message): boolean {
   return msg.from_type === "agent" && msg.payload?.interim === true;
 }
 
+/** S-265: the terminal closure the runtime posts when the LLM call fails
+ *  (`payload.turn_error`, see runtime `_close_failed_turn`). Renderers use
+ *  this to style the message as an error; it is NOT interim, so
+ *  `agentTurnPending` releases the composer as soon as it arrives. */
+export function isTurnErrorMessage(msg: Message): boolean {
+  return msg.from_type === "agent" && msg.payload?.turn_error === true;
+}
+
 /** True while the agent's turn is still in flight. S-154 baseline: the
  *  chronologically-last message is from a user (no agent reply after it).
  *  S-262 extends this through multi-message turns: a last message that is

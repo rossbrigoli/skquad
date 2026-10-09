@@ -531,5 +531,119 @@ class CallbackWiringTests(unittest.TestCase):
         self.assertFalse(missing, f"payload keys absent from gatewayMeteringRequest: {sorted(missing)}")
 
 
+class S265FailureShapingTest(unittest.TestCase):
+    """S-265: the proxy's client-facing error must be displayable AND
+    machine-classifiable, with secrets scrubbed."""
+
+    class FakeError(Exception):
+        def __init__(self, message, status=None, provider="", model=""):
+            super().__init__(message)
+            if status is not None:
+                self.status_code = status
+            if provider:
+                self.llm_provider = provider
+            if model:
+                self.model = model
+
+    def test_category_table(self):
+        cases = [
+            (self.FakeError("nope", 401), "auth", False),
+            (self.FakeError("nope", 403), "auth", False),
+            (self.FakeError("credit_balance_exhausted", 429), "no_credits", False),
+            (self.FakeError("insufficient balance", 402), "no_credits", False),
+            (self.FakeError("Too Many Requests", 429), "rate_limit", True),
+            (self.FakeError("invalid schema", 400), "bad_request", False),
+            (self.FakeError("Request timed out", 408), "timeout", True),
+            (self.FakeError("connection refused"), "timeout", True),
+            (self.FakeError("Bad Gateway", 502), "provider_error", True),
+            (self.FakeError("mystery"), "unknown", False),
+        ]
+        for exc, category, retryable in cases:
+            self.assertEqual(callbacks.classify_llm_error(exc), (category, retryable), str(exc))
+
+    def test_error_shape_is_openai_compatible_with_skquad_block(self):
+        spec = callbacks.build_failure_error(
+            {"model": "claude-sonnet-4-5"},
+            self.FakeError("RateLimitError: slow down", 429, provider="anthropic", model="claude-sonnet-4-5"),
+        )
+        self.assertEqual(spec["type"], "rate_limit_error")
+        self.assertEqual(spec["code"], "429")
+        self.assertIsNone(spec["param"])
+        self.assertIn("rate-limiting", spec["message"])
+        self.assertEqual(
+            spec["skquad"],
+            {
+                "retryable": True,
+                "category": "rate_limit",
+                "model": "claude-sonnet-4-5",
+                "provider": "anthropic",
+                "request_id": "",
+            },
+        )
+
+    def test_request_id_extracted_when_present(self):
+        spec = callbacks.build_failure_error(
+            {}, self.FakeError("upstream error; request-id: 9f8a7b6c-1234-5678")
+        )
+        self.assertEqual(spec["skquad"]["request_id"], "9f8a7b6c-1234-5678")
+
+    def test_redaction_fake_api_key_never_reaches_message(self):
+        spec = callbacks.build_failure_error(
+            {},
+            self.FakeError(
+                "upstream rejected: api_key=sk-FAKEKEY1234567890 "
+                "Authorization: Bearer ghs_FAKEGITHUBTOKEN "
+                "header AIza_FAKEGOOGLEKEY12345",
+                400,
+            ),
+        )
+        self.assertNotIn("FAKEKEY", spec["message"])
+        self.assertNotIn("FAKEGITHUBTOKEN", spec["message"])
+        self.assertNotIn("FAKEGOOGLEKEY", spec["message"])
+        self.assertIn("[REDACTED]", spec["message"])
+
+    def test_message_truncated(self):
+        spec = callbacks.build_failure_error({}, self.FakeError("y" * 1000, 500))
+        self.assertLessEqual(len(spec["message"]), 400)
+
+    def test_hook_returns_proxy_exception_carrying_skquad_fields(self):
+        captured = {}
+
+        class StubProxyException(Exception):
+            def __init__(self, message, type, param, code, provider_specific_fields=None):
+                super().__init__(message)
+                captured.update(
+                    message=message,
+                    type=type,
+                    param=param,
+                    code=code,
+                    provider_specific_fields=provider_specific_fields,
+                )
+
+        stub_types = type("litellm.proxy._types", (), {"ProxyException": StubProxyException})
+        import sys
+
+        with mock.patch.dict(sys.modules, {"litellm.proxy": object(), "litellm.proxy._types": stub_types}):
+            result = asyncio.run(
+                callbacks.SkquadMeteringCallback().async_post_call_failure_hook(
+                    {"model": "m1"}, self.FakeError("boom", 429), object()
+                )
+            )
+        self.assertIsInstance(result, StubProxyException)
+        self.assertEqual(captured["code"], "429")
+        self.assertEqual(captured["provider_specific_fields"]["skquad"]["category"], "rate_limit")
+
+    def test_hook_fail_safe_returns_none_on_internal_error(self):
+        with mock.patch.object(
+            callbacks, "make_proxy_exception", side_effect=RuntimeError("no litellm here")
+        ):
+            result = asyncio.run(
+                callbacks.SkquadMeteringCallback().async_post_call_failure_hook(
+                    {}, self.FakeError("boom", 500), object()
+                )
+            )
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

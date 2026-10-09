@@ -351,6 +351,179 @@ def _sanitize_surrogates(text: str) -> str:
         return text
     except UnicodeEncodeError:
         return text.encode("utf-8", "surrogatepass").decode("utf-8", "replace")
+
+
+# ---------------------------------------------------------------------------
+# S-265: never fail an LLM call silently — classify + sanitize for chat.
+# Mirrors the gateway's classification (llm-gateway/skquad_litellm_callbacks.py)
+# so both layers speak the same categories; the gateway's structured
+# provider_specific_fields.skquad block wins when present, otherwise the
+# exception itself is classified by status code / message keywords.
+# ---------------------------------------------------------------------------
+
+LLM_ERROR_USER_MESSAGES = {
+    "auth": (
+        "The model provider rejected my credentials (authentication error). "
+        "The provider key needs to be rotated by an admin — retrying won't help."
+    ),
+    "no_credits": (
+        "The model provider account is out of credits/balance. "
+        "No model calls will succeed until the account is topped up."
+    ),
+    "rate_limit": (
+        "The model provider is rate-limiting us (too many requests). "
+        "A retry after a short wait should work."
+    ),
+    "timeout": (
+        "The model provider didn't respond in time (connection timeout). "
+        "This is usually transient — a retry may work."
+    ),
+    "bad_request": (
+        "The model provider rejected this request as invalid (bad request). "
+        "Retrying the same message won't help."
+    ),
+    "provider_error": (
+        "The model provider had a server-side error (5xx). "
+        "A retry after a short wait should work."
+    ),
+    "unknown": (
+        "The model call failed for an unexpected reason. Please retry; "
+        "if it keeps happening, check the gateway logs."
+    ),
+}
+
+LLM_ERROR_CATEGORIES = frozenset(LLM_ERROR_USER_MESSAGES)
+
+_LLM_CREDITS_RE = re.compile(
+    r"credit|billing|payment|balance|insufficient[_ ]funds|out of funds|quota exceeded",
+    re.IGNORECASE,
+)
+_LLM_TIMEOUT_RE = re.compile(
+    r"timed? out|timeout|connection (?:error|reset|refused|closed|aborted)", re.IGNORECASE
+)
+_LLM_SECRET_PATTERNS = (
+    # Bearer values are scrubbed FIRST: the key:value pattern would otherwise
+    # consume only the word "Bearer" and strand the token behind it.
+    re.compile(r"Bearer\s+[^\s,;'\"]+", re.IGNORECASE),
+    re.compile(r"(?i)(api[_-]?key|authorization|access[_-]?token|secret|password)\"?\s*[:=]\s*\"?[^\s,;'\"]+"),
+    re.compile(r"sk-[A-Za-z0-9_\-]{6,}"),
+    re.compile(r"AIza[0-9A-Za-z_\-]{8,}"),
+    re.compile(r"gsk_[A-Za-z0-9]{8,}"),
+)
+
+
+def redact_llm_error_text(text: str) -> str:
+    """Scrub credential-shaped substrings before anything reaches a chat."""
+    redacted = text
+    redacted = _LLM_SECRET_PATTERNS[0].sub("[REDACTED]", redacted)
+    redacted = _LLM_SECRET_PATTERNS[1].sub(lambda m: m.group(1) + "=[REDACTED]", redacted)
+    for pattern in _LLM_SECRET_PATTERNS[2:]:
+        redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted
+
+
+def _extract_skquad_error(exc: BaseException) -> Mapping[str, Any] | None:
+    """Pull the gateway's structured skquad error block out of an exception.
+
+    The gateway (S-265) embeds {"error": {"provider_specific_fields":
+    {"skquad": {category, retryable, ...}}}} in its OpenAI-compatible
+    error JSON; litellm surfaces that body in the raised exception's
+    string/message/body. Best-effort: any parse miss returns None and we
+    fall back to local classification.
+    """
+    candidates: list[Any] = [str(exc)]
+    for attr in ("message", "body", "error", "status_message"):
+        value = getattr(exc, attr, None)
+        if value is not None:
+            candidates.append(value)
+    for candidate in candidates:
+        obj = candidate if isinstance(candidate, Mapping) else None
+        if obj is None and isinstance(candidate, str):
+            try:
+                obj = json.loads(candidate)
+            except (ValueError, TypeError):
+                continue
+        if not isinstance(obj, Mapping):
+            continue
+        err = obj.get("error")
+        if not isinstance(err, Mapping):
+            continue
+        fields = err.get("provider_specific_fields")
+        if isinstance(fields, Mapping) and isinstance(fields.get("skquad"), Mapping):
+            return cast(Mapping[str, Any], fields["skquad"])
+        if isinstance(err.get("skquad"), Mapping):
+            return cast(Mapping[str, Any], err["skquad"])
+    return None
+
+
+def classify_llm_failure(exc: BaseException) -> tuple[str, bool]:
+    """(category, retryable) for a failed LLM call.
+
+    Gateway-provided classification wins; otherwise status-code driven
+    with keyword fallbacks (mirrors the gateway's classify_llm_error).
+    ``no_credits`` is checked before ``rate_limit`` because providers
+    report exhausted billing as 429 too.
+    """
+    structured = _extract_skquad_error(exc)
+    if structured is not None:
+        category = str(structured.get("category") or "")
+        if category in LLM_ERROR_CATEGORIES:
+            retryable = structured.get("retryable")
+            return category, bool(retryable) if retryable is not None else False
+    status = getattr(exc, "status_code", None)
+    try:
+        status = int(status)
+    except (TypeError, ValueError):
+        status = None
+    message = str(exc)
+    if status in (401, 403):
+        return "auth", False
+    if status == 402 or (status == 429 and _LLM_CREDITS_RE.search(message)):
+        return "no_credits", False
+    if status == 429:
+        return "rate_limit", True
+    if status == 400:
+        return "bad_request", False
+    if status == 408 or _LLM_TIMEOUT_RE.search(message):
+        return "timeout", True
+    if status is not None and status >= 500:
+        return "provider_error", True
+    if _LLM_CREDITS_RE.search(message):
+        return "no_credits", False
+    return "unknown", False
+
+
+def llm_failure_detail(exc: BaseException, limit: int = 200) -> str:
+    """Redacted, single-line, truncated technical detail for chat display."""
+    detail = redact_llm_error_text(_sanitize_surrogates(str(exc))).strip().replace("\n", " ")
+    if len(detail) > limit:
+        detail = detail[: limit - 3] + "..."
+    return detail
+
+
+def llm_failure_message(exc: BaseException, *, interim_delivered: int = 0) -> str:
+    """Human chat closure text for a failed LLM call (S-265).
+
+    What failed (category), whether retrying helps, and where the agent
+    stopped — never a raw stack trace, never secrets.
+    """
+    category, retryable = classify_llm_failure(exc)
+    friendly = LLM_ERROR_USER_MESSAGES[category]
+    progress = (
+        "My progress notes above show where I stopped."
+        if interim_delivered > 0
+        else "I hadn't produced any progress on this yet."
+    )
+    # The transient categories' friendly text already invites a retry;
+    # only the non-retryable classes need the explicit "don't bother
+    # retrying" signal.
+    retry_hint = "" if retryable else " Automatic retries won't help for this failure class."
+    detail = llm_failure_detail(exc)
+    parts = ["\u26a0\ufe0f I couldn't finish this turn.", friendly, retry_hint, progress]
+    if detail:
+        parts.append(f"(details: {detail})")
+    return " ".join(part for part in parts if part)
+
 CHAT_TOOL_RESULT_MAX_CHARS = 500
 
 
@@ -1961,7 +2134,12 @@ class LLMMessageHandler:
             except Exception as exc:
                 self._close_failed_turn(message, config, exc, interim_delivered)
                 return (
-                    MessageResult(ok=False, summary=f"LLM call failed: {exc}"),
+                    MessageResult(
+                        ok=False,
+                        # S-265: redacted detail — the raw exception can
+                        # carry request fragments; never surface it raw.
+                        summary=f"LLM call failed: {llm_failure_detail(exc)}",
+                    ),
                     response,
                     tool_calls_log,
                     interim_delivered,
@@ -2021,34 +2199,34 @@ class LLMMessageHandler:
         exc: Exception,
         interim_delivered: int,
     ) -> None:
-        """S-195d (pi-inspired): a turn that already delivered progress must
-        terminate with visible closure, never a dangling progress note.
+        """S-195d + S-265: a failed turn must terminate visibly.
 
-        Pi treats error/aborted stop reasons as an explicit terminal path
-        (packages/agent/src/agent-loop.ts: finishTurn + turn_end +
-        agent_end on error — the loop never dies silently). skquad's
-        control plane retries failed messages, so the closure posts only
-        on the FINAL attempt (attempts+1 >= max_attempts, matching the
-        control plane's own dead-transition gate in postgres.go) to avoid
-        one notice per retry. Live incident 2026-10-01: provider credits
-        exhausted mid-turn; the user was left with only the interim
-        progress note and no explanation.
+        S-195d (pi-inspired) posted a closure only when progress had
+        already been delivered, so a first-step LLM failure (no interim
+        reply yet) still left the chat dead-silent — the S-265 hole.
+        S-265 removes the ``interim_delivered <= 0`` early return: every
+        failed turn posts a classified, human-readable closure, with the
+        progress wording adapted to whether anything was delivered.
+
+        The retry-suppression rule from S-195d is unchanged: the control
+        plane retries failed messages, so the closure posts only on the
+        FINAL attempt (attempts+1 >= max_attempts, matching the control
+        plane's own dead-transition gate in postgres.go) to avoid one
+        notice per retry.
         """
-        if interim_delivered <= 0:
-            return
         if message.max_attempts and message.attempts + 1 < message.max_attempts:
             return
-        short = _sanitize_surrogates(str(exc)).strip()
-        if len(short) > 200:
-            short = short[:197] + "..."
+        category, retryable = classify_llm_failure(exc)
         try:
             self._control_plane(config).send_chat_reply(
-                "\u26a0\ufe0f I couldn't finish this turn — the model provider "
-                f"returned an error ({short}). My progress notes above show "
-                "where I stopped. Please retry once the provider recovers.",
+                llm_failure_message(exc, interim_delivered=interim_delivered),
                 correlation_id=message.correlation_id or message.id,
                 to_agent_id="",
-                extra={"turn_error": True},
+                extra={
+                    "turn_error": True,
+                    "error_category": category,
+                    "retryable": retryable,
+                },
             )
         except Exception:  # noqa: BLE001 — closure is best-effort
             LOGGER.warning(
@@ -2479,9 +2657,30 @@ class LiteLLMTaskHandler:
         for _ in range(max_steps):
             messages, compaction = compactor.maybe_compact(messages)
             self._log_task_compaction(compaction, config, task)
-            response = completion(
-                **self._completion_kwargs(model, messages, config, virtual_key, task.id, tools)
-            )
+            try:
+                response = completion(
+                    **self._completion_kwargs(model, messages, config, virtual_key, task.id, tools)
+                )
+            except Exception as exc:
+                # S-265: an LLM call failure on the TASK path must end with a
+                # visible, classified reason — not a raw exception escaping to
+                # _fail_wake. This is a distinct failure class from S-263's
+                # tool errors: the model/provider itself is unreachable or
+                # rejected, so there is nothing to feed back and no retry
+                # loop for the agent to run — block with the human-readable
+                # classification (visible in the task thread) and stop.
+                category, retryable = classify_llm_failure(exc)
+                friendly = LLM_ERROR_USER_MESSAGES[category]
+                return TaskResult(
+                    status="blocked",
+                    summary=trim_text(
+                        f"LLM call failed ({category}): {friendly} "
+                        f"Retryable by the platform: {'yes' if retryable else 'no'}. "
+                        f"(details: {llm_failure_detail(exc)})",
+                        config.task_summary_max_chars,
+                    ),
+                    model_used=last_model_used,
+                )
             last_model_used = served_model(response, model)
             self._log_step_fallback(model, last_model_used, config, task)
             message = first_message(response)
