@@ -1,7 +1,7 @@
 # TG-3: builds from the REPOSITORY ROOT context because go.mod `replace`s
 # the shared module at ../shared. Build with:
 #   docker build -f control-plane/Dockerfile .
-ARG GO_VERSION=1.26.8
+ARG GO_VERSION=1.26.9
 
 FROM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
