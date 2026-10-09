@@ -16,7 +16,7 @@
 
 CREATE TABLE artifact_applies (
     id              TEXT PRIMARY KEY,
-    resource_id     TEXT NOT NULL REFERENCES registry_resources(id) ON DELETE CASCADE,
+    resource_id     UUID NOT NULL REFERENCES registry_resources(id) ON DELETE CASCADE,
     agent_id        TEXT NOT NULL,
     playbook        TEXT NOT NULL,
     git_rev         TEXT NOT NULL CHECK (char_length(git_rev) = 40 AND git_rev ~ '^[0-9a-f]+$'),
@@ -46,7 +46,7 @@ CREATE INDEX artifact_applies_agent_time_idx
 
 CREATE TABLE drift_reports (
     id              TEXT PRIMARY KEY,
-    resource_id     TEXT NOT NULL REFERENCES registry_resources(id) ON DELETE CASCADE,
+    resource_id     UUID NOT NULL REFERENCES registry_resources(id) ON DELETE CASCADE,
     host_group      TEXT NOT NULL,
     playbook        TEXT NOT NULL,
     git_rev         TEXT NOT NULL,
