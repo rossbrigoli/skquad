@@ -4930,7 +4930,7 @@ func (s *Server) agentRuntimeResource(ctx context.Context, perm *domain.AgentPer
 	// TG-10: ssh grants publish the ssh_exec + ssh_session_* tool
 	// schemas (effective ceiling ∧ grant), mirroring the rest surface.
 	if resource.Type == domain.ResSSH {
-		rt.Tools = sshToolSchema(resource.Name, resource.ID, resource.PolicyCeiling, perm.Constraints)
+		rt.Tools = sshToolSchema(resource.Name, resource.ID, resource.PolicyCeiling, perm.Constraints, resource.EndpointConfig)
 	}
 	return rt, true, nil
 }

@@ -20,6 +20,9 @@ package httpapi
 
 import (
 	"encoding/json"
+	"regexp"
+	"sort"
+	"strings"
 )
 
 const (
@@ -36,7 +39,7 @@ const (
 // sshToolSchema builds the `tools` JSON array surfaced on an ssh resource
 // entry in agentRuntimeResource. Parse failures degrade to omitting the
 // tools rather than breaking discovery — the gateway still fails closed.
-func sshToolSchema(resourceName, resourceID string, ceilingRaw, constraintsRaw json.RawMessage) json.RawMessage {
+func sshToolSchema(resourceName, resourceID string, ceilingRaw, constraintsRaw, endpointConfigRaw json.RawMessage) json.RawMessage {
 	ceiling := parseSSHPolicyLayer(ceilingRaw)
 	constraints := parseSSHPolicyLayer(constraintsRaw)
 
@@ -75,7 +78,7 @@ func sshToolSchema(resourceName, resourceID string, ceilingRaw, constraintsRaw j
 		"Every command is audited BEFORE execution. Commands matching denied patterns pause for owner confirmation (Inbox). " +
 		"No scp, no port-forwarding, no raw tunnels."
 
-	tools := []map[string]any{
+	out := []map[string]any{
 		{
 			"name":        sshExecToolName,
 			"description": "Run one command on an allowlisted host through the skquad tool gateway. " + gatewayNote,
@@ -164,11 +167,158 @@ func sshToolSchema(resourceName, resourceID string, ceilingRaw, constraintsRaw j
 		},
 	}
 
-	out, err := json.Marshal(tools)
+	// TG-11 §6.7: ssh_apply / ssh_apply_status surface ONLY when the
+	// resource carries artifact config AND the grant carries the apply
+	// capability (constraints.apply_enabled=true). Under-matching is a
+	// bypass: artifact present but capability absent ⇒ tools ABSENT,
+	// not present-and-refused.
+	if hasArtifactConfig(endpointConfigRaw) && grantHasApplyCapability(constraintsRaw) {
+		out = append(out, sshApplyToolSchemas(resourceID, ceiling, constraints, hostsAllow)...)
+	}
+
+	tools := out
+	out2, err := json.Marshal(tools)
 	if err != nil {
 		return nil
 	}
-	return out
+	return out2
+}
+
+// hasArtifactConfig reports whether endpoint_config carries a usable
+// artifact section (object with non-empty git_url).
+func hasArtifactConfig(endpointConfigRaw json.RawMessage) bool {
+	if len(endpointConfigRaw) == 0 || string(endpointConfigRaw) == "null" {
+		return false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(endpointConfigRaw, &obj); err != nil {
+		return false
+	}
+	raw, ok := obj["artifact"]
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	var art struct {
+		GitURL string `json:"git_url"`
+	}
+	if err := json.Unmarshal(raw, &art); err != nil {
+		return false
+	}
+	return strings.TrimSpace(art.GitURL) != ""
+}
+
+// grantHasApplyCapability reads constraints.apply_enabled (bool).
+// Anything other than literal true = no capability.
+func grantHasApplyCapability(constraintsRaw json.RawMessage) bool {
+	if len(constraintsRaw) == 0 || string(constraintsRaw) == "null" {
+		return false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(constraintsRaw, &obj); err != nil {
+		return false
+	}
+	raw, ok := obj["apply_enabled"]
+	if !ok {
+		return false
+	}
+	var en bool
+	if err := json.Unmarshal(raw, &en); err != nil {
+		return false
+	}
+	return en
+}
+
+// sshApplyToolSchemas builds the ssh_apply + ssh_apply_status tool
+// entries with the effective (ceiling ∧ grant) apply constraints so
+// agents see exactly what the gateway will enforce.
+func sshApplyToolSchemas(resourceID string, ceiling, constraints sshPolicyLayer, hostsAllow []string) []map[string]any {
+	// host_groups: from the ceiling; narrowed by constraints.host_groups_allow when set.
+	groups := map[string]any{}
+	if len(ceiling.hostGroups) > 0 {
+		var gh map[string]json.RawMessage
+		if json.Unmarshal(ceiling.hostGroups, &gh) == nil {
+			for name, raw := range gh {
+				if constraints.hostGroupsAllow != nil && !globMatchAnyString(*constraints.hostGroupsAllow, name) {
+					continue
+				}
+				var g struct {
+					Hosts []string `json:"hosts"`
+					Tier  string   `json:"tier"`
+				}
+				if json.Unmarshal(raw, &g) == nil {
+					groups[name] = map[string]any{"hosts": g.Hosts, "tier": g.Tier}
+				}
+			}
+		}
+	}
+
+	checkOnlyOnly := false
+	if constraints.checkOnly != nil {
+		checkOnlyOnly = *constraints.checkOnly
+	}
+
+	applyNote := "Apply a MERGED, fully-pinned playbook revision (full 40-char git SHA) through the governed artifact lane. " +
+		"The repo comes only from the resource's registered artifact config — the call cannot redirect it. " +
+		"Every apply requires confirmation (identity: host_group + playbook; high tier needs owner + admin co-sign) and is fully recorded. " +
+		"Mutation happens via approved change artifacts, never keystrokes."
+
+	apply := map[string]any{
+		"name":        "ssh_apply",
+		"description": applyNote,
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"resource_id": map[string]any{"type": "string", "const": resourceID},
+				"playbook": map[string]any{
+					"type":        "string",
+					"description": "Playbook path within the registered playbooks_path (relative, traversal-free).",
+				},
+				"git_rev": map[string]any{
+					"type":        "string",
+					"pattern":     "^[0-9a-f]{40}$",
+					"description": "Full 40-char lowercase git SHA of the MERGED revision. Branch names and short SHAs are rejected.",
+				},
+				"host_group": map[string]any{
+					"type":        "string",
+					"description": "Target host group from the resource ceiling's admin-managed inventory.",
+					"enum":        sortedGroupKeys(groups),
+				},
+				"check_only": map[string]any{
+					"type":        "boolean",
+					"description": "Dry-run (ansible --check). Dry-run-only grants refuse check_only=false.",
+				},
+				"timeout_seconds": map[string]any{
+					"type":        "integer",
+					"description": "Gateway wait window before handoff to ssh_apply_status (default 120, max 900).",
+				},
+			},
+			"required":             []string{"resource_id", "playbook", "git_rev", "host_group"},
+			"additionalProperties": false,
+		},
+		"constraints": map[string]any{
+			"host_groups":       groups,
+			"host_groups_allow": effectiveStringList(derefStrings(constraints.hostGroupsAllow)),
+			"playbooks_allow":   effectiveStringList(constraints.playbooksAllow),
+			"hosts_allow":       hostsAllow,
+			"check_only_only":   checkOnlyOnly,
+			"max_wait_seconds":  900,
+		},
+	}
+
+	status := map[string]any{
+		"name":        "ssh_apply_status",
+		"description": "Poll a started apply for its result: {apply_id, status, exit_code?, per_host?, refusal_reason?, recording_id?}.",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"resource_id": map[string]any{"type": "string", "const": resourceID},
+				"apply_id":    map[string]any{"type": "string", "description": "Apply id returned by ssh_apply."},
+			},
+			"required":             []string{"resource_id", "apply_id"},
+			"additionalProperties": false,
+		},
+	}
+	return []map[string]any{apply, status}
 }
 
 // sshPolicyLayer is a minimal parse of one ssh policy layer (ceiling or
@@ -181,6 +331,14 @@ type sshPolicyLayer struct {
 	certTTLMinutes        int
 	maxConcurrentSessions int
 	execTimeoutSeconds    int
+	// TG-11 apply-relevant fields (ceiling: host_groups, require_tip;
+	// constraints: apply_enabled, playbooks_allow, host_groups_allow, check_only).
+	hostGroups      json.RawMessage
+	requireTip      json.RawMessage
+	playbooksAllow  []string
+	hostGroupsAllow *[]string
+	checkOnly       *bool
+	applyEnabled    bool
 }
 
 func parseSSHPolicyLayer(raw json.RawMessage) sshPolicyLayer {
@@ -199,7 +357,86 @@ func parseSSHPolicyLayer(raw json.RawMessage) sshPolicyLayer {
 	layer.certTTLMinutes = intField(obj, "cert_ttl_minutes")
 	layer.maxConcurrentSessions = intField(obj, "max_concurrent_sessions")
 	layer.execTimeoutSeconds = intField(obj, "exec_timeout_seconds")
+	if v, ok := obj["host_groups"]; ok {
+		layer.hostGroups = v
+	}
+	if v, ok := obj["require_tip"]; ok {
+		layer.requireTip = v
+	}
+	if v := stringListPointer(obj, "playbooks_allow"); v != nil {
+		layer.playbooksAllow = *v
+	}
+	layer.hostGroupsAllow = stringListPointer(obj, "host_groups_allow")
+	if raw, ok := obj["check_only"]; ok {
+		var b bool
+		if json.Unmarshal(raw, &b) == nil {
+			layer.checkOnly = &b
+		}
+	}
+	if raw, ok := obj["apply_enabled"]; ok {
+		var b bool
+		if json.Unmarshal(raw, &b) == nil {
+			layer.applyEnabled = b
+		}
+	}
 	return layer
+}
+
+// effectiveStringList renders a possibly-nil list as [] for JSON.
+func effectiveStringList(l []string) []string {
+	if l == nil {
+		return []string{}
+	}
+	return l
+}
+
+// globMatchAnyString mirrors the gateway's anchored case-insensitive glob
+// semantics (drivers/ssh/policy.go) for discovery-side narrowing.
+func globMatchAnyString(patterns []string, s string) bool {
+	for _, p := range patterns {
+		if globMatchString(strings.TrimSpace(p), strings.ToLower(s)) {
+			return true
+		}
+	}
+	return false
+}
+
+func globMatchString(pattern, s string) bool {
+	var sb strings.Builder
+	sb.WriteString("^")
+	for _, r := range pattern {
+		switch r {
+		case '*':
+			sb.WriteString(".*")
+		case '?':
+			sb.WriteString(".")
+		default:
+			sb.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	sb.WriteString("$")
+	re, err := regexp.Compile(sb.String())
+	if err != nil {
+		return false
+	}
+	return re.MatchString(s)
+}
+
+func sortedGroupKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// derefStrings unwraps a *[]string to []string (nil-safe).
+func derefStrings(p *[]string) []string {
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // intersectStringLists returns nil when either side is unset (no
