@@ -581,6 +581,13 @@ class BootstrapConfig:
     # tool (SKQUAD_TOOL_GATEWAY_URL, operator-injected). Empty is legal:
     # the synthetic tool registration then stays fail-closed (absent).
     tool_gateway_url: str = ""
+    # S-263: cap on consecutive tool rounds in which EVERY tool call
+    # failed (SKQUAD_MAX_CONSECUTIVE_TOOL_ERRORS, default 3). A model
+    # hammering a broken tool no longer burns the whole step budget
+    # silently: when the cap is hit the task ends "blocked" with the
+    # collected errors as evidence. env_int clamps garbage/0/negative
+    # values back to the default.
+    max_consecutive_tool_errors: int = 3
 
     @property
     def missing_required(self) -> list[str]:
@@ -804,6 +811,27 @@ class ToolResult:
     details: Mapping[str, object] | None = None
 
 
+@dataclass(frozen=True)
+class ToolRoundOutcome:
+    """S-263: outcome of one tool round, reported back to the step loop.
+
+    Replaces the old hard-stop-on-first-error: the round never aborts on a
+    failure, so the loop needs the per-round tally to detect a stuck agent
+    (every call failing, no progress) without overriding the agent's own
+    authority to decide the task outcome.
+    """
+
+    total: int
+    ok_count: int
+    # (tool name, error text) for every failed call in this round — the
+    # evidence quoted in the blocked summary when the cap fires.
+    errors: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def all_failed(self) -> bool:
+        return self.total > 0 and self.ok_count == 0
+
+
 class TaskHandler(Protocol):
     def handle_task(self, task: RuntimeTask, config: BootstrapConfig) -> TaskResult:
         ...
@@ -865,6 +893,7 @@ def load_bootstrap_config(environ: Mapping[str, str] | None = None) -> Bootstrap
         task_timeout_seconds=env_float(env, "SKQUAD_TASK_TIMEOUT_SECONDS", 900.0),
         heartbeat_interval_seconds=env_float(env, "SKQUAD_HEARTBEAT_INTERVAL_SECONDS", 40.0),
         max_llm_steps=env_int(env, "SKQUAD_MAX_LLM_STEPS", 8),
+        max_consecutive_tool_errors=env_int(env, "SKQUAD_MAX_CONSECUTIVE_TOOL_ERRORS", 3),
         task_summary_max_chars=env_int(env, "SKQUAD_TASK_SUMMARY_MAX_CHARS", 4000),
         plugin_modules=parse_csv(env.get("SKQUAD_PLUGIN_MODULES", "")),
         enabled_plugins=parse_csv(env.get("SKQUAD_ENABLED_PLUGINS", "")),
@@ -2376,10 +2405,14 @@ class LiteLLMTaskHandler:
         config: BootstrapConfig,
         plugins: object,
         messages: list[dict[str, object]],
-    ) -> "TaskResult | None":
+    ) -> ToolRoundOutcome:
         """S-183: working narration goes to the task thread BEFORE the
         tool round runs, so a long/slow tool no longer leaves the
         thread silent while the agent is mid-work.
+
+        S-263: returns the round outcome (see ``ToolRoundOutcome``) so
+        the step loop can enforce the consecutive-error cap; a failed
+        tool call no longer produces a blocked TaskResult here.
         """
         if content.strip() and self.thread_sink is not None:
             self.thread_sink(trim_text(content, TASK_THREAD_TURN_MAX_CHARS))
@@ -2433,6 +2466,10 @@ class LiteLLMTaskHandler:
         )
         last_content = ""
         last_model_used = model
+        # S-263: consecutive all-failed tool rounds (reset by any
+        # successful tool call). See the cap check after the round.
+        consecutive_error_rounds = 0
+        max_error_rounds = max(1, config.max_consecutive_tool_errors)
 
         max_steps = max(1, self.max_steps or config.max_llm_steps)
         # S-161: tiered context compaction before each LLM call.
@@ -2463,9 +2500,35 @@ class LiteLLMTaskHandler:
                     summary=trim_text(final_content, config.task_summary_max_chars),
                     model_used=last_model_used,
                 )
-            blocked = self._run_task_tool_round(content, tool_calls, config, plugins, messages)
-            if blocked is not None:
-                return blocked
+            round_outcome = self._run_task_tool_round(content, tool_calls, config, plugins, messages)
+            # S-263: a failed tool call no longer aborts the run — the
+            # error is fed back to the model (see _run_tool_calls) and the
+            # AGENT decides the outcome per the platform prompt. But a
+            # model that keeps hammering a broken tool must not burn the
+            # whole step budget silently: after N consecutive rounds in
+            # which EVERY tool call failed, stop with "blocked" and the
+            # collected errors as evidence. Any successful tool call in
+            # any round resets the counter (progress was made).
+            if round_outcome.all_failed:
+                consecutive_error_rounds += 1
+                if consecutive_error_rounds >= max_error_rounds:
+                    tool_names = ", ".join(sorted({name for name, _ in round_outcome.errors}))
+                    last_errors = "\n".join(
+                        f"- {name}: {err}" for name, err in round_outcome.errors
+                    )
+                    return TaskResult(
+                        status="blocked",
+                        summary=trim_text(
+                            f"Blocked after {consecutive_error_rounds} consecutive tool "
+                            "rounds with no successful tool call — the agent exhausted "
+                            f"its retries without recovering.\nTools: {tool_names}\n"
+                            f"Last errors:\n{last_errors}",
+                            config.task_summary_max_chars,
+                        ),
+                        model_used=last_model_used,
+                    )
+            else:
+                consecutive_error_rounds = 0
 
         return TaskResult(
             status="in-review",
@@ -2522,22 +2585,55 @@ class LiteLLMTaskHandler:
         config: BootstrapConfig,
         plugins: list[RuntimePlugin],
         messages: list[dict[str, object]],
-    ) -> TaskResult | None:
-        """Execute one round of tool calls; return a blocked TaskResult or None."""
+    ) -> ToolRoundOutcome:
+        """S-263: execute one round of tool calls and feed EVERY result —
+        success or failure — back to the model as the tool message for
+        that call. The runtime no longer aborts on the first failed call:
+        the agent decides the task outcome (platform prompt: "WHEN A TOOL
+        CALL FAILS" / "DECLARING THE TASK OUTCOME").
+
+        Sibling calls keep executing after a failure on purpose: the
+        assistant message emitted N tool_calls and the transcript must
+        give every emitted tool_call_id exactly one tool response before
+        the next assistant turn. Breaking mid-round would leave the
+        remaining calls unanswered and corrupt the transcript (providers
+        reject it), so we answer all of them — errors clearly marked —
+        and let the model see the full picture next step.
+        """
+        ok_count = 0
+        errors: list[tuple[str, str]] = []
         for call in tool_calls:
             result = self.invoke_tool(call, config, plugins)
-            if not result.ok:
-                return TaskResult(status="blocked", summary=result.content)
+            if result.ok:
+                ok_count += 1
+                content = wrap_untrusted(result.content, "tool_result", tool=call.name)
+            else:
+                errors.append((call.name, result.content))
+                # S-PROMPT WP3: errors are untrusted data too. Mark the
+                # failure explicitly inside the wrapper so the model
+                # cannot mistake it for a successful tool result.
+                content = wrap_untrusted(
+                    f"ERROR (tool {call.name!r} failed): {result.content}\n"
+                    "This tool call FAILED. The text above is an error, not a "
+                    "result — do not treat it as success. Classify it per the "
+                    "platform prompt: retry transient failures "
+                    "(timeout/network/429/5xx) once, change approach on "
+                    "permanent errors (400/403/404), prefer partial results. "
+                    "If you cannot recover, end the task with "
+                    "'skquad_status: blocked' and a precise ask.",
+                    "tool_error",
+                    tool=call.name,
+                )
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": call.id,
                     "name": call.name,
                     # S-PROMPT WP3: tool output is untrusted data.
-                    "content": wrap_untrusted(result.content, "tool_result", tool=call.name),
+                    "content": content,
                 }
             )
-        return None
+        return ToolRoundOutcome(total=len(tool_calls), ok_count=ok_count, errors=tuple(errors))
 
     def completion(self) -> Callable[..., object]:
         if self._completion is not None:

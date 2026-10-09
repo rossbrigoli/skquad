@@ -1215,30 +1215,175 @@ class Plugin:
             self.assertEqual(result.status, "blocked")
             self.assertIn("disabled_tool", result.summary)
 
-    def test_litellm_handler_blocks_plugin_failure(self):
+    def test_s263_tool_error_flows_back_to_model_and_agent_finishes_done(self):
+        # S-263: a failing tool call no longer hard-stops the run. The
+        # error is fed back to the model as an explicitly-marked error
+        # tool message, the run continues, and the agent's final
+        # 'skquad_status: done' decides the outcome.
         with tempfile.TemporaryDirectory() as tmp:
-            virtual_key = Path(tmp) / "llm-gateway"
-            virtual_key.write_text("virtual-key", encoding="utf-8")
-            config = load_bootstrap_config(
-                {
-                    "SKQUAD_AGENT_ID": "agent-1",
-                    "SKQUAD_SQUAD_ID": "squad-1",
-                    "SKQUAD_AGENT_CREDENTIAL_PATH": str(Path(tmp) / "agent"),
-                    "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH": str(virtual_key),
-                    "SKQUAD_LLM_GATEWAY_URL": "http://gateway",
-                    "SKQUAD_DEFAULT_MODEL": "model-1",
-                }
-            )
-            handler = LiteLLMTaskHandler(
-                plugins=[FailingPlugin()],
-                completion=lambda **_kwargs: fake_tool_completion("call-1", "fail", {}),
-                discover_resources=False,
-            )
+            config = s263_config(tmp)
+            calls = []
 
+            def completion(**kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    return fake_tool_completion("call-1", "fail", {})
+                return fake_completion("Recovered and verified.\nskquad_status: done")
+
+            handler = LiteLLMTaskHandler(
+                plugins=[FailingPlugin()], completion=completion, discover_resources=False
+            )
+            result = handler.handle_task(fake_task("task-1"), config)
+
+            self.assertEqual(result.status, "done")
+            self.assertEqual(len(calls), 2)
+            tool_messages = [m for m in calls[1]["messages"] if m["role"] == "tool"]
+            self.assertEqual(len(tool_messages), 1)
+            content = tool_messages[0]["content"]
+            self.assertIn('source="tool_error"', content)
+            self.assertIn("ERROR (tool 'fail' failed):", content)
+            self.assertIn("plugin failed", content)
+
+    def test_s263_recovers_from_transient_tool_error(self):
+        # S-263: fail once then succeed — the agent recovers and the
+        # task completes normally; nothing is blocked.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = s263_config(tmp)
+            plugin = FlakyPlugin()
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                if len(calls) <= 2:
+                    return fake_tool_completion(f"call-{len(calls)}", "flaky", {"message": "hi"})
+                return fake_completion("Verified complete.\nskquad_status: done")
+
+            handler = LiteLLMTaskHandler(
+                plugins=[plugin], completion=completion, discover_resources=False
+            )
+            result = handler.handle_task(fake_task("task-1"), config)
+
+            self.assertEqual(result.status, "done")
+            tool_messages = [m for m in calls[2]["messages"] if m["role"] == "tool"]
+            contents = [m["content"] for m in tool_messages]
+            self.assertTrue(any('source="tool_error"' in c for c in contents))
+            self.assertTrue(any('source="tool_result"' in c for c in contents))
+
+    def test_s263_sibling_tool_calls_still_execute_after_failure(self):
+        # S-263: every emitted tool_call_id must receive exactly one
+        # tool response, so a failure does not skip sibling calls in the
+        # same round — and a round with any success is progress (no cap).
+        with tempfile.TemporaryDirectory() as tmp:
+            config = s263_config(tmp)
+            echo = EchoPlugin()
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    return fake_multi_tool_completion(
+                        [
+                            ("call-1", "fail", {}),
+                            ("call-2", "echo", {"message": "sibling"}),
+                        ]
+                    )
+                return fake_completion("Both answered.\nskquad_status: done")
+
+            handler = LiteLLMTaskHandler(
+                plugins=[FailingPlugin(), echo], completion=completion, discover_resources=False
+            )
+            result = handler.handle_task(fake_task("task-1"), config)
+
+            self.assertEqual(result.status, "done")
+            tool_messages = [m for m in calls[1]["messages"] if m["role"] == "tool"]
+            self.assertEqual([m["tool_call_id"] for m in tool_messages], ["call-1", "call-2"])
+            self.assertIn('source="tool_error"', tool_messages[0]["content"])
+            self.assertIn('source="tool_result"', tool_messages[1]["content"])
+            self.assertEqual(echo.calls, [{"message": "sibling"}])
+
+    def test_s263_consecutive_error_cap_blocks(self):
+        # S-263: every tool call failing for 3 consecutive rounds (the
+        # default cap) stops the task "blocked" with the evidence, well
+        # before the 8-step budget burns.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = s263_config(tmp)
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                return fake_tool_completion(f"call-{len(calls)}", "fail", {})
+
+            handler = LiteLLMTaskHandler(
+                plugins=[FailingPlugin()], completion=completion, discover_resources=False
+            )
             result = handler.handle_task(fake_task("task-1"), config)
 
             self.assertEqual(result.status, "blocked")
-            self.assertIn("failed", result.summary)
+            self.assertIn("consecutive", result.summary)
+            self.assertIn("fail", result.summary)
+            self.assertIn("plugin failed", result.summary)
+            self.assertEqual(len(calls), 3)
+
+    def test_s263_consecutive_error_cap_honours_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = s263_config(tmp, SKQUAD_MAX_CONSECUTIVE_TOOL_ERRORS="1")
+            self.assertEqual(config.max_consecutive_tool_errors, 1)
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                return fake_tool_completion(f"call-{len(calls)}", "fail", {})
+
+            handler = LiteLLMTaskHandler(
+                plugins=[FailingPlugin()], completion=completion, discover_resources=False
+            )
+            result = handler.handle_task(fake_task("task-1"), config)
+
+            self.assertEqual(result.status, "blocked")
+            self.assertEqual(len(calls), 1)
+
+    def test_s263_consecutive_error_counter_resets_on_success(self):
+        # S-263: any successful tool call resets the counter — only
+        # THREE consecutive all-failed rounds block, not three failures
+        # spread across a progressing run.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = s263_config(tmp)
+            plugin = ScriptedPlugin(["fail", "ok", "fail", "fail", "ok"])
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs)
+                if len(calls) <= 5:
+                    return fake_tool_completion(f"call-{len(calls)}", "scripted", {})
+                return fake_completion("Finally verified.\nskquad_status: done")
+
+            handler = LiteLLMTaskHandler(
+                plugins=[plugin], completion=completion, discover_resources=False
+            )
+            result = handler.handle_task(fake_task("task-1"), config)
+
+            self.assertEqual(result.status, "done")
+            self.assertEqual(plugin.calls, 5)
+
+    def test_s263_consecutive_error_config_clamping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for garbage in ("abc", "0", "-2"):
+                config = s263_config(tmp, SKQUAD_MAX_CONSECUTIVE_TOOL_ERRORS=garbage)
+                self.assertEqual(config.max_consecutive_tool_errors, 3, garbage)
+            config = s263_config(tmp, SKQUAD_MAX_CONSECUTIVE_TOOL_ERRORS="5")
+            self.assertEqual(config.max_consecutive_tool_errors, 5)
+
+    def test_s263_no_marker_lands_in_review(self):
+        # S-263: an undeclared outcome is "in-review" for a human —
+        # never a silent "done".
+        with tempfile.TemporaryDirectory() as tmp:
+            config = s263_config(tmp)
+            handler = LiteLLMTaskHandler(
+                completion=lambda **_kwargs: fake_completion("All finished, I think."),
+                discover_resources=False,
+            )
+            result = handler.handle_task(fake_task("task-1"), config)
+            self.assertEqual(result.status, "in-review")
 
 
 class FakeResponse:
@@ -1498,6 +1643,62 @@ class FailingPlugin:
         raise RuntimeError("plugin failed")
 
 
+class FlakyPlugin:
+    """S-263: fails the first invocation, succeeds afterwards."""
+
+    name = "flaky"
+
+    def __init__(self):
+        self.invocations = 0
+
+    def tools(self):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "flaky",
+                    "description": "Flaky.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+    def invoke(self, call, _config):
+        self.invocations += 1
+        if self.invocations == 1:
+            return ToolResult(content="transient network hiccup", ok=False)
+        return ToolResult(content="flaky: ok")
+
+
+class ScriptedPlugin:
+    """S-263: per-invocation outcomes from a scripted list ('fail'/'ok')."""
+
+    name = "scripted"
+
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def tools(self):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "scripted",
+                    "description": "Scripted.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+    def invoke(self, call, _config):
+        outcome = self.outcomes[self.calls]
+        self.calls += 1
+        if outcome == "fail":
+            return ToolResult(content="scripted failure", ok=False)
+        return ToolResult(content="scripted: ok")
+
+
 def fake_task(task_id, status="in-progress"):
     return RuntimeTask(
         id=task_id,
@@ -1534,6 +1735,10 @@ def fake_completion(content):
 
 
 def fake_tool_completion(call_id, name, arguments):
+    return fake_multi_tool_completion([(call_id, name, arguments)])
+
+
+def fake_multi_tool_completion(calls):
     return {
         "choices": [
             {
@@ -1548,11 +1753,28 @@ def fake_tool_completion(call_id, name, arguments):
                                 "arguments": json.dumps(arguments),
                             },
                         }
+                        for call_id, name, arguments in calls
                     ],
                 }
             }
         ]
     }
+
+
+def s263_config(tmp, **overrides):
+    """S-263: ready bootstrap config with optional env overrides."""
+    (Path(tmp) / "agent").write_text("credential", encoding="utf-8")
+    (Path(tmp) / "llm-gateway").write_text("virtual-key", encoding="utf-8")
+    env = {
+        "SKQUAD_AGENT_ID": "agent-1",
+        "SKQUAD_SQUAD_ID": "squad-1",
+        "SKQUAD_AGENT_CREDENTIAL_PATH": str(Path(tmp) / "agent"),
+        "SKQUAD_LLM_GATEWAY_VIRTUAL_KEY_PATH": str(Path(tmp) / "llm-gateway"),
+        "SKQUAD_LLM_GATEWAY_URL": "http://gateway",
+        "SKQUAD_DEFAULT_MODEL": "model-1",
+    }
+    env.update({key: str(value) for key, value in overrides.items()})
+    return load_bootstrap_config(env)
 
 
 def ready_config(tmp):
