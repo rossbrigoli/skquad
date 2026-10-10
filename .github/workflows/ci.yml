@@ -52,8 +52,42 @@ jobs:
           name: coverage-scripts
           path: scripts/coverage.xml
 
+  # S-266: single source of truth for the Go runtime version. Repo-root
+  # .go-version is authoritative; every go.mod toolchain directive, every
+  # Dockerfile ARG GO_VERSION default and every setup-go go-version below must
+  # agree with it. Cheap hosted check that gates all heavy Go jobs.
+  go-version-sync:
+    name: Go version sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Derivation check (.go-version vs go.mod / Dockerfiles / ci.yml)
+        run: python3 scripts/go-version-sync.py check
+
+  # S-266: runner pre-seed drift guard. Reads the skquad self-hosted runner's
+  # pre-seeded Go (BEFORE any setup-go override) and compares it to
+  # .go-version. K-37 pre-seeded 1.26.8; the runtime moved to 1.26.9 (#216)
+  # and nothing noticed until the SCA job went red. Now drift fails fast with:
+  #   runner Go cache X != app runtime Y — refresh skquad runner image pre-seed
+  # The refresh runbook is Kanbunny K-45 (k3s-cluster board, owner: Groot).
+  # Heavy Go jobs stay green via setup-go (cache:false) — this guard signals
+  # the runner-image staleness, it does not block the app-build fix path.
+  runner-go-drift:
+    name: Runner Go drift guard
+    if: vars.SECURITY_RUNNER_READY == 'true'
+    runs-on: [self-hosted, skquad]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Runner pre-seed vs .go-version (before setup-go)
+        run: python3 scripts/go-version-sync.py runner-drift
+
   control-plane:
     name: Control plane
+    needs: go-version-sync
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -107,6 +141,7 @@ jobs:
   # control plane and the tool gateway (single source of truth).
   shared:
     name: Shared library
+    needs: go-version-sync
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -125,6 +160,7 @@ jobs:
   # coverage gate yet (module is young, mirrors TG-1 wiring).
   tool-gateway:
     name: Tool gateway
+    needs: go-version-sync
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -143,6 +179,7 @@ jobs:
 
   operator:
     name: Operator
+    needs: go-version-sync
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -353,6 +390,7 @@ jobs:
 
   integration-smoke:
     name: Integration smoke
+    needs: go-version-sync
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
