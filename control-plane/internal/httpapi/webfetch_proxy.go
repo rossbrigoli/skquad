@@ -54,6 +54,7 @@ const (
 	defaultFetchMaxBytes       = 262144
 	fetchMaxRedirects          = 3
 	fetchUserAgent             = "skquad-webfetch/1.0"
+	fetchBlockedMsg            = "fetch failed (blocked by network policy or unreachable target)"
 )
 
 // blockedDestAddr reports whether a dial destination address must be
@@ -188,7 +189,7 @@ func (s *Server) webFetchDirect(w http.ResponseWriter, r *http.Request, p fetchP
 		// Never echo the raw error back: it can carry internal host/IP
 		// detail. Log server-side, return a generic failure.
 		log.Printf("web_fetch proxy error agent=%s url=%q: %v", principal.Agent.ID, target, err)
-		writeError(w, http.StatusBadGateway, "fetch_failed", "fetch failed (blocked by network policy or unreachable target)")
+		writeError(w, http.StatusBadGateway, "fetch_failed", fetchBlockedMsg)
 		return
 	}
 	defer resp.Body.Close()
@@ -260,7 +261,7 @@ func (s *Server) webFetchViaGateway(w http.ResponseWriter, r *http.Request, p fe
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("web_fetch gateway error agent=%s url=%q: %v", principal.Agent.ID, target, err)
-		writeError(w, http.StatusBadGateway, "fetch_failed", "fetch failed (blocked by network policy or unreachable target)")
+		writeError(w, http.StatusBadGateway, "fetch_failed", fetchBlockedMsg)
 		return
 	}
 	defer resp.Body.Close()
@@ -270,7 +271,7 @@ func (s *Server) webFetchViaGateway(w http.ResponseWriter, r *http.Request, p fe
 		// own 502-class tool error during rollout; the runtime treats
 		// tool errors uniformly.
 		log.Printf("web_fetch gateway status=%d agent=%s url=%q", resp.StatusCode, principal.Agent.ID, target)
-		writeError(w, http.StatusBadGateway, "fetch_failed", "fetch failed (blocked by network policy or unreachable target)")
+		writeError(w, http.StatusBadGateway, "fetch_failed", fetchBlockedMsg)
 		return
 	}
 

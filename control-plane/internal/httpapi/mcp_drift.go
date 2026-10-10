@@ -334,6 +334,26 @@ func checkMCPResourceDrift(
 		return outcome, nil
 	}
 
+	if err := applyMCPDrift(ctx, store, resource, fresh, now, outcome, actorType, actorID); err != nil {
+		return nil, err
+	}
+	return outcome, nil
+}
+
+// applyMCPDrift diffs freshly enumerated tools against the stored snapshot,
+// applies the wildcard-deny mechanism, updates the resource snapshot/hash/pending
+// fields, and persists it with a drift-detected audit entry. The outcome struct is
+// mutated in place. Extracted from checkMCPResourceDrift to keep each function's
+// cognitive complexity within limits (S-268 / S3776).
+func applyMCPDrift(
+	ctx context.Context,
+	store Store,
+	resource *domain.RegistryResource,
+	fresh *MCPEnumerateResult,
+	now time.Time,
+	outcome *mcpDriftOutcome,
+	actorType, actorID string,
+) error {
 	oldTools, _ := mcpSnapshotTools(resource.ToolsSnapshot)
 	added, removed, changedTools := diffMCPTools(oldTools, fresh.Tools)
 	outcome.Changed = true
@@ -349,7 +369,7 @@ func checkMCPResourceDrift(
 	// the added tools immediately.
 	ceiling, didExpand, err := mcpApplyWildcardDeny(allowEntries, oldTools, newlyMatched, resource.PolicyCeiling)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if didExpand {
 		resource.PolicyCeiling = ceiling
@@ -358,7 +378,7 @@ func checkMCPResourceDrift(
 
 	snapshot, err := json.Marshal(fresh.Tools)
 	if err != nil {
-		return nil, fmt.Errorf("mcp drift check: snapshot encode: %w", err)
+		return fmt.Errorf("mcp drift check: snapshot encode: %w", err)
 	}
 	resource.ToolsSnapshot = snapshot
 	resource.ToolsHash = fresh.Hash
@@ -369,7 +389,7 @@ func checkMCPResourceDrift(
 	if len(pendingList) > 0 {
 		pj, err := json.Marshal(pendingList)
 		if err != nil {
-			return nil, fmt.Errorf("mcp drift check: pending encode: %w", err)
+			return fmt.Errorf("mcp drift check: pending encode: %w", err)
 		}
 		resource.MCPDriftPending = pj
 	} else {
@@ -392,9 +412,9 @@ func checkMCPResourceDrift(
 		actorType, actorID, mcpAuditDriftDetected, string(domain.ResMCP), resource.ID, "", metadata,
 	))
 	if _, err := store.UpdateResource(auditCtx, resource); err != nil {
-		return nil, fmt.Errorf("mcp drift check: persist drift: %w", err)
+		return fmt.Errorf("mcp drift check: persist drift: %w", err)
 	}
-	return outcome, nil
+	return nil
 }
 
 func triggerFor(actorType string) string {

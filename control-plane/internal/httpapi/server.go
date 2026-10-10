@@ -1560,11 +1560,8 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if req.OwnerUserID != "" {
-		if _, err := s.store.GetUser(r.Context(), req.OwnerUserID); err != nil {
-			writeStorageError(w, err)
-			return
-		}
+	if !s.validateCreateOwner(w, r.Context(), req.OwnerUserID) {
+		return
 	}
 	if len(req.Manifest) == 0 {
 		req.Manifest = json.RawMessage(`{}`)
@@ -1591,6 +1588,20 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 		created = updated
 	}
 	writeJSON(w, http.StatusCreated, created)
+}
+
+// validateCreateOwner checks that a create request's optional owner reference
+// resolves to an existing user. Extracted from createRegistryResource to keep
+// cognitive complexity within limits (S-268/S3776).
+func (s *Server) validateCreateOwner(w http.ResponseWriter, ctx context.Context, ownerUserID string) bool {
+	if ownerUserID == "" {
+		return true
+	}
+	if _, err := s.store.GetUser(ctx, ownerUserID); err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	return true
 }
 
 // validateCreateResourceShape runs the workspace + typed-shape gates
@@ -1878,14 +1889,7 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 	if req.OwnerUserID != nil && !s.applyUpdateOwner(w, r, resource, *req.OwnerUserID) {
 		return
 	}
-	// TG-4: BYO REST credential rotation. `auth` (write-only) replaces
-	// the managed Secret contents; rotating to auth_kind=none drops the
-	// managed Secret and blanks the ref. Values never echo back.
-	if req.Auth != nil && resource.Type != domain.ResRest && resource.Type != domain.ResMCP {
-		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest and mcp resources")
-		return
-	}
-	if resource.Type == domain.ResRest && req.Auth != nil && !s.rotateRestCredential(w, r, resource, eff.config, *req.Auth) {
+	if !s.validateAndRotateUpdateAuth(w, r, resource, eff, &req) {
 		return
 	}
 	updated, err := s.store.UpdateResource(s.pendingUserAuditCtx(r, "registry.resource.update", string(typ), resource.ID, "", nil), resource)
@@ -1894,6 +1898,28 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// validateAndRotateUpdateAuth enforces the BYO auth payload type gate and
+// performs REST credential rotation for an update. `auth` (write-only) replaces
+// the managed Secret contents; rotating to auth_kind=none drops the managed
+// Secret and blanks the ref. Values never echo back. Extracted from
+// updateRegistryResource to keep cognitive complexity within limits (S-268/S3776).
+func (s *Server) validateAndRotateUpdateAuth(
+	w http.ResponseWriter,
+	r *http.Request,
+	resource *domain.RegistryResource,
+	eff updateEffective,
+	req *updateRegistryResourceReq,
+) bool {
+	if req.Auth != nil && resource.Type != domain.ResRest && resource.Type != domain.ResMCP {
+		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest and mcp resources")
+		return false
+	}
+	if resource.Type == domain.ResRest && req.Auth != nil && !s.rotateRestCredential(w, r, resource, eff.config, *req.Auth) {
+		return false
+	}
+	return true
 }
 
 // applyUpdateScalarFields applies the non-typed scalar fields, answering
