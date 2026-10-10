@@ -17,6 +17,7 @@ import { DeleteResourceButton } from "./DeleteResourceButton";
 import { EmptyState } from "./EmptyState";
 import { Modal, ModalForm } from "./Modal";
 import { StatusChip } from "./StatusChip";
+import type { StatusKey } from "../lib/status";
 import {
   GIT_AUTH_FIELDS,
   buildGitResourcePayload,
@@ -38,6 +39,14 @@ function asStringArray(value: unknown): string[] {
 
 function asNumberOpt(value: unknown): string {
   return typeof value === "number" ? String(value) : "";
+}
+
+// S-268/S3358: registry lifecycle status → StatusChip variant
+// (replaces the nested ternary that used to sit in the row JSX).
+function lifecycleStatusChip(status: string): StatusKey {
+  if (status === "active") return "idle";
+  if (status === "deprecated") return "paused";
+  return "error";
 }
 
 // gitFormFromResource prefills the edit form from a registry row.
@@ -87,7 +96,7 @@ export function GitResourcePanel({ isAdmin }: { readonly isAdmin: boolean }) {
                 </span>
               </div>
               <div className="entity-side">
-                <StatusChip status={r.status === "active" ? "idle" : r.status === "deprecated" ? "paused" : "error"} />
+                <StatusChip status={lifecycleStatusChip(r.status)} />
                 {isAdmin ? (
                   <button type="button" className="btn btn-sm" onClick={() => setEditing(r)}>
                     Edit
@@ -214,7 +223,7 @@ export function GitResourceModal({
         </label>
         <div className="field-row">
           <label className="field-checkbox">
-            <input type="checkbox" checked={form.allowPush} onChange={(e) => set("allowPush", e.target.checked)} />
+            <input type="checkbox" checked={form.allowPush} onChange={(e) => set("allowPush", e.target.checked)} />{" "}
             Allow push
           </label>
           <label className="field">

@@ -8,7 +8,8 @@
 // and NO per-resource aggregation, so tokens/cost cannot be attributed
 // to a resource from the API today.
 //
-// TODO(backend gap): once the control plane exposes per-resource metering
+// Backend gap (S-268 note: still pending — re-file when actionable):
+// once the control plane exposes per-resource metering
 // (or a raw metering list endpoint), replace this audit-derived rollup
 // with the real tokens/cost numbers. Until then this module aggregates
 // what IS observable — per-resource call/decision counts from the audit
