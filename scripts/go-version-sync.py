@@ -27,6 +27,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -135,20 +136,82 @@ def check_runner_drift(expected: str, runner_output: str) -> tuple[bool, str]:
     return True, f"OK: runner pre-seed go{actual} == .go-version {expected}"
 
 
+def discover_preseed() -> tuple[list[str], str]:
+    """Locate the runner image's pre-seeded Go versions.
+
+    Preference order:
+      1. ``go`` on PATH (``go version``) — if the image exposes it.
+      2. The Actions hosted toolcache manifests: ``$RUNNER_TOOL_CACHE/go/<ver>/x64``
+         plus the common fixed locations. The skquad runner image (K-37) has NO
+         ``go`` on PATH; its pre-seed lives in the toolcache that setup-go
+         consults, so the manifest directories are the ground truth.
+
+    Returns (sorted-unique versions, human-readable source description).
+    """
+    try:
+        out = subprocess.run(
+            ["go", "version"], capture_output=True, text=True, check=True
+        ).stdout
+        version = parse_runner_go(out)
+        if version:
+            return [version], "`go version` on PATH"
+    except (OSError, subprocess.CalledProcessError):
+        pass
+
+    roots: list[Path] = []
+    tool_cache = os.environ.get("RUNNER_TOOL_CACHE")
+    if tool_cache:
+        roots.append(Path(tool_cache) / "go")
+    roots += [
+        Path("/opt/hostedtoolcache/go"),
+        Path.home() / "hostedtoolcache" / "go",
+        Path.home() / "_work" / "_tool" / "go",
+    ]
+    found: list[str] = []
+    for root_dir in roots:
+        if not root_dir.is_dir():
+            continue
+        for entry in sorted(root_dir.iterdir()):
+            if entry.is_dir() and VERSION_RE.match(entry.name) and entry.name not in found:
+                found.append(entry.name)
+    if found:
+        return found, "hosted toolcache manifest (no `go` on PATH)"
+    return [], "scanned: PATH, " + ", ".join(str(r) for r in roots)
+
+
+def check_runner_drift(
+    expected: str, versions: list[str], source: str
+) -> tuple[bool, str]:
+    """Compare the runner's pre-seeded Go versions against ``.go-version``.
+
+    No drift means the toolcache already contains the app runtime, so setup-go
+    resolves it locally instead of downloading.
+    """
+    if not versions:
+        return False, (
+            f"could not locate runner Go pre-seed ({source}) — "
+            f"cannot verify drift against app runtime {expected}"
+        )
+    if expected in versions:
+        return True, (
+            f"OK: runner pre-seed contains go{expected} "
+            f"(pre-seeded: {', '.join(versions)}; source: {source})"
+        )
+    return False, (
+        f"runner Go cache {', '.join(versions)} != app runtime {expected} — "
+        f"refresh skquad runner image pre-seed (Kanbunny {REFRESH_CARD})"
+    )
+
+
 def runner_drift(root: Path) -> int:
     expected = read_expected(root)
     if not expected:
         return 2
-    try:
-        # Deliberately BEFORE any setup-go override: whatever `go` is on PATH
-        # in the runner image is the pre-seed we're guarding.
-        out = subprocess.run(
-            ["go", "version"], capture_output=True, text=True, check=True
-        ).stdout
-    except (OSError, subprocess.CalledProcessError) as exc:
-        print(f"could not run 'go version' on runner: {exc}", file=sys.stderr)
-        return 2
-    ok, message = check_runner_drift(expected, out)
+    # Deliberately BEFORE any setup-go override: the runner image's own
+    # pre-seed (PATH go or hosted toolcache) is what we guard.
+    versions, source = discover_preseed()
+    ok, message = check_runner_drift(expected, versions, source)
+    print(f"runner Go source: {source}")
     if ok:
         print(message)
         return 0

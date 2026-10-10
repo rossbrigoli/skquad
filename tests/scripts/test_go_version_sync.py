@@ -148,12 +148,17 @@ def test_parse_runner_go(tmp_path):
 
 
 def test_runner_drift_ok(tmp_path):
-    ok, msg = gvs.check_runner_drift("1.26.9", "go version go1.26.9 linux/amd64")
+    ok, msg = gvs.check_runner_drift("1.26.9", ["1.26.9"], "PATH")
     assert ok and "OK" in msg
 
 
+def test_runner_drift_ok_when_expected_among_many(tmp_path):
+    ok, msg = gvs.check_runner_drift("1.26.9", ["1.25.0", "1.26.8", "1.26.9"], "tc")
+    assert ok and "contains go1.26.9" in msg
+
+
 def test_runner_drift_mismatch_message(tmp_path):
-    ok, msg = gvs.check_runner_drift("1.26.9", "go version go1.26.8 linux/amd64")
+    ok, msg = gvs.check_runner_drift("1.26.9", ["1.26.8"], "toolcache")
     assert not ok
     # The exact loud signal required by the card:
     assert "runner Go cache 1.26.8 != app runtime 1.26.9" in msg
@@ -161,9 +166,42 @@ def test_runner_drift_mismatch_message(tmp_path):
     assert "K-45" in msg
 
 
-def test_runner_drift_unparseable(tmp_path):
-    ok, msg = gvs.check_runner_drift("1.26.9", "go: command not found-ish")
-    assert not ok and "could not parse" in msg
+def test_runner_drift_no_preseed_found(tmp_path):
+    ok, msg = gvs.check_runner_drift("1.26.9", [], "scanned: PATH, /opt/x")
+    assert not ok and "could not locate runner Go pre-seed" in msg
+
+
+def test_discover_preseed_uses_path_go_first(tmp_path, monkeypatch):
+    class Out:
+        stdout = "go version go1.26.8 linux/amd64"
+
+    monkeypatch.setattr(gvs.subprocess, "run", lambda *a, **k: Out())
+    versions, source = gvs.discover_preseed()
+    assert versions == ["1.26.8"] and "PATH" in source
+
+
+def test_discover_preseed_falls_back_to_toolcache(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        gvs.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("no go on PATH")),
+    )
+    tc = tmp_path / "toolcache" / "go"
+    (tc / "1.26.8" / "x64").mkdir(parents=True)
+    (tc / "1.26.9" / "x64").mkdir(parents=True)
+    monkeypatch.setenv("RUNNER_TOOL_CACHE", str(tmp_path / "toolcache"))
+    versions, source = gvs.discover_preseed()
+    assert versions == ["1.26.8", "1.26.9"] and "toolcache" in source
+
+
+def test_discover_preseed_nothing_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        gvs.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("no go on PATH")),
+    )
+    monkeypatch.setenv("RUNNER_TOOL_CACHE", str(tmp_path / "missing"))
+    monkeypatch.setattr(gvs.Path, "home", classmethod(lambda cls: tmp_path / "nohome"))
+    versions, source = gvs.discover_preseed()
+    assert versions == [] and "scanned" in source
 
 
 # ---------------------------------------------------------------------------
@@ -186,20 +224,9 @@ def test_main_runner_drift_missing_go_version(tmp_path):
     assert gvs.main(["--root", str(tmp_path), "runner-drift"]) == 2
 
 
-def test_main_runner_drift_no_go_binary(tmp_path, monkeypatch):
-    make_repo(tmp_path)
-    monkeypatch.setattr(gvs.subprocess, "run",
-                      lambda *a, **k: (_ for _ in ()).throw(OSError("no go")))
-    assert gvs.main(["--root", str(tmp_path), "runner-drift"]) == 2
-
-
 def test_main_runner_drift_fires_on_mismatch(tmp_path, monkeypatch, capsys):
     make_repo(tmp_path)
-
-    class Out:
-        stdout = "go version go1.26.8 linux/amd64"
-
-    monkeypatch.setattr(gvs.subprocess, "run", lambda *a, **k: Out())
+    monkeypatch.setattr(gvs, "discover_preseed", lambda: (["1.26.8"], "toolcache"))
     assert gvs.main(["--root", str(tmp_path), "runner-drift"]) == 1
     err = capsys.readouterr().err
     assert "::error::runner Go cache 1.26.8 != app runtime 1.26.9" in err
@@ -207,10 +234,15 @@ def test_main_runner_drift_fires_on_mismatch(tmp_path, monkeypatch, capsys):
 
 def test_main_runner_drift_passes_on_match(tmp_path, monkeypatch, capsys):
     make_repo(tmp_path)
-
-    class Out:
-        stdout = "go version go1.26.9 linux/amd64"
-
-    monkeypatch.setattr(gvs.subprocess, "run", lambda *a, **k: Out())
+    monkeypatch.setattr(
+        gvs, "discover_preseed", lambda: (["1.26.8", "1.26.9"], "toolcache")
+    )
     assert gvs.main(["--root", str(tmp_path), "runner-drift"]) == 0
-    assert "OK: runner pre-seed go1.26.9" in capsys.readouterr().out
+    assert "OK: runner pre-seed contains go1.26.9" in capsys.readouterr().out
+
+
+def test_main_runner_drift_loud_when_unlocatable(tmp_path, monkeypatch, capsys):
+    make_repo(tmp_path)
+    monkeypatch.setattr(gvs, "discover_preseed", lambda: ([], "scanned: nothing"))
+    assert gvs.main(["--root", str(tmp_path), "runner-drift"]) == 1
+    assert "could not locate runner Go pre-seed" in capsys.readouterr().err
