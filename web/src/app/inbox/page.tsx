@@ -113,6 +113,109 @@ function inboxEmptyState(loading: boolean, count: number) {
   return null;
 }
 
+type InboxControlsProps = {
+  readonly selectionSize: number;
+  readonly unreadOnly: boolean;
+  readonly isAdmin: boolean;
+  readonly filter: UserFilter;
+  readonly users: ApiUser[];
+  readonly currentUserId?: string;
+  readonly onBulkMarkRead: () => Promise<unknown>;
+  readonly onBulkDelete: () => void;
+  readonly onChangeUnread: (v: boolean) => void;
+  readonly onChangeUserFilter: (v: UserFilter) => void;
+};
+
+// InboxControls renders the bulk-action buttons and the read/user filters shown
+// above the inbox list. Extracted from InboxPage to keep its cognitive
+// complexity within limits (S-268 / S3776).
+function InboxControls(props: InboxControlsProps) {
+  const {
+    selectionSize,
+    unreadOnly,
+    isAdmin,
+    filter,
+    users,
+    currentUserId,
+    onBulkMarkRead,
+    onBulkDelete,
+    onChangeUnread,
+    onChangeUserFilter,
+  } = props;
+  return (
+    <div className="inbox-controls">
+      {/* S-207 req 5: bulk actions, enabled only with a selection. */}
+      <fieldset
+        className="inbox-bulk"
+        style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }}
+        aria-label="Bulk actions"
+      >
+        <button
+          type="button"
+          className="btn btn-small inbox-bulk-read"
+          disabled={selectionSize === 0}
+          aria-label={`Mark ${selectionSize} selected as read`}
+          onClick={() => {
+            onBulkMarkRead().catch(() => undefined);
+          }}
+        >
+          Mark as Read
+        </button>
+        <button
+          type="button"
+          className="btn btn-small btn-danger inbox-bulk-delete"
+          disabled={selectionSize === 0}
+          aria-label={`Delete ${selectionSize} selected messages`}
+          onClick={onBulkDelete}
+        >
+          Delete
+        </button>
+        {selectionSize > 0 ? (
+          <span className="inbox-selection-count">
+            {selectionSize} selected
+          </span>
+        ) : null}
+      </fieldset>
+      {/* S-207 req 1: restyled to the platform field standard. */}
+      <label className="inbox-filter">
+        <span>Show</span>
+        <select
+          className="form-control"
+          value={unreadOnly ? "unread" : "all"}
+          onChange={(e) => onChangeUnread(e.target.value === "unread")}
+        >
+          <option value="all">All messages</option>
+          <option value="unread">Unread only</option>
+        </select>
+      </label>
+      {isAdmin ? (
+        <label className="inbox-filter">
+          <span>User</span>
+          <select
+            className="form-control"
+            value={filter.mode === "user" ? filter.userId : "own"}
+            onChange={(e) => {
+              const v = e.target.value;
+              onChangeUserFilter(
+                v === "own" ? { mode: "own" } : { mode: "user", userId: v },
+              );
+            }}
+          >
+            <option value="own">My inbox</option>
+            {users
+              .filter((u) => u.id !== currentUserId)
+              .map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name || u.email}
+                </option>
+              ))}
+          </select>
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
 export default function InboxPage() {
   const { token, user, authed } = useAuth();
   const { agentName, markRead: markAttentionRead } = useAttention();
@@ -379,80 +482,18 @@ export default function InboxPage() {
           {/* S-207 req 8: "Inbox — N new" when unread, plain otherwise. */}
           <h1 className="page-title">{inboxPageTitle(unread)}</h1>
           {!selected ? (
-            <div className="inbox-controls">
-              {/* S-207 req 5: bulk actions, enabled only with a selection. */}
-              <fieldset
-                className="inbox-bulk"
-                style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }}
-                aria-label="Bulk actions"
-              >
-                <button
-                  type="button"
-                  className="btn btn-small inbox-bulk-read"
-                  disabled={selectionSize === 0}
-                  aria-label={`Mark ${selectionSize} selected as read`}
-                  onClick={() => {
-                    doBulkMarkRead().catch(() => undefined);
-                  }}
-                >
-                  Mark as Read
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-small btn-danger inbox-bulk-delete"
-                  disabled={selectionSize === 0}
-                  aria-label={`Delete ${selectionSize} selected messages`}
-                  onClick={() => setPendingBulkDelete(true)}
-                >
-                  Delete
-                </button>
-                {selectionSize > 0 ? (
-                  <span className="inbox-selection-count">
-                    {selectionSize} selected
-                  </span>
-                ) : null}
-              </fieldset>
-              {/* S-207 req 1: restyled to the platform field standard. */}
-              <label className="inbox-filter">
-                <span>Show</span>
-                <select
-                  className="form-control"
-                  value={unreadOnly ? "unread" : "all"}
-                  onChange={(e) =>
-                    changeUnreadOnly(e.target.value === "unread")
-                  }
-                >
-                  <option value="all">All messages</option>
-                  <option value="unread">Unread only</option>
-                </select>
-              </label>
-              {isAdmin ? (
-                <label className="inbox-filter">
-                  <span>User</span>
-                  <select
-                    className="form-control"
-                    value={filter.mode === "user" ? filter.userId : "own"}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      changeUserFilter(
-                        v === "own"
-                          ? { mode: "own" }
-                          : { mode: "user", userId: v },
-                      );
-                    }}
-                  >
-                    <option value="own">My inbox</option>
-                    {users
-                      .filter((u) => u.id !== user?.id)
-                      .map((u) => (
-                        <option key={u.id} value={u.id}>
-                          {u.name || u.email}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-              ) : null}
-            </div>
+            <InboxControls
+              selectionSize={selectionSize}
+              unreadOnly={unreadOnly}
+              isAdmin={isAdmin}
+              filter={filter}
+              users={users}
+              currentUserId={user?.id}
+              onBulkMarkRead={doBulkMarkRead}
+              onBulkDelete={() => setPendingBulkDelete(true)}
+              onChangeUnread={changeUnreadOnly}
+              onChangeUserFilter={changeUserFilter}
+            />
           ) : null}
         </div>
         {error ? <div className="notice error">{error}</div> : null}
