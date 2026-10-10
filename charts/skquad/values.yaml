@@ -511,6 +511,9 @@ toolGateway:
     requests:
       cpu: "100m"
       memory: 64Mi
+      # S6897: explicit ephemeral-storage request for a complete
+      # scheduler profile (matches the llm-gateway pattern).
+      ephemeral-storage: 256Mi
     limits:
       memory: 256Mi
       ephemeral-storage: 256Mi
