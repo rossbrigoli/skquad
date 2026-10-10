@@ -541,8 +541,21 @@ func TestPostgresStoreAgentMemoryTrustAndEmbeddingRoundTrip(t *testing.T) {
 
 func TestPostgresStoreKubernetesOutboxLeaseAndRetry(t *testing.T) {
 	store := postgresTestStore(t)
-	f := newPGFixture(t, store)
 	ctx := context.Background()
+
+	// The outbox is a single global FIFO queue shared by every test that runs
+	// against this database. Leftover pending intents from other tests (or from
+	// a previous run against a persistent DB) crowd this fixture's squad/agent
+	// intents out of the small lease batch below, which made the "leased batch
+	// did not include the squad intent" assertion fail on a dirty database
+	// (S-270). Start from an empty queue so the fixture's two intents are the
+	// only pending rows. This test is deliberately non-parallel (see the
+	// global-sweep note above), so the sweep cannot race a concurrent test.
+	if _, err := store.pool.Exec(ctx, `DELETE FROM kubernetes_outbox`); err != nil {
+		t.Fatalf("sweep outbox: %v", err)
+	}
+
+	f := newPGFixture(t, store)
 
 	// Squad + agent creation must have enqueued outbox intents.
 	pending, err := store.ListKubernetesOutbox(ctx, domain.KubernetesOutboxPending, 50)
