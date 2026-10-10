@@ -26,7 +26,9 @@ export function threadActorLabel(message: ThreadActor): string {
       ? `agent ${message.from_display}`
       : `agent ${message.from_id.slice(0, 8)}`;
   }
-  return message.from_display || "you";
+  // S6606: explicit ternary — an empty display is treated as missing
+  // (see actorDisplay tests), so `??` would change behavior.
+  return message.from_display ? message.from_display : "you";
 }
 
 /** Status-timeline label: "agent Bob" / "Ross". System actors and
@@ -36,7 +38,7 @@ export function timelineActorLabel(entry: TimelineActor): string {
     return entry.actor_display ? `agent ${entry.actor_display}` : "agent";
   }
   if (entry.actor_type === "user") {
-    return entry.actor_display || entry.actor_id;
+    return entry.actor_display ? entry.actor_display : entry.actor_id;
   }
   return entry.actor_type;
 }

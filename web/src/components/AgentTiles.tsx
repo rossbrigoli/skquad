@@ -39,8 +39,10 @@ export function agentTileClass(status: StatusKey, variant?: string): string {
 // agent has no task at all — the tile then omits the line entirely.
 export function agentTaskLine(agent: Pick<Agent, "current_task" | "last_task">): string | null {
   const task: AgentTaskBrief | null | undefined = agent.current_task ?? agent.last_task;
-  if (!task || !task.id) return null;
-  const ref = task.ref || task.id.slice(0, 8);
+  if (!task?.id) return null;
+  // S6606: explicit ternary — an empty ref must fall back to the id
+  // prefix just like a missing one, so plain `??` would change behavior.
+  const ref = task.ref ? task.ref : task.id.slice(0, 8);
   const title = (task.title ?? "").trim();
   if (!title) return ref;
   return `${ref} · ${title}`;

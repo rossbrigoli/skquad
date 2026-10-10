@@ -55,24 +55,29 @@ func (s *Server) resolveActorDisplays(ctx context.Context, refs []actorRef) map[
 		if _, done := display[key]; done {
 			continue
 		}
-		switch ref.kind {
-		case "agent":
-			agent, err := s.store.GetAgent(ctx, ref.id)
-			if err != nil || agent == nil {
-				display[key] = ""
-				continue
-			}
-			display[key] = actorDisplayName("agent", agent.Name, "")
-		case "user":
-			user, err := s.store.GetUser(ctx, ref.id)
-			if err != nil || user == nil {
-				display[key] = ""
-				continue
-			}
-			display[key] = actorDisplayName("user", user.Name, user.Email)
-		}
+		display[key] = s.resolveActorDisplay(ctx, ref)
 	}
 	return display
+}
+
+// resolveActorDisplay resolves one actor ref (agent or user) to its
+// display name; "" when unresolvable.
+func (s *Server) resolveActorDisplay(ctx context.Context, ref actorRef) string {
+	switch ref.kind {
+	case "agent":
+		agent, err := s.store.GetAgent(ctx, ref.id)
+		if err != nil || agent == nil {
+			return ""
+		}
+		return actorDisplayName("agent", agent.Name, "")
+	case "user":
+		user, err := s.store.GetUser(ctx, ref.id)
+		if err != nil || user == nil {
+			return ""
+		}
+		return actorDisplayName("user", user.Name, user.Email)
+	}
+	return ""
 }
 
 // actorDisplay looks a previously resolved display name up; "" when absent.

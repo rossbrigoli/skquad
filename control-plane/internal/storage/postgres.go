@@ -621,22 +621,12 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 	// S-156: agent names are unique per user (across all their squads).
 	// The legacy per-squad DB constraint stays as a backstop; the per-owner
 	// rule needs the squads join, so it is checked here in-tx.
-	var squadOwner, squadName, ownerName, ownerEmail string
-	if err := tx.QueryRow(ctx, `
-		SELECT s.owner_id::text, s.name, coalesce(u.name, ''), coalesce(u.email, '')
-		FROM squads s LEFT JOIN users u ON u.id = s.owner_id
-		WHERE s.id = $1`, a.SquadID).Scan(&squadOwner, &squadName, &ownerName, &ownerEmail); err != nil {
-		return nil, mapPgErr(err)
+	info, err := lookupAgentSquadInfo(ctx, tx, a.SquadID)
+	if err != nil {
+		return nil, err
 	}
-	var clashID string
-	if err := tx.QueryRow(ctx, `
-		SELECT a.id::text FROM agents a
-		JOIN squads s ON s.id = a.squad_id
-		WHERE s.owner_id = $1 AND lower(a.name) = lower($2)
-		LIMIT 1`, squadOwner, a.Name).Scan(&clashID); err == nil {
-		return nil, ErrConflict
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, mapPgErr(err)
+	if err := rejectAgentNameClashForOwner(ctx, tx, info.ownerID, a.Name); err != nil {
+		return nil, err
 	}
 
 	row := tx.QueryRow(ctx, `
@@ -653,16 +643,8 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 	// same pattern as deployment_name). Pre-S-261 rows keep '' and the
 	// operator's legacy agent-<cr-name>-workspace fallback — live volumes
 	// are never renamed. Done in-tx so the outbox payload always carries it.
-	if created.WorkspacePVCName == "" {
-		created.WorkspacePVCName = k8sname.WorkspacePVCName(
-			k8sname.OwnerSlug(ownerName, ownerEmail, squadOwner),
-			squadName, created.Name, created.ID,
-		)
-		if created.WorkspacePVCName != "" {
-			if _, err := tx.Exec(ctx, `UPDATE agents SET workspace_pvc_name = $2 WHERE id = $1`, created.ID, created.WorkspacePVCName); err != nil {
-				return nil, mapPgErr(err)
-			}
-		}
+	if err := stampWorkspacePVCName(ctx, tx, created, info); err != nil {
+		return nil, err
 	}
 	// S-PROMPT WP2: an agent born with a prompt records its first revision
 	// in the same transaction as the row insert.
@@ -683,6 +665,63 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 		return nil, mapPgErr(err)
 	}
 	return created, nil
+}
+
+// agentSquadInfo carries the owning-squad fields CreateAgent needs for the
+// per-owner name rule and the friendly PVC slug.
+type agentSquadInfo struct {
+	ownerID    string
+	squadName  string
+	ownerName  string
+	ownerEmail string
+}
+
+// lookupAgentSquadInfo fetches the owning squad + owner identity for an
+// agent's squad inside the caller's transaction.
+func lookupAgentSquadInfo(ctx context.Context, tx pgx.Tx, squadID string) (agentSquadInfo, error) {
+	var info agentSquadInfo
+	err := tx.QueryRow(ctx, `
+		SELECT s.owner_id::text, s.name, coalesce(u.name, ''), coalesce(u.email, '')
+		FROM squads s LEFT JOIN users u ON u.id = s.owner_id
+		WHERE s.id = $1`, squadID).Scan(&info.ownerID, &info.squadName, &info.ownerName, &info.ownerEmail)
+	return info, mapPgErr(err)
+}
+
+// rejectAgentNameClashForOwner enforces the S-156 per-owner unique-name
+// rule inside the caller's transaction.
+func rejectAgentNameClashForOwner(ctx context.Context, tx pgx.Tx, ownerID, agentName string) error {
+	var clashID string
+	err := tx.QueryRow(ctx, `
+		SELECT a.id::text FROM agents a
+		JOIN squads s ON s.id = a.squad_id
+		WHERE s.owner_id = $1 AND lower(a.name) = lower($2)
+		LIMIT 1`, ownerID, agentName).Scan(&clashID)
+	if err == nil {
+		return ErrConflict
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return mapPgErr(err)
+	}
+	return nil
+}
+
+// stampWorkspacePVCName computes and persists the immutable friendly
+// workspace PVC name for a freshly created agent (S-261).
+func stampWorkspacePVCName(ctx context.Context, tx pgx.Tx, created *domain.Agent, info agentSquadInfo) error {
+	if created.WorkspacePVCName != "" {
+		return nil
+	}
+	created.WorkspacePVCName = k8sname.WorkspacePVCName(
+		k8sname.OwnerSlug(info.ownerName, info.ownerEmail, info.ownerID),
+		info.squadName, created.Name, created.ID,
+	)
+	if created.WorkspacePVCName == "" {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE agents SET workspace_pvc_name = $2 WHERE id = $1`, created.ID, created.WorkspacePVCName); err != nil {
+		return mapPgErr(err)
+	}
+	return nil
 }
 
 func (p *PostgresStore) GetAgent(ctx context.Context, id string) (*domain.Agent, error) {

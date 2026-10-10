@@ -19,7 +19,8 @@ export function listGrantRequests(
   if (filter.mine) params.set("mine", filter.mine);
   if (filter.state) params.set("state", filter.state);
   const qs = params.toString();
-  return apiGet<GrantRequest[]>(`/grant-requests${qs ? `?${qs}` : ""}`, token);
+  const query = qs ? `?${qs}` : "";
+  return apiGet<GrantRequest[]>(`/grant-requests${query}`, token);
 }
 
 export function approveGrantOwner(token: string, id: string): Promise<GrantRequest> {
@@ -44,7 +45,8 @@ export function listConfirmations(
   if (filter.mine) params.set("mine", "true");
   if (filter.state) params.set("state", filter.state);
   const qs = params.toString();
-  return apiGet<PendingConfirmation[]>(`/confirmations${qs ? `?${qs}` : ""}`, token);
+  const query = qs ? `?${qs}` : "";
+  return apiGet<PendingConfirmation[]>(`/confirmations${query}`, token);
 }
 
 export function approveConfirmationOnce(token: string, id: string): Promise<PendingConfirmation> {

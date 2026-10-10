@@ -54,6 +54,7 @@ const (
 	defaultFetchMaxBytes       = 262144
 	fetchMaxRedirects          = 3
 	fetchUserAgent             = "skquad-webfetch/1.0"
+	fetchBlockedMsg            = "fetch failed (blocked by network policy or unreachable target)"
 )
 
 // blockedDestAddr reports whether a dial destination address must be
@@ -110,8 +111,8 @@ func guardedHTTPClient(p fetchPolicy) *http.Client {
 		DialContext: dialer.DialContext,
 	}
 	return &http.Client{
-		Transport: transport,
-		Timeout:   time.Duration(p.timeoutSeconds) * time.Second,
+		Transport:     transport,
+		Timeout:       time.Duration(p.timeoutSeconds) * time.Second,
 		CheckRedirect: netguard.RedirectCheck(fetchMaxRedirects, nil),
 	}
 }
@@ -120,7 +121,6 @@ func guardedHTTPClient(p fetchPolicy) *http.Client {
 // Body: {"url": "https://example.com"}.
 // Response: {"url","status","contentType","bodyB64","truncated"}.
 func (s *Server) agentWebFetch(w http.ResponseWriter, r *http.Request) {
-	principal := currentAgent(r.Context())
 	cfg, err := s.store.GetBuiltinTool(r.Context(), domain.BuiltinToolWebFetch)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		writeStorageError(w, err)
@@ -142,8 +142,8 @@ func (s *Server) agentWebFetch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "url is required")
 		return
 	}
-	parsed, err := url.Parse(target)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+	parsed, ok := validFetchURL(target)
+	if !ok {
 		writeError(w, http.StatusBadRequest, "bad_request", "url must be a valid http(s) URL")
 		return
 	}
@@ -156,7 +156,22 @@ func (s *Server) agentWebFetch(w http.ResponseWriter, r *http.Request) {
 		s.webFetchViaGateway(w, r, p, target)
 		return
 	}
+	s.webFetchDirect(w, r, p, parsed, target)
+}
 
+// validFetchURL parses and validates a web_fetch target URL.
+func validFetchURL(target string) (*url.URL, bool) {
+	parsed, err := url.Parse(target)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return nil, false
+	}
+	return parsed, true
+}
+
+// webFetchDirect performs the in-process guarded fetch and emits the
+// legacy response contract.
+func (s *Server) webFetchDirect(w http.ResponseWriter, r *http.Request, p fetchPolicy, parsed *url.URL, target string) {
+	principal := currentAgent(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(p.timeoutSeconds)*time.Second)
 	defer cancel()
 
@@ -174,7 +189,7 @@ func (s *Server) agentWebFetch(w http.ResponseWriter, r *http.Request) {
 		// Never echo the raw error back: it can carry internal host/IP
 		// detail. Log server-side, return a generic failure.
 		log.Printf("web_fetch proxy error agent=%s url=%q: %v", principal.Agent.ID, target, err)
-		writeError(w, http.StatusBadGateway, "fetch_failed", "fetch failed (blocked by network policy or unreachable target)")
+		writeError(w, http.StatusBadGateway, "fetch_failed", fetchBlockedMsg)
 		return
 	}
 	defer resp.Body.Close()
@@ -246,7 +261,7 @@ func (s *Server) webFetchViaGateway(w http.ResponseWriter, r *http.Request, p fe
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("web_fetch gateway error agent=%s url=%q: %v", principal.Agent.ID, target, err)
-		writeError(w, http.StatusBadGateway, "fetch_failed", "fetch failed (blocked by network policy or unreachable target)")
+		writeError(w, http.StatusBadGateway, "fetch_failed", fetchBlockedMsg)
 		return
 	}
 	defer resp.Body.Close()
@@ -256,7 +271,7 @@ func (s *Server) webFetchViaGateway(w http.ResponseWriter, r *http.Request, p fe
 		// own 502-class tool error during rollout; the runtime treats
 		// tool errors uniformly.
 		log.Printf("web_fetch gateway status=%d agent=%s url=%q", resp.StatusCode, principal.Agent.ID, target)
-		writeError(w, http.StatusBadGateway, "fetch_failed", "fetch failed (blocked by network policy or unreachable target)")
+		writeError(w, http.StatusBadGateway, "fetch_failed", fetchBlockedMsg)
 		return
 	}
 

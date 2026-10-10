@@ -229,6 +229,18 @@ export function buildAuditPath(filters: AuditFilters, isAdmin: boolean): string 
 // filterAuditEntries applies the client-side filters over the fetched
 // window. Empty/whitespace filter values are ignored. Entries without a
 // timestamp are dropped only when a time bound is active.
+function withinTimeRange(
+  entry: AuditEntry,
+  sinceMs: number,
+  untilMs: number,
+): boolean {
+  const ts = entry.timestamp ? Date.parse(entry.timestamp) : NaN;
+  if (!Number.isFinite(ts)) return false;
+  if (Number.isFinite(sinceMs) && ts < sinceMs) return false;
+  if (Number.isFinite(untilMs) && ts > untilMs) return false;
+  return true;
+}
+
 export function filterAuditEntries(entries: AuditEntry[], filters: AuditFilters): AuditEntry[] {
   const agentId = (filters.agentId ?? "").trim();
   const taskId = (filters.taskId ?? "").trim();
@@ -242,24 +254,19 @@ export function filterAuditEntries(entries: AuditEntry[], filters: AuditFilters)
     if (taskId && taskRefFor(entry) !== taskId) return false;
     if (resourceId && entry.resource_id !== resourceId) return false;
     if (filters.decision && deriveDecision(entry).kind !== filters.decision) return false;
-    if (hasRange) {
-      const ts = entry.timestamp ? Date.parse(entry.timestamp) : NaN;
-      if (!Number.isFinite(ts)) return false;
-      if (Number.isFinite(sinceMs) && ts < sinceMs) return false;
-      if (Number.isFinite(untilMs) && ts > untilMs) return false;
-    }
+    if (hasRange && !withinTimeRange(entry, sinceMs, untilMs)) return false;
     return true;
   });
 }
 
 // hasActiveFilters powers the "clear filters" affordance.
 export function hasActiveFilters(filters: AuditFilters): boolean {
-  return Boolean(
-    (filters.agentId ?? "").trim() ||
-      (filters.taskId ?? "").trim() ||
-      (filters.resourceId ?? "").trim() ||
-      filters.decision ||
-      filters.since ||
-      filters.until,
+  return (
+    (filters.agentId ?? "").trim() !== "" ||
+    (filters.taskId ?? "").trim() !== "" ||
+    (filters.resourceId ?? "").trim() !== "" ||
+    Boolean(filters.decision) ||
+    Boolean(filters.since) ||
+    Boolean(filters.until)
   );
 }

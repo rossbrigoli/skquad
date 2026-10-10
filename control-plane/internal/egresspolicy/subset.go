@@ -5,6 +5,13 @@ import (
 	"strings"
 )
 
+// Field-path constants for grant constraint violation fields (S1192).
+const (
+	constraintEgressClassField = "constraints.egress_class"
+	constraintRatePerMinField  = "constraints.rate_per_min"
+	constraintPerToolPrefix    = "constraints.per_tool."
+)
+
 // ValidateGrant enforces the no-escalation invariant (§7/§8):
 // grant.constraints ⊆ resource.policy_ceiling.
 //
@@ -212,7 +219,7 @@ func validateWebGrant(c, ce map[string]json.RawMessage) Violations {
 		v = append(v, denyGrows("constraints.deny_cidrs", listIn(c, "deny_cidrs"), listIn(ce, "deny_cidrs"))...)
 	}
 	if _, has := c["rate_per_min"]; has {
-		v = append(v, numLE("constraints.rate_per_min", intIn(c, "rate_per_min"), intIn(ce, "rate_per_min"))...)
+		v = append(v, numLE(constraintRatePerMinField, intIn(c, "rate_per_min"), intIn(ce, "rate_per_min"))...)
 	}
 	if _, has := c["max_bytes"]; has {
 		v = append(v, numLE("constraints.max_bytes", intIn(c, "max_bytes"), intIn(ce, "max_bytes"))...)
@@ -250,16 +257,10 @@ func validateRestGrant(c, ce map[string]json.RawMessage) Violations {
 		v = append(v, numLE("constraints.max_response_bytes", intIn(c, "max_response_bytes"), intIn(ce, "max_response_bytes"))...)
 	}
 	if _, has := c["rate_per_min"]; has {
-		v = append(v, numLE("constraints.rate_per_min", intIn(c, "rate_per_min"), intIn(ce, "rate_per_min"))...)
+		v = append(v, numLE(constraintRatePerMinField, intIn(c, "rate_per_min"), intIn(ce, "rate_per_min"))...)
 	}
 	if _, has := c["egress_class"]; has {
-		var ec string
-		_ = json.Unmarshal(c["egress_class"], &ec)
-		var cec string
-		if raw, ok := ce["egress_class"]; ok {
-			_ = json.Unmarshal(raw, &cec)
-		}
-		v = append(v, equalField("constraints.egress_class", ec, cec)...)
+		v = append(v, egressClassViolation(c, ce)...)
 	}
 	return sortByField(v)
 }
@@ -284,7 +285,7 @@ func validateMCPGrant(c, ce map[string]json.RawMessage) Violations {
 		v = append(v, denyGrows("constraints.tools_deny", listIn(c, "tools_deny"), listIn(ce, "tools_deny"))...)
 	}
 	if _, has := c["rate_per_min"]; has {
-		v = append(v, numLE("constraints.rate_per_min", intIn(c, "rate_per_min"), intIn(ce, "rate_per_min"))...)
+		v = append(v, numLE(constraintRatePerMinField, intIn(c, "rate_per_min"), intIn(ce, "rate_per_min"))...)
 	}
 	if _, has := c["max_args_bytes"]; has {
 		v = append(v, numLE("constraints.max_args_bytes", intIn(c, "max_args_bytes"), intIn(ce, "max_args_bytes"))...)
@@ -292,13 +293,7 @@ func validateMCPGrant(c, ce map[string]json.RawMessage) Violations {
 	// TG-5 B2a: egress_class must equal the ceiling (internal reach is
 	// admin-only) — same rule as the rest grant.
 	if _, has := c["egress_class"]; has {
-		var ec string
-		_ = json.Unmarshal(c["egress_class"], &ec)
-		var cec string
-		if raw, ok := ce["egress_class"]; ok {
-			_ = json.Unmarshal(raw, &cec)
-		}
-		v = append(v, equalField("constraints.egress_class", ec, cec)...)
+		v = append(v, egressClassViolation(c, ce)...)
 	}
 	if raw, has := c["per_tool"]; has {
 		var cPer map[string]json.RawMessage
@@ -306,48 +301,75 @@ func validateMCPGrant(c, ce map[string]json.RawMessage) Violations {
 			v = append(v, Violation{Field: "constraints.per_tool", Code: "invalid_type", Message: "per_tool must be an object keyed by tool name"})
 			return sortByField(v)
 		}
-		cePer := map[string]map[string]bool{}
-		if ceRaw, ok := ce["per_tool"]; ok {
-			var cePerRaw map[string]json.RawMessage
-			if err := json.Unmarshal(ceRaw, &cePerRaw); err == nil {
-				for name, traw := range cePerRaw {
-					var tObj map[string]json.RawMessage
-					if err := json.Unmarshal(traw, &tObj); err == nil {
-						rc, _ := boolIn(tObj, "requires_confirmation")
-						cePer[name] = map[string]bool{"requires_confirmation": rc}
-					}
-				}
-			}
-		}
+		cePer := ceilingPerToolMap(ce)
 		ceAllow := listIn(ce, "tools_allow")
 		for name, traw := range cPer {
-			var tObj map[string]json.RawMessage
-			if err := json.Unmarshal(traw, &tObj); err != nil {
-				v = append(v, Violation{Field: "constraints.per_tool." + name, Code: "invalid_type", Message: "per_tool entry must be an object"})
-				continue
-			}
-			v = append(v, checkUnknownKeys("constraints.per_tool."+name, tObj, "requires_confirmation")...)
-			if rc, hasRC := boolIn(tObj, "requires_confirmation"); hasRC {
-				if !rc {
-					if ceT, ok := cePer[name]; ok && ceT["requires_confirmation"] {
-						v = append(v, Violation{Field: "constraints.per_tool." + name + ".requires_confirmation", Code: "exceeds_ceiling", Message: "ceiling requires confirmation for this tool"})
-					}
-				}
-			}
-			// per_tool entries must reference a tool inside the ceiling allowlist
-			allowed := false
-			for _, a := range ceAllow {
-				if globCovers(a, name) || a == name {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				v = append(v, Violation{Field: "constraints.per_tool." + name, Code: "not_subset", Message: "tool is outside the ceiling tools_allow list"})
-			}
+			v = append(v, validateMCPPerToolEntry(name, traw, cePer, ceAllow)...)
 		}
 	}
 	return sortByField(v)
+}
+
+// egressClassViolation checks that a grant's egress_class equals the
+// ceiling's (internal reach is admin-only).
+func egressClassViolation(c, ce map[string]json.RawMessage) Violations {
+	var ec string
+	_ = json.Unmarshal(c["egress_class"], &ec)
+	var cec string
+	if raw, ok := ce["egress_class"]; ok {
+		_ = json.Unmarshal(raw, &cec)
+	}
+	return equalField(constraintEgressClassField, ec, cec)
+}
+
+// ceilingPerToolMap parses the ceiling's per_tool entries into
+// name → {requires_confirmation}.
+func ceilingPerToolMap(ce map[string]json.RawMessage) map[string]map[string]bool {
+	cePer := map[string]map[string]bool{}
+	ceRaw, ok := ce["per_tool"]
+	if !ok {
+		return cePer
+	}
+	var cePerRaw map[string]json.RawMessage
+	if err := json.Unmarshal(ceRaw, &cePerRaw); err != nil {
+		return cePer
+	}
+	for name, traw := range cePerRaw {
+		var tObj map[string]json.RawMessage
+		if err := json.Unmarshal(traw, &tObj); err != nil {
+			continue
+		}
+		rc, _ := boolIn(tObj, "requires_confirmation")
+		cePer[name] = map[string]bool{"requires_confirmation": rc}
+	}
+	return cePer
+}
+
+// validateMCPPerToolEntry checks one grant per_tool entry against the
+// parsed ceiling (confirmation requirement + allowlist membership).
+func validateMCPPerToolEntry(name string, traw json.RawMessage, cePer map[string]map[string]bool, ceAllow []string) Violations {
+	var tObj map[string]json.RawMessage
+	if err := json.Unmarshal(traw, &tObj); err != nil {
+		return Violations{{Field: constraintPerToolPrefix + name, Code: "invalid_type", Message: "per_tool entry must be an object"}}
+	}
+	v := checkUnknownKeys(constraintPerToolPrefix+name, tObj, "requires_confirmation")
+	if rc, hasRC := boolIn(tObj, "requires_confirmation"); hasRC && !rc {
+		if ceT, ok := cePer[name]; ok && ceT["requires_confirmation"] {
+			v = append(v, Violation{Field: constraintPerToolPrefix + name + ".requires_confirmation", Code: "exceeds_ceiling", Message: "ceiling requires confirmation for this tool"})
+		}
+	}
+	// per_tool entries must reference a tool inside the ceiling allowlist
+	allowed := false
+	for _, a := range ceAllow {
+		if globCovers(a, name) || a == name {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		v = append(v, Violation{Field: constraintPerToolPrefix + name, Code: "not_subset", Message: "tool is outside the ceiling tools_allow list"})
+	}
+	return v
 }
 
 func validateGitGrant(c, ce map[string]json.RawMessage) Violations {
@@ -366,7 +388,7 @@ func validateGitGrant(c, ce map[string]json.RawMessage) Violations {
 		}
 	}
 	if _, has := c["rate_per_min"]; has {
-		v = append(v, numLE("constraints.rate_per_min", intIn(c, "rate_per_min"), intIn(ce, "rate_per_min"))...)
+		v = append(v, numLE(constraintRatePerMinField, intIn(c, "rate_per_min"), intIn(ce, "rate_per_min"))...)
 	}
 	return sortByField(v)
 }
@@ -408,7 +430,7 @@ func validateSSHGrant(c, ce map[string]json.RawMessage) Violations {
 		if raw, ok := ce["egress_class"]; ok {
 			_ = json.Unmarshal(raw, &cec)
 		}
-		v = append(v, equalField("constraints.egress_class", ec, cec)...)
+		v = append(v, equalField(constraintEgressClassField, ec, cec)...)
 	}
 	return sortByField(v)
 }

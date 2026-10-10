@@ -40,9 +40,15 @@ function errMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
-export function ConfirmationDecisionCard({ messageId }: { readonly messageId: string }) {
+export function ConfirmationDecisionCard({
+  messageId,
+}: {
+  readonly messageId: string;
+}) {
   const { token } = useAuth();
-  const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(null);
+  const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(
+    null,
+  );
   const [decided, setDecided] = useState<ConfirmationState | "">("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -56,7 +62,10 @@ export function ConfirmationDecisionCard({ messageId }: { readonly messageId: st
     listConfirmations(token, { mine: true, state: "pending" })
       .then((list) => {
         if (cancelled) return;
-        const match = matchConfirmationForInboxMessage(Array.isArray(list) ? list : [], messageId);
+        const match = matchConfirmationForInboxMessage(
+          Array.isArray(list) ? list : [],
+          messageId,
+        );
         if (match && match.state === "pending") setConfirmation(match);
       })
       .catch(() => {
@@ -71,8 +80,8 @@ export function ConfirmationDecisionCard({ messageId }: { readonly messageId: st
   const runDecision = useCallback(
     async (kind: Decision, action: () => Promise<unknown>) => {
       if (!confirmation || busy) return;
-      const optimistic: ConfirmationState =
-        kind === "approved_once" ? "approved_once" : kind === "approved_standing" ? "approved_standing" : "denied";
+      // Decision values are a strict subset of ConfirmationState and map to themselves.
+      const optimistic: ConfirmationState = kind;
       // Optimistic flip: badge + disabled buttons land immediately.
       setBusy(true);
       setError("");
@@ -97,6 +106,124 @@ export function ConfirmationDecisionCard({ messageId }: { readonly messageId: st
   const decidedState = decided || confirmation.state;
   const isDecided = decidedState !== "pending";
 
+  const renderActions = () => {
+    if (showDeny) {
+      return (
+        <div className="confirmation-deny-form">
+          <label className="field">
+            <span>Reason (shared with the agent)</span>
+            <input
+              value={denyReason}
+              onChange={(e) => setDenyReason(e.target.value)}
+              placeholder="Why is this denied?"
+              aria-label="Denial reason"
+            />
+          </label>
+          <div className="confirmation-action-row">
+            <button
+              type="button"
+              className="btn btn-danger"
+              disabled={busy}
+              onClick={() =>
+                runDecision("denied", () =>
+                  denyConfirmation(
+                    token,
+                    confirmation.id,
+                    denyReason.trim() || "denied",
+                  ),
+                )
+              }
+            >
+              Confirm Deny
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={() => setShowDeny(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      );
+    }
+    if (showStanding) {
+      return (
+        <div className="confirmation-standing-form">
+          <label className="field">
+            <span>Standing grant expires</span>
+            <input
+              type="date"
+              value={expiryDate}
+              min={new Date().toISOString().slice(0, 10)}
+              onChange={(e) => setExpiryDate(e.target.value)}
+              aria-label="Standing grant expiry date"
+            />
+          </label>
+          <div className="confirmation-action-row">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || dateInputToIso(expiryDate) === ""}
+              onClick={() =>
+                runDecision("approved_standing", () =>
+                  approveConfirmationStanding(
+                    token,
+                    confirmation.id,
+                    dateInputToIso(expiryDate),
+                  ),
+                )
+              }
+            >
+              Confirm standing approval
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={() => setShowStanding(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <>
+        <button
+          type="button"
+          className="btn btn-danger confirmation-btn-deny"
+          disabled={busy}
+          onClick={() => setShowDeny(true)}
+        >
+          Deny
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary confirmation-btn-approve"
+          disabled={busy}
+          onClick={() =>
+            runDecision("approved_once", () =>
+              approveConfirmationOnce(token, confirmation.id),
+            )
+          }
+        >
+          Approve
+        </button>
+        <button
+          type="button"
+          className="btn confirmation-btn-standing"
+          disabled={busy}
+          onClick={() => setShowStanding(true)}
+        >
+          Approve This and Future
+        </button>
+      </>
+    );
+  };
+
   return (
     <section className="confirmation-card" aria-label="Confirmation decision">
       <div className="confirmation-card-head">
@@ -119,95 +246,11 @@ export function ConfirmationDecisionCard({ messageId }: { readonly messageId: st
       ) : null}
       {isDecided ? (
         <p className="confirmation-decided-note">
-          Decision recorded — this card is final. Manage standing authorizations under
-          Settings → Standing Grants.
+          Decision recorded — this card is final. Manage standing authorizations
+          under Settings → Standing Grants.
         </p>
       ) : (
-        <div className="confirmation-actions">
-          {showDeny ? (
-            <div className="confirmation-deny-form">
-              <label className="field">
-                <span>Reason (shared with the agent)</span>
-                <input
-                  value={denyReason}
-                  onChange={(e) => setDenyReason(e.target.value)}
-                  placeholder="Why is this denied?"
-                  aria-label="Denial reason"
-                />
-              </label>
-              <div className="confirmation-action-row">
-                <button
-                  type="button"
-                  className="btn btn-danger"
-                  disabled={busy}
-                  onClick={() => runDecision("denied", () => denyConfirmation(token, confirmation.id, denyReason.trim() || "denied"))}
-                >
-                  Confirm Deny
-                </button>
-                <button type="button" className="btn" disabled={busy} onClick={() => setShowDeny(false)}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : showStanding ? (
-            <div className="confirmation-standing-form">
-              <label className="field">
-                <span>Standing grant expires</span>
-                <input
-                  type="date"
-                  value={expiryDate}
-                  min={new Date().toISOString().slice(0, 10)}
-                  onChange={(e) => setExpiryDate(e.target.value)}
-                  aria-label="Standing grant expiry date"
-                />
-              </label>
-              <div className="confirmation-action-row">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={busy || dateInputToIso(expiryDate) === ""}
-                  onClick={() =>
-                    runDecision("approved_standing", () =>
-                      approveConfirmationStanding(token, confirmation.id, dateInputToIso(expiryDate)),
-                    )
-                  }
-                >
-                  Confirm standing approval
-                </button>
-                <button type="button" className="btn" disabled={busy} onClick={() => setShowStanding(false)}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <button
-                type="button"
-                className="btn btn-danger confirmation-btn-deny"
-                disabled={busy}
-                onClick={() => setShowDeny(true)}
-              >
-                Deny
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary confirmation-btn-approve"
-                disabled={busy}
-                onClick={() => runDecision("approved_once", () => approveConfirmationOnce(token, confirmation.id))}
-              >
-                Approve
-              </button>
-              <button
-                type="button"
-                className="btn confirmation-btn-standing"
-                disabled={busy}
-                onClick={() => setShowStanding(true)}
-              >
-                Approve This and Future
-              </button>
-            </>
-          )}
-        </div>
+        <div className="confirmation-actions">{renderActions()}</div>
       )}
     </section>
   );

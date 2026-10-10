@@ -46,6 +46,13 @@ const (
 	routeAIModel          = "/ai-models/{modelID}"
 	routeRegistryResource = "/registry/{registryType}/{resourceID}"
 
+	// BYO credential custody messages/codes (S-1192).
+	agentCredentialRoute            = "/registry/{registryType}/{resourceID}/agent-credentials/{agentID}"
+	invalidAuthPayloadCode          = "invalid_auth_payload"
+	authPayloadFailedValidationMsg  = "auth payload failed validation"
+	secretStoreUnavailableCode      = "secret_store_unavailable"
+	byoRequiresKubeSecretStorageMsg = "BYO credentials require Kubernetes secret storage"
+
 	// errWrapFormat wraps a sentinel error with a contextual field name.
 	errWrapFormat               = "%w: %s"
 	auditAccessDenied           = "access.denied"
@@ -828,9 +835,9 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Post("/registry/{registryType}/{resourceID}/approve-tools", s.approveMCPTools)
 			// TG-4c (S-259): per-agent BYO REST credentials — set/probe/
 			// clear one agent's own credential (write-only; owner or admin).
-			r.Put("/registry/{registryType}/{resourceID}/agent-credentials/{agentID}", s.putRestAgentCredential)
-			r.Get("/registry/{registryType}/{resourceID}/agent-credentials/{agentID}", s.getRestAgentCredentialStatus)
-			r.Delete("/registry/{registryType}/{resourceID}/agent-credentials/{agentID}", s.deleteRestAgentCredential)
+			r.Put(agentCredentialRoute, s.putRestAgentCredential)
+			r.Get(agentCredentialRoute, s.getRestAgentCredentialStatus)
+			r.Delete(agentCredentialRoute, s.deleteRestAgentCredential)
 			r.Delete(routeRegistryResource, s.deleteRegistryResource)
 
 			r.Get("/metering/summary", s.getMeteringSummary)
@@ -1515,6 +1522,22 @@ func (s *Server) reconcileGatewayKeys(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// createRegistryResourceReq is the POST body for registry resource
+// creation (named for helper reuse, S-3776 extraction).
+type createRegistryResourceReq struct {
+	Name           string          `json:"name"`
+	Description    string          `json:"description"`
+	Endpoint       string          `json:"endpoint"`
+	AuthRef        string          `json:"auth_ref"`
+	Auth           json.RawMessage `json:"auth"`
+	Manifest       json.RawMessage `json:"manifest"`
+	EndpointConfig json.RawMessage `json:"endpoint_config"`
+	PolicyCeiling  json.RawMessage `json:"policy_ceiling"`
+	RiskTier       string          `json:"risk_tier"`
+	EgressClass    string          `json:"egress_class"`
+	OwnerUserID    string          `json:"owner_user_id"`
+}
+
 func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
@@ -1523,29 +1546,71 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	var req struct {
-		Name           string          `json:"name"`
-		Description    string          `json:"description"`
-		Endpoint       string          `json:"endpoint"`
-		AuthRef        string          `json:"auth_ref"`
-		Auth           json.RawMessage `json:"auth"`
-		Manifest       json.RawMessage `json:"manifest"`
-		EndpointConfig json.RawMessage `json:"endpoint_config"`
-		PolicyCeiling  json.RawMessage `json:"policy_ceiling"`
-		RiskTier       string          `json:"risk_tier"`
-		EgressClass    string          `json:"egress_class"`
-		OwnerUserID    string          `json:"owner_user_id"`
-	}
+	var req createRegistryResourceReq
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if !validateName(w, req.Name) {
 		return
 	}
+	if !validateCreateResourceShape(w, typ, &req) {
+		return
+	}
+	byoAuth, ok := s.resolveBYOAuthForCreate(w, typ, &req)
+	if !ok {
+		return
+	}
+	if !s.validateCreateOwner(w, r.Context(), req.OwnerUserID) {
+		return
+	}
+	if len(req.Manifest) == 0 {
+		req.Manifest = json.RawMessage(`{}`)
+	}
+	u := currentUser(r.Context())
+	resource := buildRegistryResource(typ, &req, u.ID)
+	created, err := s.store.CreateResource(s.pendingUserAuditCtx(r, "registry.resource.create", string(typ), "", "", nil), resource)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	// TG-5 slice B2a: MCP snapshot — enumerate the REAL tool set through
+	// the gateway before the resource is usable, and validate the ceiling's
+	// tools_allow against it. Any failure compensates by deleting the row:
+	// a half-registered MCP resource must never exist.
+	if typ == domain.ResMCP && !s.snapshotMCPForCreate(w, r.Context(), created, byoAuth) {
+		return
+	}
+	if len(byoAuth) > 0 {
+		updated, ok := s.attachCreatedResourceSecret(w, r.Context(), created, byoAuth)
+		if !ok {
+			return
+		}
+		created = updated
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+// validateCreateOwner checks that a create request's optional owner reference
+// resolves to an existing user. Extracted from createRegistryResource to keep
+// cognitive complexity within limits (S-268/S3776).
+func (s *Server) validateCreateOwner(w http.ResponseWriter, ctx context.Context, ownerUserID string) bool {
+	if ownerUserID == "" {
+		return true
+	}
+	if _, err := s.store.GetUser(ctx, ownerUserID); err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	return true
+}
+
+// validateCreateResourceShape runs the workspace + typed-shape gates
+// for a create request.
+func validateCreateResourceShape(w http.ResponseWriter, typ domain.ResourceType, req *createRegistryResourceReq) bool {
 	if typ == domain.ResProjectWorkspace {
 		if msg, ok := validateGitWorkspace(req.Endpoint, req.AuthRef, req.Manifest); !ok {
 			writeError(w, http.StatusBadRequest, "bad_request", msg)
-			return
+			return false
 		}
 	}
 	// TG-2: typed egress resources validate endpoint_config/policy_ceiling
@@ -1553,87 +1618,109 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 	// violations before anything is written.
 	if v := validateTypedResourceFields(string(typ), req.EndpointConfig, req.PolicyCeiling, req.RiskTier, req.EgressClass); len(v) > 0 {
 		writeViolations(w, "invalid_resource_shape", "resource config/ceiling failed validation", v)
-		return
+		return false
 	}
-	// TG-4: BYO credentials — validate the write-only auth payload
-	// against the declared auth_kind before anything is written. The
-	// secret itself lands in a managed K8s Secret after the row exists
-	// (name derived from the row id); the response never carries it.
-	// TG-4b: git resources join the same custody flow with a fixed
-	// bearer kind (PAT) and the "skquad-git-" Secret prefix.
-	// TG-5 slice B2a: mcp resources join with a fixed bearer kind and
-	// the "skquad-mcp-" prefix; the token is MANDATORY because
-	// registration enumerates the upstream through the gateway with it.
-	var byoAuth map[string]string
+	return true
+}
+
+// resolveBYOAuthForCreate validates and collects the write-only BYO
+// auth payload for a create (TG-4/TG-4b/TG-5/TG-6). Returns
+// (fields, handled-ok); on false the failure response is already
+// written. The secret itself lands in a managed K8s Secret after the
+// row exists (name derived from the row id); the response never
+// carries it.
+func (s *Server) resolveBYOAuthForCreate(w http.ResponseWriter, typ domain.ResourceType, req *createRegistryResourceReq) (map[string]string, bool) {
 	// TG-6 slice D: browser-driver mcp resources broker auth via
 	// gateway-managed session tokens; a BYO bearer is OPTIONAL (custody
 	// still applies when one is supplied) and the ceiling carries the
 	// browser policy shape instead of the plain-mcp one.
 	browserResource := typ == domain.ResMCP && egresspolicy.IsBrowserConfig(req.EndpointConfig)
-	if typ == domain.ResRest || typ == domain.ResGit || (typ == domain.ResMCP && !browserResource) {
-		kind := restAuthKindFromConfig(req.EndpointConfig)
-		if typ == domain.ResGit {
-			kind = gitAuthKind
+	switch {
+	case typ == domain.ResRest || typ == domain.ResGit || (typ == domain.ResMCP && !browserResource):
+		return s.resolvePlainBYOAuthForCreate(w, typ, req)
+	case browserResource:
+		return s.resolveBrowserBYOAuthForCreate(w, req)
+	case !isEmptyJSONObject(req.Auth):
+		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest, git and mcp resources")
+		return nil, false
+	}
+	return nil, true
+}
+
+// resolvePlainBYOAuthForCreate handles the rest/git/plain-mcp BYO
+// payload (TG-4b: git uses a fixed bearer kind (PAT) and the
+// "skquad-git-" Secret prefix; TG-5 slice B2a: mcp uses a fixed
+// bearer kind and the "skquad-mcp-" prefix — the token is MANDATORY
+// because registration enumerates the upstream through the gateway
+// with it).
+func (s *Server) resolvePlainBYOAuthForCreate(w http.ResponseWriter, typ domain.ResourceType, req *createRegistryResourceReq) (map[string]string, bool) {
+	kind := restAuthKindFromConfig(req.EndpointConfig)
+	if typ == domain.ResGit {
+		kind = gitAuthKind
+	}
+	if typ == domain.ResMCP {
+		if k := restAuthKindFromConfig(req.EndpointConfig); k != "bearer" {
+			writeError(w, http.StatusBadRequest, "bad_request", "mcp resources require endpoint_config.auth_kind=bearer")
+			return nil, false
 		}
-		if typ == domain.ResMCP {
-			if k := restAuthKindFromConfig(req.EndpointConfig); k != "bearer" {
-				writeError(w, http.StatusBadRequest, "bad_request", "mcp resources require endpoint_config.auth_kind=bearer")
-				return
-			}
-			kind = "bearer"
-		}
-		fields, v := parseRestAuth(kind, req.Auth)
+		kind = "bearer"
+	}
+	fields, v := parseRestAuth(kind, req.Auth)
+	if len(v) > 0 {
+		writeViolations(w, invalidAuthPayloadCode, authPayloadFailedValidationMsg, v)
+		return nil, false
+	}
+	if len(fields) > 0 && s.resourceSecrets == nil {
+		writeError(w, http.StatusServiceUnavailable, secretStoreUnavailableCode, byoRequiresKubeSecretStorageMsg)
+		return nil, false
+	}
+	if typ == domain.ResMCP && len(fields) == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "mcp registration requires a bearer credential (auth.token) to enumerate the upstream")
+		return nil, false
+	}
+	return fields, true
+}
+
+// resolveBrowserBYOAuthForCreate handles the optional BYO bearer on a
+// browser-driver mcp resource and re-materializes the browser ceiling
+// defaults so the grant payload the gateway reads is fully explicit
+// (the gateway would fold the same defaults; explicit beats implicit).
+func (s *Server) resolveBrowserBYOAuthForCreate(w http.ResponseWriter, req *createRegistryResourceReq) (map[string]string, bool) {
+	var byoAuth map[string]string
+	if !isEmptyJSONObject(req.Auth) {
+		fields, v := parseRestAuth("bearer", req.Auth)
 		if len(v) > 0 {
-			writeViolations(w, "invalid_auth_payload", "auth payload failed validation", v)
-			return
+			writeViolations(w, invalidAuthPayloadCode, authPayloadFailedValidationMsg, v)
+			return nil, false
 		}
 		if len(fields) > 0 && s.resourceSecrets == nil {
-			writeError(w, http.StatusServiceUnavailable, "secret_store_unavailable", "BYO credentials require Kubernetes secret storage")
-			return
-		}
-		if typ == domain.ResMCP && len(fields) == 0 {
-			writeError(w, http.StatusBadRequest, "bad_request", "mcp registration requires a bearer credential (auth.token) to enumerate the upstream")
-			return
+			writeError(w, http.StatusServiceUnavailable, secretStoreUnavailableCode, byoRequiresKubeSecretStorageMsg)
+			return nil, false
 		}
 		byoAuth = fields
-	} else if browserResource {
-		if !isEmptyJSONObject(req.Auth) {
-			fields, v := parseRestAuth("bearer", req.Auth)
-			if len(v) > 0 {
-				writeViolations(w, "invalid_auth_payload", "auth payload failed validation", v)
-				return
-			}
-			if len(fields) > 0 && s.resourceSecrets == nil {
-				writeError(w, http.StatusServiceUnavailable, "secret_store_unavailable", "BYO credentials require Kubernetes secret storage")
-				return
-			}
-			byoAuth = fields
-		}
-	} else if !isEmptyJSONObject(req.Auth) {
-		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest, git and mcp resources")
-		return
 	}
-	// TG-6 slice D: materialize the browser ceiling defaults so the
-	// grant payload the gateway reads is fully explicit (the gateway
-	// would fold the same defaults; explicit beats implicit here).
-	if browserResource {
-		normalized, nv := egresspolicy.NormalizeBrowserCeiling(req.PolicyCeiling)
-		if len(nv) > 0 {
-			writeViolations(w, "invalid_resource_shape", "browser ceiling failed normalization", nv)
-			return
-		}
-		req.PolicyCeiling = normalized
+	normalized, ok := normalizeBrowserCeilingUpdate(w, req.PolicyCeiling)
+	if !ok {
+		return nil, false
 	}
-	if req.OwnerUserID != "" {
-		if _, err := s.store.GetUser(r.Context(), req.OwnerUserID); err != nil {
-			writeStorageError(w, err)
-			return
-		}
+	req.PolicyCeiling = normalized
+	return byoAuth, true
+}
+
+// normalizeBrowserCeilingUpdate folds the browser ceiling defaults in,
+// answering with violations when normalization fails.
+func normalizeBrowserCeilingUpdate(w http.ResponseWriter, ceiling json.RawMessage) (json.RawMessage, bool) {
+	normalized, nv := egresspolicy.NormalizeBrowserCeiling(ceiling)
+	if len(nv) > 0 {
+		writeViolations(w, "invalid_resource_shape", "browser ceiling failed normalization", nv)
+		return nil, false
 	}
-	if len(req.Manifest) == 0 {
-		req.Manifest = json.RawMessage(`{}`)
-	}
-	u := currentUser(r.Context())
+	return normalized, true
+}
+
+// buildRegistryResource assembles the domain row from the create
+// request.
+func buildRegistryResource(typ domain.ResourceType, req *createRegistryResourceReq, registeredBy string) *domain.RegistryResource {
 	resource := &domain.RegistryResource{
 		Type:         typ,
 		Name:         strings.TrimSpace(req.Name),
@@ -1642,7 +1729,7 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 		AuthRef:      req.AuthRef,
 		Manifest:     req.Manifest,
 		Status:       domain.ResourceActive,
-		RegisteredBy: u.ID,
+		RegisteredBy: registeredBy,
 		RiskTier:     req.RiskTier,
 		EgressClass:  req.EgressClass,
 		OwnerUserID:  req.OwnerUserID,
@@ -1653,42 +1740,44 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 	if len(req.PolicyCeiling) > 0 {
 		resource.PolicyCeiling = req.PolicyCeiling
 	}
-	created, err := s.store.CreateResource(s.pendingUserAuditCtx(r, "registry.resource.create", string(typ), "", "", nil), resource)
+	return resource
+}
+
+// snapshotMCPForCreate runs the TG-5 enumerate-and-validate step,
+// compensating with a row delete on any failure.
+func (s *Server) snapshotMCPForCreate(w http.ResponseWriter, ctx context.Context, created *domain.RegistryResource, byoAuth map[string]string) bool {
+	if fail := s.snapshotMCPTools(ctx, created, byoAuth["token"]); fail != nil {
+		s.rollbackCreatedResource(ctx, created, "after enumerate failure")
+		fail.respond(w)
+		return false
+	}
+	return true
+}
+
+// rollbackCreatedResource deletes a just-created row whose post-create
+// step failed; a half-registered resource must never exist.
+func (s *Server) rollbackCreatedResource(ctx context.Context, created *domain.RegistryResource, why string) {
+	if delErr := s.store.DeleteResource(ctx, created.Type, created.ID); delErr != nil {
+		log.Printf("resource %s: rollback %s: %v", created.ID, why, delErr)
+	}
+}
+
+// attachCreatedResourceSecret stores the BYO credential for a freshly
+// created resource and persists the resulting auth_ref, compensating
+// with a row delete when the secret cannot land (same posture as
+// provider keys).
+func (s *Server) attachCreatedResourceSecret(w http.ResponseWriter, ctx context.Context, created *domain.RegistryResource, byoAuth map[string]string) (*domain.RegistryResource, bool) {
+	if err := s.setResourceSecret(ctx, created, byoAuth); err != nil {
+		s.rollbackCreatedResource(ctx, created, "after secret failure")
+		writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the resource credential as a Kubernetes Secret")
+		return nil, false
+	}
+	updated, err := s.store.UpdateResource(ctx, created)
 	if err != nil {
 		writeStorageError(w, err)
-		return
+		return nil, false
 	}
-	// TG-5 slice B2a: MCP snapshot — enumerate the REAL tool set through
-	// the gateway before the resource is usable, and validate the ceiling's
-	// tools_allow against it. Any failure compensates by deleting the row:
-	// a half-registered MCP resource must never exist.
-	if typ == domain.ResMCP {
-		if fail := s.snapshotMCPTools(r.Context(), created, byoAuth["token"]); fail != nil {
-			if delErr := s.store.DeleteResource(r.Context(), created.Type, created.ID); delErr != nil {
-				log.Printf("mcp resource %s: rollback after enumerate failure: %v", created.ID, delErr)
-			}
-			fail.respond(w)
-			return
-		}
-	}
-	if len(byoAuth) > 0 {
-		if err := s.setResourceSecret(r.Context(), created, byoAuth); err != nil {
-			// Compensate: never leave a resource row whose secret failed
-			// to land in the Secret store (same posture as provider keys).
-			if delErr := s.store.DeleteResource(r.Context(), created.Type, created.ID); delErr != nil {
-				log.Printf("rest resource %s: rollback after secret failure: %v", created.ID, delErr)
-			}
-			writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the resource credential as a Kubernetes Secret")
-			return
-		}
-		updated, err := s.store.UpdateResource(r.Context(), created)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		created = updated
-	}
-	writeJSON(w, http.StatusCreated, created)
+	return updated, true
 }
 
 func (s *Server) listRegistryResources(w http.ResponseWriter, r *http.Request) {
@@ -1723,6 +1812,48 @@ func (s *Server) getRegistryResource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resource)
 }
 
+// updateRegistryResourceReq is the PATCH body for registry resource
+// updates (named for helper reuse, S-3776 extraction).
+type updateRegistryResourceReq struct {
+	Name           *string          `json:"name"`
+	Description    *string          `json:"description"`
+	Endpoint       *string          `json:"endpoint"`
+	AuthRef        *string          `json:"auth_ref"`
+	Auth           *json.RawMessage `json:"auth"`
+	Manifest       *json.RawMessage `json:"manifest"`
+	EndpointConfig *json.RawMessage `json:"endpoint_config"`
+	PolicyCeiling  *json.RawMessage `json:"policy_ceiling"`
+	RiskTier       *string          `json:"risk_tier"`
+	EgressClass    *string          `json:"egress_class"`
+	OwnerUserID    *string          `json:"owner_user_id"`
+}
+
+// updateEffective carries the post-request values of the typed fields
+// (stored value overridden by any provided update).
+type updateEffective struct {
+	config      json.RawMessage
+	ceiling     json.RawMessage
+	riskTier    string
+	egressClass string
+}
+
+// applyBrowserCeilingUpdate re-materializes browser-driver ceiling defaults on
+// update so the stored ceiling stays fully explicit for the gateway's policy
+// fold (TG-6 slice D). Non-browser resources and requests without a ceiling
+// change pass through unchanged. Extracted from updateRegistryResource to keep
+// cognitive complexity within limits (S-268/S3776).
+func (s *Server) applyBrowserCeilingUpdate(w http.ResponseWriter, browserResource bool, req *updateRegistryResourceReq, eff *updateEffective) bool {
+	if !browserResource || req.PolicyCeiling == nil {
+		return true
+	}
+	normalized, ok := normalizeBrowserCeilingUpdate(w, eff.ceiling)
+	if !ok {
+		return false
+	}
+	eff.ceiling = normalized
+	return true
+}
+
 func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
@@ -1736,25 +1867,80 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 		writeStorageError(w, err)
 		return
 	}
-	var req struct {
-		Name           *string          `json:"name"`
-		Description    *string          `json:"description"`
-		Endpoint       *string          `json:"endpoint"`
-		AuthRef        *string          `json:"auth_ref"`
-		Auth           *json.RawMessage `json:"auth"`
-		Manifest       *json.RawMessage `json:"manifest"`
-		EndpointConfig *json.RawMessage `json:"endpoint_config"`
-		PolicyCeiling  *json.RawMessage `json:"policy_ceiling"`
-		RiskTier       *string          `json:"risk_tier"`
-		EgressClass    *string          `json:"egress_class"`
-		OwnerUserID    *string          `json:"owner_user_id"`
-	}
+	var req updateRegistryResourceReq
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if !applyUpdateScalarFields(w, resource, &req) {
+		return
+	}
+	eff := resolveUpdateEffective(resource, &req)
+	// TG-2: validate any typed-field changes against the resource's type
+	// before writing. Ceiling changes are checked for shape here; the
+	// grant-change linter (inv.4, TG-8) adds risky-delta review later.
+	if v := validateTypedResourceFields(string(resource.Type), eff.config, eff.ceiling, eff.riskTier, eff.egressClass); len(v) > 0 {
+		writeViolations(w, "invalid_resource_shape", "resource config/ceiling failed validation", v)
+		return
+	}
+	// TG-6 slice D: browser-driver resources re-materialize the ceiling
+	// defaults on update so the stored ceiling stays fully explicit for
+	// the gateway's policy fold.
+	browserResource := resource.Type == domain.ResMCP && egresspolicy.IsBrowserConfig(eff.config)
+	if !s.applyBrowserCeilingUpdate(w, browserResource, &req, &eff) {
+		return
+	}
+	// TG-5 slice B2a: MCP snapshot maintenance. Rotating the bearer or
+	// moving the upstream URL re-enumerates through the gateway (the
+	// snapshot must describe what the URL actually serves); a ceiling
+	// change alone is validated against the effective stored snapshot so
+	// admins still cannot allowlist tools that do not exist. Runs BEFORE
+	// the field assignments below so the old config is still readable.
+	if resource.Type == domain.ResMCP && !s.mcpUpdateMaintenance(w, r, resource, &req, eff, browserResource) {
+		return
+	}
+	commitUpdateTypedFields(resource, &req, eff)
+	if req.OwnerUserID != nil && !s.applyUpdateOwner(w, r, resource, *req.OwnerUserID) {
+		return
+	}
+	if !s.validateAndRotateUpdateAuth(w, r, resource, eff, &req) {
+		return
+	}
+	updated, err := s.store.UpdateResource(s.pendingUserAuditCtx(r, "registry.resource.update", string(typ), resource.ID, "", nil), resource)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// validateAndRotateUpdateAuth enforces the BYO auth payload type gate and
+// performs REST credential rotation for an update. `auth` (write-only) replaces
+// the managed Secret contents; rotating to auth_kind=none drops the managed
+// Secret and blanks the ref. Values never echo back. Extracted from
+// updateRegistryResource to keep cognitive complexity within limits (S-268/S3776).
+func (s *Server) validateAndRotateUpdateAuth(
+	w http.ResponseWriter,
+	r *http.Request,
+	resource *domain.RegistryResource,
+	eff updateEffective,
+	req *updateRegistryResourceReq,
+) bool {
+	if req.Auth != nil && resource.Type != domain.ResRest && resource.Type != domain.ResMCP {
+		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest and mcp resources")
+		return false
+	}
+	if resource.Type == domain.ResRest && req.Auth != nil && !s.rotateRestCredential(w, r, resource, eff.config, *req.Auth) {
+		return false
+	}
+	return true
+}
+
+// applyUpdateScalarFields applies the non-typed scalar fields, answering
+// with a violation when the name is invalid.
+func applyUpdateScalarFields(w http.ResponseWriter, resource *domain.RegistryResource, req *updateRegistryResourceReq) bool {
 	if req.Name != nil {
 		if !validateName(w, *req.Name) {
-			return
+			return false
 		}
 		resource.Name = strings.TrimSpace(*req.Name)
 	}
@@ -1770,108 +1956,41 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 	if req.Manifest != nil {
 		resource.Manifest = *req.Manifest
 	}
-	// TG-2: validate any typed-field changes against the resource's type
-	// before writing. Ceiling changes are checked for shape here; the
-	// grant-change linter (inv.4, TG-8) adds risky-delta review later.
-	newConfig := resource.EndpointConfig
+	return true
+}
+
+// resolveUpdateEffective computes the post-request typed-field values
+// without committing them (MCP maintenance needs the old config).
+func resolveUpdateEffective(resource *domain.RegistryResource, req *updateRegistryResourceReq) updateEffective {
+	eff := updateEffective{
+		config:      resource.EndpointConfig,
+		ceiling:     resource.PolicyCeiling,
+		riskTier:    resource.RiskTier,
+		egressClass: resource.EgressClass,
+	}
 	if req.EndpointConfig != nil {
-		newConfig = *req.EndpointConfig
+		eff.config = *req.EndpointConfig
 	}
-	newCeiling := resource.PolicyCeiling
 	if req.PolicyCeiling != nil {
-		newCeiling = *req.PolicyCeiling
+		eff.ceiling = *req.PolicyCeiling
 	}
-	riskTier := resource.RiskTier
 	if req.RiskTier != nil {
-		riskTier = *req.RiskTier
+		eff.riskTier = *req.RiskTier
 	}
-	egressClass := resource.EgressClass
 	if req.EgressClass != nil {
-		egressClass = *req.EgressClass
+		eff.egressClass = *req.EgressClass
 	}
-	if v := validateTypedResourceFields(string(resource.Type), newConfig, newCeiling, riskTier, egressClass); len(v) > 0 {
-		writeViolations(w, "invalid_resource_shape", "resource config/ceiling failed validation", v)
-		return
-	}
-	// TG-6 slice D: browser-driver resources re-materialize the ceiling
-	// defaults on update so the stored ceiling stays fully explicit for
-	// the gateway's policy fold.
-	browserResource := resource.Type == domain.ResMCP && egresspolicy.IsBrowserConfig(newConfig)
-	if browserResource && req.PolicyCeiling != nil {
-		normalized, nv := egresspolicy.NormalizeBrowserCeiling(newCeiling)
-		if len(nv) > 0 {
-			writeViolations(w, "invalid_resource_shape", "browser ceiling failed normalization", nv)
-			return
-		}
-		newCeiling = normalized
-	}
-	// TG-5 slice B2a: MCP snapshot maintenance. Rotating the bearer or
-	// moving the upstream URL re-enumerates through the gateway (the
-	// snapshot must describe what the URL actually serves); a ceiling
-	// change alone is validated against the effective stored snapshot so
-	// admins still cannot allowlist tools that do not exist. Runs BEFORE
-	// the field assignments below so the old config is still readable.
-	if resource.Type == domain.ResMCP {
-		mcpToken := ""
-		if req.Auth != nil {
-			fields, v := parseRestAuth("bearer", *req.Auth)
-			if len(v) > 0 {
-				writeViolations(w, "invalid_auth_payload", "auth payload failed validation", v)
-				return
-			}
-			if strings.TrimSpace(fields["token"]) == "" && !browserResource {
-				writeError(w, http.StatusBadRequest, "bad_request", "mcp rotation requires a bearer credential (auth.token)")
-				return
-			}
-			mcpToken = fields["token"]
-		}
-		urlChanged := req.EndpointConfig != nil && mcpURLFromConfig(newConfig) != mcpURLFromConfig(resource.EndpointConfig)
-		switch {
-		case mcpToken != "" || urlChanged:
-			if mcpToken == "" {
-				if browserResource {
-					// Browser upstream needs no BYO credential (session-
-					// brokered auth); enumerate with the placeholder and
-					// store no Secret.
-					mcpToken = browserEnumeratePlaceholder
-				} else {
-					// URL moved with no fresh credential: reuse the stored one.
-					tok, err := s.mcpStoredToken(r.Context(), resource)
-					if err != nil {
-						writeError(w, http.StatusServiceUnavailable, "credentials_unavailable", "stored MCP credential could not be resolved to re-enumerate the new upstream URL")
-						return
-					}
-					mcpToken = tok
-				}
-			}
-			resource.EndpointConfig = newConfig
-			if fail := s.snapshotMCPTools(r.Context(), resource, mcpToken); fail != nil {
-				fail.respond(w)
-				return
-			}
-			if mcpToken != browserEnumeratePlaceholder {
-				if err := s.setResourceSecret(r.Context(), resource, map[string]string{"token": mcpToken}); err != nil {
-					writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the MCP credential as a Kubernetes Secret")
-					return
-				}
-			}
-		case req.PolicyCeiling != nil:
-			tools, ok := mcpSnapshotTools(resource.ToolsSnapshot)
-			if !ok || len(tools) == 0 {
-				writeError(w, http.StatusBadRequest, "snapshot_missing", "no MCP tool snapshot to validate the ceiling against; rotate the credential (auth) to re-enumerate")
-				return
-			}
-			if v := mcpAllowlistViolations(newCeiling, tools); len(v) > 0 {
-				writeViolations(w, "invalid_tool_allowlist", "tools_allow entries must exist in the enumerated MCP tool set", v)
-				return
-			}
-		}
-	}
+	return eff
+}
+
+// commitUpdateTypedFields writes the effective typed-field values for
+// the fields the request actually touched.
+func commitUpdateTypedFields(resource *domain.RegistryResource, req *updateRegistryResourceReq, eff updateEffective) {
 	if req.EndpointConfig != nil {
-		resource.EndpointConfig = newConfig
+		resource.EndpointConfig = eff.config
 	}
 	if req.PolicyCeiling != nil {
-		resource.PolicyCeiling = newCeiling
+		resource.PolicyCeiling = eff.ceiling
 	}
 	if req.RiskTier != nil {
 		resource.RiskTier = *req.RiskTier
@@ -1879,54 +1998,124 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 	if req.EgressClass != nil {
 		resource.EgressClass = *req.EgressClass
 	}
-	if req.OwnerUserID != nil {
-		if *req.OwnerUserID != "" {
-			if _, err := s.store.GetUser(r.Context(), *req.OwnerUserID); err != nil {
-				writeStorageError(w, err)
-				return
-			}
+}
+
+// applyUpdateOwner validates and sets the owner_user_id field.
+func (s *Server) applyUpdateOwner(w http.ResponseWriter, r *http.Request, resource *domain.RegistryResource, ownerID string) bool {
+	if ownerID != "" {
+		if _, err := s.store.GetUser(r.Context(), ownerID); err != nil {
+			writeStorageError(w, err)
+			return false
 		}
-		resource.OwnerUserID = *req.OwnerUserID
 	}
-	// TG-4: BYO REST credential rotation. `auth` (write-only) replaces
-	// the managed Secret contents; rotating to auth_kind=none drops the
-	// managed Secret and blanks the ref. Values never echo back.
-	if req.Auth != nil && resource.Type != domain.ResRest && resource.Type != domain.ResMCP {
-		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest and mcp resources")
-		return
+	resource.OwnerUserID = ownerID
+	return true
+}
+
+// mcpUpdateMaintenance performs the TG-5 snapshot maintenance for an
+// mcp resource update. Returns false when the request was answered.
+func (s *Server) mcpUpdateMaintenance(w http.ResponseWriter, r *http.Request, resource *domain.RegistryResource, req *updateRegistryResourceReq, eff updateEffective, browserResource bool) bool {
+	mcpToken := ""
+	if req.Auth != nil {
+		fields, v := parseRestAuth("bearer", *req.Auth)
+		if len(v) > 0 {
+			writeViolations(w, invalidAuthPayloadCode, authPayloadFailedValidationMsg, v)
+			return false
+		}
+		if strings.TrimSpace(fields["token"]) == "" && !browserResource {
+			writeError(w, http.StatusBadRequest, "bad_request", "mcp rotation requires a bearer credential (auth.token)")
+			return false
+		}
+		mcpToken = fields["token"]
 	}
-	if resource.Type == domain.ResRest && req.Auth != nil {
-		kind := restAuthKindFromConfig(newConfig)
-		if kind == "none" {
-			if !isEmptyJSONObject(*req.Auth) {
-				writeViolations(w, "invalid_auth_payload", "auth payload is not allowed with auth_kind=none", nil)
-				return
-			}
-			s.clearResourceSecret(r.Context(), resource)
+	urlChanged := req.EndpointConfig != nil && mcpURLFromConfig(eff.config) != mcpURLFromConfig(resource.EndpointConfig)
+	switch {
+	case mcpToken != "" || urlChanged:
+		return s.reEnumerateMCPForUpdate(w, r, resource, eff.config, mcpToken, browserResource)
+	case req.PolicyCeiling != nil:
+		return validateMCPAgainstSnapshot(w, resource, eff.ceiling)
+	}
+	return true
+}
+
+// reEnumerateMCPForUpdate rotates the upstream (token and/or URL) by
+// re-enumerating through the gateway and re-storing the credential.
+func (s *Server) reEnumerateMCPForUpdate(w http.ResponseWriter, r *http.Request, resource *domain.RegistryResource, newConfig json.RawMessage, mcpToken string, browserResource bool) bool {
+	token := mcpToken
+	if token == "" {
+		if browserResource {
+			// Browser upstream needs no BYO credential (session-
+			// brokered auth); enumerate with the placeholder and
+			// store no Secret.
+			token = browserEnumeratePlaceholder
 		} else {
-			fields, v := parseRestAuth(kind, *req.Auth)
-			if len(v) > 0 {
-				writeViolations(w, "invalid_auth_payload", "auth payload failed validation", v)
-				return
+			// URL moved with no fresh credential: reuse the stored one.
+			tok, err := s.mcpStoredToken(r.Context(), resource)
+			if err != nil {
+				writeError(w, http.StatusServiceUnavailable, "credentials_unavailable", "stored MCP credential could not be resolved to re-enumerate the new upstream URL")
+				return false
 			}
-			if len(fields) > 0 {
-				if s.resourceSecrets == nil {
-					writeError(w, http.StatusServiceUnavailable, "secret_store_unavailable", "BYO credentials require Kubernetes secret storage")
-					return
-				}
-				if err := s.setResourceSecret(r.Context(), resource, fields); err != nil {
-					writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the resource credential as a Kubernetes Secret")
-					return
-				}
-			}
+			token = tok
 		}
 	}
-	updated, err := s.store.UpdateResource(s.pendingUserAuditCtx(r, "registry.resource.update", string(typ), resource.ID, "", nil), resource)
-	if err != nil {
-		writeStorageError(w, err)
-		return
+	resource.EndpointConfig = newConfig
+	if fail := s.snapshotMCPTools(r.Context(), resource, token); fail != nil {
+		fail.respond(w)
+		return false
 	}
-	writeJSON(w, http.StatusOK, updated)
+	if token != browserEnumeratePlaceholder {
+		if err := s.setResourceSecret(r.Context(), resource, map[string]string{"token": token}); err != nil {
+			writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the MCP credential as a Kubernetes Secret")
+			return false
+		}
+	}
+	return true
+}
+
+// validateMCPAgainstSnapshot checks a ceiling-only change against the
+// effective stored tool snapshot.
+func validateMCPAgainstSnapshot(w http.ResponseWriter, resource *domain.RegistryResource, newCeiling json.RawMessage) bool {
+	tools, ok := mcpSnapshotTools(resource.ToolsSnapshot)
+	if !ok || len(tools) == 0 {
+		writeError(w, http.StatusBadRequest, "snapshot_missing", "no MCP tool snapshot to validate the ceiling against; rotate the credential (auth) to re-enumerate")
+		return false
+	}
+	if v := mcpAllowlistViolations(newCeiling, tools); len(v) > 0 {
+		writeViolations(w, "invalid_tool_allowlist", "tools_allow entries must exist in the enumerated MCP tool set", v)
+		return false
+	}
+	return true
+}
+
+// rotateRestCredential applies a BYO REST credential rotation
+// (TG-4). Returns false when the request was answered.
+func (s *Server) rotateRestCredential(w http.ResponseWriter, r *http.Request, resource *domain.RegistryResource, newConfig, authRaw json.RawMessage) bool {
+	kind := restAuthKindFromConfig(newConfig)
+	if kind == "none" {
+		if !isEmptyJSONObject(authRaw) {
+			writeViolations(w, "invalid_auth_payload", "auth payload is not allowed with auth_kind=none", nil)
+			return false
+		}
+		s.clearResourceSecret(r.Context(), resource)
+		return true
+	}
+	fields, v := parseRestAuth(kind, authRaw)
+	if len(v) > 0 {
+		writeViolations(w, invalidAuthPayloadCode, authPayloadFailedValidationMsg, v)
+		return false
+	}
+	if len(fields) == 0 {
+		return true
+	}
+	if s.resourceSecrets == nil {
+		writeError(w, http.StatusServiceUnavailable, secretStoreUnavailableCode, byoRequiresKubeSecretStorageMsg)
+		return false
+	}
+	if err := s.setResourceSecret(r.Context(), resource, fields); err != nil {
+		writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the resource credential as a Kubernetes Secret")
+		return false
+	}
+	return true
 }
 
 func (s *Server) deprecateRegistryResource(w http.ResponseWriter, r *http.Request) {
@@ -3719,26 +3908,8 @@ func (s *Server) buildAgentPermissions(ctx context.Context, w http.ResponseWrite
 		// TG-2 no-escalation invariant: grant constraints must be a
 		// subset of the resource's policy_ceiling. Reject with the full
 		// structured violation list before any write happens.
-		if len(item.Constraints) > 0 && string(item.Constraints) != "{}" {
-			resource, err := s.store.GetResource(ctx, typ, resourceID)
-			if err != nil {
-				writeStorageError(w, err)
-				return nil, false
-			}
-			// TG-6 slice D: browser-driver resources validate against
-			// the flat browser ceiling (tightening-only numerics, deny-
-			// hosts may only grow) instead of the plain-mcp rules.
-			var gv egresspolicy.Violations
-			if egresspolicy.IsBrowserConfig(resource.EndpointConfig) {
-				gv = egresspolicy.ValidateBrowserGrant(item.Constraints, resource.PolicyCeiling)
-			} else {
-				gv = egresspolicy.ValidateGrant(string(resource.Type), item.Constraints, resource.PolicyCeiling)
-			}
-			if len(gv) > 0 {
-				writeViolations(w, "grant_escalation",
-					"grant constraints exceed the resource policy ceiling (no-escalation invariant)", gv)
-				return nil, false
-			}
+		if !s.validateGrantConstraints(ctx, w, typ, resourceID, item.Constraints) {
+			return nil, false
 		}
 		key := string(typ) + ":" + resourceID
 		if seen[key] {
@@ -3754,6 +3925,34 @@ func (s *Server) buildAgentPermissions(ctx context.Context, w http.ResponseWrite
 		})
 	}
 	return perms, true
+}
+
+// validateGrantConstraints enforces the TG-2 no-escalation invariant
+// for one grant entry. Returns false when the request was answered.
+func (s *Server) validateGrantConstraints(ctx context.Context, w http.ResponseWriter, typ domain.ResourceType, resourceID string, constraints json.RawMessage) bool {
+	if len(constraints) == 0 || string(constraints) == "{}" {
+		return true
+	}
+	resource, err := s.store.GetResource(ctx, typ, resourceID)
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	// TG-6 slice D: browser-driver resources validate against
+	// the flat browser ceiling (tightening-only numerics, deny-
+	// hosts may only grow) instead of the plain-mcp rules.
+	var gv egresspolicy.Violations
+	if egresspolicy.IsBrowserConfig(resource.EndpointConfig) {
+		gv = egresspolicy.ValidateBrowserGrant(constraints, resource.PolicyCeiling)
+	} else {
+		gv = egresspolicy.ValidateGrant(string(resource.Type), constraints, resource.PolicyCeiling)
+	}
+	if len(gv) > 0 {
+		writeViolations(w, "grant_escalation",
+			"grant constraints exceed the resource policy ceiling (no-escalation invariant)", gv)
+		return false
+	}
+	return true
 }
 
 func (s *Server) setAgentPermissions(w http.ResponseWriter, r *http.Request) {

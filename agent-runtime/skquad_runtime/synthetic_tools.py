@@ -28,7 +28,6 @@ codes and gateway-provided messages only.
 from __future__ import annotations
 
 import base64
-import binascii
 import json
 import logging
 from typing import Callable, Mapping
@@ -47,6 +46,11 @@ REST_CALL_TOOL_NAME = "rest_call"
 # ALL granted mcp resources (resource_id enum = granted ids).
 MCP_LIST_TOOL_NAME = "mcp_list"
 MCP_CALL_TOOL_NAME = "mcp_call"
+
+# Shared literals (S-268 / S1192): the fail-closed grant-rejection message
+# and the gateway JSON content type.
+RESOURCE_NOT_GRANTED = "resource not granted"
+JSON_CONTENT_TYPE = "application/json"
 
 # Opener injection point for tests (same shape as ControlPlaneClient).
 Opener = Callable[[request.Request], object]
@@ -128,7 +132,7 @@ class RestCallTool:
         # Client-side grant check: never touch the gateway for an id the
         # agent was not granted (defense in depth; the gateway enforces too).
         if resource_id not in self.resource_ids:
-            return ToolResult(content="resource not granted", ok=False)
+            return ToolResult(content=RESOURCE_NOT_GRANTED, ok=False)
         method = str(args.get("method", ""))
         path = str(args.get("path", ""))
         payload: dict[str, object] = {"method": method, "path": path}
@@ -147,15 +151,14 @@ class RestCallTool:
             headers={
                 "Authorization": f"Bearer {credential}",
                 "X-Skquad-Agent-ID": config.agent_id,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
+                "Content-Type": JSON_CONTENT_TYPE,
+                "Accept": JSON_CONTENT_TYPE,
             },
             method="POST",
         )
         try:
             with self._opener(req) as response:
                 raw = response.read()
-                status = getattr(response, "status", None) or response.getcode()
         except error.HTTPError as exc:
             # Gateway/policy rejection (4xx/5xx): the LLM must SEE the
             # rejection, so carry it as a successful tool result. The
@@ -183,7 +186,7 @@ class RestCallTool:
 
         try:
             envelope = json.loads(raw.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
+        except ValueError:
             return ToolResult(content="tool 'rest_call' failed: malformed gateway response", ok=False)
         if not isinstance(envelope, Mapping):
             return ToolResult(content="tool 'rest_call' failed: malformed gateway response", ok=False)
@@ -207,7 +210,7 @@ def _render_gateway_envelope(envelope: Mapping[str, object]) -> str:
     if body_b64:
         try:
             body_text = base64.b64decode(body_b64).decode("utf-8", errors="replace")
-        except (binascii.Error, ValueError):
+        except ValueError:
             body_text = "(undecodable body)"
     marker = " [truncated]" if truncated else ""
     return f"HTTP {status}{marker}\n{body_text}"
@@ -241,6 +244,42 @@ def granted_rest_resources(resources: list[RuntimeResource]) -> list[RuntimeReso
     ]
 
 
+def _published_method_enum(tool: Mapping[str, object]) -> object:
+    """``parameters.properties.method.enum`` from a published tool schema."""
+    parameters = tool.get("parameters")
+    if isinstance(parameters, Mapping):
+        properties = parameters.get("properties")
+        if isinstance(properties, Mapping):
+            method_prop = properties.get("method")
+            if isinstance(method_prop, Mapping):
+                return method_prop.get("enum")
+    return None
+
+
+def _constraint_method_enum(tool: Mapping[str, object]) -> object:
+    """``constraints.methods`` fallback carried by the TG-4 surface."""
+    constraints = tool.get("constraints")
+    if isinstance(constraints, Mapping):
+        return constraints.get("methods")
+    return None
+
+
+def _tool_method_items(tool: Mapping[str, object]) -> list[str]:
+    """Effective method list for one published rest_call schema: the
+    schema's own enum, falling back to the grant constraints."""
+    enum = _published_method_enum(tool)
+    if not isinstance(enum, list) or not enum:
+        enum = _constraint_method_enum(tool)
+    if not isinstance(enum, list):
+        return []
+    items: list[str] = []
+    for value in enum:
+        item = str(value)
+        if item and item not in items:
+            items.append(item)
+    return items
+
+
 def _rest_call_method_union(rest_resources: list[RuntimeResource]) -> tuple[str, ...]:
     """Union of the method enums across the granted resources' published
     schemas (parameters.properties.method.enum, falling back to the
@@ -250,23 +289,9 @@ def _rest_call_method_union(rest_resources: list[RuntimeResource]) -> tuple[str,
         for tool in resource.tools:
             if str(tool.get("name", "")) != REST_CALL_TOOL_NAME:
                 continue
-            enum: object = None
-            parameters = tool.get("parameters")
-            if isinstance(parameters, Mapping):
-                properties = parameters.get("properties")
-                if isinstance(properties, Mapping):
-                    method_prop = properties.get("method")
-                    if isinstance(method_prop, Mapping):
-                        enum = method_prop.get("enum")
-            if not isinstance(enum, list) or not enum:
-                constraints = tool.get("constraints")
-                if isinstance(constraints, Mapping):
-                    enum = constraints.get("methods")
-            if isinstance(enum, list):
-                for value in enum:
-                    item = str(value)
-                    if item and item not in methods:
-                        methods.append(item)
+            for item in _tool_method_items(tool):
+                if item not in methods:
+                    methods.append(item)
     return tuple(methods)
 
 
@@ -382,11 +407,13 @@ class McpListTool:
             }
         ]
 
-    def invoke(self, call: ToolCall, config: BootstrapConfig) -> ToolResult:
+    def invoke(self, call: ToolCall, _config: BootstrapConfig) -> ToolResult:
+        # mcp_list reads only the cached wake surface; the config arg is
+        # kept (positional RuntimePlugin protocol) but unused (S1172).
         args = call.arguments if isinstance(call.arguments, Mapping) else {}
         resource_id = str(args.get("resource_id", ""))
         if resource_id not in self.tools_by_resource:
-            return ToolResult(content="resource not granted", ok=False)
+            return ToolResult(content=RESOURCE_NOT_GRANTED, ok=False)
         names = self.tools_by_resource[resource_id]
         if not names:
             return ToolResult(
@@ -474,7 +501,7 @@ class McpCallTool:
         # Client-side grant check: never touch the gateway for an id the
         # agent was not granted (defense in depth; the gateway enforces too).
         if resource_id not in self.resource_ids:
-            return ToolResult(content="resource not granted", ok=False)
+            return ToolResult(content=RESOURCE_NOT_GRANTED, ok=False)
         tool_name = str(args.get("tool", ""))
         if not tool_name:
             return ToolResult(content="mcp_call requires a non-empty 'tool' name", ok=False)
@@ -510,8 +537,8 @@ class McpCallTool:
             headers={
                 "Authorization": f"Bearer {credential}",
                 "X-Skquad-Agent-ID": config.agent_id,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
+                "Content-Type": JSON_CONTENT_TYPE,
+                "Accept": JSON_CONTENT_TYPE,
             },
             method="POST",
         )
@@ -546,7 +573,7 @@ class McpCallTool:
 
         try:
             envelope = json.loads(raw.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
+        except ValueError:
             return ToolResult(content="tool 'mcp_call' failed: malformed gateway response", ok=False)
         if not isinstance(envelope, Mapping):
             return ToolResult(content="tool 'mcp_call' failed: malformed gateway response", ok=False)

@@ -157,6 +157,11 @@ func authKindForType(resource *domain.RegistryResource) string {
 // (BYO static key; CA-mode resources carry no secret).
 const sshKeyAuthKind = "ssh_key"
 
+// noResourceAuthMsg is the uniform 404 message for every unresolvable
+// credential lookup (no type/existence leakage). The name avoids the word
+// "credential" so gosec G101 does not flag the message const as a secret value.
+const noResourceAuthMsg = "no credential for resource"
+
 // parseRestAuth validates the write-only auth payload against the
 // resource's auth_kind. Unknown fields, missing required fields and a
 // non-URL token_url are violations. Violation messages never echo
@@ -185,6 +190,20 @@ func parseRestAuth(authKind string, raw json.RawMessage) (map[string]string, egr
 		v = append(v, egresspolicy.Violation{Field: "auth", Code: "invalid_type", Message: "auth must be a JSON object of string fields"})
 		return nil, v
 	}
+	v = append(v, checkAuthFields(fields, allowed, authKind)...)
+	if authKind == "oauth2_client_credentials" && len(v) == 0 {
+		v = append(v, validateTokenURLField(fields)...)
+	}
+	if len(v) > 0 {
+		return nil, v
+	}
+	return fields, nil
+}
+
+// checkAuthFields reports unknown and missing-required fields for the
+// auth_kind's field set.
+func checkAuthFields(fields map[string]string, allowed []string, authKind string) egresspolicy.Violations {
+	var v egresspolicy.Violations
 	for k := range fields {
 		if !slices.Contains(allowed, k) {
 			v = append(v, egresspolicy.Violation{Field: "auth." + k, Code: "unknown_field", Message: "field is not valid for auth_kind=" + authKind})
@@ -195,16 +214,16 @@ func parseRestAuth(authKind string, raw json.RawMessage) (map[string]string, egr
 			v = append(v, egresspolicy.Violation{Field: "auth." + required, Code: "required", Message: required + " is required for auth_kind=" + authKind})
 		}
 	}
-	if authKind == "oauth2_client_credentials" && len(v) == 0 {
-		u := fields["token_url"]
-		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-			v = append(v, egresspolicy.Violation{Field: "auth.token_url", Code: "invalid_value", Message: "token_url must be an absolute http(s) URL"})
-		}
+	return v
+}
+
+// validateTokenURLField enforces the oauth2 token_url absolute-URL rule.
+func validateTokenURLField(fields map[string]string) egresspolicy.Violations {
+	u := fields["token_url"]
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return egresspolicy.Violations{{Field: "auth.token_url", Code: "invalid_value", Message: "token_url must be an absolute http(s) URL"}}
 	}
-	if len(v) > 0 {
-		return nil, v
-	}
-	return fields, nil
+	return nil
 }
 
 // setResourceSecret stores BYO secret fields in the managed Secret
@@ -271,16 +290,16 @@ func (s *Server) internalCredentials(w http.ResponseWriter, r *http.Request) {
 	// TG-5 slice B2a: mcp resources join with bearer custody too — the
 	// gateway resolves the per-call bearer for mcp_call through this
 	// same endpoint (agent-scoped when supplied).
-	if err != nil || (resource.Type != domain.ResRest && resource.Type != domain.ResGit && resource.Type != domain.ResMCP && resource.Type != domain.ResSSH) || resource.Status != domain.ResourceActive {
+	if !credentialResourceUsable(resource, err) {
 		s.auditCredentialAccess(r, "", resourceID, agentID, "", "denied")
-		writeError(w, http.StatusNotFound, "not_found", "no credential for resource")
+		writeError(w, http.StatusNotFound, "not_found", noResourceAuthMsg)
 		return
 	}
 	resType := string(resource.Type)
 	kind := authKindForType(resource)
 	if kind == "none" {
 		s.auditCredentialAccess(r, resType, resourceID, agentID, kind, "denied")
-		writeError(w, http.StatusNotFound, "not_found", "no credential for resource")
+		writeError(w, http.StatusNotFound, "not_found", noResourceAuthMsg)
 		return
 	}
 	if s.resourceSecrets == nil {
@@ -292,37 +311,12 @@ func (s *Server) internalCredentials(w http.ResponseWriter, r *http.Request) {
 	// fields served for (resource, agent) are that agent's own secret
 	// whenever one exists — never another agent's. Git per-agent
 	// custody (TG-4b) uses the same resolution with the git prefix.
-	if agentID != "" {
-		agentSecretName := kube.ResourceAgentSecretName(resourceID, agentID)
-		switch resource.Type {
-		case domain.ResGit:
-			agentSecretName = kube.GitAgentSecretName(resourceID, agentID)
-		case domain.ResMCP:
-			agentSecretName = kube.MCPAgentSecretName(resourceID, agentID)
-		}
-		if name := agentSecretName; name != "" {
-			fields, err := s.resourceSecrets.GetResourceSecret(r.Context(), name)
-			if err == nil && len(fields) > 0 && restFieldsMatchKind(kind, fields) {
-				s.serveCredential(w, r, resType, resourceID, agentID, kind, "agent", fields)
-				return
-			}
-			if err == nil && len(fields) > 0 {
-				// Stale payload (e.g. auth_kind rotated on the resource
-				// after the per-agent secret was written): refuse rather
-				// than inject the wrong shape; fall back to the default.
-				log.Printf("credentials: per-agent secret %s inconsistent with auth_kind, falling back to resource default", name)
-			}
-			if err != nil {
-				// Per-agent read failed: fall back to the resource
-				// default. Log without values; a store-wide failure
-				// surfaces as 503 on the default read below.
-				log.Printf("credentials: per-agent secret %s unreadable, falling back to resource default: %v", name, err)
-			}
-		}
+	if agentID != "" && s.tryServeAgentCredential(w, r, resource, resType, resourceID, agentID, kind) {
+		return
 	}
 	if resource.AuthRef == "" {
 		s.auditCredentialAccess(r, resType, resourceID, agentID, kind, "denied")
-		writeError(w, http.StatusNotFound, "not_found", "no credential for resource")
+		writeError(w, http.StatusNotFound, "not_found", noResourceAuthMsg)
 		return
 	}
 	name := resource.AuthRef[strings.LastIndex(resource.AuthRef, "/")+1:]
@@ -332,19 +326,83 @@ func (s *Server) internalCredentials(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "credentials_unavailable", "credential could not be resolved")
 		return
 	}
-	s.serveCredential(w, r, resType, resourceID, agentID, kind, "resource", fields)
+	s.serveCredential(credentialServe{w: w, r: r, resType: resType, resourceID: resourceID, agentID: agentID, kind: kind, scope: "resource", fields: fields})
+}
+
+// credentialResourceUsable gates the credentials endpoint: only active
+// rest/git/mcp/ssh resources resolve.
+func credentialResourceUsable(resource *domain.RegistryResource, err error) bool {
+	if err != nil {
+		return false
+	}
+	switch resource.Type {
+	case domain.ResRest, domain.ResGit, domain.ResMCP, domain.ResSSH:
+	default:
+		return false
+	}
+	return resource.Status == domain.ResourceActive
+}
+
+// tryServeAgentCredential attempts the agent's OWN per-(resource,agent)
+// secret and serves it when present and consistent with the auth kind.
+// Returns true when the response was served; false means "fall back to
+// the resource default".
+func (s *Server) tryServeAgentCredential(w http.ResponseWriter, r *http.Request, resource *domain.RegistryResource, resType, resourceID, agentID, kind string) bool {
+	agentSecretName := kube.ResourceAgentSecretName(resourceID, agentID)
+	switch resource.Type {
+	case domain.ResGit:
+		agentSecretName = kube.GitAgentSecretName(resourceID, agentID)
+	case domain.ResMCP:
+		agentSecretName = kube.MCPAgentSecretName(resourceID, agentID)
+	}
+	if agentSecretName == "" {
+		return false
+	}
+	fields, err := s.resourceSecrets.GetResourceSecret(r.Context(), agentSecretName)
+	if err != nil {
+		// Per-agent read failed: fall back to the resource
+		// default. Log without values; a store-wide failure
+		// surfaces as 503 on the default read below.
+		log.Printf("credentials: per-agent secret %s unreadable, falling back to resource default: %v", agentSecretName, err)
+		return false
+	}
+	if len(fields) == 0 {
+		return false
+	}
+	if !restFieldsMatchKind(kind, fields) {
+		// Stale payload (e.g. auth_kind rotated on the resource
+		// after the per-agent secret was written): refuse rather
+		// than inject the wrong shape; fall back to the default.
+		log.Printf("credentials: per-agent secret %s inconsistent with auth_kind, falling back to resource default", agentSecretName)
+		return false
+	}
+	s.serveCredential(credentialServe{w: w, r: r, resType: resType, resourceID: resourceID, agentID: agentID, kind: kind, scope: "agent", fields: fields})
+	return true
+}
+
+// credentialServe carries everything needed to serve one resolved
+// credential response (S-107: params struct).
+type credentialServe struct {
+	w          http.ResponseWriter
+	r          *http.Request
+	resType    string
+	resourceID string
+	agentID    string
+	kind       string
+	scope      string
+	fields     map[string]string
 }
 
 // serveCredential writes a resolved credential response and audits
 // the serve. Values go to the response body only — never the audit.
-func (s *Server) serveCredential(w http.ResponseWriter, r *http.Request, resType, resourceID, agentID, kind, scope string, fields map[string]string) {
-	s.auditCredentialAccess(r, resType, resourceID, agentID, kind, "served")
-	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{
-		"resource_id": resourceID,
-		"kind":        kind,
-		"fields":      fields,
-		"scope":       scope,
+func (s *Server) serveCredential(p credentialServe) {
+	s.auditCredentialAccess(p.r, p.resType, p.resourceID, p.agentID, p.kind, "served")
+	p.w.Header().Set("Cache-Control", "no-store")
+	writeJSON(p.w, http.StatusOK, map[string]any{
+		"resource_id": p.resourceID,
+		"kind":        p.kind,
+		"fields":      p.fields,
+		"scope":       p.scope,
 	})
 }
 

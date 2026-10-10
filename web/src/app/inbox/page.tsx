@@ -37,7 +37,13 @@ import { ConfirmationDecisionCard } from "../../components/ConfirmationDecisionC
 import { EmptyState } from "../../components/EmptyState";
 import { IconEnvelopeRead, IconEnvelopeUnread } from "../../components/icons";
 import { InboxAttachments } from "../../components/InboxAttachments";
-import { apiDelete, apiGet, apiGetWithTotal, type ApiUser, type InboxMessage } from "../../lib/api";
+import {
+  apiDelete,
+  apiGet,
+  apiGetWithTotal,
+  type ApiUser,
+  type InboxMessage,
+} from "../../lib/api";
 import { DEFAULT_PAGE_SIZE, Pager, pageCount } from "../../components/Pager";
 import { useAuth } from "../../lib/auth";
 import { useAttention } from "../../lib/useAttention";
@@ -77,8 +83,137 @@ function effectiveUserIdFor(filter: UserFilter): string | undefined {
   return filter.mode === "user" ? filter.userId : undefined;
 }
 
-function allVisibleInSelection(visibleIds: readonly string[], selectedIds: ReadonlySet<string>): boolean {
+function allVisibleInSelection(
+  visibleIds: readonly string[],
+  selectedIds: ReadonlySet<string>,
+): boolean {
   return visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+}
+
+// inboxEmptyState returns the loading/empty placeholder for the inbox list, or
+// null when there are messages. Extracted from InboxPage to keep its cognitive
+// complexity within limits (S-268 / S3776).
+function inboxEmptyState(loading: boolean, count: number) {
+  if (loading && count === 0) {
+    return (
+      <EmptyState
+        title="Loading your inbox…"
+        hint="Agent and system messages addressed to you."
+      />
+    );
+  }
+  if (count === 0) {
+    return (
+      <EmptyState
+        title="Your inbox is empty"
+        hint="Ask an agent to send something to your inbox and it will land here — unread until you open it."
+      />
+    );
+  }
+  return null;
+}
+
+type InboxControlsProps = {
+  readonly selectionSize: number;
+  readonly unreadOnly: boolean;
+  readonly isAdmin: boolean;
+  readonly filter: UserFilter;
+  readonly users: ApiUser[];
+  readonly currentUserId?: string;
+  readonly onBulkMarkRead: () => Promise<unknown>;
+  readonly onBulkDelete: () => void;
+  readonly onChangeUnread: (v: boolean) => void;
+  readonly onChangeUserFilter: (v: UserFilter) => void;
+};
+
+// InboxControls renders the bulk-action buttons and the read/user filters shown
+// above the inbox list. Extracted from InboxPage to keep its cognitive
+// complexity within limits (S-268 / S3776).
+function InboxControls(props: InboxControlsProps) {
+  const {
+    selectionSize,
+    unreadOnly,
+    isAdmin,
+    filter,
+    users,
+    currentUserId,
+    onBulkMarkRead,
+    onBulkDelete,
+    onChangeUnread,
+    onChangeUserFilter,
+  } = props;
+  return (
+    <div className="inbox-controls">
+      {/* S-207 req 5: bulk actions, enabled only with a selection. */}
+      <fieldset
+        className="inbox-bulk"
+        style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }}
+        aria-label="Bulk actions"
+      >
+        <button
+          type="button"
+          className="btn btn-small inbox-bulk-read"
+          disabled={selectionSize === 0}
+          aria-label={`Mark ${selectionSize} selected as read`}
+          onClick={() => {
+            onBulkMarkRead().catch(() => undefined);
+          }}
+        >
+          Mark as Read
+        </button>
+        <button
+          type="button"
+          className="btn btn-small btn-danger inbox-bulk-delete"
+          disabled={selectionSize === 0}
+          aria-label={`Delete ${selectionSize} selected messages`}
+          onClick={onBulkDelete}
+        >
+          Delete
+        </button>
+        {selectionSize > 0 ? (
+          <span className="inbox-selection-count">
+            {selectionSize} selected
+          </span>
+        ) : null}
+      </fieldset>
+      {/* S-207 req 1: restyled to the platform field standard. */}
+      <label className="inbox-filter">
+        <span>Show</span>
+        <select
+          className="form-control"
+          value={unreadOnly ? "unread" : "all"}
+          onChange={(e) => onChangeUnread(e.target.value === "unread")}
+        >
+          <option value="all">All messages</option>
+          <option value="unread">Unread only</option>
+        </select>
+      </label>
+      {isAdmin ? (
+        <label className="inbox-filter">
+          <span>User</span>
+          <select
+            className="form-control"
+            value={filter.mode === "user" ? filter.userId : "own"}
+            onChange={(e) => {
+              const v = e.target.value;
+              onChangeUserFilter(
+                v === "own" ? { mode: "own" } : { mode: "user", userId: v },
+              );
+            }}
+          >
+            <option value="own">My inbox</option>
+            {users
+              .filter((u) => u.id !== currentUserId)
+              .map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name || u.email}
+                </option>
+              ))}
+          </select>
+        </label>
+      ) : null}
+    </div>
+  );
 }
 
 export default function InboxPage() {
@@ -93,7 +228,9 @@ export default function InboxPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<InboxMessage | null>(null);
   // S-207: multi-select set of message ids (list view only).
-  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
   const [pendingBulkDelete, setPendingBulkDelete] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -114,7 +251,9 @@ export default function InboxPage() {
         limit: pageSize,
         offset: (page - 1) * pageSize,
       });
-      const { items, total: totalCount } = await apiGetWithTotal<InboxMessage[]>(`/inbox${query}`, token);
+      const { items, total: totalCount } = await apiGetWithTotal<
+        InboxMessage[]
+      >(`/inbox${query}`, token);
       setMessages(asArray<InboxMessage>(items));
       setTotal(totalCount);
       setError("");
@@ -139,12 +278,15 @@ export default function InboxPage() {
 
   const unread = useMemo(() => unreadCount(messages), [messages]);
   const selected = useMemo(
-    () => (selectedId === null ? null : (messages.find((m) => m.id === selectedId) ?? null)),
+    () => messages.find((m) => m.id === selectedId) ?? null,
     [messages, selectedId],
   );
 
   // S-207: group the visible messages by recency (empty groups omitted).
-  const sections = useMemo(() => groupInboxByRecency(messages, new Date()), [messages]);
+  const sections = useMemo(
+    () => groupInboxByRecency(messages, new Date()),
+    [messages],
+  );
   const visibleIds = useMemo(() => messages.map((m) => m.id), [messages]);
   const selectionSize = selectedIds.size;
   const allVisibleSelected = allVisibleInSelection(visibleIds, selectedIds);
@@ -191,7 +333,9 @@ export default function InboxPage() {
       // read immediately; the provider owns the POST so one request keeps
       // both surfaces in sync.
       setMessages((prev) =>
-        prev.map((m) => (m.id === message.id ? { ...m, read_at: new Date().toISOString() } : m)),
+        prev.map((m) =>
+          m.id === message.id ? { ...m, read_at: new Date().toISOString() } : m,
+        ),
       );
       try {
         await markAttentionRead(message.id);
@@ -240,7 +384,9 @@ export default function InboxPage() {
     }
     const idSet = new Set(ids);
     setMessages((prev) =>
-      prev.map((m) => (idSet.has(m.id) ? { ...m, read_at: new Date().toISOString() } : m)),
+      prev.map((m) =>
+        idSet.has(m.id) ? { ...m, read_at: new Date().toISOString() } : m,
+      ),
     );
     for (const id of ids) {
       try {
@@ -263,7 +409,8 @@ export default function InboxPage() {
       }
       setMessages((prev) => prev.filter((m) => !selectedIds.has(m.id)));
       accountRemoval(removed);
-      if (selectedId !== null && selectedIds.has(selectedId)) setSelectedId(null);
+      if (selectedId !== null && selectedIds.has(selectedId))
+        setSelectedId(null);
       setError("");
     } catch (err) {
       setError(errMessage(err, "bulk delete failed"));
@@ -281,17 +428,8 @@ export default function InboxPage() {
   }, []);
 
   function renderList() {
-    if (loading && messages.length === 0) {
-      return <EmptyState title="Loading your inbox…" hint="Agent and system messages addressed to you." />;
-    }
-    if (messages.length === 0) {
-      return (
-        <EmptyState
-          title="Your inbox is empty"
-          hint="Ask an agent to send something to your inbox and it will land here — unread until you open it."
-        />
-      );
-    }
+    const empty = inboxEmptyState(loading, messages.length);
+    if (empty) return empty;
     return (
       <div className="inbox-groups">
         {/* S-207 req 7: column header above the list. */}
@@ -301,7 +439,9 @@ export default function InboxPage() {
             className="inbox-checkbox"
             checked={allVisibleSelected}
             aria-label="Select all visible messages"
-            onChange={() => setSelectedIds((prev) => toggleSelectAll(prev, visibleIds))}
+            onChange={() =>
+              setSelectedIds((prev) => toggleSelectAll(prev, visibleIds))
+            }
           />
           <span className="inbox-status" aria-hidden="true" />
           <span className="inbox-col-sender">From</span>
@@ -311,7 +451,11 @@ export default function InboxPage() {
         </div>
         {/* S-207 req 9: recency groups, empty ones hidden. */}
         {sections.map((section) => (
-          <section key={section.group} className="inbox-group" aria-label={section.label}>
+          <section
+            key={section.group}
+            className="inbox-group"
+            aria-label={section.label}
+          >
             <h2 className="inbox-group-header">{section.label}</h2>
             <div className="entity-list inbox-list">
               {section.items.map((m) => (
@@ -338,66 +482,18 @@ export default function InboxPage() {
           {/* S-207 req 8: "Inbox — N new" when unread, plain otherwise. */}
           <h1 className="page-title">{inboxPageTitle(unread)}</h1>
           {!selected ? (
-            <div className="inbox-controls">
-              {/* S-207 req 5: bulk actions, enabled only with a selection. */}
-              <fieldset className="inbox-bulk" style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }} aria-label="Bulk actions">
-                <button
-                  type="button"
-                  className="btn btn-small inbox-bulk-read"
-                  disabled={selectionSize === 0}
-                  aria-label={`Mark ${selectionSize} selected as read`}
-                  onClick={() => { doBulkMarkRead().catch(() => undefined); }}
-                >
-                  Mark as Read
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-small btn-danger inbox-bulk-delete"
-                  disabled={selectionSize === 0}
-                  aria-label={`Delete ${selectionSize} selected messages`}
-                  onClick={() => setPendingBulkDelete(true)}
-                >
-                  Delete
-                </button>
-                {selectionSize > 0 ? (
-                  <span className="inbox-selection-count">{selectionSize} selected</span>
-                ) : null}
-              </fieldset>
-              {/* S-207 req 1: restyled to the platform field standard. */}
-              <label className="inbox-filter">
-                <span>Show</span>
-                <select
-                  className="form-control"
-                  value={unreadOnly ? "unread" : "all"}
-                  onChange={(e) => changeUnreadOnly(e.target.value === "unread")}
-                >
-                  <option value="all">All messages</option>
-                  <option value="unread">Unread only</option>
-                </select>
-              </label>
-              {isAdmin ? (
-                <label className="inbox-filter">
-                  <span>User</span>
-                  <select
-                    className="form-control"
-                    value={filter.mode === "user" ? filter.userId : "own"}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      changeUserFilter(v === "own" ? { mode: "own" } : { mode: "user", userId: v });
-                    }}
-                  >
-                    <option value="own">My inbox</option>
-                    {users
-                      .filter((u) => u.id !== user?.id)
-                      .map((u) => (
-                        <option key={u.id} value={u.id}>
-                          {u.name || u.email}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-              ) : null}
-            </div>
+            <InboxControls
+              selectionSize={selectionSize}
+              unreadOnly={unreadOnly}
+              isAdmin={isAdmin}
+              filter={filter}
+              users={users}
+              currentUserId={user?.id}
+              onBulkMarkRead={doBulkMarkRead}
+              onBulkDelete={() => setPendingBulkDelete(true)}
+              onChangeUnread={changeUnreadOnly}
+              onChangeUserFilter={changeUserFilter}
+            />
           ) : null}
         </div>
         {error ? <div className="notice error">{error}</div> : null}
@@ -459,30 +555,33 @@ function InboxRow({
   readonly onOpen: (m: InboxMessage) => void;
   readonly onToggleSelect: (id: string) => void;
 }) {
-    const unreadRow = isUnread(message.read_at);
-    const kind = inboxKindMeta(message.kind);
-    const { subject, body } = inboxDisplay(message);
-      return (
-      <div className={`inbox-row ${unreadRow ? "inbox-row-unread" : ""}`}>
-        {/* S-207 req 4: multi-select checkbox (never opens the row). */}
-        <input
-          type="checkbox"
-          className="inbox-checkbox"
-          checked={checked}
-          aria-label={`Select message: ${subject}`}
-          onClick={(e) => e.stopPropagation()}
-          onChange={() => onToggleSelect(message.id)}
-        />
-        {/* S-189: the row-open affordance is a native <button> spanning every
+  const unreadRow = isUnread(message.read_at);
+  const kind = inboxKindMeta(message.kind);
+  const { subject, body } = inboxDisplay(message);
+  return (
+    <div className={`inbox-row ${unreadRow ? "inbox-row-unread" : ""}`}>
+      {/* S-207 req 4: multi-select checkbox (never opens the row). */}
+      <input
+        type="checkbox"
+        className="inbox-checkbox"
+        checked={checked}
+        aria-label={`Select message: ${subject}`}
+        onClick={(e) => e.stopPropagation()}
+        onChange={() => onToggleSelect(message.id)}
+      />
+      {/* S-189: the row-open affordance is a native <button> spanning every
             column except the checkbox (was div role="button", S6819). */}
-        <button
-          type="button"
-          className="inbox-row-open"
-          aria-label={`Open message: ${subject}`}
-          onClick={() => onOpen(message)}
-        >
+      <button
+        type="button"
+        className="inbox-row-open"
+        aria-label={`Open message: ${subject}`}
+        onClick={() => onOpen(message)}
+      >
         {/* S-207 req 3: envelope read/unread marker. */}
-        <span className="inbox-status" aria-hidden={unreadRow ? undefined : "true"}>
+        <span
+          className="inbox-status"
+          aria-hidden={unreadRow ? undefined : "true"}
+        >
           {unreadRow ? (
             <IconEnvelopeUnread size={18} />
           ) : (
@@ -499,17 +598,22 @@ function InboxRow({
           {/* S-258: cheap paperclip so attachment-carrying messages are
               findable in the list before opening. */}
           {(message.attachments?.length ?? 0) > 0 ? (
-            <span className="inbox-attachment-flag" aria-label={`${message.attachments?.length} attachment(s)`}>
+            <span
+              className="inbox-attachment-flag"
+              aria-label={`${message.attachments?.length} attachment(s)`}
+            >
               📎 {message.attachments?.length}
             </span>
           ) : null}
         </span>
         <span className={`chip ${kind.className}`}>{kind.label}</span>
-        <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
-        </button>
-      </div>
-    );
-  }
+        <span className="inbox-time">
+          {formatRelativeTime(message.created_at)}
+        </span>
+      </button>
+    </div>
+  );
+}
 
 function InboxDetail({
   message,
@@ -522,54 +626,58 @@ function InboxDetail({
   readonly onBack: () => void;
   readonly onDelete: (m: InboxMessage) => void;
 }) {
-    const kind = inboxKindMeta(message.kind);
-    const { subject, body } = inboxDisplay(message);
-    const taskHref = inboxTaskLink(message);
-    return (
-      <div className="inbox-detail">
-        <div className="inbox-detail-topbar">
-          <button
-            type="button"
-            className="btn btn-small inbox-back"
-            aria-label="Back to inbox"
-            onClick={onBack}
-          >
-            ← Inbox
-          </button>
-          <button
-            type="button"
-            className="btn btn-small btn-danger inbox-delete"
-            aria-label="Delete message"
-            onClick={() => onDelete(message)}
-          >
-            Delete
-          </button>
-        </div>
-        <h2 className="inbox-detail-subject">{subject}</h2>
-        <div className="inbox-detail-meta">
-          <span className="inbox-detail-from">{inboxSender(message, agentName)}</span>
-          <span className={`chip ${kind.className}`}>{kind.label}</span>
-          <span className="inbox-time">{formatRelativeTime(message.created_at)}</span>
-        </div>
-        <div className="inbox-detail-body">
-          <p className="inbox-body-text">{body}</p>
-        </div>
-        {/* S-258: attachment previews (images) + download list (all
+  const kind = inboxKindMeta(message.kind);
+  const { subject, body } = inboxDisplay(message);
+  const taskHref = inboxTaskLink(message);
+  return (
+    <div className="inbox-detail">
+      <div className="inbox-detail-topbar">
+        <button
+          type="button"
+          className="btn btn-small inbox-back"
+          aria-label="Back to inbox"
+          onClick={onBack}
+        >
+          ← Inbox
+        </button>
+        <button
+          type="button"
+          className="btn btn-small btn-danger inbox-delete"
+          aria-label="Delete message"
+          onClick={() => onDelete(message)}
+        >
+          Delete
+        </button>
+      </div>
+      <h2 className="inbox-detail-subject">{subject}</h2>
+      <div className="inbox-detail-meta">
+        <span className="inbox-detail-from">
+          {inboxSender(message, agentName)}
+        </span>
+        <span className={`chip ${kind.className}`}>{kind.label}</span>
+        <span className="inbox-time">
+          {formatRelativeTime(message.created_at)}
+        </span>
+      </div>
+      <div className="inbox-detail-body">
+        <p className="inbox-body-text">{body}</p>
+      </div>
+      {/* S-258: attachment previews (images) + download list (all
             other types). Renders nothing when the message has none. */}
-        <InboxAttachments attachments={message.attachments} />
-        {/* TG-8 slice D: gated-call confirmations ride the action_required
+      <InboxAttachments attachments={message.attachments} />
+      {/* TG-8 slice D: gated-call confirmations ride the action_required
             kind; the card joins the confirmation via its inbox_message_id
             and renders the owner's 3 decision buttons inline. */}
-        {message.kind === "action_required" ? (
-          <ConfirmationDecisionCard messageId={message.id} />
-        ) : null}
-        {taskHref ? (
-          <div className="inbox-detail-footer">
-            <Link className="inbox-task-link" href={taskHref}>
-              Open task →
-            </Link>
-          </div>
-        ) : null}
-      </div>
-    );
-  }
+      {message.kind === "action_required" ? (
+        <ConfirmationDecisionCard messageId={message.id} />
+      ) : null}
+      {taskHref ? (
+        <div className="inbox-detail-footer">
+          <Link className="inbox-task-link" href={taskHref}>
+            Open task →
+          </Link>
+        </div>
+      ) : null}
+    </div>
+  );
+}

@@ -258,7 +258,9 @@ function EventDetail({ entry, onClose }: { readonly entry: AuditEntry; readonly 
           <span>{entry.resource_type}</span> <span>{entry.resource_id}</span>
         </dd>
         <dt>Squad</dt>
-        <dd className="mono">{entry.squad_id || "—"}</dd>
+        {/* S6606: explicit ternary — an empty squad_id renders as the
+            em-dash placeholder, same as a missing one. */}
+        <dd className="mono">{entry.squad_id ? entry.squad_id : "—"}</dd>
         <dt>Decision</dt>
         <dd>
           <DecisionChip kind={decision.kind} label={decision.label} />{" "}

@@ -63,37 +63,49 @@ func restCallToolSchema(resourceName, resourceID string, ceilingRaw, constraints
 
 	pathDeny := append(append([]string{}, ceiling.pathDeny...), constraints.pathDeny...)
 
-	maxReq := restDefaultMaxRequestBytes
-	for _, v := range []int{ceiling.maxRequestBytes, constraints.maxRequestBytes} {
-		if v > 0 && v < maxReq {
-			maxReq = v
-		}
-	}
-	maxResp := restDefaultMaxResponseBytes
-	for _, v := range []int{ceiling.maxResponseBytes, constraints.maxResponseBytes} {
-		if v > 0 && v < maxResp {
-			maxResp = v
-		}
-	}
-	rate := 0
-	for _, v := range []int{ceiling.ratePerMin, constraints.ratePerMin} {
-		if v > 0 && (rate == 0 || v < rate) {
-			rate = v
-		}
-	}
+	maxReq := minPositive(restDefaultMaxRequestBytes, ceiling.maxRequestBytes, constraints.maxRequestBytes)
+	maxResp := minPositive(restDefaultMaxResponseBytes, ceiling.maxResponseBytes, constraints.maxResponseBytes)
+	rate := minPositiveUnbounded(ceiling.ratePerMin, constraints.ratePerMin)
 
-	out, err := json.Marshal([]map[string]any{buildRestCallTool(resourceName, resourceID, methods, pathAllow, pathDeny, maxReq, maxResp, rate)})
+	out, err := json.Marshal([]map[string]any{buildRestCallTool(restCallToolParams{
+		resourceName: resourceName,
+		resourceID:   resourceID,
+		methods:      methods,
+		pathAllow:    pathAllow,
+		pathDeny:     pathDeny,
+		maxRequest:   maxReq,
+		maxResponse:  maxResp,
+		ratePerMin:   rate,
+	})})
 	if err != nil {
 		return nil
 	}
 	return out
 }
 
-func buildRestCallTool(resourceName, resourceID string, methods, pathAllow, pathDeny []string, maxReq, maxResp, rate int) map[string]any {
+// restCallToolParams carries the effective (ceiling ∧ grant) values
+// surfaced on the rest_call tool schema (S-107: params struct).
+type restCallToolParams struct {
+	resourceName string
+	resourceID   string
+	methods      []string
+	pathAllow    []string
+	pathDeny     []string
+	maxRequest   int
+	maxResponse  int
+	ratePerMin   int
+}
+
+func buildRestCallTool(p restCallToolParams) map[string]any {
+	resourceName := p.resourceName
+	resourceID := p.resourceID
+	maxReq := p.maxRequest
+	maxResp := p.maxResponse
+	rate := p.ratePerMin
 	desc := "Call the registered REST resource \"" + resourceName + "\" through the tool gateway. " +
 		"Credentials are injected at the gateway (never visible to the agent); every call is policy-checked and audited. " +
 		"Gateway endpoint: POST /v1/rest/" + resourceID + " (agent-credential auth)."
-	methodEnum := methods
+	methodEnum := p.methods
 	if len(methodEnum) == 0 {
 		methodEnum = []string{}
 	}
@@ -131,8 +143,8 @@ func buildRestCallTool(resourceName, resourceID string, methods, pathAllow, path
 		},
 		"constraints": map[string]any{
 			"methods":            methodEnum,
-			"path_allow":         pathAllow,
-			"path_deny":          pathDeny,
+			"path_allow":         p.pathAllow,
+			"path_deny":          p.pathDeny,
 			"max_request_bytes":  maxReq,
 			"max_response_bytes": maxResp,
 			"rate_per_min":       rate,
