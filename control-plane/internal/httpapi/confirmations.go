@@ -294,43 +294,9 @@ func (s *Server) consumeConfirmation(ctx context.Context, confID, argsHash strin
 	now := s.confirmationTime()
 	switch conf.State {
 	case domain.ConfirmationApprovedOnce:
-		if conf.ConsumedAt != nil {
-			return &ConfirmationConsumeResult{Allowed: false, Reason: "denied_replayed"}, nil
-		}
-		if conf.ApprovedAt == nil || now.Sub(*conf.ApprovedAt) > confirmationOnceTTL {
-			// TTL elapsed: mark expired (best-effort; the answer
-			// stands even if the write races away).
-			_, _ = s.store.UpdateConfirmationState(ctx, conf.ID, domain.ConfirmationApprovedOnce,
-				storage.ConfirmationUpdate{State: domain.ConfirmationExpired})
-			return &ConfirmationConsumeResult{Allowed: false, Reason: "approval_expired"}, nil
-		}
-		consumed := now
-		// Single-use claim is race-safe: expectedFrom=approved_once.
-		// A concurrent consume that won the race leaves us conflicting
-		// ⇒ the call is a replay.
-		if _, uErr := s.store.UpdateConfirmationState(ctx, conf.ID, domain.ConfirmationApprovedOnce,
-			storage.ConfirmationUpdate{State: domain.ConfirmationApprovedOnce, ConsumedAt: &consumed}); uErr != nil {
-			if errors.Is(uErr, storage.ErrConflict) {
-				return &ConfirmationConsumeResult{Allowed: false, Reason: "denied_replayed"}, nil
-			}
-			return nil, uErr
-		}
-		return &ConfirmationConsumeResult{Allowed: true, Mode: "once"}, nil
+		return s.consumeApprovedOnce(ctx, conf, now)
 	case domain.ConfirmationApprovedStanding:
-		// Standing is re-validated at consume so a revoke between
-		// approval and consume is immediately effective (invariant 2).
-		grant, gErr := s.store.FindLiveStandingGrant(ctx, conf.ResourceID, conf.AgentID, conf.Tool, now)
-		if gErr != nil {
-			if errors.Is(gErr, storage.ErrNotFound) {
-				return &ConfirmationConsumeResult{Allowed: false, Reason: "standing_grant_not_live"}, nil
-			}
-			return nil, gErr
-		}
-		s.auditConfirmation(ctx, "system", "", "confirmation.standing_match", conf.ResourceID, map[string]any{
-			"confirmation_id": conf.ID, "agent_id": conf.AgentID, "tool": conf.Tool,
-			"matched_standing_grant": grant.ID,
-		})
-		return &ConfirmationConsumeResult{Allowed: true, Mode: "standing", MatchedStandingGrantID: grant.ID}, nil
+		return s.consumeStanding(ctx, conf, now)
 	case domain.ConfirmationDenied:
 		reason := "denied_by_owner"
 		if conf.DeniedReason != "" {
@@ -342,6 +308,50 @@ func (s *Server) consumeConfirmation(ctx context.Context, confID, argsHash strin
 	default: // pending
 		return &ConfirmationConsumeResult{Allowed: false, Reason: "confirmation_pending"}, nil
 	}
+}
+
+// consumeApprovedOnce handles the single-use claim for an approved_once
+// confirmation. Single-use claim is race-safe: expectedFrom=approved_once.
+// A concurrent consume that won the race leaves us conflicting ⇒ the call
+// is a replay.
+func (s *Server) consumeApprovedOnce(ctx context.Context, conf *domain.PendingConfirmation, now time.Time) (*ConfirmationConsumeResult, error) {
+	if conf.ConsumedAt != nil {
+		return &ConfirmationConsumeResult{Allowed: false, Reason: "denied_replayed"}, nil
+	}
+	if conf.ApprovedAt == nil || now.Sub(*conf.ApprovedAt) > confirmationOnceTTL {
+		// TTL elapsed: mark expired (best-effort; the answer
+		// stands even if the write races away).
+		_, _ = s.store.UpdateConfirmationState(ctx, conf.ID, domain.ConfirmationApprovedOnce,
+			storage.ConfirmationUpdate{State: domain.ConfirmationExpired})
+		return &ConfirmationConsumeResult{Allowed: false, Reason: "approval_expired"}, nil
+	}
+	consumed := now
+	if _, uErr := s.store.UpdateConfirmationState(ctx, conf.ID, domain.ConfirmationApprovedOnce,
+		storage.ConfirmationUpdate{State: domain.ConfirmationApprovedOnce, ConsumedAt: &consumed}); uErr != nil {
+		if errors.Is(uErr, storage.ErrConflict) {
+			return &ConfirmationConsumeResult{Allowed: false, Reason: "denied_replayed"}, nil
+		}
+		return nil, uErr
+	}
+	return &ConfirmationConsumeResult{Allowed: true, Mode: "once"}, nil
+}
+
+// consumeStanding re-validates a standing approval at consume time so a
+// revoke between approval and consume is immediately effective
+// (invariant 2).
+func (s *Server) consumeStanding(ctx context.Context, conf *domain.PendingConfirmation, now time.Time) (*ConfirmationConsumeResult, error) {
+	grant, gErr := s.store.FindLiveStandingGrant(ctx, conf.ResourceID, conf.AgentID, conf.Tool, now)
+	if gErr != nil {
+		if errors.Is(gErr, storage.ErrNotFound) {
+			return &ConfirmationConsumeResult{Allowed: false, Reason: "standing_grant_not_live"}, nil
+		}
+		return nil, gErr
+	}
+	s.auditConfirmation(ctx, "system", "", "confirmation.standing_match", conf.ResourceID, map[string]any{
+		"confirmation_id": conf.ID, "agent_id": conf.AgentID, "tool": conf.Tool,
+		"matched_standing_grant": grant.ID,
+	})
+	return &ConfirmationConsumeResult{Allowed: true, Mode: "standing", MatchedStandingGrantID: grant.ID}, nil
 }
 
 func (s *Server) loadConfirmationAndResource(ctx context.Context, confID string) (*domain.PendingConfirmation, *domain.RegistryResource, error) {

@@ -182,6 +182,32 @@ func LintChange(before, after *ChangeSnapshot) []Finding {
 	}
 
 	// --- absolute rule: metadata paths are findings regardless of before ---
+	f = append(f, metadataHostFindings(after)...)
+
+	gainedHosts := gained(bHosts, after.Hosts)
+
+	// --- widening rules: only meaningful against a non-nil baseline ---
+	// (A brand-new grant has nothing to widen from; its absolute dangers are
+	// still caught by the rules above, and its approval path is tier routing.)
+	if before != nil {
+		f = append(f, wideningFindings(bMethods, bTools, after, gainedHosts)...)
+	}
+
+	f = append(f, internalReachFindings(gainedHosts, after.EgressClass, bEgress)...)
+	f = append(f, capWideningFindings(before, bCaps, after)...)
+
+	sort.Slice(f, func(i, j int) bool {
+		if f[i].Code != f[j].Code {
+			return f[i].Code < f[j].Code
+		}
+		return f[i].Detail < f[j].Detail
+	})
+	return f
+}
+
+// metadataHostFindings flags cloud metadata endpoints regardless of baseline.
+func metadataHostFindings(after *ChangeSnapshot) []Finding {
+	var f []Finding
 	for _, raw := range after.Hosts {
 		h := normalizeHost(raw)
 		if h == "" {
@@ -195,40 +221,43 @@ func LintChange(before, after *ChangeSnapshot) []Finding {
 			})
 		}
 	}
+	return f
+}
 
-	gainedHosts := gained(bHosts, after.Hosts)
-
-	// --- widening rules: only meaningful against a non-nil baseline ---
-	// (A brand-new grant has nothing to widen from; its absolute dangers are
-	// still caught by the rules above, and its approval path is tier routing.)
-	if before != nil {
-		if after.HasCredential && len(gainedHosts) > 0 {
-			f = append(f, Finding{
-				Code:     CodeNewCredentialedReach,
-				Severity: SeverityBlock,
-				Detail:   fmt.Sprintf("credential newly usable against %d host(s): %s", len(gainedHosts), strings.Join(gainedHosts, ", ")),
-			})
-		}
-		for _, m := range gained(bMethods, after.HTTPMethods) {
-			f = append(f, Finding{
-				Code:     CodeNewHTTPMethod,
-				Severity: SeverityBlock,
-				Detail:   fmt.Sprintf("HTTP method %s newly allowed", m),
-			})
-		}
-		for _, t := range gained(bTools, after.MCPTools) {
-			f = append(f, Finding{
-				Code:     CodeNewMCPTool,
-				Severity: SeverityBlock,
-				Detail:   fmt.Sprintf("MCP tool %s newly allowed", t),
-			})
-		}
+// wideningFindings reports newly-usable credential reach, new HTTP methods
+// and new MCP tools against a non-nil baseline.
+func wideningFindings(bMethods, bTools []string, after *ChangeSnapshot, gainedHosts []string) []Finding {
+	var f []Finding
+	if after.HasCredential && len(gainedHosts) > 0 {
+		f = append(f, Finding{
+			Code:     CodeNewCredentialedReach,
+			Severity: SeverityBlock,
+			Detail:   fmt.Sprintf("credential newly usable against %d host(s): %s", len(gainedHosts), strings.Join(gainedHosts, ", ")),
+		})
 	}
+	for _, m := range gained(bMethods, after.HTTPMethods) {
+		f = append(f, Finding{
+			Code:     CodeNewHTTPMethod,
+			Severity: SeverityBlock,
+			Detail:   fmt.Sprintf("HTTP method %s newly allowed", m),
+		})
+	}
+	for _, t := range gained(bTools, after.MCPTools) {
+		f = append(f, Finding{
+			Code:     CodeNewMCPTool,
+			Severity: SeverityBlock,
+			Detail:   fmt.Sprintf("MCP tool %s newly allowed", t),
+		})
+	}
+	return f
+}
 
-	// cluster-internal reach: gained hosts (for before==nil, gained = all
-	// after hosts, so brand-new grants into private space are caught) plus
-	// newly-internal egress class. Metadata hosts are excluded here to avoid
-	// double-reporting the same host under both codes.
+// internalReachFindings covers cluster-internal reach: gained hosts (for
+// before==nil, gained = all after hosts, so brand-new grants into private
+// space are caught) plus newly-internal egress class. Metadata hosts are
+// excluded here to avoid double-reporting the same host under both codes.
+func internalReachFindings(gainedHosts []string, afterEgress, beforeEgress string) []Finding {
+	var f []Finding
 	for _, raw := range gainedHosts {
 		h := normalizeHost(raw)
 		if h != "" && isClusterInternalHost(h) && !isMetadataHost(h) {
@@ -239,16 +268,20 @@ func LintChange(before, after *ChangeSnapshot) []Finding {
 			})
 		}
 	}
-	if after.EgressClass == "internal" && bEgress != "internal" {
+	if afterEgress == "internal" && beforeEgress != "internal" {
 		f = append(f, Finding{
 			Code:     CodeClusterInternalPath,
 			Severity: SeverityBlock,
 			Detail:   "egress class newly set to internal",
 		})
 	}
+	return f
+}
 
-	// ceiling widening: any numeric cap increased. (Set widening is already
-	// surfaced by the gained-* codes above.)
+// capWideningFindings reports any numeric cap increased. (Set widening is
+// already surfaced by the gained-* codes above.)
+func capWideningFindings(before *ChangeSnapshot, bCaps map[string]int, after *ChangeSnapshot) []Finding {
+	var f []Finding
 	for cap, av := range after.NumericCaps {
 		if bv, ok := bCaps[cap]; ok && av > bv {
 			f = append(f, Finding{
@@ -268,13 +301,6 @@ func LintChange(before, after *ChangeSnapshot) []Finding {
 			})
 		}
 	}
-
-	sort.Slice(f, func(i, j int) bool {
-		if f[i].Code != f[j].Code {
-			return f[i].Code < f[j].Code
-		}
-		return f[i].Detail < f[j].Detail
-	})
 	return f
 }
 

@@ -236,6 +236,50 @@ func mcpStoredTokenFor(ctx context.Context, secrets ResourceSecretStore, resourc
 	return tok, nil
 }
 
+// mcpComputeDriftPending computes the pending set: added tools the
+// current allowlist would newly allow (wildcard-matched), merged with
+// prior pending names still present upstream. Returns (pending, newlyMatched).
+func mcpComputeDriftPending(added []string, allowEntries []string, freshTools []MCPToolInfo, priorPendingRaw json.RawMessage) (map[string]bool, map[string]bool) {
+	pending := map[string]bool{}
+	newlyMatched := map[string]bool{}
+	for _, name := range added {
+		if mcpAllowedByEntries(allowEntries, name) {
+			pending[name] = true
+			newlyMatched[name] = true
+		}
+	}
+	newIdx := mcpToolIndex(freshTools)
+	for _, p := range decodeMCPDriftPending(priorPendingRaw) {
+		if _, stillThere := newIdx[p]; stillThere {
+			pending[p] = true
+		}
+	}
+	return pending, newlyMatched
+}
+
+// mcpApplyWildcardDeny expands every newly-matching wildcard into the
+// concrete OLD-snapshot names it matched, so the gateway's effective
+// allowlist excludes the added tools immediately. Returns the (possibly
+// rewritten) ceiling raw and whether a rewrite happened.
+func mcpApplyWildcardDeny(allowEntries []string, oldTools []MCPToolInfo, newlyMatched map[string]bool, ceilingRaw json.RawMessage) (json.RawMessage, bool, error) {
+	if len(newlyMatched) == 0 {
+		return ceilingRaw, false, nil
+	}
+	oldNames := make([]string, 0, len(oldTools))
+	for _, t := range oldTools {
+		oldNames = append(oldNames, t.Name)
+	}
+	rewritten, didExpand := mcpExpandWildcardsForDrift(allowEntries, oldNames, newlyMatched)
+	if !didExpand {
+		return ceilingRaw, false, nil
+	}
+	ceiling, err := mcpSetCeilingToolsAllow(ceilingRaw, rewritten)
+	if err != nil {
+		return ceilingRaw, false, fmt.Errorf("mcp drift check: rewrite ceiling: %w", err)
+	}
+	return ceiling, true, nil
+}
+
 // checkMCPResourceDrift runs one fresh gateway enumeration for the
 // resource, compares against the stored snapshot, persists the new
 // snapshot + drift state (with the wildcard-expansion deny mechanism),
@@ -294,43 +338,22 @@ func checkMCPResourceDrift(
 	added, removed, changedTools := diffMCPTools(oldTools, fresh.Tools)
 	outcome.Changed = true
 	outcome.Added, outcome.Removed, outcome.ChangedTools = added, removed, changedTools
-
 	// Pending = added tools the CURRENT allowlist would newly allow
 	// (wildcard-matched), merged with prior pending names that are
 	// still present upstream.
 	allowEntries := mcpCeilingToolsAllow(resource.PolicyCeiling)
-	newIdx := mcpToolIndex(fresh.Tools)
-	pending := map[string]bool{}
-	newlyMatched := map[string]bool{}
-	for _, name := range added {
-		if mcpAllowedByEntries(allowEntries, name) {
-			pending[name] = true
-			newlyMatched[name] = true
-		}
-	}
-	for _, p := range decodeMCPDriftPending(resource.MCPDriftPending) {
-		if _, stillThere := newIdx[p]; stillThere {
-			pending[p] = true
-		}
-	}
+	pending, newlyMatched := mcpComputeDriftPending(added, allowEntries, fresh.Tools, resource.MCPDriftPending)
 
-	// Deny mechanism: expand every newly-matching wildcard into the
-	// concrete OLD-snapshot names it matched, so the gateway's
-	// effective allowlist excludes the added tools immediately.
-	if len(newlyMatched) > 0 {
-		oldNames := make([]string, 0, len(oldTools))
-		for _, t := range oldTools {
-			oldNames = append(oldNames, t.Name)
-		}
-		rewritten, didExpand := mcpExpandWildcardsForDrift(allowEntries, oldNames, newlyMatched)
-		if didExpand {
-			ceiling, err := mcpSetCeilingToolsAllow(resource.PolicyCeiling, rewritten)
-			if err != nil {
-				return nil, fmt.Errorf("mcp drift check: rewrite ceiling: %w", err)
-			}
-			resource.PolicyCeiling = ceiling
-			outcome.AllowRewritten = true
-		}
+	// Deny mechanism: expand newly-matching wildcards into concrete
+	// OLD-snapshot names so the gateway's effective allowlist excludes
+	// the added tools immediately.
+	ceiling, didExpand, err := mcpApplyWildcardDeny(allowEntries, oldTools, newlyMatched, resource.PolicyCeiling)
+	if err != nil {
+		return nil, err
+	}
+	if didExpand {
+		resource.PolicyCeiling = ceiling
+		outcome.AllowRewritten = true
 	}
 
 	snapshot, err := json.Marshal(fresh.Tools)
