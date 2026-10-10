@@ -1,0 +1,57 @@
+name: Go drift weekly (S-266)
+
+# Weekly proactive check that the skquad self-hosted runner's pre-seeded Go
+# still matches the app runtime (.go-version). On drift, ping the K-45 card
+# (k3s-cluster board) so Groot refreshes the runner image before it bites a
+# release. Reuses the existing KANBUNNY_TOKEN secret (same one the SonarQube
+# severity gate files cards with) — no new secrets.
+
+on:
+  schedule:
+    # Monday 06:13 ACST (Sun 20:13 UTC). Odd minute to avoid the cron herd.
+    - cron: "13 20 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Runner pre-seed vs .go-version
+    if: vars.SECURITY_RUNNER_READY == 'true'
+    runs-on: [self-hosted, skquad]
+    timeout-minutes: 10
+    env:
+      KANBUNNY_URL: http://kanbunny.kanbunny.svc.cluster.local:3500
+      KANBUNNY_TOKEN: ${{ secrets.KANBUNNY_TOKEN }}
+      GROOT_CARD_ID: 4a0735e9-effc-49b2-b58f-6ca2c60cadbd # K-45, k3s-cluster board
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Drift check (runner pre-seeded Go vs .go-version)
+        run: python3 scripts/go-version-sync.py runner-drift
+      - name: Ping Groot's K-45 card on drift
+        if: failure() && env.KANBUNNY_TOKEN != ''
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          body = json.dumps({
+              "body": (
+                  "⚠️ Weekly Go drift check (skquad S-266): the skquad runner "
+                  "image's pre-seeded Go no longer matches skquad `.go-version`. "
+                  "Please refresh the runner image pre-seed per the runbook on "
+                  f"this card. Failing run: {os.environ['RUN_URL']}"
+              )
+          }).encode()
+          req = urllib.request.Request(
+              f"{os.environ['KANBUNNY_URL'].rstrip('/')}/api/cards/"
+              f"{os.environ['GROOT_CARD_ID']}/comments",
+              data=body, method="POST",
+              headers={
+                  "Authorization": f"Bearer {os.environ['KANBUNNY_TOKEN']}",
+                  "Content-Type": "application/json",
+              },
+          )
+          with urllib.request.urlopen(req, timeout=15) as resp:
+              print(f"kanbunny ping status {resp.status}")
+          PY
