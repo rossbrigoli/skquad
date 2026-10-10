@@ -34,5 +34,8 @@
     "jsdom": "^30.1.2",
     "typescript": "^5",
     "vitest": "^5.0.1"
+  },
+  "overrides": {
+    "katex": ">=0.18.2 <0.19.0"
   }
 }
