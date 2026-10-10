@@ -241,3 +241,127 @@ func mustMarshalString(t *testing.T, v any) string {
 	require.NoError(t, err)
 	return string(b)
 }
+
+// ── S-260: orphan sweep on resource delete ─────────────────────────────
+
+func paSetCred(t *testing.T, h http.Handler, resID, agentID, token string) {
+	t.Helper()
+	var resp map[string]any
+	doJSONAuth(t, h, authOwner, http.MethodPut, paPath(resID, agentID),
+		map[string]any{"auth": map[string]string{"token": token}}, http.StatusOK, &resp)
+}
+
+func paDeleteResource(t *testing.T, h http.Handler, resID string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, registryBase+"rest/"+resID, nil)
+	req.Header.Set("Authorization", authAdmin)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+}
+
+func TestDeleteResourceSweepsPerAgentSecrets(t *testing.T) {
+	f := paSetup(t)
+	var agent2 domain.Agent
+	doJSONAuth(t, f.handler, authOwner, http.MethodPost, pathSquadsPrefix+f.squadID+pathAgents,
+		map[string]any{"name": "PA Agent 2"}, http.StatusCreated, &agent2)
+
+	// Per-agent credentials for both agents on the doomed resource, plus
+	// a second resource whose custody Secrets must survive.
+	paSetCred(t, f.handler, f.resource.ID, f.agent.ID, "fake-sweep-A-DO-NOT-USE")
+	paSetCred(t, f.handler, f.resource.ID, agent2.ID, "fake-sweep-B-DO-NOT-USE")
+	keep := createBYORestResourceAuthed(t, f.handler, "sweep-keep-api")
+	paSetCred(t, f.handler, keep.ID, f.agent.ID, "fake-sweep-keep-DO-NOT-USE")
+
+	doomedPerAgent := []string{
+		kube.ResourceAgentSecretName(f.resource.ID, f.agent.ID),
+		kube.ResourceAgentSecretName(f.resource.ID, agent2.ID),
+	}
+	for _, n := range doomedPerAgent {
+		_, ok := f.secrets.get(n)
+		require.True(t, ok, "precondition: %s should exist", n)
+	}
+
+	// Admin hard-deletes the resource.
+	paDeleteResource(t, f.handler, f.resource.ID)
+
+	// Resource-level + both per-agent Secrets swept…
+	f.secrets.mu.Lock()
+	for name := range f.secrets.secrets {
+		require.NotContains(t, name, "skquad-rest-"+f.resource.ID, "no Secret for the deleted resource may survive")
+	}
+	f.secrets.mu.Unlock()
+	deleted := f.secrets.deletedNames()
+	for _, n := range doomedPerAgent {
+		require.Contains(t, deleted, n)
+	}
+	require.Contains(t, deleted, "skquad-rest-"+f.resource.ID)
+	// …and the other resource's custody untouched.
+	_, ok := f.secrets.get("skquad-rest-" + keep.ID)
+	require.True(t, ok, "other resource's Secret must survive")
+	_, ok = f.secrets.get(kube.ResourceAgentSecretName(keep.ID, f.agent.ID))
+	require.True(t, ok, "other resource's per-agent Secret must survive")
+
+	// Sweep audit: counts only, never values.
+	entries, err := f.store.ListAudit(context.Background(), "", 200)
+	require.NoError(t, err)
+	var swept bool
+	for _, e := range entries {
+		if e.Action != "registry.resource.secret_sweep" || e.ResourceID != f.resource.ID {
+			continue
+		}
+		swept = true
+		raw, _ := json.Marshal(e)
+		require.NotContains(t, string(raw), "fake-sweep-A-DO-NOT-USE")
+		require.NotContains(t, string(raw), "fake-sweep-B-DO-NOT-USE")
+		var md map[string]string
+		require.NoError(t, json.Unmarshal(e.Metadata, &md))
+		require.Equal(t, "2", md["count"], "sweep covers the two per-agent Secrets; the resource-level Secret was already cleared by the TG-4 path")
+		require.Equal(t, "skquad-rest-"+f.resource.ID, md["prefix"])
+	}
+	require.True(t, swept, "expected a registry.resource.secret_sweep audit entry")
+}
+
+func TestDeleteResourceSweepNoSecretsIsNoop(t *testing.T) {
+	f := paSetup(t)
+	// auth_kind=none resource: no custody Secrets ever exist for it.
+	var res domain.RegistryResource
+	doJSONAuth(t, f.handler, authAdmin, http.MethodPost, registryBase+"rest", map[string]any{
+		"name":            "sweep-none-api",
+		"endpoint_config": map[string]any{"base_url": "https://api.example.com/v2", "auth_kind": "none"},
+		"policy_ceiling":  map[string]any{"methods": []string{"GET"}, "path_allow": []string{"/x/**"}},
+	}, http.StatusCreated, &res)
+	f.secrets.mu.Lock()
+	f.secrets.secrets = map[string]map[string]string{} // drop unrelated fixtures' Secrets
+	f.secrets.mu.Unlock()
+
+	paDeleteResource(t, f.handler, res.ID)
+	// No sweep audit when nothing was deleted (quiet success).
+	entries, err := f.store.ListAudit(context.Background(), "", 200)
+	require.NoError(t, err)
+	for _, e := range entries {
+		require.NotEqual(t, "registry.resource.secret_sweep", e.Action)
+	}
+}
+
+func TestDeleteResourceSweepFailureIsBestEffortAndAudited(t *testing.T) {
+	f := paSetup(t)
+	paSetCred(t, f.handler, f.resource.ID, f.agent.ID, "fake-sweep-fail-DO-NOT-USE")
+	f.secrets.failSweep = true
+
+	// Store delete still succeeds; the sweep failure must not 5xx the delete.
+	paDeleteResource(t, f.handler, f.resource.ID)
+
+	entries, err := f.store.ListAudit(context.Background(), "", 200)
+	require.NoError(t, err)
+	var swept bool
+	for _, e := range entries {
+		if e.Action == "registry.resource.secret_sweep" && e.ResourceID == f.resource.ID {
+			swept = true
+			var md map[string]string
+			require.NoError(t, json.Unmarshal(e.Metadata, &md))
+			require.Equal(t, "true", md["error"])
+		}
+	}
+	require.True(t, swept, "failed sweep must still be audited with error=true")
+}

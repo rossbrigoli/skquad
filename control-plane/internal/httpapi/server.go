@@ -2041,12 +2041,24 @@ func (s *Server) deleteRegistryResource(w http.ResponseWriter, r *http.Request) 
 	}
 	// TG-4: drop the managed BYO Secret (if any) so a deleted rest
 	// resource never leaves orphaned credential material behind.
-	if res, err := s.store.GetResource(r.Context(), typ, resourceID); err == nil && res.Type == domain.ResRest && res.AuthRef != "" {
-		s.clearResourceSecret(r.Context(), res)
+	// S-260: keep the fetched resource around — after the store delete
+	// we sweep ALL custody Secrets for this resource (resource-level +
+	// every per-agent skquad-*-<id>-agent-* derivative), which is only
+	// possible while we still know the resource's type and id.
+	existing, getErr := s.store.GetResource(r.Context(), typ, resourceID)
+	if getErr == nil && existing.Type == domain.ResRest && existing.AuthRef != "" {
+		s.clearResourceSecret(r.Context(), existing)
 	}
 	if err := s.store.DeleteResource(s.pendingUserAuditCtx(r, "registry.resource.delete", string(typ), resourceID, "", nil), typ, resourceID); err != nil {
 		writeStorageError(w, err)
 		return
+	}
+	// S-260: orphan sweep for per-agent custody Secrets. Runs after
+	// the store delete so a failed delete never strips credentials
+	// from a live resource; failures here orphan Secret material that
+	// is logged and audited (names/counts only, never values).
+	if getErr == nil {
+		s.sweepResourceCustodySecrets(r, existing)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

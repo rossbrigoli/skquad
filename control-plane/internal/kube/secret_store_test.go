@@ -328,3 +328,127 @@ func TestResourceAgentSecretName(t *testing.T) {
 		t.Fatalf("name too long: %d", len(n))
 	}
 }
+
+// S-260: prefix sweep for per-agent custody Secrets.
+
+func TestSecretStoreListSecretNamesByPrefix(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	s, _ := newTestSecretStore(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.RequestURI()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"items": []map[string]any{
+				{"metadata": map[string]any{"name": "skquad-rest-aaa"}},
+				{"metadata": map[string]any{"name": "skquad-rest-aaa-agent-bbb"}},
+				{"metadata": map[string]any{"name": "skquad-rest-aaa-agent-ccc"}},
+				{"metadata": map[string]any{"name": "skquad-rest-aaab-agent-ddd"}},
+				{"metadata": map[string]any{"name": "skquad-rest-bbb"}},
+				{"metadata": map[string]any{"name": "skquad-git-aaa"}},
+			},
+		})
+	})
+
+	names, err := s.ListSecretNamesByPrefix(context.Background(), "skquad-rest-aaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"skquad-rest-aaa", "skquad-rest-aaa-agent-bbb", "skquad-rest-aaa-agent-ccc"}
+	if len(names) != len(want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("names = %v, want %v", names, want)
+		}
+	}
+	// Listing must be scoped by the managed-by label, never unscoped.
+	if !strings.Contains(gotPath, "/api/v1/namespaces/"+testNamespace+"/secrets?labelSelector=") {
+		t.Fatalf("path = %q (must carry labelSelector)", gotPath)
+	}
+	if !strings.Contains(gotPath, "app.kubernetes.io") || !strings.Contains(gotPath, "skquad-control-plane") {
+		t.Fatalf("labelSelector missing managed-by scoping: %q", gotPath)
+	}
+
+	if _, err := s.ListSecretNamesByPrefix(context.Background(), ""); err == nil {
+		t.Fatal("empty prefix must error")
+	}
+}
+
+func TestSecretStoreDeleteSecretsByPrefix(t *testing.T) {
+	t.Run("deletes resource and per-agent secrets only", func(t *testing.T) {
+		var deleted []string
+		s, _ := newTestSecretStore(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"items": []map[string]any{
+						{"metadata": map[string]any{"name": "skquad-rest-aaa"}},
+						{"metadata": map[string]any{"name": "skquad-rest-aaa-agent-bbb"}},
+						{"metadata": map[string]any{"name": "skquad-rest-bbb-agent-ccc"}},
+					},
+				})
+				return
+			}
+			deleted = append(deleted, strings.TrimPrefix(r.URL.Path, "/api/v1/namespaces/"+testNamespace+"/secrets/"))
+			w.WriteHeader(http.StatusOK)
+		})
+		n, err := s.DeleteSecretsByPrefix(context.Background(), "skquad-rest-aaa")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 2 {
+			t.Fatalf("deleted = %d, want 2", n)
+		}
+		if strings.Join(deleted, ",") != "skquad-rest-aaa,skquad-rest-aaa-agent-bbb" {
+			t.Fatalf("deleted = %v", deleted)
+		}
+	})
+
+	t.Run("no matches is a no-op", func(t *testing.T) {
+		s, _ := newTestSecretStore(t, func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
+		})
+		n, err := s.DeleteSecretsByPrefix(context.Background(), "skquad-rest-zzz")
+		if err != nil || n != 0 {
+			t.Fatalf("no-match sweep: n=%d err=%v", n, err)
+		}
+	})
+
+	t.Run("list failure propagates", func(t *testing.T) {
+		s, _ := newTestSecretStore(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		})
+		if _, err := s.DeleteSecretsByPrefix(context.Background(), "skquad-rest-aaa"); err == nil {
+			t.Fatal("503 on list must error")
+		}
+	})
+
+	t.Run("delete failure keeps sweeping and reports", func(t *testing.T) {
+		var deleted []string
+		s, _ := newTestSecretStore(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"items": []map[string]any{
+						{"metadata": map[string]any{"name": "skquad-rest-aaa-agent-bbb"}},
+						{"metadata": map[string]any{"name": "skquad-rest-aaa-agent-ccc"}},
+					},
+				})
+				return
+			}
+			name := strings.TrimPrefix(r.URL.Path, "/api/v1/namespaces/"+testNamespace+"/secrets/")
+			if name == "skquad-rest-aaa-agent-bbb" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			deleted = append(deleted, name)
+			w.WriteHeader(http.StatusOK)
+		})
+		n, err := s.DeleteSecretsByPrefix(context.Background(), "skquad-rest-aaa")
+		if err == nil {
+			t.Fatal("failed delete must surface an error")
+		}
+		if n != 1 || len(deleted) != 1 || deleted[0] != "skquad-rest-aaa-agent-ccc" {
+			t.Fatalf("sweep must continue past failure: n=%d deleted=%v", n, deleted)
+		}
+	})
+}

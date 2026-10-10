@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,7 @@ type fakeResourceSecretStore struct {
 	mu         sync.Mutex
 	secrets    map[string]map[string]string
 	failEnsure bool
+	failSweep  bool
 	deletes    []string
 }
 
@@ -68,6 +70,30 @@ func (f *fakeResourceSecretStore) DeleteResourceSecret(_ context.Context, name s
 
 func (f *fakeResourceSecretStore) RefFor(secretName string) string {
 	return "k8s://skquad-system/" + secretName
+}
+
+// DeleteSecretsByPrefix mirrors kube.SecretStore's S-260 sweep: a name
+// matches when it equals prefix or starts with prefix+"-". Matches are
+// removed and recorded in deleted order.
+func (f *fakeResourceSecretStore) DeleteSecretsByPrefix(_ context.Context, prefix string) (int, error) {
+	if f.failSweep {
+		return 0, errors.New("fake: sweep failed")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	dash := prefix + "-"
+	var matched []string
+	for name := range f.secrets {
+		if name == prefix || strings.HasPrefix(name, dash) {
+			matched = append(matched, name)
+		}
+	}
+	slices.Sort(matched) // deterministic delete order for assertions
+	for _, name := range matched {
+		delete(f.secrets, name)
+		f.deletes = append(f.deletes, name)
+	}
+	return len(matched), nil
 }
 
 func (f *fakeResourceSecretStore) set(name string, fields map[string]string) {

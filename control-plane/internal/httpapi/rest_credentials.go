@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"slices"
@@ -40,7 +41,63 @@ type ResourceSecretStore interface {
 	EnsureResourceSecret(ctx context.Context, name string, fields map[string]string) error
 	GetResourceSecret(ctx context.Context, name string) (map[string]string, error)
 	DeleteResourceSecret(ctx context.Context, name string) error
+	// DeleteSecretsByPrefix sweeps every managed Secret whose name
+	// equals prefix or starts with prefix+"-" (S-260: deleting a
+	// resource must remove its per-agent custody Secrets,
+	// skquad-rest-<id>-agent-<agent>, which no by-name API can find
+	// after the resource row is gone). Returns the deleted count.
+	DeleteSecretsByPrefix(ctx context.Context, prefix string) (int, error)
 	RefFor(secretName string) string
+}
+
+// custodySecretName returns the resource-level custody Secret name for
+// a typed resource: rest -> "skquad-rest-", git -> "skquad-git-",
+// mcp -> "skquad-mcp-". The same prefix anchors the per-agent names
+// (<prefix><id>-agent-<agent>), so it doubles as the S-260 sweep
+// prefix that catches the resource Secret and all its per-agent
+// derivatives in one pass.
+func custodySecretName(resource *domain.RegistryResource) string {
+	switch resource.Type {
+	case domain.ResGit:
+		return kube.GitSecretName(resource.ID)
+	case domain.ResMCP:
+		// TG-5 slice B2a: MCP custody under its own prefix, disjoint
+		// from rest/git even if a resource id were reused across types.
+		return kube.MCPSecretName(resource.ID)
+	default:
+		return kube.ResourceSecretName(resource.ID)
+	}
+}
+
+// sweepResourceCustodySecrets removes the resource-level Secret and
+// every per-agent Secret for a resource being deleted (S-260). Runs
+// best-effort after the store delete succeeded: a sweep failure then
+// orphans Secret material (logged, recoverable) rather than stripping
+// credentials from a resource that is still live. Values are never
+// read — the sweep works on names only, and the audit carries counts.
+func (s *Server) sweepResourceCustodySecrets(r *http.Request, resource *domain.RegistryResource) {
+	if s.resourceSecrets == nil || resource == nil {
+		return
+	}
+	prefix := custodySecretName(resource)
+	if prefix == "" {
+		return
+	}
+	deleted, err := s.resourceSecrets.DeleteSecretsByPrefix(r.Context(), prefix)
+	if err != nil {
+		// Log without values; keep going so a partial sweep still
+		// removes what it can. The error is surfaced in the audit.
+		log.Printf("registry resource %s (%s): custody secret sweep error after %d deleted: %v", resource.ID, resource.Type, deleted, err)
+	}
+	if deleted == 0 && err == nil {
+		return
+	}
+	metadata, _ := json.Marshal(map[string]string{
+		"prefix": prefix,
+		"count":  fmt.Sprintf("%d", deleted),
+		"error":  fmt.Sprintf("%v", err != nil),
+	})
+	s.recordUserAudit(r, "registry.resource.secret_sweep", string(resource.Type), resource.ID, "", json.RawMessage(metadata))
 }
 
 // restAuthFields lists the allowed secret fields per auth kind. This is
@@ -158,15 +215,7 @@ func (s *Server) setResourceSecret(ctx context.Context, resource *domain.Registr
 	if s.resourceSecrets == nil {
 		return errSecretStoreUnconfigured
 	}
-	secretName := kube.ResourceSecretName(resource.ID)
-	switch resource.Type {
-	case domain.ResGit:
-		secretName = kube.GitSecretName(resource.ID)
-	case domain.ResMCP:
-		// TG-5 slice B2a: MCP custody under its own prefix, disjoint
-		// from rest/git even if a resource id were reused across types.
-		secretName = kube.MCPSecretName(resource.ID)
-	}
+	secretName := custodySecretName(resource)
 	if err := s.resourceSecrets.EnsureResourceSecret(ctx, secretName, fields); err != nil {
 		return err
 	}

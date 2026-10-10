@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -304,6 +305,84 @@ func (s *SecretStore) GetResourceSecret(ctx context.Context, name string) (map[s
 // Secret is not an error.
 func (s *SecretStore) DeleteResourceSecret(ctx context.Context, name string) error {
 	return s.deleteSecret(ctx, name)
+}
+
+// ListSecretNamesByPrefix returns the names of control-plane-managed
+// Secrets in the store's namespace whose name equals prefix or starts
+// with prefix+"-" (S-260). The dash rule makes a resource-level custody
+// name (e.g. skquad-rest-<id>) match exactly its own Secret plus its
+// per-agent derivatives (skquad-rest-<id>-agent-<agent>) and nothing
+// else — a different resource's Secret can never share the prefix past
+// the dash boundary because ids are fixed-shape UUIDs, and the guard
+// keeps the match precise regardless.
+//
+// Only names are returned: list results are parsed for
+// metadata.name and secret data is never inspected or logged. The
+// listing is scoped by the managed-by label so operator-created
+// Secrets in the namespace are never candidates.
+func (s *SecretStore) ListSecretNamesByPrefix(ctx context.Context, prefix string) ([]string, error) {
+	if prefix == "" {
+		return nil, fmt.Errorf("secretstore: prefix required")
+	}
+	path := apiPathNamespaces + s.namespace + "/secrets?labelSelector=" + url.QueryEscape(managedByLabel+"="+controlPlaneName)
+	req, err := s.request(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("secretstore: list secrets: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("secretstore: list secrets: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&list); err != nil {
+		return nil, fmt.Errorf("secretstore: parse secret list: %w", err)
+	}
+	dash := prefix + "-"
+	var names []string
+	for _, item := range list.Items {
+		name := item.Metadata.Name
+		if name == prefix || strings.HasPrefix(name, dash) {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+// DeleteSecretsByPrefix removes every control-plane-managed Secret
+// whose name matches prefix (see ListSecretNamesByPrefix) and returns
+// how many were deleted (S-260 orphan sweep for per-agent custody
+// Secrets on resource delete). Deletion continues past individual
+// failures so one stuck Secret can't strand the rest; the first error
+// is returned alongside the count of what did get deleted. A prefix
+// with no matches is a successful no-op (0, nil).
+func (s *SecretStore) DeleteSecretsByPrefix(ctx context.Context, prefix string) (int, error) {
+	names, err := s.ListSecretNamesByPrefix(ctx, prefix)
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	var firstErr error
+	for _, name := range names {
+		if err := s.deleteSecret(ctx, name); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		deleted++
+	}
+	return deleted, firstErr
 }
 
 func (s *SecretStore) deleteSecret(ctx context.Context, name string) error {
