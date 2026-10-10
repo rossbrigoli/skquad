@@ -36,6 +36,30 @@ const (
 	sshDefaultMaxSessions     = 2
 )
 
+// minPositive returns the smallest positive value in vals, or def when
+// none of them is positive (tightest-wins policy layering).
+func minPositive(def int, vals ...int) int {
+	out := def
+	for _, v := range vals {
+		if v > 0 && v < out {
+			out = v
+		}
+	}
+	return out
+}
+
+// minPositiveUnbounded returns the smallest positive value in vals, or
+// 0 when none — 0 means "no rate limit" in the policy layers.
+func minPositiveUnbounded(vals ...int) int {
+	out := 0
+	for _, v := range vals {
+		if v > 0 && (out == 0 || v < out) {
+			out = v
+		}
+	}
+	return out
+}
+
 // sshToolSchema builds the `tools` JSON array surfaced on an ssh resource
 // entry in agentRuntimeResource. Parse failures degrade to omitting the
 // tools rather than breaking discovery — the gateway still fails closed.
@@ -55,24 +79,9 @@ func sshToolSchema(resourceName, resourceID string, ceilingRaw, constraintsRaw, 
 		commandAllow = *ceiling.commandAllow
 	}
 
-	certTTL := sshDefaultCertTTLMinutes
-	for _, v := range []int{ceiling.certTTLMinutes, constraints.certTTLMinutes} {
-		if v > 0 && v < certTTL {
-			certTTL = v
-		}
-	}
-	execTimeout := sshDefaultExecTimeoutSecs
-	for _, v := range []int{ceiling.execTimeoutSeconds, constraints.execTimeoutSeconds} {
-		if v > 0 && v < execTimeout {
-			execTimeout = v
-		}
-	}
-	maxSessions := sshDefaultMaxSessions
-	for _, v := range []int{ceiling.maxConcurrentSessions, constraints.maxConcurrentSessions} {
-		if v > 0 && v < maxSessions {
-			maxSessions = v
-		}
-	}
+	certTTL := minPositive(sshDefaultCertTTLMinutes, ceiling.certTTLMinutes, constraints.certTTLMinutes)
+	execTimeout := minPositive(sshDefaultExecTimeoutSecs, ceiling.execTimeoutSeconds, constraints.execTimeoutSeconds)
+	maxSessions := minPositive(sshDefaultMaxSessions, ceiling.maxConcurrentSessions, constraints.maxConcurrentSessions)
 
 	gatewayNote := "Calls execute in the quarantined terminal-service; SSH credentials (CA-signed, TTL " + itoa(certTTL) + "m) never enter your sandbox. " +
 		"Every command is audited BEFORE execution. Commands matching denied patterns pause for owner confirmation (Inbox). " +
@@ -228,29 +237,38 @@ func grantHasApplyCapability(constraintsRaw json.RawMessage) bool {
 	return en
 }
 
+// effectiveSSHHostGroups filters the ceiling's admin-managed host_groups
+// by the grant's host_groups_allow, yielding the surfaced name → {hosts,tier} map.
+func effectiveSSHHostGroups(ceiling, constraints sshPolicyLayer) map[string]any {
+	groups := map[string]any{}
+	if len(ceiling.hostGroups) == 0 {
+		return groups
+	}
+	var gh map[string]json.RawMessage
+	if json.Unmarshal(ceiling.hostGroups, &gh) != nil {
+		return groups
+	}
+	for name, raw := range gh {
+		if constraints.hostGroupsAllow != nil && !globMatchAnyString(*constraints.hostGroupsAllow, name) {
+			continue
+		}
+		var g struct {
+			Hosts []string `json:"hosts"`
+			Tier  string   `json:"tier"`
+		}
+		if json.Unmarshal(raw, &g) == nil {
+			groups[name] = map[string]any{"hosts": g.Hosts, "tier": g.Tier}
+		}
+	}
+	return groups
+}
+
 // sshApplyToolSchemas builds the ssh_apply + ssh_apply_status tool
 // entries with the effective (ceiling ∧ grant) apply constraints so
 // agents see exactly what the gateway will enforce.
 func sshApplyToolSchemas(resourceID string, ceiling, constraints sshPolicyLayer, hostsAllow []string) []map[string]any {
 	// host_groups: from the ceiling; narrowed by constraints.host_groups_allow when set.
-	groups := map[string]any{}
-	if len(ceiling.hostGroups) > 0 {
-		var gh map[string]json.RawMessage
-		if json.Unmarshal(ceiling.hostGroups, &gh) == nil {
-			for name, raw := range gh {
-				if constraints.hostGroupsAllow != nil && !globMatchAnyString(*constraints.hostGroupsAllow, name) {
-					continue
-				}
-				var g struct {
-					Hosts []string `json:"hosts"`
-					Tier  string   `json:"tier"`
-				}
-				if json.Unmarshal(raw, &g) == nil {
-					groups[name] = map[string]any{"hosts": g.Hosts, "tier": g.Tier}
-				}
-			}
-		}
-	}
+	groups := effectiveSSHHostGroups(ceiling, constraints)
 
 	checkOnlyOnly := false
 	if constraints.checkOnly != nil {

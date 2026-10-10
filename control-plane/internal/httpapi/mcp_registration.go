@@ -144,32 +144,45 @@ func mcpAllowlistViolations(ceiling json.RawMessage, tools []MCPToolInfo) egress
 	var v egresspolicy.Violations
 	for i, entry := range ce.ToolsAllow {
 		field := "policy_ceiling.tools_allow[" + strconv.Itoa(i) + "]"
-		if strings.Contains(entry, "*") {
-			matched := false
-			for name := range names {
-				if mcpWildcardMatch(entry, name) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				v = append(v, egresspolicy.Violation{
-					Field:   field,
-					Code:    "unmatched_wildcard",
-					Message: "wildcard " + entry + " matches no tool in the enumerated MCP tool set",
-				})
-			}
-			continue
-		}
-		if !names[entry] {
-			v = append(v, egresspolicy.Violation{
-				Field:   field,
-				Code:    "unknown_tool",
-				Message: "tool " + entry + " does not exist in the enumerated MCP tool set",
-			})
+		if viol := mcpAllowlistEntryViolation(entry, field, names); viol != nil {
+			v = append(v, *viol)
 		}
 	}
 	return v
+}
+
+// mcpAllowlistEntryViolation checks one tools_allow entry (wildcard or
+// literal) against the enumerated tool-name set.
+func mcpAllowlistEntryViolation(entry, field string, names map[string]bool) *egresspolicy.Violation {
+	if strings.Contains(entry, "*") {
+		if !mcpWildcardEntryMatched(entry, names) {
+			return &egresspolicy.Violation{
+				Field:   field,
+				Code:    "unmatched_wildcard",
+				Message: "wildcard " + entry + " matches no tool in the enumerated MCP tool set",
+			}
+		}
+		return nil
+	}
+	if !names[entry] {
+		return &egresspolicy.Violation{
+			Field:   field,
+			Code:    "unknown_tool",
+			Message: "tool " + entry + " does not exist in the enumerated MCP tool set",
+		}
+	}
+	return nil
+}
+
+// mcpWildcardEntryMatched reports whether a wildcard entry matches at
+// least one enumerated tool name.
+func mcpWildcardEntryMatched(entry string, names map[string]bool) bool {
+	for name := range names {
+		if mcpWildcardMatch(entry, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // browserEnumeratePlaceholder is the non-secret bearer the CP sends when

@@ -226,11 +226,23 @@ func (s *Server) dashboardSquadEntry(ctx context.Context, squad *domain.Squad, o
 		entry.Cost = costFromMetering(usage)
 	}
 
-	agents, err := s.store.ListAgents(ctx, squad.ID)
+	agents, err := s.dashboardAgents(ctx, squad.ID, squadTasks, modelLabels)
 	if err != nil {
 		return entry, err
 	}
+	entry.Agents = agents
+	return entry, nil
+}
+
+// dashboardAgents builds the per-agent dashboard rows for a squad, using
+// the squad's already-fetched task list for the current/last picks.
+func (s *Server) dashboardAgents(ctx context.Context, squadID string, squadTasks []*domain.Task, modelLabels map[string]string) ([]DashboardAgent, error) {
+	agents, err := s.store.ListAgents(ctx, squadID)
+	if err != nil {
+		return nil, err
+	}
 	picks := pickAgentTasks(squadTasks)
+	out := []DashboardAgent{}
 	for _, agent := range agents {
 		da := DashboardAgent{
 			ID:      agent.ID,
@@ -249,9 +261,9 @@ func (s *Server) dashboardSquadEntry(ctx context.Context, squad *domain.Squad, o
 		if usage, err := s.store.SumMetering(ctx, "", agent.ID, time.Time{}); err == nil && usage != nil {
 			da.Cost = costFromMetering(usage)
 		}
-		entry.Agents = append(entry.Agents, da)
+		out = append(out, da)
 	}
-	return entry, nil
+	return out, nil
 }
 
 // dashboardModelLabels maps AI model id -> display label for the whole
@@ -304,26 +316,33 @@ func pickAgentTasks(tasks []*domain.Task) map[string]agentTaskPick {
 			continue
 		}
 		p := picks[t.AssigneeAgentID]
-		switch t.Status {
-		case domain.TaskInProgress:
-			if taskNewerThan(t, p.current) {
-				p.current = t
-			}
-		case domain.TaskDone:
-			if taskNewerThan(t, p.last) {
-				p.last = t
-			}
-		case domain.TaskInReview, domain.TaskBlocked:
-			if p.last == nil && taskNewerThan(t, p.fallback) {
-				p.fallback = t
-			}
-		}
-		picks[t.AssigneeAgentID] = p
+		picks[t.AssigneeAgentID] = applyTaskToPick(p, t)
 	}
 	for id, p := range picks {
 		picks[id] = p.resolved()
 	}
 	return picks
+}
+
+// applyTaskToPick folds one task into the agent's pick according to its
+// status (in-progress → current, done → last, in-review/blocked →
+// fallback candidate).
+func applyTaskToPick(p agentTaskPick, t *domain.Task) agentTaskPick {
+	switch t.Status {
+	case domain.TaskInProgress:
+		if taskNewerThan(t, p.current) {
+			p.current = t
+		}
+	case domain.TaskDone:
+		if taskNewerThan(t, p.last) {
+			p.last = t
+		}
+	case domain.TaskInReview, domain.TaskBlocked:
+		if p.last == nil && taskNewerThan(t, p.fallback) {
+			p.fallback = t
+		}
+	}
+	return p
 }
 
 // taskNewerThan orders tasks by updated_at, breaking ties on created_at
