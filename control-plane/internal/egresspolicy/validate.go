@@ -9,6 +9,15 @@ import (
 	"strings"
 )
 
+// Field-path constants for policy_ceiling violation fields (S1192).
+const (
+	ceilingHostGroupsPrefix = "policy_ceiling.host_groups."
+	ceilingEgressClassField = "policy_ceiling.egress_class"
+	ceilingRatePerMinField  = "policy_ceiling.rate_per_min"
+	ceilingPerToolPrefix    = "policy_ceiling.per_tool."
+	hostGroupsHostsSuffix   = ".hosts"
+)
+
 // object decodes raw JSON into a key map. Empty/absent raw is treated as an
 // empty object. Non-object JSON is a structured violation.
 func object(field string, raw json.RawMessage) (map[string]json.RawMessage, Violations) {
@@ -358,9 +367,9 @@ func validateRestCeiling(obj map[string]json.RawMessage) Violations {
 	var reqBytes, respBytes, rate int
 	v = append(v, positiveIntField(obj, "max_request_bytes", "policy_ceiling.max_request_bytes", &reqBytes)...)
 	v = append(v, positiveIntField(obj, "max_response_bytes", "policy_ceiling.max_response_bytes", &respBytes)...)
-	v = append(v, positiveIntField(obj, "rate_per_min", "policy_ceiling.rate_per_min", &rate)...)
+	v = append(v, positiveIntField(obj, "rate_per_min", ceilingRatePerMinField, &rate)...)
 	var ec string
-	v = append(v, stringField(obj, "egress_class", "policy_ceiling.egress_class", &ec, false, egressClass)...)
+	v = append(v, stringField(obj, "egress_class", ceilingEgressClassField, &ec, false, egressClass)...)
 	return sortByField(v)
 }
 
@@ -393,10 +402,10 @@ func validateMCPCeiling(obj map[string]json.RawMessage) Violations {
 	v = append(v, stringListField(obj, "tools_allow", "policy_ceiling.tools_allow", &allow)...)
 	v = append(v, stringListField(obj, "tools_deny", "policy_ceiling.tools_deny", &deny)...)
 	var rate, maxArgs int
-	v = append(v, positiveIntField(obj, "rate_per_min", "policy_ceiling.rate_per_min", &rate)...)
+	v = append(v, positiveIntField(obj, "rate_per_min", ceilingRatePerMinField, &rate)...)
 	v = append(v, positiveIntField(obj, "max_args_bytes", "policy_ceiling.max_args_bytes", &maxArgs)...)
 	var ec string
-	v = append(v, stringField(obj, "egress_class", "policy_ceiling.egress_class", &ec, false, egressClass)...)
+	v = append(v, stringField(obj, "egress_class", ceilingEgressClassField, &ec, false, egressClass)...)
 	if raw, ok := obj["per_tool"]; ok {
 		var perTool map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &perTool); err != nil {
@@ -405,12 +414,12 @@ func validateMCPCeiling(obj map[string]json.RawMessage) Violations {
 			for name, traw := range perTool {
 				var tObj map[string]json.RawMessage
 				if err := json.Unmarshal(traw, &tObj); err != nil {
-					v = append(v, Violation{Field: "policy_ceiling.per_tool." + name, Code: "invalid_type", Message: "per_tool entry must be an object"})
+					v = append(v, Violation{Field: ceilingPerToolPrefix + name, Code: "invalid_type", Message: "per_tool entry must be an object"})
 					continue
 				}
-				v = append(v, checkUnknownKeys("policy_ceiling.per_tool."+name, tObj, "requires_confirmation")...)
+				v = append(v, checkUnknownKeys(ceilingPerToolPrefix+name, tObj, "requires_confirmation")...)
 				var rc bool
-				v = append(v, boolField(tObj, "requires_confirmation", "policy_ceiling.per_tool."+name+".requires_confirmation", &rc)...)
+				v = append(v, boolField(tObj, "requires_confirmation", ceilingPerToolPrefix+name+".requires_confirmation", &rc)...)
 			}
 		}
 	}
@@ -435,7 +444,7 @@ func validateGitCeiling(obj map[string]json.RawMessage) Violations {
 	var allowPush bool
 	v = append(v, boolField(obj, "allow_push", "policy_ceiling.allow_push", &allowPush)...)
 	var rate int
-	v = append(v, positiveIntField(obj, "rate_per_min", "policy_ceiling.rate_per_min", &rate)...)
+	v = append(v, positiveIntField(obj, "rate_per_min", ceilingRatePerMinField, &rate)...)
 	return sortByField(v)
 }
 
@@ -478,7 +487,7 @@ func validateSSHCeiling(obj map[string]json.RawMessage) Violations {
 		v = append(v, Violation{Field: "policy_ceiling.exec_timeout_seconds", Code: "invalid_value", Message: "exec_timeout_seconds must be <= 300"})
 	}
 	var ec string
-	v = append(v, stringField(obj, "egress_class", "policy_ceiling.egress_class", &ec, false, egressClass)...)
+	v = append(v, stringField(obj, "egress_class", ceilingEgressClassField, &ec, false, egressClass)...)
 	// TG-11 §6.7: host_groups — admin-managed, versioned inventory. Every
 	// host in a group MUST be covered by hosts_allow: groups narrow the
 	// approved surface, they can never widen it past the ceiling.
@@ -495,15 +504,22 @@ func validateSSHCeiling(obj map[string]json.RawMessage) Violations {
 		if len(tv) > 0 {
 			return sortByField(append(v, tv...))
 		}
-		for k := range tipObj {
-			if k != "low" && k != "medium" && k != "high" {
-				v = append(v, Violation{Field: "policy_ceiling.require_tip." + k, Code: "invalid_value", Message: "require_tip keys must be low|medium|high"})
-			}
-			var b bool
-			v = append(v, boolField(tipObj, k, "policy_ceiling.require_tip."+k, &b)...)
-		}
+		v = append(v, validateRequireTipKeys(tipObj)...)
 	}
 	return sortByField(v)
+}
+
+// validateRequireTipKeys checks the tier→bool map inside require_tip.
+func validateRequireTipKeys(tipObj map[string]json.RawMessage) Violations {
+	var v Violations
+	for k := range tipObj {
+		if k != "low" && k != "medium" && k != "high" {
+			v = append(v, Violation{Field: "policy_ceiling.require_tip." + k, Code: "invalid_value", Message: "require_tip keys must be low|medium|high"})
+		}
+		var b bool
+		v = append(v, boolField(tipObj, k, "policy_ceiling.require_tip."+k, &b)...)
+	}
+	return v
 }
 
 // validateHostGroups validates policy_ceiling.host_groups against the
@@ -519,41 +535,50 @@ func validateHostGroups(raw json.RawMessage, hostsAllow []string) Violations {
 		return Violations{{Field: "policy_ceiling.host_groups", Code: "required", Message: "host_groups must contain at least one group when present"}}
 	}
 	for name, graw := range groups {
-		if name == "" || !hostGroupNameRe.MatchString(name) {
-			v = append(v, Violation{Field: "policy_ceiling.host_groups." + name, Code: "invalid_value", Message: "group name must match [a-z0-9_-]+"})
-		}
-		gobj, gv := object("policy_ceiling.host_groups."+name, graw)
-		if len(gv) > 0 {
-			v = append(v, gv...)
-			continue
-		}
-		if uv := checkUnknownKeys("policy_ceiling.host_groups."+name, gobj, "hosts", "tier"); len(uv) > 0 {
-			v = append(v, uv...)
-			continue
-		}
-		var hosts []string
-		v = append(v, stringListField(gobj, "hosts", "policy_ceiling.host_groups."+name+".hosts", &hosts)...)
-		if len(hosts) == 0 {
-			v = append(v, Violation{Field: "policy_ceiling.host_groups." + name + ".hosts", Code: "required", Message: "group must contain at least one host"})
-		}
-		var tier string
-		if tv := stringField(gobj, "tier", "policy_ceiling.host_groups."+name+".tier", &tier, true, map[string]bool{"low": true, "medium": true, "high": true}); len(tv) > 0 {
-			v = append(v, tv...)
-		}
-		for _, h := range hosts {
-			covered := false
-			for _, p := range hostsAllow {
-				if sshHostGlobMatch(p, h) {
-					covered = true
-					break
-				}
-			}
-			if !covered {
-				v = append(v, Violation{Field: "policy_ceiling.host_groups." + name + ".hosts", Code: "outside_hosts_allow", Message: "host " + h + " is not covered by any hosts_allow pattern — groups cannot widen the ceiling"})
-			}
+		v = append(v, validateHostGroup(name, graw, hostsAllow)...)
+	}
+	return v
+}
+
+// validateHostGroup validates one host_groups entry: name shape, key
+// allowlist, non-empty hosts, tier, and that every host stays inside the
+// ceiling's hosts_allow patterns.
+func validateHostGroup(name string, graw json.RawMessage, hostsAllow []string) Violations {
+	path := ceilingHostGroupsPrefix + name
+	var v Violations
+	if name == "" || !hostGroupNameRe.MatchString(name) {
+		v = append(v, Violation{Field: path, Code: "invalid_value", Message: "group name must match [a-z0-9_-]+"})
+	}
+	gobj, gv := object(path, graw)
+	if len(gv) > 0 {
+		return append(v, gv...)
+	}
+	if uv := checkUnknownKeys(path, gobj, "hosts", "tier"); len(uv) > 0 {
+		return append(v, uv...)
+	}
+	var hosts []string
+	v = append(v, stringListField(gobj, "hosts", path+hostGroupsHostsSuffix, &hosts)...)
+	if len(hosts) == 0 {
+		v = append(v, Violation{Field: path + hostGroupsHostsSuffix, Code: "required", Message: "group must contain at least one host"})
+	}
+	var tier string
+	v = append(v, stringField(gobj, "tier", path+".tier", &tier, true, map[string]bool{"low": true, "medium": true, "high": true})...)
+	for _, h := range hosts {
+		if !hostCoveredByAny(h, hostsAllow) {
+			v = append(v, Violation{Field: path + hostGroupsHostsSuffix, Code: "outside_hosts_allow", Message: "host " + h + " is not covered by any hosts_allow pattern — groups cannot widen the ceiling"})
 		}
 	}
 	return v
+}
+
+// hostCoveredByAny reports whether host matches at least one hosts_allow glob.
+func hostCoveredByAny(host string, hostsAllow []string) bool {
+	for _, p := range hostsAllow {
+		if sshHostGlobMatch(p, host) {
+			return true
+		}
+	}
+	return false
 }
 
 var hostGroupNameRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
