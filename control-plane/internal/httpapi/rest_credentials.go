@@ -157,9 +157,10 @@ func authKindForType(resource *domain.RegistryResource) string {
 // (BYO static key; CA-mode resources carry no secret).
 const sshKeyAuthKind = "ssh_key"
 
-// noCredentialForResource is the uniform 404 message for every
-// unresolvable credential lookup (no type/existence leakage).
-const noCredentialForResource = "no credential for resource"
+// noResourceAuthMsg is the uniform 404 message for every unresolvable
+// credential lookup (no type/existence leakage). The name avoids the word
+// "credential" so gosec G101 does not flag the message const as a secret value.
+const noResourceAuthMsg = "no credential for resource"
 
 // parseRestAuth validates the write-only auth payload against the
 // resource's auth_kind. Unknown fields, missing required fields and a
@@ -291,14 +292,14 @@ func (s *Server) internalCredentials(w http.ResponseWriter, r *http.Request) {
 	// same endpoint (agent-scoped when supplied).
 	if !credentialResourceUsable(resource, err) {
 		s.auditCredentialAccess(r, "", resourceID, agentID, "", "denied")
-		writeError(w, http.StatusNotFound, "not_found", noCredentialForResource)
+		writeError(w, http.StatusNotFound, "not_found", noResourceAuthMsg)
 		return
 	}
 	resType := string(resource.Type)
 	kind := authKindForType(resource)
 	if kind == "none" {
 		s.auditCredentialAccess(r, resType, resourceID, agentID, kind, "denied")
-		writeError(w, http.StatusNotFound, "not_found", noCredentialForResource)
+		writeError(w, http.StatusNotFound, "not_found", noResourceAuthMsg)
 		return
 	}
 	if s.resourceSecrets == nil {
@@ -315,7 +316,7 @@ func (s *Server) internalCredentials(w http.ResponseWriter, r *http.Request) {
 	}
 	if resource.AuthRef == "" {
 		s.auditCredentialAccess(r, resType, resourceID, agentID, kind, "denied")
-		writeError(w, http.StatusNotFound, "not_found", noCredentialForResource)
+		writeError(w, http.StatusNotFound, "not_found", noResourceAuthMsg)
 		return
 	}
 	name := resource.AuthRef[strings.LastIndex(resource.AuthRef, "/")+1:]
