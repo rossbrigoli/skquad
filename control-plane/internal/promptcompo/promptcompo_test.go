@@ -24,6 +24,7 @@ var testFacts = Facts{
 	ModelSupportsTools: "supported",
 	ModelFallback:      "none configured",
 	Owner:              "Ross Brigoli, admin@acme.test",
+	SquadOwner:         "Sam Owner",
 }
 
 func TestComposeHappyPath(t *testing.T) {
@@ -165,12 +166,12 @@ func TestTemplateUnknownVarFails(t *testing.T) {
 
 // Platform-prompt awareness upgrade: the tools/model/owner vars substitute.
 func TestNewTemplateVarsSubstitute(t *testing.T) {
-	tmpl := "{{tools.enabled}}|{{model.display}}|{{model.name}}|{{model.provider}}|{{model.context_window}}|{{model.supports_tools}}|{{model.fallback}}|{{platform.owner}}"
+	tmpl := "{{tools.enabled}}|{{model.display}}|{{model.name}}|{{model.provider}}|{{model.context_window}}|{{model.supports_tools}}|{{model.fallback}}|{{platform.owner}}|{{squad.owner}}"
 	c, err := Compose("", "", "", tmpl, testFacts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "- exec — run shell commands inside your sandboxed agent pod; the container is your boundary\n- send_message — send a message to a squad-mate agent (cross-squad needs an access grant; humans are NOT reachable via send_message)|Claude Opus 4.6|claude-opus-4-6|Anthropic|200000 tokens|supported|none configured|Ross Brigoli, admin@acme.test"
+	want := "- exec — run shell commands inside your sandboxed agent pod; the container is your boundary\n- send_message — send a message to a squad-mate agent (cross-squad needs an access grant; humans are NOT reachable via send_message)|Claude Opus 4.6|claude-opus-4-6|Anthropic|200000 tokens|supported|none configured|Ross Brigoli, admin@acme.test|Sam Owner"
 	if got := c.Tiers[len(c.Tiers)-1].Content; got != want {
 		t.Errorf("substitution mismatch:\ngot:  %s\nwant: %s", got, want)
 	}
@@ -178,7 +179,7 @@ func TestNewTemplateVarsSubstitute(t *testing.T) {
 
 // Unknown vars in the new namespaces must still fail closed.
 func TestNewTemplateVarsUnknownStillRejected(t *testing.T) {
-	for _, v := range []string{"tools.all", "model.secret", "model.temperature", "platform.ownerx", "platform.owners"} {
+	for _, v := range []string{"tools.all", "model.secret", "model.temperature", "platform.ownerx", "platform.owners", "squad.ownerx", "squad.ownerid"} {
 		_, err := Compose("", "", "", "x {{"+v+"}}", testFacts)
 		var ute *UnknownTemplateVarsError
 		if !errors.As(err, &ute) {
@@ -190,11 +191,11 @@ func TestNewTemplateVarsUnknownStillRejected(t *testing.T) {
 // Empty tool/model/owner facts render as empty strings — the platform prompt's
 // own copy handles the "none" case upstream; the composer stays pure.
 func TestNewTemplateVarsEmptyFacts(t *testing.T) {
-	c, err := Compose("", "", "", "[{{tools.enabled}}][{{model.display}}][{{platform.owner}}][{{squad.roster}}]", Facts{})
+	c, err := Compose("", "", "", "[{{tools.enabled}}][{{model.display}}][{{platform.owner}}][{{squad.roster}}][{{squad.owner}}]", Facts{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := c.Tiers[len(c.Tiers)-1].Content; got != "[][][][]" {
+	if got := c.Tiers[len(c.Tiers)-1].Content; got != "[][][][][]" {
 		t.Errorf("got %q, want %q", got, "[][][][]")
 	}
 }

@@ -64,6 +64,10 @@ type Facts struct {
 	// Owner is the display name(s) of the platform admin user(s),
 	// comma-joined; "unknown" when unresolvable or none exist.
 	Owner string
+	// SquadOwner (S-272) is the display name of the SQUAD's owner — the
+	// human the agent works for and chats with. Distinct from Owner (the
+	// platform admin). "unknown" when unresolvable.
+	SquadOwner string
 }
 
 // Composition is the result of composing all tiers.
@@ -124,6 +128,7 @@ var templateVars = map[string]func(Facts) string{
 	"model.supports_tools": func(f Facts) string { return f.ModelSupportsTools },
 	"model.fallback":       func(f Facts) string { return f.ModelFallback },
 	"platform.owner":       func(f Facts) string { return f.Owner },
+	"squad.owner":          func(f Facts) string { return f.SquadOwner },
 }
 
 // Compose builds the effective prompt from the four tiers.

@@ -16,6 +16,7 @@ import { PromptTierEditor } from "../../../../../components/PromptTierEditor";
 import { Modal, ModalForm } from "../../../../../components/Modal";
 import { StatusChip } from "../../../../../components/StatusChip";
 import { DEFAULT_AGENT_STORAGE_SIZE, STORAGE_PRESETS, isValidStorageSize, storageDisplay } from "../../../../../lib/agentStorage";
+import { chatSenderAttribution } from "../../../../../lib/actorDisplay";
 import { monthStartISO } from "../../../../../lib/metering";
 import { useApi } from "../../../../../lib/useApi";
 import { useAuth } from "../../../../../lib/auth";
@@ -981,6 +982,13 @@ function ChatThread({
         ) : (
           sorted.map((msg) => {
             const fromUser = msg.from_type === "user";
+            // S-272: render the ACTUAL sender of each message (from_display is
+            // resolved server-side), not the logged-in viewer. Messages from
+            // another human — e.g. a platform admin testing someone else's
+            // agent — no longer borrow your avatar and "You" label.
+            const attribution = chatSenderAttribution(msg, user);
+            const isMe = fromUser && attribution.isMe;
+            const senderName = fromUser ? attribution.name : agentName;
             // S-265: LLM turn-failure closure gets distinct error styling.
             const turnError = !fromUser && isTurnErrorMessage(msg);
             const toolCalls = fromUser ? [] : chatToolCalls(msg);
@@ -1000,12 +1008,12 @@ function ChatThread({
             };
             return (
               <div key={msg.id} className={`chat-row ${fromUser ? "mine" : "theirs"}`}>
-                <div className={`chat-avatar ${fromUser ? "me" : "agent"}`} aria-hidden="true">
-                  {fromUser ? initials(user?.name ?? "You") : initials(agentName)}
+                <div className={`chat-avatar ${fromUser ? (isMe ? "me" : "them") : "agent"}`} aria-hidden="true">
+                  {initials(fromUser ? senderName : agentName)}
                 </div>
                 <div className={`chat-bubble${turnError ? " chat-error-bubble" : ""}`}>
                   <div className="chat-head">
-                    <span className="chat-name">{fromUser ? "You" : agentName}</span>
+                    <span className="chat-name">{fromUser ? (isMe ? "You" : senderName) : agentName}</span>
                     <span className="chat-time">{formatRelativeTime(msg.created_at)}</span>
                     {turnError ? (
                       <span className="chat-status mono error">LLM error</span>

@@ -5000,6 +5000,14 @@ func (s *Server) listAgentChatMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		messages = filtered
 	}
+	// S-272: resolve sender display names (same S-235 pattern as the
+	// task thread) so the chat UI can render the ACTUAL sender's avatar
+	// and name instead of the logged-in viewer's.
+	refs := make([]actorRef, 0, len(messages))
+	for _, msg := range messages {
+		refs = append(refs, actorRef{kind: msg.FromType, id: msg.FromID})
+	}
+	decorateMessages(messages, s.resolveActorDisplays(r.Context(), refs))
 	writeJSON(w, http.StatusOK, messages)
 }
 

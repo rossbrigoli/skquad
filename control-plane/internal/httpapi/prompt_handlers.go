@@ -281,6 +281,12 @@ func (s *Server) composePromptForAgent(ctx context.Context, agent *domain.Agent)
 	}
 	s.applyModelFacts(ctx, agent, &facts)
 	facts.Owner = s.resolvePlatformOwner(ctx)
+	// S-272: the squad owner is the human the agent talks to. Expose the
+	// full display name (profile name, email local-part fallback) so the
+	// platform prompt can pin "the person in your chat is {{squad.owner}}"
+	// instead of letting agents conflate every sender with the platform
+	// admin. Fail-soft like the other identity facts.
+	facts.SquadOwner = s.resolveSquadOwner(ctx, squad)
 	// S-179: the squad mission is injected into the squad tier so every
 	// agent's system prompt carries it alongside the Squad Context text.
 	// The runtime fetches this composition per wake (ETag-cached), so a
@@ -466,6 +472,27 @@ func (s *Server) resolvePlatformOwner(ctx context.Context) string {
 	// changes when the admin set actually changes.
 	sort.Strings(names)
 	return strings.Join(names, ", ")
+}
+
+// resolveSquadOwner renders the squad owner's display name for the
+// {{squad.owner}} fact: the profile name, falling back to the email
+// local-part, then "unknown". Fail-soft — a lookup error never fails
+// prompt composition (mirrors resolvePlatformOwner's policy).
+func (s *Server) resolveSquadOwner(ctx context.Context, squad *domain.Squad) string {
+	if squad == nil || strings.TrimSpace(squad.OwnerID) == "" {
+		return "unknown"
+	}
+	user, err := s.store.GetUser(ctx, squad.OwnerID)
+	if err != nil || user == nil {
+		return "unknown"
+	}
+	if name := strings.TrimSpace(user.Name); name != "" {
+		return name
+	}
+	if local := strings.SplitN(strings.TrimSpace(user.Email), "@", 2)[0]; local != "" {
+		return local
+	}
+	return "unknown"
 }
 
 // ifNoneMatchMatches reports whether an If-None-Match header contains the
