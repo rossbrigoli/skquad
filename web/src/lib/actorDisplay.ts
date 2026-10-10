@@ -42,3 +42,19 @@ export function timelineActorLabel(entry: TimelineActor): string {
   }
   return entry.actor_type;
 }
+
+/** S-272: per-message attribution for the agent chat thread. The chat
+ *  viewer and the message sender are NOT necessarily the same person —
+ *  e.g. a platform admin testing someone else's agent. Render the
+ *  ACTUAL sender's resolved name/avatar per message; fall back to the
+ *  viewer's own name only for the viewer's own messages, and to a
+ *  neutral label for unresolvable third-party senders. */
+export function chatSenderAttribution(
+  message: ThreadActor,
+  viewer?: { id?: string; name?: string } | null,
+): { isMe: boolean; name: string } {
+  const viewerId = viewer?.id;
+  const isMe = Boolean(viewerId) && message.from_id === viewerId;
+  const name = message.from_display || (isMe ? viewer?.name || "You" : "a teammate");
+  return { isMe, name };
+}

@@ -1517,6 +1517,14 @@ button.squad-tab.active {
   border: 1px solid var(--line-strong);
 }
 
+/* S-272: another human sent this message (e.g. a platform admin in
+   someone else's agent chat) — distinct from your own "me" avatar. */
+.chat-avatar.them {
+  background: var(--accent-soft);
+  color: var(--ink-muted);
+  border: 1px solid var(--line-strong);
+}
+
 .chat-bubble {
   background: var(--surface-sunken);
   border-radius: var(--radius-lg);

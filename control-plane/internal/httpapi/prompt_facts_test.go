@@ -206,7 +206,7 @@ func TestComposePromptOwnerRendered(t *testing.T) {
 
 	platform := composedPlatformTier(t, s, agent)
 	// Names are sorted for deterministic composition (ETag stability).
-	require.Contains(t, platform, "The platform owner of this skquad instance is: Ross Brigoli, admin2@acme.test.")
+	require.Contains(t, platform, "This skquad instance is administered by: Ross Brigoli, admin2@acme.test.")
 	require.NotContains(t, platform, "Just A User")
 }
 
@@ -217,7 +217,45 @@ func TestComposePromptOwnerUnknown(t *testing.T) {
 	require.NoError(t, err)
 
 	platform := composedPlatformTier(t, s, agent)
-	require.Contains(t, platform, "The platform owner of this skquad instance is: unknown.")
+	require.Contains(t, platform, "This skquad instance is administered by: unknown.")
+}
+
+// S-272: the SQUAD owner — not the platform admin — is the human the
+// agent chats with. The platform block must render {{squad.owner}} from
+// the squad's OwnerID profile, and keep the admin line clearly separate.
+func TestComposePromptSquadOwnerRendered(t *testing.T) {
+	_, store, _ := factTestSetup(t)
+	ctx := context.Background()
+	owner, err := store.UpsertUser(ctx, &domain.User{Email: "wkt@acme.test", Name: "Weng Kee Teh", Role: domain.RoleUser})
+	require.NoError(t, err)
+	// OwnerID is immutable via UpdateSquad, so create the squad owned up-front.
+	squad, err := store.CreateSquad(ctx, &domain.Squad{Name: "owned-squad", OwnerID: owner.ID, Status: domain.SquadActive})
+	require.NoError(t, err)
+	agent, err := store.CreateAgent(ctx, &domain.Agent{SquadID: squad.ID, Name: "owned-agent", Role: "worker", Status: domain.AgentIdle})
+	require.NoError(t, err)
+
+	platform := composedPlatformTier(t, &Server{cfg: testConfig(), store: store}, agent)
+	require.Contains(t, platform, "YOUR SQUAD OWNER")
+	require.Contains(t, platform, "The human who owns this squad — and your work — is: Weng Kee Teh.")
+	require.Contains(t, platform, "converse as if you are speaking with your squad owner Weng Kee Teh")
+	// The platform admin stays an operational note, never the chat peer.
+	require.Contains(t, platform, "This skquad instance is administered by: unknown.")
+}
+
+func TestResolveSquadOwner(t *testing.T) {
+	s, store, _ := factTestSetup(t)
+	ctx := context.Background()
+	require.Equal(t, "unknown", s.resolveSquadOwner(ctx, nil))
+	require.Equal(t, "unknown", s.resolveSquadOwner(ctx, &domain.Squad{}))
+	require.Equal(t, "unknown", s.resolveSquadOwner(ctx, &domain.Squad{OwnerID: "missing-user"}))
+	// No display name → email local-part fallback.
+	u, err := store.UpsertUser(ctx, &domain.User{Email: "fallback@acme.test", Role: domain.RoleUser})
+	require.NoError(t, err)
+	require.Equal(t, "fallback", s.resolveSquadOwner(ctx, &domain.Squad{OwnerID: u.ID}))
+	// Display name wins when present.
+	u2, err := store.UpsertUser(ctx, &domain.User{Email: "named@acme.test", Name: "Ada Lovelace", Role: domain.RoleUser})
+	require.NoError(t, err)
+	require.Equal(t, "Ada Lovelace", s.resolveSquadOwner(ctx, &domain.Squad{OwnerID: u2.ID}))
 }
 
 func TestResolvePlatformOwnerEmptyStore(t *testing.T) {

@@ -146,6 +146,22 @@ model — composition never fails over missing model data. The YOUR
 PLATFORM OWNER section also pins the human-contact rule: agents reach
 humans only through the task lifecycle (blocked/review), never
 out-of-band.
+
+**Squad-owner identity fix (S-272, 2026-10-11):** agents previously saw
+only `{{platform.owner}}` (the platform ADMIN) as "the owner", so any
+chat message — including one from the actual squad owner — was assumed
+to be from the platform admin. The composer now carries a distinct
+`{{squad.owner}}` fact: the squad's `OwnerID` user profile display name
+(email local-part fallback, `"unknown"` when unresolvable, fail-soft
+like the model facts). The platform block replaces YOUR PLATFORM OWNER
+with YOUR SQUAD OWNER — "the person chatting with you IS your squad
+owner; address them by name; even when a platform administrator is
+testing on the owner's behalf, converse as if speaking with the squad
+owner" — and demotes the admin to a PLATFORM ADMINISTRATION note
+(operational role only, never the chat peer). Companion fixes: the agent
+chat list endpoint now decorates messages with `from_display` (S-235
+pattern) and the web chat renders the actual per-message sender's
+avatar/name instead of the logged-in viewer's.
 **Operator note:** `SKQUAD_PLATFORM_PROMPT_FILE` overrides replace the
 embedded block wholesale; an override should include equivalent
 TOOLS / MODEL / FAILURE-PLAYBOOK sections or the agent loses them.
