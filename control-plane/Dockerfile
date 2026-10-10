@@ -8,12 +8,12 @@ WORKDIR /src
 
 COPY shared/go.mod shared/go.sum ./shared/
 COPY control-plane/go.mod control-plane/go.sum ./control-plane/
-RUN cd control-plane && go mod download
+WORKDIR /src/control-plane
+RUN go mod download
 
-COPY shared ./shared
-COPY control-plane ./control-plane
-RUN cd control-plane \
- && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/skquad-api ./cmd/api \
+COPY shared /src/shared
+COPY control-plane /src/control-plane
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/skquad-api ./cmd/api \
  && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/embed-backfill ./cmd/embed-backfill
 
 FROM alpine:3.20
