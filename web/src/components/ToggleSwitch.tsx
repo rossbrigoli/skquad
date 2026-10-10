@@ -19,6 +19,7 @@ export function ToggleSwitch({
   readonly disabled?: boolean;
   readonly className?: string;
 }) {
+  const extraClass = className ? ` ${className}` : "";
   return (
     <button
       type="button"
@@ -26,7 +27,7 @@ export function ToggleSwitch({
       aria-checked={checked}
       aria-label={label}
       disabled={disabled}
-      className={`toggle-switch${checked ? " on" : ""}${className ? ` ${className}` : ""}`}
+      className={`toggle-switch${checked ? " on" : ""}${extraClass}`}
       onClick={(e) => {
         // Tiles wrap this control next to (never inside) a <Link>; stop
         // the click from bubbling into navigation handlers anyway.

@@ -66,8 +66,9 @@ export function ToolTile({
   readonly pending?: boolean;
 }) {
   const toggleable = tool.kind === "builtin" && onToggle !== undefined;
+  const toggleVerb = tool.enabled ? "Disable" : "Enable";
   const toggleLabel = toggleable
-    ? `${tool.enabled ? "Disable" : "Enable"} ${tool.name}`
+    ? `${toggleVerb} ${tool.name}`
     : `${tool.name}: enable/disable is managed on the registry, not from the tile`;
   return (
     <div className="tool-tile-wrap">

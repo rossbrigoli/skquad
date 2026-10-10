@@ -17,6 +17,7 @@ import { DeleteResourceButton } from "./DeleteResourceButton";
 import { EmptyState } from "./EmptyState";
 import { Modal, ModalForm } from "./Modal";
 import { StatusChip } from "./StatusChip";
+import type { StatusKey } from "../lib/status";
 import {
   REST_AUTH_FIELDS,
   REST_AUTH_KINDS,
@@ -43,6 +44,14 @@ function asNumberOpt(value: unknown): string {
   return typeof value === "number" ? String(value) : "";
 }
 
+// S-268/S3358: registry lifecycle status → StatusChip variant
+// (replaces the nested ternary that used to sit in the row JSX).
+function lifecycleStatusChip(status: string): StatusKey {
+  if (status === "active") return "idle";
+  if (status === "deprecated") return "paused";
+  return "error";
+}
+
 // restFormFromResource prefills the edit form from a registry row.
 // Secret fields are NEVER prefilled — the API never returns them.
 export function restFormFromResource(resource: RegistryResource): RestResourceForm {
@@ -53,7 +62,7 @@ export function restFormFromResource(resource: RegistryResource): RestResourceFo
     name: resource.name ?? "",
     description: resource.description ?? "",
     baseUrl: cfg.base_url ?? "",
-    authKind: (cfg.auth_kind ?? "none") as RestAuthKind,
+    authKind: cfg.auth_kind ?? "none",
     headerName: cfg.header_name ?? "",
     methods: ceiling.methods ?? [],
     pathAllow: (ceiling.path_allow ?? []).join(", "),
@@ -97,7 +106,7 @@ export function RestResourcePanel({ isAdmin }: { readonly isAdmin: boolean }) {
                 </span>
               </div>
               <div className="entity-side">
-                <StatusChip status={r.status === "active" ? "idle" : r.status === "deprecated" ? "paused" : "error"} />
+                <StatusChip status={lifecycleStatusChip(r.status)} />
                 {isAdmin ? (
                   <button type="button" className="btn btn-sm" onClick={() => setEditing(r)}>
                     Edit

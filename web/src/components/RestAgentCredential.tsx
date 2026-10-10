@@ -52,7 +52,7 @@ export function RestAgentCredential({
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot probe on mount / identity change
-    void refresh();
+    refresh().catch(() => undefined);
   }, [refresh]);
 
   if (!probe) return null;
