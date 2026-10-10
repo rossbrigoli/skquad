@@ -185,6 +185,7 @@ def test_discover_preseed_falls_back_to_toolcache(tmp_path, monkeypatch):
         gvs.subprocess, "run",
         lambda *a, **k: (_ for _ in ()).throw(OSError("no go on PATH")),
     )
+    monkeypatch.setattr(gvs, "FALLBACK_TOOLCACHE_ROOTS", ())
     tc = tmp_path / "toolcache" / "go"
     (tc / "1.26.8" / "x64").mkdir(parents=True)
     (tc / "1.26.9" / "x64").mkdir(parents=True)
@@ -198,10 +199,23 @@ def test_discover_preseed_nothing_found(tmp_path, monkeypatch):
         gvs.subprocess, "run",
         lambda *a, **k: (_ for _ in ()).throw(OSError("no go on PATH")),
     )
+    monkeypatch.setattr(gvs, "FALLBACK_TOOLCACHE_ROOTS", ())
     monkeypatch.setenv("RUNNER_TOOL_CACHE", str(tmp_path / "missing"))
-    monkeypatch.setattr(gvs.Path, "home", classmethod(lambda cls: tmp_path / "nohome"))
     versions, source = gvs.discover_preseed()
     assert versions == [] and "scanned" in source
+
+
+def test_discover_preseed_scans_fallback_roots(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        gvs.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("no go on PATH")),
+    )
+    monkeypatch.delenv("RUNNER_TOOL_CACHE", raising=False)
+    fb = tmp_path / "opt" / "go"
+    (fb / "1.26.8").mkdir(parents=True)
+    monkeypatch.setattr(gvs, "FALLBACK_TOOLCACHE_ROOTS", (str(fb),))
+    versions, source = gvs.discover_preseed()
+    assert versions == ["1.26.8"] and "toolcache" in source
 
 
 # ---------------------------------------------------------------------------

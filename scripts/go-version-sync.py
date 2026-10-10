@@ -136,6 +136,16 @@ def check_runner_drift(expected: str, runner_output: str) -> tuple[bool, str]:
     return True, f"OK: runner pre-seed go{actual} == .go-version {expected}"
 
 
+# Extra hosted-toolcache locations scanned besides $RUNNER_TOOL_CACHE. Kept as
+# a module constant so unit tests can monkeypatch it for hermeticity (the
+# GitHub-hosted runner image ships a real /opt/hostedtoolcache/go).
+FALLBACK_TOOLCACHE_ROOTS = (
+    "/opt/hostedtoolcache/go",
+    "~/hostedtoolcache/go",
+    "~/_work/_tool/go",
+)
+
+
 def discover_preseed() -> tuple[list[str], str]:
     """Locate the runner image's pre-seeded Go versions.
 
@@ -162,11 +172,7 @@ def discover_preseed() -> tuple[list[str], str]:
     tool_cache = os.environ.get("RUNNER_TOOL_CACHE")
     if tool_cache:
         roots.append(Path(tool_cache) / "go")
-    roots += [
-        Path("/opt/hostedtoolcache/go"),
-        Path.home() / "hostedtoolcache" / "go",
-        Path.home() / "_work" / "_tool" / "go",
-    ]
+    roots += [Path(p).expanduser() for p in FALLBACK_TOOLCACHE_ROOTS]
     found: list[str] = []
     for root_dir in roots:
         if not root_dir.is_dir():
