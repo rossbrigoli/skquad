@@ -62,9 +62,14 @@ Every flavor needs the same four capabilities:
    to launch until egress enforcement is *confirmed* (N consecutive blocked
    canary probes). If your CNI does not enforce NetworkPolicy, the canary
    stays reachable and **agent pods fail closed** (init container exits 1
-   after `agentNetpolGuard.maxWaitSeconds`, default 30 s). All mainstream
-   CNIs (Calico, Cilium, Flannel*, OVN-K) enforce policies — *Flannel
-   enforces since v0.14 with `--kube-network-policy`; older Flannel does not.
+   after `agentNetpolGuard.maxWaitSeconds`, default 30 s). Calico, Cilium,
+   and OVN-Kubernetes enforce NetworkPolicy; **plain Flannel does not
+   implement it** — on k3s with the default Flannel CNI, either switch to
+   a policy-enforcing CNI (Cilium/Calico) or set
+   `agentNetpolGuard.enabled: false` (weakens the birth-race protection;
+   see the TG-9 drill findings in [security-threat-model.md](security-threat-model.md)).
+   TODO: verify the exact guard-configuration trade-off with the team before
+   disabling it on any shared cluster.
 3. **LLM provider credentials.** The default LiteLLM `model_list` is empty
    (`llmGateway.config`). Before agents can do model-backed work you must
    register at least one AI provider + model with real credentials
