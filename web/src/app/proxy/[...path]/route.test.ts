@@ -207,3 +207,77 @@ describe("proxy GET response passthrough (S-226)", () => {
     expect(res.status).toBe(501);
   });
 });
+
+// S-267: the inbox pager reads X-Total-Count via apiGetWithTotal(); the
+// proxy must copy it from the upstream response or the pager is invisible
+// in OIDC mode (total parses as 0). Explicit allowlist — only the headers
+// the browser actually needs, never hop-by-hop/cookie headers.
+describe("proxy X-Total-Count passthrough (S-267)", () => {
+  it("copies X-Total-Count from upstream to the proxied response", async () => {
+    const body = [{ id: "n1" }, { id: "n2" }];
+    stubFetchWith(
+      () =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "X-Total-Count": "42" },
+        }),
+    );
+
+    const res = await getWithCookie(["inbox"], "?limit=25");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Total-Count")).toBe("42");
+    expect(await res.json()).toEqual(body);
+  });
+
+  it("omits X-Total-Count when upstream does not send it", async () => {
+    stubFetchWith(
+      () => new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    const res = await getWithCookie(["squads"]);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Total-Count")).toBeNull();
+  });
+
+  it("keeps status and byte-exact body passthrough alongside the header", async () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe]);
+    stubFetchWith(
+      () =>
+        new Response(png, {
+          status: 404,
+          headers: { "Content-Type": "image/png", "X-Total-Count": "0" },
+        }),
+    );
+
+    const res = await getWithCookie(["uploads", "missing"]);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("X-Total-Count")).toBe("0");
+    const out = new Uint8Array(await res.arrayBuffer());
+    expect(out).toEqual(png);
+  });
+
+  it("does not leak other upstream headers (cookies, CORS, server)", async () => {
+    stubFetchWith(
+      () =>
+        new Response("{}", {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Total-Count": "7",
+            "Set-Cookie": "session=leak; Path=/",
+            "Access-Control-Allow-Origin": "*",
+            Server: "upstream-secret",
+          },
+        }),
+    );
+
+    const res = await getWithCookie(["inbox"]);
+    expect(res.headers.get("X-Total-Count")).toBe("7");
+    // The proxy sets its OWN skquad_session cookie; what must not appear is
+    // the upstream's Set-Cookie value leaking through.
+    const setCookie = res.headers.get("Set-Cookie") ?? "";
+    expect(setCookie).not.toContain("session=leak");
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    expect(res.headers.get("Server")).toBeNull();
+  });
+});

@@ -88,6 +88,16 @@ async function forward(request: NextRequest, method: string, path: string[]): Pr
       status: upstream.status,
       headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "application/json" },
     });
+    // S-267: explicit response-header allowlist. The inbox pager reads
+    // X-Total-Count (set by the control-plane's paging design, S-239), but
+    // forward() only copied Content-Type, so in OIDC mode the browser saw
+    // total=0 and hid the pager. Copy it through when present. We deliberately
+    // do NOT blanket-forward upstream headers — hop-by-hop headers, cookies,
+    // and CORS headers from the control-plane must not leak into the browser.
+    const total = upstream.headers.get("X-Total-Count");
+    if (total !== null) {
+      res.headers.set("X-Total-Count", total);
+    }
     // If we refreshed, roll the new session into the response cookie.
     // Match the cookie to the protocol the request arrived on; see requestIsHttps.
   res.cookies.set(SESSION_COOKIE, encodeSession(session), {
