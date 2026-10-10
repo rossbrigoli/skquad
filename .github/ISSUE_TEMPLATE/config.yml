@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 Documentation
+    url: https://github.com/rossbrigoli/skquad/tree/main/docs
+    about: Architecture, deployment guides, and runbooks — check here first
+  - name: 🚀 Quick start & current status
+    url: https://github.com/rossbrigoli/skquad#readme
+    about: What works today and what's still early-stage

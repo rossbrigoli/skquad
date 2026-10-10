@@ -1,0 +1,115 @@
+name: 🐛 Bug Report
+description: Report something that isn't working as expected
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report!
+
+        Before you submit, please:
+        - Search [existing issues](https://github.com/rossbrigoli/skquad/issues) to avoid duplicates.
+        - Check the [known status of the project](https://github.com/rossbrigoli/skquad/blob/main/docs/implementation-status.md) — skquad is an early-stage project.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug. Include error messages verbatim where possible.
+      placeholder: |
+        When I assigned a task to an agent, the task stayed in "TO DO" and the agent pod logged:
+        ```
+        ERROR ...
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      description: A clear and concise description of what you expected instead.
+      placeholder: The agent should have claimed the task and moved it to "IN PROGRESS".
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of skquad is affected? (Pick the closest one; add more in the description if several are involved.)
+      options:
+        - control-plane (Go API server)
+        - operator (Kubernetes operator)
+        - agent-runtime (Python)
+        - llm-gateway (LiteLLM)
+        - tool-gateway
+        - web (frontend)
+        - embedder
+        - charts / Helm / deployment
+        - CI/CD
+        - Docs
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the behaviour. Include the YAML/commands you ran.
+      placeholder: |
+        1. Deploy skquad version 0.1.x with `helm upgrade --install ...`
+        2. Create a squad with `kubectl apply -f squad.yaml`
+        3. Create a task via the web UI / API
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Please include the relevant versions and platform details. Examples:
+        - skquad version: `0.1.232` (image tag or release)
+        - Kubernetes: k3s v1.35.5 / EKS / kind / ...
+        - Where it runs: home lab, cloud provider, local
+        - Browser (for web UI issues): Chrome 129
+      value: |
+        - skquad version:
+        - Kubernetes distribution and version:
+        - Where deployed:
+        - Browser (if web UI):
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs and output
+      description: |
+        Paste relevant logs (pod logs, API responses, stack traces). This will be rendered as code, so no need to escape.
+        Please redact secrets, tokens, and API keys before pasting.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that might help — recent config changes, related issues, workarounds you tried.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checkboxes
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I searched existing issues and this has not been reported yet
+          required: true
+        - label: I redacted all secrets, tokens, and API keys from the logs
+          required: true

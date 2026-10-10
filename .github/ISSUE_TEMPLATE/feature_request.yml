@@ -1,0 +1,76 @@
+name: ✨ Feature Request
+description: Suggest an improvement or new capability
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement! Please search
+        [existing issues](https://github.com/rossbrigoli/skquad/issues) first to avoid duplicates.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the problem or pain point, not just the solution. "As a [user/operator/agent owner], I struggle with ..."
+      placeholder: |
+        As a squad operator, I can't see how much a single agent has spent across tasks,
+        so budget overruns go unnoticed until the end of the month.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe how you'd like this to work. Include API/UI sketches if you have them.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about and why they fall short.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of skquad would this touch?
+      options:
+        - control-plane (Go API server)
+        - operator (Kubernetes operator)
+        - agent-runtime (Python)
+        - llm-gateway (LiteLLM)
+        - tool-gateway
+        - web (frontend)
+        - embedder
+        - charts / Helm / deployment
+        - CI/CD
+        - Docs
+        - Cross-cutting / not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: importance
+    attributes:
+      label: How important is this to you?
+      options:
+        - Nice to have
+        - Important — significantly improves my workflow
+        - Critical — blocks my use of skquad
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: pr
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd be willing to submit a PR for this
+          required: false
