@@ -422,6 +422,32 @@ def redact_llm_error_text(text: str) -> str:
     return redacted
 
 
+def _llm_error_candidates(exc: BaseException) -> list[Any]:
+    """Candidate payloads that may carry the gateway's structured error."""
+    candidates: list[Any] = [str(exc)]
+    for attr in ("message", "body", "error", "status_message"):
+        value = getattr(exc, attr, None)
+        if value is not None:
+            candidates.append(value)
+    return candidates
+
+
+def _skquad_block(obj: Any) -> Mapping[str, Any] | None:
+    """Extract the skquad block from a parsed error Mapping (either under
+    ``error.provider_specific_fields`` or directly under ``error``)."""
+    if not isinstance(obj, Mapping):
+        return None
+    err = obj.get("error")
+    if not isinstance(err, Mapping):
+        return None
+    fields = err.get("provider_specific_fields")
+    if isinstance(fields, Mapping) and isinstance(fields.get("skquad"), Mapping):
+        return cast(Mapping[str, Any], fields["skquad"])
+    if isinstance(err.get("skquad"), Mapping):
+        return cast(Mapping[str, Any], err["skquad"])
+    return None
+
+
 def _extract_skquad_error(exc: BaseException) -> Mapping[str, Any] | None:
     """Pull the gateway's structured skquad error block out of an exception.
 
@@ -431,51 +457,34 @@ def _extract_skquad_error(exc: BaseException) -> Mapping[str, Any] | None:
     string/message/body. Best-effort: any parse miss returns None and we
     fall back to local classification.
     """
-    candidates: list[Any] = [str(exc)]
-    for attr in ("message", "body", "error", "status_message"):
-        value = getattr(exc, attr, None)
-        if value is not None:
-            candidates.append(value)
-    for candidate in candidates:
+    for candidate in _llm_error_candidates(exc):
         obj = candidate if isinstance(candidate, Mapping) else None
         if obj is None and isinstance(candidate, str):
             try:
                 obj = json.loads(candidate)
             except (ValueError, TypeError):
                 continue
-        if not isinstance(obj, Mapping):
-            continue
-        err = obj.get("error")
-        if not isinstance(err, Mapping):
-            continue
-        fields = err.get("provider_specific_fields")
-        if isinstance(fields, Mapping) and isinstance(fields.get("skquad"), Mapping):
-            return cast(Mapping[str, Any], fields["skquad"])
-        if isinstance(err.get("skquad"), Mapping):
-            return cast(Mapping[str, Any], err["skquad"])
+        block = _skquad_block(obj)
+        if block is not None:
+            return block
     return None
 
 
-def classify_llm_failure(exc: BaseException) -> tuple[str, bool]:
-    """(category, retryable) for a failed LLM call.
+def _classify_structured(structured: Mapping[str, Any]) -> tuple[str, bool] | None:
+    """Gateway-provided classification: wins when the category is known."""
+    category = str(structured.get("category") or "")
+    if category not in LLM_ERROR_CATEGORIES:
+        return None
+    retryable = structured.get("retryable")
+    return category, bool(retryable) if retryable is not None else False
 
-    Gateway-provided classification wins; otherwise status-code driven
-    with keyword fallbacks (mirrors the gateway's classify_llm_error).
-    ``no_credits`` is checked before ``rate_limit`` because providers
-    report exhausted billing as 429 too.
+
+def _classify_status_message(status: int | None, message: str) -> tuple[str, bool]:
+    """Local status-code driven classification with keyword fallbacks
+    (mirrors the gateway's classify_llm_error). ``no_credits`` is checked
+    before ``rate_limit`` because providers report exhausted billing as
+    429 too.
     """
-    structured = _extract_skquad_error(exc)
-    if structured is not None:
-        category = str(structured.get("category") or "")
-        if category in LLM_ERROR_CATEGORIES:
-            retryable = structured.get("retryable")
-            return category, bool(retryable) if retryable is not None else False
-    status = getattr(exc, "status_code", None)
-    try:
-        status = int(status)
-    except (TypeError, ValueError):
-        status = None
-    message = str(exc)
     if status in (401, 403):
         return "auth", False
     if status == 402 or (status == 429 and _LLM_CREDITS_RE.search(message)):
@@ -491,6 +500,25 @@ def classify_llm_failure(exc: BaseException) -> tuple[str, bool]:
     if _LLM_CREDITS_RE.search(message):
         return "no_credits", False
     return "unknown", False
+
+
+def classify_llm_failure(exc: BaseException) -> tuple[str, bool]:
+    """(category, retryable) for a failed LLM call.
+
+    Gateway-provided classification wins; otherwise status-code driven
+    with keyword fallbacks (mirrors the gateway's classify_llm_error).
+    """
+    structured = _extract_skquad_error(exc)
+    if structured is not None:
+        classified = _classify_structured(structured)
+        if classified is not None:
+            return classified
+    status = getattr(exc, "status_code", None)
+    try:
+        status = int(status)
+    except (TypeError, ValueError):
+        status = None
+    return _classify_status_message(status, str(exc))
 
 
 def llm_failure_detail(exc: BaseException, limit: int = 200) -> str:
@@ -2599,9 +2627,7 @@ class LiteLLMTaskHandler:
     def handle_task(self, task: RuntimeTask, config: BootstrapConfig) -> TaskResult:
         virtual_key, model = self._task_prerequisites(config)
 
-        context = self.available_task_context(task, config)
-        resources = context.resources if context is not None else self.available_resources(config)
-        memories = context.memory if context is not None else []
+        resources, memories = self._task_resources_and_memories(task, config)
         plugins = self.available_plugins(resources)
         # TG-4d (S-264): synthetic gateway-backed tools (rest_call) join
         # the resource-derived plugin list before builtin composition.
@@ -2669,18 +2695,7 @@ class LiteLLMTaskHandler:
                 # rejected, so there is nothing to feed back and no retry
                 # loop for the agent to run — block with the human-readable
                 # classification (visible in the task thread) and stop.
-                category, retryable = classify_llm_failure(exc)
-                friendly = LLM_ERROR_USER_MESSAGES[category]
-                return TaskResult(
-                    status="blocked",
-                    summary=trim_text(
-                        f"LLM call failed ({category}): {friendly} "
-                        f"Retryable by the platform: {'yes' if retryable else 'no'}. "
-                        f"(details: {llm_failure_detail(exc)})",
-                        config.task_summary_max_chars,
-                    ),
-                    model_used=last_model_used,
-                )
+                return self._llm_failure_task_result(exc, last_model_used, config)
             last_model_used = served_model(response, model)
             self._log_step_fallback(model, last_model_used, config, task)
             message = first_message(response)
@@ -2693,12 +2708,7 @@ class LiteLLMTaskHandler:
             tool_calls = parse_tool_calls(message)
             messages.append(assistant_message(content, tool_calls))
             if not tool_calls:
-                final_content = content if content.strip() else last_content
-                return TaskResult(
-                    status=status_from_content(final_content),
-                    summary=trim_text(final_content, config.task_summary_max_chars),
-                    model_used=last_model_used,
-                )
+                return self._task_final_result(content, last_content, last_model_used, config)
             round_outcome = self._run_task_tool_round(content, tool_calls, config, plugins, messages)
             # S-263: a failed tool call no longer aborts the run — the
             # error is fed back to the model (see _run_tool_calls) and the
@@ -2711,20 +2721,8 @@ class LiteLLMTaskHandler:
             if round_outcome.all_failed:
                 consecutive_error_rounds += 1
                 if consecutive_error_rounds >= max_error_rounds:
-                    tool_names = ", ".join(sorted({name for name, _ in round_outcome.errors}))
-                    last_errors = "\n".join(
-                        f"- {name}: {err}" for name, err in round_outcome.errors
-                    )
-                    return TaskResult(
-                        status="blocked",
-                        summary=trim_text(
-                            f"Blocked after {consecutive_error_rounds} consecutive tool "
-                            "rounds with no successful tool call — the agent exhausted "
-                            f"its retries without recovering.\nTools: {tool_names}\n"
-                            f"Last errors:\n{last_errors}",
-                            config.task_summary_max_chars,
-                        ),
-                        model_used=last_model_used,
+                    return self._tool_round_blocked_result(
+                        round_outcome, consecutive_error_rounds, last_model_used, config
                     )
             else:
                 consecutive_error_rounds = 0
@@ -2738,6 +2736,73 @@ class LiteLLMTaskHandler:
             summary=trim_text(
                 f"Stopped after {max_steps} steps without finishing the task.\n"
                 f"Last output before stopping:\n{last_content}",
+                config.task_summary_max_chars,
+            ),
+            model_used=last_model_used,
+        )
+
+    def _task_resources_and_memories(
+        self, task: RuntimeTask, config: BootstrapConfig
+    ) -> tuple[list[RuntimeResource], list[RuntimeMemory]]:
+        """Task-context resources/memories, falling back to the agent's
+        full grant list when no composed task context exists."""
+        context = self.available_task_context(task, config)
+        resources = context.resources if context is not None else self.available_resources(config)
+        memories = context.memory if context is not None else []
+        return resources, memories
+
+    def _llm_failure_task_result(
+        self, exc: BaseException, last_model_used: str, config: BootstrapConfig
+    ) -> TaskResult:
+        """Blocked TaskResult for a failed LLM call (S-265 classification)."""
+        category, retryable = classify_llm_failure(exc)
+        friendly = LLM_ERROR_USER_MESSAGES[category]
+        return TaskResult(
+            status="blocked",
+            summary=trim_text(
+                f"LLM call failed ({category}): {friendly} "
+                f"Retryable by the platform: {'yes' if retryable else 'no'}. "
+                f"(details: {llm_failure_detail(exc)})",
+                config.task_summary_max_chars,
+            ),
+            model_used=last_model_used,
+        )
+
+    def _task_final_result(
+        self,
+        content: str,
+        last_content: str,
+        last_model_used: str,
+        config: BootstrapConfig,
+    ) -> TaskResult:
+        """Normal finish: no tool calls this round. Falls back to the last
+        non-empty assistant text (S-182) so a tool-only final round does
+        not wipe the produced summary."""
+        final_content = content if content.strip() else last_content
+        return TaskResult(
+            status=status_from_content(final_content),
+            summary=trim_text(final_content, config.task_summary_max_chars),
+            model_used=last_model_used,
+        )
+
+    def _tool_round_blocked_result(
+        self,
+        round_outcome: ToolRoundOutcome,
+        consecutive_error_rounds: int,
+        last_model_used: str,
+        config: BootstrapConfig,
+    ) -> TaskResult:
+        """Blocked TaskResult after N consecutive all-failed tool rounds
+        (S-263 cap) with the collected errors as evidence."""
+        tool_names = ", ".join(sorted({name for name, _ in round_outcome.errors}))
+        last_errors = "\n".join(f"- {name}: {err}" for name, err in round_outcome.errors)
+        return TaskResult(
+            status="blocked",
+            summary=trim_text(
+                f"Blocked after {consecutive_error_rounds} consecutive tool "
+                "rounds with no successful tool call — the agent exhausted "
+                f"its retries without recovering.\nTools: {tool_names}\n"
+                f"Last errors:\n{last_errors}",
                 config.task_summary_max_chars,
             ),
             model_used=last_model_used,
