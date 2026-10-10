@@ -103,6 +103,53 @@ Key properties:
 
 See [ADR-0012: Built-in Platform Tools](docs/adr/0012-builtin-platform-tools.md) for the full contract.
 
+## Getting Started
+
+The fastest way to run skquad is a single-node cluster (k3s, kind, or
+minikube) plus Helm. You need:
+
+- **Kubernetes** — single node is fine for a demo; 4 vCPU / 8 GB RAM is a
+  comfortable minimum. The CNI must enforce NetworkPolicy (all mainstream
+  CNIs do; kind's default kindnet does).
+- **Helm 3** and **kubectl** configured for the cluster.
+- **A default StorageClass** (k3s `local-path` and kind `standard` work
+  out of the box) — Postgres and per-agent workspace PVCs provision from it.
+- **An LLM provider API key** (OpenAI, Anthropic, local vLLM, …) to add
+  after install so agents can do model-backed work.
+- **Optional GPU** for the memory-embedding service — auto-detected
+  (NVIDIA/AMD/Intel); without a GPU the embedder runs on CPU.
+
+```bash
+git clone https://github.com/rossbrigoli/skquad && cd skquad
+
+helm upgrade --install skquad charts/skquad \
+  --namespace skquad-system --create-namespace
+
+kubectl -n skquad-system rollout status deployment/skquad-api-server
+```
+
+Open the UI (dev mode — no login required yet):
+
+```bash
+kubectl -n skquad-system port-forward service/skquad-web 3000:80
+# then open http://localhost:3000
+```
+
+From there: add an AI provider (Settings → AI Providers), create a squad
+and an agent, file a task, and watch the operator wake the agent pod.
+
+> [!WARNING]
+> The default install is development-grade: no human authentication
+> (`authMode: dev`), a bundled Postgres with a known password, and a dev
+> LiteLLM master key. Before exposing skquad anywhere, configure OIDC,
+> externally managed secrets, your own database credentials, and TLS
+> ingress.
+
+For production-grade installs and per-flavor guides (**k3s, kubeadm,
+EKS, AKS, OpenShift**) — storage classes, ingress/TLS, OIDC, GPU, CIDR
+mapping, and gotchas — see the
+[installation guide](docs/installation.md).
+
 ## Current status
 
 The repository currently implements:
