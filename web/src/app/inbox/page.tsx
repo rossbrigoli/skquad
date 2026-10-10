@@ -139,7 +139,7 @@ export default function InboxPage() {
 
   const unread = useMemo(() => unreadCount(messages), [messages]);
   const selected = useMemo(
-    () => (selectedId === null ? null : (messages.find((m) => m.id === selectedId) ?? null)),
+    () => messages.find((m) => m.id === selectedId) ?? null,
     [messages, selectedId],
   );
 

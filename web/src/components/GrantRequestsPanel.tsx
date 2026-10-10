@@ -130,6 +130,123 @@ function RequestsSection({
   );
 }
 
+// S-268/S3776: the approve/deny button cluster extracted from
+// GrantRequestRow so the row renderer stays under the complexity cap.
+function GrantRequestActions({
+  request,
+  isAdmin,
+  busy,
+  onApproveOwner,
+  onApproveAdmin,
+  onStartDeny,
+}: {
+  readonly request: GrantRequest;
+  readonly isAdmin: boolean;
+  readonly busy: boolean;
+  readonly onApproveOwner: () => void;
+  readonly onApproveAdmin: () => void;
+  readonly onStartDeny: () => void;
+}) {
+  const canApproveOwner = request.state === "pending_owner";
+  const canApproveAdmin = request.state === "pending_admin" && isAdmin;
+  const canDeny = request.state === "pending_owner" || (request.state === "pending_admin" && isAdmin);
+  const meta = grantRequestStateMeta(request.state);
+  return (
+    <div className="entity-side">
+      <span className={meta.className}>{meta.label}</span>
+      {canApproveOwner ? (
+        <button type="button" className="btn btn-sm btn-primary grant-approve-owner" disabled={busy} onClick={onApproveOwner}>
+          Approve{isAdmin ? " as owner" : ""}
+        </button>
+      ) : null}
+      {canApproveAdmin ? (
+        <button type="button" className="btn btn-sm btn-primary grant-approve-admin" disabled={busy} onClick={onApproveAdmin}>
+          Approve as admin
+        </button>
+      ) : null}
+      {canDeny ? (
+        <button type="button" className="btn btn-sm btn-danger grant-deny" disabled={busy} onClick={onStartDeny}>
+          Deny
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+// S-268/S3776: the expanded detail (findings, scope, stamps, deny
+// form) extracted from GrantRequestRow.
+function GrantRequestDetail({
+  request,
+  denying,
+  busy,
+  reason,
+  onReasonChange,
+  onDeny,
+  onCancelDeny,
+}: {
+  readonly request: GrantRequest;
+  readonly denying: boolean;
+  readonly busy: boolean;
+  readonly reason: string;
+  readonly onReasonChange: (v: string) => void;
+  readonly onDeny: () => void;
+  readonly onCancelDeny: () => void;
+}) {
+  const scopeRows = summarizeScope(request.requested_scope);
+  return (
+    <div className="grant-request-detail">
+      {request.findings && request.findings.length > 0 ? (
+        <div className="findings-list" aria-label="Linter findings">
+          {request.findings.map((f, idx) => (
+            <div key={`${f.code}-${idx}`} className={findingSeverityClass(f.severity)}>
+              <strong>{f.severity.toUpperCase()}</strong> <code>{f.code}</code> — {f.detail}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="grant-request-no-findings">No linter findings on this change.</p>
+      )}
+      {scopeRows.length > 0 ? (
+        <table className="grant-scope-table" aria-label="Requested scope">
+          <tbody>
+            {scopeRows.map((row) => (
+              <tr key={row.label}>
+                <th scope="row">{row.label}</th>
+                <td>{row.value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="grant-request-no-findings">Requested scope: default (no overrides).</p>
+      )}
+      {request.denied_reason ? <p className="grant-request-denied-reason">Denied: {request.denied_reason}</p> : null}
+      {request.approved_by_owner_at ? (
+        <p className="grant-request-stamp">Owner approved: {request.approved_by_owner_at}</p>
+      ) : null}
+      {request.approved_by_admin_at ? (
+        <p className="grant-request-stamp">Admin approved: {request.approved_by_admin_at}</p>
+      ) : null}
+      {denying ? (
+        <div className="grant-deny-form">
+          <label className="field">
+            <span>Denial reason (shared with the requester)</span>
+            <input value={reason} onChange={(e) => onReasonChange(e.target.value)} aria-label="Denial reason" />
+          </label>
+          <div className="confirmation-action-row">
+            <button type="button" className="btn btn-danger" disabled={busy} onClick={onDeny}>
+              Confirm Deny
+            </button>
+            <button type="button" className="btn" disabled={busy} onClick={onCancelDeny}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function GrantRequestRow({
   request,
   isAdmin,
@@ -159,12 +276,7 @@ function GrantRequestRow({
   readonly onApproveAdmin: () => void;
   readonly onDeny: () => void;
 }) {
-  const meta = grantRequestStateMeta(request.state);
   const counts = countFindingsBySeverity(request.findings);
-  const scopeRows = summarizeScope(request.requested_scope);
-  const canApproveOwner = request.state === "pending_owner";
-  const canApproveAdmin = request.state === "pending_admin" && isAdmin;
-  const canDeny = request.state === "pending_owner" || (request.state === "pending_admin" && isAdmin);
 
   return (
     <div className={`entity-row grant-request-row${counts.block > 0 ? " grant-request-blocked" : ""}`}>
@@ -180,75 +292,24 @@ function GrantRequestRow({
           </span>
         </button>
       </div>
-      <div className="entity-side">
-        <span className={meta.className}>{meta.label}</span>
-        {canApproveOwner ? (
-          <button type="button" className="btn btn-sm btn-primary grant-approve-owner" disabled={busy} onClick={onApproveOwner}>
-            Approve{isAdmin ? " as owner" : ""}
-          </button>
-        ) : null}
-        {canApproveAdmin ? (
-          <button type="button" className="btn btn-sm btn-primary grant-approve-admin" disabled={busy} onClick={onApproveAdmin}>
-            Approve as admin
-          </button>
-        ) : null}
-        {canDeny ? (
-          <button type="button" className="btn btn-sm btn-danger grant-deny" disabled={busy} onClick={onStartDeny}>
-            Deny
-          </button>
-        ) : null}
-      </div>
+      <GrantRequestActions
+        request={request}
+        isAdmin={isAdmin}
+        busy={busy}
+        onApproveOwner={onApproveOwner}
+        onApproveAdmin={onApproveAdmin}
+        onStartDeny={onStartDeny}
+      />
       {expanded ? (
-        <div className="grant-request-detail">
-          {request.findings && request.findings.length > 0 ? (
-            <div className="findings-list" aria-label="Linter findings">
-              {request.findings.map((f, idx) => (
-                <div key={`${f.code}-${idx}`} className={findingSeverityClass(f.severity)}>
-                  <strong>{f.severity.toUpperCase()}</strong> <code>{f.code}</code> — {f.detail}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="grant-request-no-findings">No linter findings on this change.</p>
-          )}
-          {scopeRows.length > 0 ? (
-            <table className="grant-scope-table" aria-label="Requested scope">
-              <tbody>
-                {scopeRows.map((row) => (
-                  <tr key={row.label}>
-                    <th scope="row">{row.label}</th>
-                    <td>{row.value}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p className="grant-request-no-findings">Requested scope: default (no overrides).</p>
-          )}
-          {request.denied_reason ? <p className="grant-request-denied-reason">Denied: {request.denied_reason}</p> : null}
-          {request.approved_by_owner_at ? (
-            <p className="grant-request-stamp">Owner approved: {request.approved_by_owner_at}</p>
-          ) : null}
-          {request.approved_by_admin_at ? (
-            <p className="grant-request-stamp">Admin approved: {request.approved_by_admin_at}</p>
-          ) : null}
-          {denying ? (
-            <div className="grant-deny-form">
-              <label className="field">
-                <span>Denial reason (shared with the requester)</span>
-                <input value={reason} onChange={(e) => onReasonChange(e.target.value)} aria-label="Denial reason" />
-              </label>
-              <div className="confirmation-action-row">
-                <button type="button" className="btn btn-danger" disabled={busy} onClick={onDeny}>
-                  Confirm Deny
-                </button>
-                <button type="button" className="btn" disabled={busy} onClick={onCancelDeny}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </div>
+        <GrantRequestDetail
+          request={request}
+          denying={denying}
+          busy={busy}
+          reason={reason}
+          onReasonChange={onReasonChange}
+          onDeny={onDeny}
+          onCancelDeny={onCancelDeny}
+        />
       ) : null}
     </div>
   );
