@@ -334,7 +334,7 @@ func checkMCPResourceDrift(
 		return outcome, nil
 	}
 
-	if err := applyMCPDrift(ctx, store, resource, fresh, now, outcome, actorType, actorID); err != nil {
+	if err := applyMCPDrift(ctx, store, resource, fresh, outcome, actorType, actorID); err != nil {
 		return nil, err
 	}
 	return outcome, nil
@@ -350,10 +350,10 @@ func applyMCPDrift(
 	store Store,
 	resource *domain.RegistryResource,
 	fresh *MCPEnumerateResult,
-	now time.Time,
 	outcome *mcpDriftOutcome,
 	actorType, actorID string,
 ) error {
+	now := time.Now().UTC()
 	oldTools, _ := mcpSnapshotTools(resource.ToolsSnapshot)
 	added, removed, changedTools := diffMCPTools(oldTools, fresh.Tools)
 	outcome.Changed = true

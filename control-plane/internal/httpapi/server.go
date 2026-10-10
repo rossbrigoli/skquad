@@ -1837,6 +1837,23 @@ type updateEffective struct {
 	egressClass string
 }
 
+// applyBrowserCeilingUpdate re-materializes browser-driver ceiling defaults on
+// update so the stored ceiling stays fully explicit for the gateway's policy
+// fold (TG-6 slice D). Non-browser resources and requests without a ceiling
+// change pass through unchanged. Extracted from updateRegistryResource to keep
+// cognitive complexity within limits (S-268/S3776).
+func (s *Server) applyBrowserCeilingUpdate(w http.ResponseWriter, browserResource bool, req *updateRegistryResourceReq, eff *updateEffective) bool {
+	if !browserResource || req.PolicyCeiling == nil {
+		return true
+	}
+	normalized, ok := normalizeBrowserCeilingUpdate(w, eff.ceiling)
+	if !ok {
+		return false
+	}
+	eff.ceiling = normalized
+	return true
+}
+
 func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePlatformAdmin(w, r) {
 		return
@@ -1869,12 +1886,8 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 	// defaults on update so the stored ceiling stays fully explicit for
 	// the gateway's policy fold.
 	browserResource := resource.Type == domain.ResMCP && egresspolicy.IsBrowserConfig(eff.config)
-	if browserResource && req.PolicyCeiling != nil {
-		normalized, ok := normalizeBrowserCeilingUpdate(w, eff.ceiling)
-		if !ok {
-			return
-		}
-		eff.ceiling = normalized
+	if !s.applyBrowserCeilingUpdate(w, browserResource, &req, &eff) {
+		return
 	}
 	// TG-5 slice B2a: MCP snapshot maintenance. Rotating the bearer or
 	// moving the upstream URL re-enumerates through the gateway (the
