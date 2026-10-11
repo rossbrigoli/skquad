@@ -1165,3 +1165,21 @@
 - Commands run: go build ./... (CP+operator) OK; go vet ./... (CP+operator) clean; go test ./... control-plane ALL ok; go test ./... operator ALL ok. Package counts: k8sname 7, kube 54, storage 97, httpapi 571, operator/controller 75, operator/api/v1 16 — all passing.
 - Not verified offline: Postgres migration application (no live PG in test path — parity tests skip without DSN); ArgoCD/CRD apply on cluster (out of scope per task); end-to-end CP→operator with real GUIDs (covered by unit/integration pieces).
 - Result: committed on feat/s261-pvc-naming worktree (no push, no cluster contact).
+
+## 2026-10-12 08:3x ACST — S-274: platform prompt full tool catalog + YOUR RESOURCES (Sherlock)
+
+**Objective:** Ross policy 2026-10-12 — ALL agents learn platform capability through the platform prompt: catalog includes ALL tools (built-in + gateway-backed), and every agent's prompt lists the platform resources it has access to.
+
+**Gap found:** `{{tools.enabled}}` rendered only enabled built-ins (`ListBuiltinTools`); gateway tools (rest_call, mcp_list/mcp_call, git-via-gateway) lived only in the fetch-at-wake resources surface; `{{agent.resources}}` was composed but ABSENT from the platform template (resources only in task-context JSON).
+
+**Files changed:**
+- `control-plane/internal/promptcompo/platform_prompt.md` — YOUR TOOLS rewritten as "FULL PLATFORM CATALOG" (built-ins + gateway capabilities; capabilities ≠ permissions); new YOUR RESOURCES section rendering `{{agent.resources}}` with git-remote guidance.
+- `control-plane/internal/httpapi/prompt_handlers.go` — `gatewayToolLines()` (rest/mcp/git classes listed only when the platform has ACTIVE resources of that type; git additionally requires `cfg.ToolGatewayURL` — no gateway, no advertised remote); `countActiveResources()`; `mergeToolCatalog()` (placeholder handling); git resource lines now carry `(gateway remote: …)`; empty grants render an explicit "(none …)" resources line.
+- `control-plane/internal/promptcompo/testdata/golden_*` — regenerated (diff = template change only).
+- `control-plane/internal/httpapi/prompt_facts_test.go` — 6 new tests: universal catalog (two agents, different squads), absent-when-no-resources, git-needs-gateway-URL, skips-inactive, granted-resources section (incl. git gateway remote), mergeToolCatalog unit.
+
+**Design note:** awareness ≠ authorization. Catalog is platform-wide truth (only classes with live resources are advertised so the inventory never lies); enforcement stays at the gateway + grants, unchanged. Fetch-at-wake per-grant tool schemas (rest_tool_surface.go) untouched.
+
+**Commands/tests:** `go build ./...` OK; `go vet ./...` clean; `go test ./... -count=1` exit 0 (0 FAIL).
+
+**PR:** TBD → merge on green per TG policy.

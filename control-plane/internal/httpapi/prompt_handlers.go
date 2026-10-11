@@ -262,6 +262,9 @@ func (s *Server) composePromptForAgent(ctx context.Context, agent *domain.Agent)
 		return promptcompo.Composition{}, err
 	}
 	resourceLines := buildResourceLines(granted)
+	if len(resourceLines) == 0 {
+		resourceLines = []string{"(none — you hold no resource grants; built-in tools only, and gateway calls will be denied)"}
+	}
 	// Platform-prompt awareness: enabled tool inventory. A store failure on
 	// the tool list is a real error (same posture as the other reads); the
 	// model facts below are deliberately fail-soft.
@@ -269,6 +272,16 @@ func (s *Server) composePromptForAgent(ctx context.Context, agent *domain.Agent)
 	if err != nil {
 		return promptcompo.Composition{}, err
 	}
+	// S-274: the catalog is the FULL platform tool set — enabled built-ins
+	// plus every gateway-backed capability the platform actually serves —
+	// identical for every agent. Awareness, not authorization: the grant
+	// lines in YOUR RESOURCES and the gateway's own policy still decide
+	// what a given agent may call.
+	gatewayTools, err := s.gatewayToolLines(ctx)
+	if err != nil {
+		return promptcompo.Composition{}, err
+	}
+	toolCatalog := mergeToolCatalog(renderEnabledTools(tools), gatewayTools)
 	facts := promptcompo.Facts{
 		AgentName:   agent.Name,
 		AgentRole:   agent.Role,
@@ -277,7 +290,7 @@ func (s *Server) composePromptForAgent(ctx context.Context, agent *domain.Agent)
 		Resources:   resourceLines,
 		Workspace:   squad.Namespace,
 		PlatformVer: s.cfg.APIServerVersion,
-		Tools:       renderEnabledTools(tools),
+		Tools:       toolCatalog,
 	}
 	s.applyModelFacts(ctx, agent, &facts)
 	facts.Owner = s.resolvePlatformOwner(ctx)
@@ -314,6 +327,8 @@ func buildSquadRoster(squadAgents []*domain.Agent) []string {
 
 // buildResourceLines renders "Name [type]: description" lines for the
 // agent's granted resources, omitting the description when empty.
+// Git resources carry their gateway remote (S-274): the agent must use
+// the gateway URL as its git remote, never the upstream URL.
 func buildResourceLines(granted []agentRuntimeResource) []string {
 	lines := make([]string, 0, len(granted))
 	for _, res := range granted {
@@ -321,9 +336,82 @@ func buildResourceLines(granted []agentRuntimeResource) []string {
 		if strings.TrimSpace(res.Description) != "" {
 			line += ": " + res.Description
 		}
+		if res.ResourceType == domain.ResGit && strings.TrimSpace(res.Endpoint) != "" {
+			line += " (gateway remote: " + res.Endpoint + ")"
+		}
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+// gatewayToolLines renders the gateway-backed tool classes present on
+// this platform (S-274). A class is advertised only when the platform
+// actually has live resources of that type — the inventory never lies
+// about empty capabilities — and git additionally requires the gateway
+// URL to be configured (without it there is no gateway remote to use).
+// Ordering is fixed (rest, mcp, git) so prompt ETags stay stable for
+// identical platform state.
+func (s *Server) gatewayToolLines(ctx context.Context) ([]string, error) {
+	lines := []string{}
+	restActive, err := s.countActiveResources(ctx, domain.ResRest)
+	if err != nil {
+		return nil, err
+	}
+	if restActive > 0 {
+		lines = append(lines, "- rest_call — call registered REST API resources through the tool gateway (per-resource grant required; credentials are injected at the gateway, never visible to you; every call policy-checked and audited)")
+	}
+	mcpActive, err := s.countActiveResources(ctx, domain.ResMCP)
+	if err != nil {
+		return nil, err
+	}
+	if mcpActive > 0 {
+		lines = append(lines, "- mcp_list / mcp_call — enumerate and invoke the tools of registered MCP servers through the tool gateway (per-resource grant required)")
+	}
+	gitActive, err := s.countActiveResources(ctx, domain.ResGit)
+	if err != nil {
+		return nil, err
+	}
+	gatewayURL := ""
+	if s.cfg != nil {
+		gatewayURL = strings.TrimSpace(s.cfg.ToolGatewayURL)
+	}
+	if gitActive > 0 && gatewayURL != "" {
+		lines = append(lines, "- git via gateway (CLI) — clone and push granted git repositories through the gateway remote shown on each resource line; never point git at the upstream URL directly")
+	}
+	return lines, nil
+}
+
+// countActiveResources counts active registry resources of one type.
+func (s *Server) countActiveResources(ctx context.Context, typ domain.ResourceType) (int, error) {
+	resources, err := s.store.ListResources(ctx, typ)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, res := range resources {
+		if res != nil && res.Status == domain.ResourceActive {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// mergeToolCatalog joins built-in and gateway tool lines into one catalog,
+// dropping the built-ins' "(none ...)" placeholder when gateway tools
+// follow, and re-adding a placeholder only when both are empty.
+func mergeToolCatalog(builtin, gateway []string) []string {
+	out := make([]string, 0, len(builtin)+len(gateway))
+	for _, l := range builtin {
+		if strings.HasPrefix(l, "(none") {
+			continue
+		}
+		out = append(out, l)
+	}
+	out = append(out, gateway...)
+	if len(out) == 0 {
+		return []string{"(none — you have no tools this run)"}
+	}
+	return out
 }
 
 // composeSquadTier returns the squad tier text with the squad mission

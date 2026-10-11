@@ -262,3 +262,102 @@ func TestResolvePlatformOwnerEmptyStore(t *testing.T) {
 	s, _, _ := factTestSetup(t)
 	require.Equal(t, "unknown", s.resolvePlatformOwner(context.Background()))
 }
+
+// --- S-274: full platform tool catalog + YOUR RESOURCES -----------------
+
+func seedRegistryResource(t *testing.T, store *storage.MemoryStore, typ domain.ResourceType, name, desc string, active bool) *domain.RegistryResource {
+	t.Helper()
+	status := domain.ResourceActive
+	if !active {
+		status = domain.ResourceDeprecated
+	}
+	res, err := store.CreateResource(context.Background(), &domain.RegistryResource{
+		Type:        typ,
+		Name:        name,
+		Description: desc,
+		Status:      status,
+	})
+	require.NoError(t, err)
+	return res
+}
+
+// Every agent — granted or not — sees the full gateway capability catalog
+// for resource classes the platform actually serves (Ross policy 2026-10-12).
+func TestComposePromptGatewayCatalogUniversal(t *testing.T) {
+	s, store, agent := factTestSetup(t)
+	ctx := context.Background()
+	s.cfg.ToolGatewayURL = "http://tool-gateway.skquad-system.svc.cluster.local:8080"
+	seedRegistryResource(t, store, domain.ResRest, "GitHub API", "github rest", true)
+	seedRegistryResource(t, store, domain.ResMCP, "Docs MCP", "mcp server", true)
+	seedRegistryResource(t, store, domain.ResGit, "monorepo", "git repo", true)
+
+	platform := composedPlatformTier(t, s, agent)
+	require.Contains(t, platform, "FULL PLATFORM CATALOG")
+	require.Contains(t, platform, "- rest_call — call registered REST API resources through the tool gateway")
+	require.Contains(t, platform, "- mcp_list / mcp_call — enumerate and invoke the tools of registered MCP servers")
+	require.Contains(t, platform, "- git via gateway (CLI) — clone and push granted git repositories")
+	// No grants yet: the resources section says so explicitly.
+	require.Contains(t, platform, "YOUR RESOURCES")
+	require.Contains(t, platform, "(none — you hold no resource grants; built-in tools only, and gateway calls will be denied)")
+
+	// A second agent in a DIFFERENT squad gets the same catalog lines —
+	// capability awareness is universal, not per-agent.
+	squad2, err := store.CreateSquad(ctx, &domain.Squad{Name: "other-squad", OwnerID: "owner-2", Status: domain.SquadActive})
+	require.NoError(t, err)
+	agent2, err := store.CreateAgent(ctx, &domain.Agent{SquadID: squad2.ID, Name: "nobody", Role: "worker", Status: domain.AgentIdle})
+	require.NoError(t, err)
+	require.Contains(t, composedPlatformTier(t, s, agent2), "- rest_call — call registered REST API resources through the tool gateway")
+}
+
+func TestComposePromptGatewayCatalogAbsentWhenNoResources(t *testing.T) {
+	s, _, agent := factTestSetup(t)
+	s.cfg.ToolGatewayURL = "http://tool-gateway.skquad-system.svc.cluster.local:8080"
+	platform := composedPlatformTier(t, s, agent)
+	require.NotContains(t, platform, "- rest_call")
+	require.NotContains(t, platform, "- mcp_list / mcp_call")
+	require.NotContains(t, platform, "- git via gateway")
+}
+
+// Git's gateway line requires a configured gateway URL: without one there
+// is no gateway remote, so advertising the capability would lie.
+func TestComposePromptGatewayGitLineNeedsGatewayURL(t *testing.T) {
+	s, store, agent := factTestSetup(t)
+	seedRegistryResource(t, store, domain.ResGit, "monorepo", "git repo", true)
+	platform := composedPlatformTier(t, s, agent) // ToolGatewayURL empty
+	require.NotContains(t, platform, "- git via gateway")
+}
+
+// Deprecated (non-active) resources do not light up the catalog.
+func TestComposePromptGatewayCatalogSkipsInactive(t *testing.T) {
+	s, store, agent := factTestSetup(t)
+	s.cfg.ToolGatewayURL = "http://tool-gateway.skquad-system.svc.cluster.local:8080"
+	seedRegistryResource(t, store, domain.ResRest, "old api", "retired", false)
+	platform := composedPlatformTier(t, s, agent)
+	require.NotContains(t, platform, "- rest_call")
+}
+
+// Granted resources render in YOUR RESOURCES, including the git gateway
+// remote the agent must use as its git remote.
+func TestComposePromptGrantedResourcesSection(t *testing.T) {
+	s, store, agent := factTestSetup(t)
+	ctx := context.Background()
+	s.cfg.ToolGatewayURL = "http://tool-gateway.skquad-system.svc.cluster.local:8080"
+	rest := seedRegistryResource(t, store, domain.ResRest, "GitHub API", "github rest", true)
+	gitRes := seedRegistryResource(t, store, domain.ResGit, "monorepo", "team repo", true)
+	require.NoError(t, store.GrantAgentPermission(ctx, &domain.AgentPermission{AgentID: agent.ID, ResourceType: domain.ResRest, ResourceID: rest.ID, GrantedBy: "admin"}))
+	require.NoError(t, store.GrantAgentPermission(ctx, &domain.AgentPermission{AgentID: agent.ID, ResourceType: domain.ResGit, ResourceID: gitRes.ID, GrantedBy: "admin"}))
+
+	platform := composedPlatformTier(t, s, agent)
+	require.Contains(t, platform, "GitHub API [rest]: github rest")
+	require.Contains(t, platform, "monorepo [git]: team repo (gateway remote: http://tool-gateway.skquad-system.svc.cluster.local:8080/git/"+gitRes.ID+"/)")
+	require.NotContains(t, platform, "(none — you hold no resource grants")
+}
+
+func TestMergeToolCatalogPlaceholders(t *testing.T) {
+	require.Equal(t, []string{"(none — you have no tools this run)"},
+		mergeToolCatalog([]string{"(none — you have no tools this run)"}, nil))
+	require.Equal(t, []string{"- rest_call — x"},
+		mergeToolCatalog([]string{"(none — you have no tools this run)"}, []string{"- rest_call — x"}))
+	require.Equal(t, []string{"- exec — y", "- rest_call — x"},
+		mergeToolCatalog([]string{"- exec — y"}, []string{"- rest_call — x"}))
+}
