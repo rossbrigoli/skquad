@@ -360,33 +360,46 @@ jobs:
           PY
       - name: Smoke test LiteLLM startup against Postgres
         run: |
-          docker rm -f skquad-llm-gateway-smoke >/dev/null 2>&1 || true
           cleanup() {
             docker rm -f skquad-llm-gateway-smoke >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
 
-          docker run -d --name skquad-llm-gateway-smoke --network host \
-            -e LITELLM_MASTER_KEY='sk-test-master-key' \
-            -e LITELLM_MIGRATION_DIR='/tmp/litellm-migrations' \
-            -e DATABASE_URL='postgres://skquad:skquad-dev-password@127.0.0.1:5432/skquad?sslmode=disable&schema=litellm' \
-            skquad-llm-gateway-ci --config /etc/skquad/config.yaml --host 0.0.0.0 --port 54000
+          smoke_attempt() {
+            docker rm -f skquad-llm-gateway-smoke >/dev/null 2>&1 || true
+            docker run -d --name skquad-llm-gateway-smoke --network host \
+              -e LITELLM_MASTER_KEY='sk-test-master-key' \
+              -e LITELLM_MIGRATION_DIR='/tmp/litellm-migrations' \
+              -e DATABASE_URL='postgres://skquad:skquad-dev-password@127.0.0.1:5432/skquad?sslmode=disable&schema=litellm' \
+              skquad-llm-gateway-ci --config /etc/skquad/config.yaml --host 0.0.0.0 --port 54000
 
-          for _ in $(seq 1 90); do
-            if curl --fail --silent --show-error http://127.0.0.1:54000/health/liveliness >/dev/null; then
-              curl --fail --silent --show-error http://127.0.0.1:54000/health/readiness >/dev/null
-              echo "OK: LiteLLM gateway started and passed readiness"
-              exit 0
-            fi
-            if ! docker ps --format '{{.Names}}' | grep -qx skquad-llm-gateway-smoke; then
-              docker logs skquad-llm-gateway-smoke
-              exit 1
-            fi
-            sleep 2
-          done
+            for _ in $(seq 1 90); do
+              if curl --fail --silent --show-error http://127.0.0.1:54000/health/liveliness >/dev/null; then
+                curl --fail --silent --show-error http://127.0.0.1:54000/health/readiness >/dev/null
+                echo "OK: LiteLLM gateway started and passed readiness (attempt $1)"
+                return 0
+              fi
+              if ! docker ps --format '{{.Names}}' | grep -qx skquad-llm-gateway-smoke; then
+                echo "--- smoke attempt $1: container exited early ---"
+                docker logs skquad-llm-gateway-smoke
+                return 1
+              fi
+              sleep 2
+            done
 
-          docker logs skquad-llm-gateway-smoke
-          exit 1
+            echo "--- smoke attempt $1: readiness timed out ---"
+            docker logs skquad-llm-gateway-smoke
+            return 1
+          }
+
+          # Known transient (2026-10-11, main 888d12b run 38095234635): litellm
+          # startup can race itself — Prisma engine init warning followed by
+          # uvicorn "[Errno 98] bind 0.0.0.0:54000: address already in use",
+          # container dies, job goes red on an otherwise-identical green commit.
+          # Retry the whole container once before failing.
+          if smoke_attempt 1; then exit 0; fi
+          echo "Retrying smoke startup once (known transient litellm bind race)..."
+          smoke_attempt 2
 
   integration-smoke:
     name: Integration smoke
