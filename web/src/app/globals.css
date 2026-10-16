@@ -3250,6 +3250,12 @@ button.squad-tab.active {
   /* S-189/S6819: <dialog> UA margin:auto would shift the popover. */
   margin: 0;
   top: calc(100% + 8px);
+  /* S-276: the non-modal <dialog> UA stylesheet sets left:0. With an
+     explicit width set, left+right+width is over-constrained and LTR
+     resolves in favour of left — pinning the popover's LEFT edge to the
+     bell and shoving its 380px body off-screen to the right. Neutralise
+     the UA inset so right:0 actually anchors the popover. */
+  left: auto;
   right: 0;
   z-index: 60;
   width: min(380px, 92vw);
@@ -3272,6 +3278,20 @@ button.squad-tab.active {
 .notif-popover-title {
   font-weight: 600;
   font-size: var(--text-sm, 13px);
+}
+
+/* S-276: on narrow screens the bell sits ~120px from the viewport's right
+   edge (theme pill + padding), so a 380px popover anchored to the bell
+   overflows the LEFT edge there. Render it as a fixed sheet just below the
+   sticky top bar instead — no overflow at any width. */
+@media (max-width: 768px) {
+  .notif-popover {
+    position: fixed;
+    top: 52px;
+    left: var(--space-4);
+    right: var(--space-4);
+    width: auto;
+  }
 }
 
 .notif-empty {

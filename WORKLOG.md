@@ -1183,3 +1183,19 @@
 **Commands/tests:** `go build ./...` OK; `go vet ./...` clean; `go test ./... -count=1` exit 0 (0 FAIL).
 
 **PR:** TBD → merge on green per TG policy.
+
+## 2026-10-16 20:4x ACST — S-276: notification popover off-screen fix (Sherlock)
+
+**Objective:** Fix bell popover rendering to the right of the bell, outside the browser viewport.
+
+**Root cause:** `.notif-popover` is a non-modal `<dialog>`. The UA stylesheet sets `left: 0` on dialogs; the author CSS set only `right: 0` + explicit `width`. An absolutely positioned element with left+right+width is over-constrained and LTR resolves in favour of `left` — so the popover's LEFT edge pinned to the bell and its 380px body extended off-screen to the right. Verified empirically in headless Chromium: popoverRight=1574 vs viewport 1280.
+
+**Files changed:**
+- `web/src/app/globals.css` — `.notif-popover`: added `left: auto` (neutralises the UA inset so `right: 0` anchors). Added `@media (max-width: 768px)` block: popover becomes a fixed sheet below the sticky top bar (`top: 52px; left/right: var(--space-4); width: auto`) because the bell sits ~120px from the viewport right edge on narrow screens (theme pill + padding), where a 380px bell-anchored popover would overflow the LEFT edge instead.
+
+**Verification (headless Chromium, playwright-core against actual globals.css):**
+- Before fix: right overflow at 1280px (delta +378px) — bug reproduced.
+- After fix: desktop 1280/900 → popover right edge aligns with bell right edge (delta 0), no overflow. Mobile 768/500/420/360 → sheet fits viewport, no left/right overflow. ALL PASS.
+- `npx vitest run` NotificationBell + AppShell: 20 pass. Full `npm test`: 99 files / 1402 tests pass. `npm run build`: clean. `npm run lint`: 14 problems — byte-identical to baseline without my change (pre-existing, CSS-only diff, CI has no lint gate).
+
+**Not verified:** live site behind Cloudflare Access (local reproduction used the same Chromium engine + actual shipped CSS).
