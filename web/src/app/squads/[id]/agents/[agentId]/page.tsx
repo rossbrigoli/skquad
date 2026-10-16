@@ -877,6 +877,87 @@ function initials(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
+// SonarQube S3776/S3358 (2026-10-16): extracted from ChatThread's render loop.
+// Per-message derivations are plain statements here; avatar/name variants use
+// small helpers instead of nested ternaries inside JSX.
+function avatarVariant(fromUser: boolean, isMe: boolean): "me" | "them" | "agent" {
+  if (!fromUser) return "agent";
+  return isMe ? "me" : "them";
+}
+
+function headName(fromUser: boolean, isMe: boolean, senderName: string, agentName: string): string {
+  if (!fromUser) return agentName;
+  return isMe ? "You" : senderName;
+}
+
+function ChatMessageRow({
+  msg,
+  user,
+  agentName,
+  onShowSubagent,
+}: {
+  readonly msg: Message;
+  readonly user?: { id?: string; name?: string } | null;
+  readonly agentName: string;
+  readonly onShowSubagent: (c: SubagentInfo | null) => void;
+}) {
+  const fromUser = msg.from_type === "user";
+  // S-272: render the ACTUAL sender of each message (from_display is
+  // resolved server-side), not the logged-in viewer. Messages from
+  // another human — e.g. a platform admin testing someone else's
+  // agent — no longer borrow your avatar and "You" label.
+  const attribution = chatSenderAttribution(msg, user);
+  const isMe = fromUser && attribution.isMe;
+  const senderName = fromUser ? attribution.name : agentName;
+  // S-265: LLM turn-failure closure gets distinct error styling.
+  const turnError = !fromUser && isTurnErrorMessage(msg);
+  const toolCalls = fromUser ? [] : chatToolCalls(msg);
+  // S-194: image attachments render under the message text.
+  const attachments = messageAttachments(msg);
+  // S-189: content-derived stable keys for tool calls (no natural ids;
+  // list is static message history).
+  const callKeys = uniqueContentKeys(toolCalls, (c) => `${msg.id}|${c.name}|${JSON.stringify(c.arguments)}`);
+  const avatarKind = avatarVariant(fromUser, isMe);
+  const displayName = headName(fromUser, isMe, senderName, agentName);
+  const renderChatBody = () => {
+    if (msg.payload?.message) {
+      return <MarkdownMessage text={msg.payload.message} />;
+    }
+    if (attachments.length > 0) {
+      return null;
+    }
+    return <div className="chat-text">(no text)</div>;
+  };
+  return (
+    <div className={`chat-row ${fromUser ? "mine" : "theirs"}`}>
+      <div className={`chat-avatar ${avatarKind}`} aria-hidden="true">
+        {initials(senderName)}
+      </div>
+      <div className={`chat-bubble${turnError ? " chat-error-bubble" : ""}`}>
+        <div className="chat-head">
+          <span className="chat-name">{displayName}</span>
+          <span className="chat-time">{formatRelativeTime(msg.created_at)}</span>
+          {turnError ? (
+            <span className="chat-status mono error">LLM error</span>
+          ) : null}
+          {!fromUser && msg.status ? <span className="chat-status mono">{msg.status}</span> : null}
+          {/* S-175: surface cancelled user turns; other user statuses stay quiet. */}
+          {fromUser && msg.status === "cancelled" ? (
+            <span className="chat-status mono cancelled">cancelled</span>
+          ) : null}
+        </div>
+        {renderChatBody()}
+        <AttachmentThumbs attachments={attachments} />
+        <ChatToolCallList
+          calls={toolCalls}
+          callKeys={callKeys}
+          onShowSubagent={onShowSubagent}
+        />
+      </div>
+    </div>
+  );
+}
+
 function ChatThread({
   messages,
   agentName,
@@ -980,61 +1061,15 @@ function ChatThread({
             </p>
           </div>
         ) : (
-          sorted.map((msg) => {
-            const fromUser = msg.from_type === "user";
-            // S-272: render the ACTUAL sender of each message (from_display is
-            // resolved server-side), not the logged-in viewer. Messages from
-            // another human — e.g. a platform admin testing someone else's
-            // agent — no longer borrow your avatar and "You" label.
-            const attribution = chatSenderAttribution(msg, user);
-            const isMe = fromUser && attribution.isMe;
-            const senderName = fromUser ? attribution.name : agentName;
-            // S-265: LLM turn-failure closure gets distinct error styling.
-            const turnError = !fromUser && isTurnErrorMessage(msg);
-            const toolCalls = fromUser ? [] : chatToolCalls(msg);
-            // S-194: image attachments render under the message text.
-            const attachments = messageAttachments(msg);
-            // S-189: content-derived stable keys for tool calls (no natural ids;
-            // list is static message history).
-            const callKeys = uniqueContentKeys(toolCalls, (c) => `${msg.id}|${c.name}|${JSON.stringify(c.arguments)}`);
-            const renderChatBody = () => {
-              if (msg.payload?.message) {
-                return <MarkdownMessage text={msg.payload.message} />;
-              }
-              if (attachments.length > 0) {
-                return null;
-              }
-              return <div className="chat-text">(no text)</div>;
-            };
-            return (
-              <div key={msg.id} className={`chat-row ${fromUser ? "mine" : "theirs"}`}>
-                <div className={`chat-avatar ${fromUser ? (isMe ? "me" : "them") : "agent"}`} aria-hidden="true">
-                  {initials(fromUser ? senderName : agentName)}
-                </div>
-                <div className={`chat-bubble${turnError ? " chat-error-bubble" : ""}`}>
-                  <div className="chat-head">
-                    <span className="chat-name">{fromUser ? (isMe ? "You" : senderName) : agentName}</span>
-                    <span className="chat-time">{formatRelativeTime(msg.created_at)}</span>
-                    {turnError ? (
-                      <span className="chat-status mono error">LLM error</span>
-                    ) : null}
-                    {!fromUser && msg.status ? <span className="chat-status mono">{msg.status}</span> : null}
-                    {/* S-175: surface cancelled user turns; other user statuses stay quiet. */}
-                    {fromUser && msg.status === "cancelled" ? (
-                      <span className="chat-status mono cancelled">cancelled</span>
-                    ) : null}
-                  </div>
-                  {renderChatBody()}
-                  <AttachmentThumbs attachments={attachments} />
-                  <ChatToolCallList
-                    calls={toolCalls}
-                    callKeys={callKeys}
-                    onShowSubagent={(c) => setOpenSubagent(c)}
-                  />
-                </div>
-              </div>
-            );
-          })
+          sorted.map((msg) => (
+            <ChatMessageRow
+              key={msg.id}
+              msg={msg}
+              user={user}
+              agentName={agentName}
+              onShowSubagent={(c) => setOpenSubagent(c)}
+            />
+          ))
         )}
         {generating ? (
           <div className="chat-row theirs chat-typing-row" aria-live="polite">

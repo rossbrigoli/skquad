@@ -55,6 +55,13 @@ export function chatSenderAttribution(
 ): { isMe: boolean; name: string } {
   const viewerId = viewer?.id;
   const isMe = Boolean(viewerId) && message.from_id === viewerId;
-  const name = message.from_display || (isMe ? viewer?.name || "You" : "a teammate");
-  return { isMe, name };
+  // SonarQube S6606 (2026-10-16): truthiness fallbacks made explicit with
+  // early returns — identical behaviour, no `||` chains on nullable strings.
+  if (message.from_display) {
+    return { isMe, name: message.from_display };
+  }
+  if (isMe && viewer?.name) {
+    return { isMe, name: viewer.name };
+  }
+  return { isMe, name: isMe ? "You" : "a teammate" };
 }
