@@ -551,6 +551,16 @@ type MeteringStore interface {
 	// Rows are sorted by day, then squad name, agent name, provider name,
 	// model.
 	SumMeteringDaily(ctx context.Context, since time.Time, squadIDs []string) ([]domain.MeteringDailyRow, error)
+	// SumMeteringByResource aggregates per-resource usage for the
+	// S-269 per-resource metering API. Only events carrying a resource
+	// attribution are counted; resourceID / resourceType are optional
+	// filters (empty = no filter). Usage (Calls) covers metered and
+	// non-metered resources alike — cost is only charged when the
+	// resource is metered, so a non-metered row's zero Cost is an
+	// explicit billed zero, not missing data. Like SumMeteringDaily
+	// this is a read-time rollup over the retained raw events
+	// (S-203 retention alignment: no separate rollup table).
+	SumMeteringByResource(ctx context.Context, since time.Time, resourceID, resourceType string) ([]domain.ResourceMeteringRow, error)
 }
 
 // WakeLatencyStore persists wake-path latency events (S-87). Record is
