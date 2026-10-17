@@ -1375,6 +1375,81 @@ func (m *MemoryStore) SumMeteringDaily(_ context.Context, since time.Time, squad
 	return out, nil
 }
 
+// SumMeteringByResource buckets resource-attributed metering events by
+// resource id for the S-269 per-resource metering API. See
+// MeteringStore for semantics; the memory mirror of the Postgres
+// read-time rollup.
+func (m *MemoryStore) SumMeteringByResource(_ context.Context, since time.Time, resourceID, resourceType string) ([]domain.ResourceMeteringRow, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	type bucket struct {
+		row domain.ResourceMeteringRow
+	}
+	agg := map[string]*bucket{}
+	for _, event := range m.metering {
+		if event.ResourceID == "" {
+			continue
+		}
+		if !since.IsZero() && event.Timestamp.Before(since) {
+			continue
+		}
+		if resourceID != "" && event.ResourceID != resourceID {
+			continue
+		}
+		effType := event.ResourceType
+		if resourceType != "" {
+			want := string(domain.CanonicalResourceType(domain.ResourceType(resourceType)))
+			if effType != "" && effType != want {
+				continue
+			}
+			effType = want
+		}
+		b := agg[event.ResourceID]
+		if b == nil {
+			b = &bucket{row: domain.ResourceMeteringRow{
+				ResourceID:   event.ResourceID,
+				ResourceType: effType,
+				Currency:     "USD",
+				LastSeen:     event.Timestamp,
+			}}
+			// Registry metadata: name + metering config come from the
+			// live registry row when present (LEFT JOIN semantics).
+			if res, ok := m.resources[event.ResourceID]; ok {
+				b.row.Name = res.Name
+				b.row.Metered = res.Metered
+				if res.Currency != "" {
+					b.row.Currency = res.Currency
+				}
+				if b.row.ResourceType == "" {
+					b.row.ResourceType = string(domain.CanonicalResourceType(res.Type))
+				}
+			}
+			agg[event.ResourceID] = b
+		}
+		b.row.Calls++
+		b.row.Cost += event.Cost
+		if event.Currency != "" {
+			b.row.Currency = event.Currency
+		}
+		if event.Timestamp.After(b.row.LastSeen) {
+			b.row.LastSeen = event.Timestamp
+		}
+	}
+
+	out := make([]domain.ResourceMeteringRow, 0, len(agg))
+	for _, b := range agg {
+		out = append(out, b.row)
+	}
+	slices.SortFunc(out, func(a, b domain.ResourceMeteringRow) int {
+		if a.Calls != b.Calls {
+			return int(b.Calls - a.Calls)
+		}
+		return strings.Compare(a.ResourceID, b.ResourceID)
+	})
+	return out, nil
+}
+
 // meteringGroupKey is the aggregation key for daily metering rows
 // (S-189: hoisted to package scope for the extracted helpers).
 type meteringGroupKey struct {

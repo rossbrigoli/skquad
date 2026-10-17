@@ -787,6 +787,16 @@ type RegistryResource struct {
 	RiskTier       string          `json:"risk_tier,omitempty"`
 	EgressClass    string          `json:"egress_class,omitempty"`
 	OwnerUserID    string          `json:"owner_user_id,omitempty"`
+	// S-269: per-resource metering config. Metering is OPTIONAL per
+	// resource (Ross's hard requirement): a non-metered resource needs
+	// no metering config and EVERY governed call to it costs 0 — the
+	// zero is an explicit billed zero, not missing data. A metered
+	// resource bills PricePerCall per call; Metered=true requires a
+	// price >= 0 (validated at the API boundary). Currency defaults to
+	// the platform currency (USD, matching the metering table default).
+	Metered      bool     `json:"metered"`
+	PricePerCall *float64 `json:"price_per_call,omitempty"`
+	Currency     string   `json:"currency,omitempty"`
 	// TG-5 slice B2a (S-244-series): MCP tool snapshot (docs/tool-gateway.md §6.3).
 	// Registration enumerates the live tool set through the gateway
 	// (POST /internal/mcp/enumerate); the CP persists the enumerated tools
@@ -1018,6 +1028,29 @@ type MeteringEvent struct {
 	// RateSnapshot is true when the rates above were resolved from the AI
 	// Model registry and Cost was computed from them.
 	RateSnapshot bool `json:"rate_snapshot,omitempty"`
+	// S-269: OPTIONAL resource attribution. Set on per-resource usage
+	// events recorded from the tool gateway's resource-usage reports
+	// (governed resource calls); LLM token events leave them empty.
+	// omitempty keeps every pre-S-269 reporter wire-compatible.
+	ResourceID   string `json:"resource_id,omitempty"`
+	ResourceType string `json:"resource_type,omitempty"`
+}
+
+// ResourceMeteringRow is a per-resource aggregate of usage events for
+// the S-269 per-resource metering API. Calls counts every recorded
+// usage event for the resource — metered or not (usage is always
+// recorded; cost is only charged when metered). Cost is the sum of
+// event-time billed cost: zero for non-metered resources, which is an
+// explicit billed zero, not missing data.
+type ResourceMeteringRow struct {
+	ResourceID   string    `json:"resource_id"`
+	ResourceType string    `json:"resource_type"`
+	Name         string    `json:"name"`
+	Metered      bool      `json:"metered"`
+	Calls        int64     `json:"calls"`
+	Cost         float64   `json:"cost"`
+	Currency     string    `json:"currency"`
+	LastSeen     time.Time `json:"last_seen"`
 }
 
 // WakeLatencyEvent records one task-delivery wake path (S-87): from the
