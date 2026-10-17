@@ -29,6 +29,12 @@ import { apiGet } from "../../lib/api";
 import { formatMoney } from "../../lib/format";
 import { buildStackedChart } from "../../lib/usage";
 import {
+  listResourceMeteringPath,
+  parseResourceMeteringRows,
+  resourceMeteringTotals,
+} from "../../lib/resourceMetering";
+import { useApi } from "../../lib/useApi";
+import {
   COST_GROUP_SOURCES,
   resolveCostTab,
   seriesForSource,
@@ -79,10 +85,12 @@ function CostTabContent({
   summary,
   source,
   onSourceChange,
+  isAdmin,
 }: {
   readonly summary: CostSummaryPayload;
   readonly source: CostGroupSource;
   readonly onSourceChange: (source: CostGroupSource) => void;
+  readonly isAdmin: boolean;
 }) {
   const currency = summary.currency ?? "USD";
   const money = (n: number) => formatMoney(n, currency);
@@ -136,6 +144,57 @@ function CostTabContent({
       <p className="entity-meta" style={{ marginTop: "var(--space-4)" }}>
         Showing the last {summary.days?.length ?? WINDOW_DAYS} days for {summary.scope === "all" ? "all squads (platform admin view)" : "your squads"}.
       </p>
+
+      {isAdmin ? <ResourceMeteringSection /> : null}
+    </>
+  );
+}
+
+// ResourceMeteringSection renders the S-269 per-resource usage/cost
+// rollup (platform-admin surface). Non-metered resources show an
+// explicit 0 cost — every call to them is billed zero by design.
+function ResourceMeteringSection() {
+  const metering = useApi<unknown>(listResourceMeteringPath());
+  const rows = parseResourceMeteringRows(metering.data);
+  const totals = resourceMeteringTotals(rows);
+  const currency = totals.currency || "USD";
+  const money = (n: number) => formatMoney(n, currency);
+
+  if (metering.loading && !metering.data) {
+    return null;
+  }
+  return (
+    <>
+      <h2 className="section-title">Per-resource usage</h2>
+      {metering.error ? <div className="notice error">{metering.error}</div> : null}
+      {rows.length === 0 ? (
+        <EmptyState title="No resource usage" hint="No registered resource has recorded calls yet." />
+      ) : (
+        <div className="card">
+          <table className="entity-table">
+            <thead>
+              <tr>
+                <th>Resource</th>
+                <th>Type</th>
+                <th>Metered</th>
+                <th>Calls</th>
+                <th>Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.resourceId}>
+                  <td>{row.name || <span className="entity-meta">(deleted)</span>}</td>
+                  <td className="mono">{row.resourceType}</td>
+                  <td>{row.metered ? "yes" : "no"}</td>
+                  <td>{row.calls}</td>
+                  <td className="mono">{money(row.cost)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </>
   );
 }
@@ -190,7 +249,7 @@ export default function CostsPage() {
       return <EmptyState title="Crunching numbers…" hint="Aggregating metering across your squads." />;
     }
     return summary ? (
-      <CostTabContent summary={summary} source={source} onSourceChange={setSource} />
+      <CostTabContent summary={summary} source={source} onSourceChange={setSource} isAdmin={isAdmin} />
     ) : null;
   }
 

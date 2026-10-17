@@ -12,6 +12,7 @@
 import { useState } from "react";
 import { apiPatch, apiPost, type RegistryResource } from "../lib/api";
 import { useApi } from "../lib/useApi";
+import { meteringFromResource } from "../lib/meteringFields";
 import { useAuth } from "../lib/auth";
 import { DeleteResourceButton } from "./DeleteResourceButton";
 import { EmptyState } from "./EmptyState";
@@ -71,6 +72,7 @@ export function restFormFromResource(resource: RegistryResource): RestResourceFo
     maxResponseBytes: asNumberOpt(ceiling.max_response_bytes),
     ratePerMin: asNumberOpt(ceiling.rate_per_min),
     egressClass: ceiling.egress_class === "internal" ? "internal" : "public",
+    ...meteringFromResource(resource),
   };
 }
 
@@ -295,6 +297,28 @@ export function RestResourceModal({
             </select>
           </label>
         </div>
+        <label className="field field-checkbox">
+          <input
+            type="checkbox"
+            checked={form.metered}
+            onChange={(e) => set("metered", e.target.checked)}
+            aria-label="Meter this resource"
+          />
+          <span>Meter this resource (billed per call; when off, every call costs 0)</span>
+        </label>
+        {form.metered ? (
+          <label className="field">
+            <span>Price per call (USD)</span>
+            <input
+              type="number"
+              min="0"
+              step="0.0001"
+              value={form.pricePerCall}
+              onChange={(e) => set("pricePerCall", e.target.value)}
+              placeholder="0.0000"
+            />
+          </label>
+        ) : null}
         <div className="notice">
           Effective ceiling: {restCeilingSummary(asObject(buildRestResourcePayload(form, false).policy_ceiling) as RestCeiling)}
         </div>
