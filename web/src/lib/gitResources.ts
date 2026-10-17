@@ -27,6 +27,8 @@ export type GitCeiling = {
   rate_per_min?: number;
 };
 
+import { meteringPayload, validateMeteringFields } from "./meteringFields";
+
 export type GitResourceForm = {
   name: string;
   description: string;
@@ -34,6 +36,9 @@ export type GitResourceForm = {
   reposAllow: string;
   allowPush: boolean;
   ratePerMin: string;
+  // S-269: optional per-resource metering (see lib/meteringFields).
+  metered: boolean;
+  pricePerCall: string;
   secrets: Record<string, string>;
 };
 
@@ -45,6 +50,8 @@ export function emptyGitForm(): GitResourceForm {
     reposAllow: "",
     allowPush: false,
     ratePerMin: "",
+    metered: false,
+    pricePerCall: "",
     secrets: {},
   };
 }
@@ -84,6 +91,8 @@ export function validateGitForm(form: GitResourceForm, requireToken = true): str
   } catch (err) {
     return err instanceof Error ? err.message : "invalid numeric bound";
   }
+  const meteringError = validateMeteringFields({ metered: form.metered, pricePerCall: form.pricePerCall });
+  if (meteringError) return meteringError;
   return null;
 }
 
@@ -107,6 +116,7 @@ export function buildGitResourcePayload(form: GitResourceForm, includeAuth: bool
     policy_ceiling: ceiling,
     risk_tier: "medium",
     egress_class: "public",
+    ...meteringPayload({ metered: form.metered, pricePerCall: form.pricePerCall }),
   };
   if (includeAuth) {
     const auth: Record<string, string> = {};

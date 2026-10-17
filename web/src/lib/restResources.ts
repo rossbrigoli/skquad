@@ -7,6 +7,8 @@
 // way the gateway does (methods intersect, grant path_allow wins, deny
 // unions, numerics take the tightest bound).
 
+import { meteringPayload, validateMeteringFields } from "./meteringFields";
+
 export const REST_AUTH_KINDS = ["none", "bearer", "api_key_header", "basic", "oauth2_client_credentials"] as const;
 export type RestAuthKind = (typeof REST_AUTH_KINDS)[number];
 
@@ -58,6 +60,9 @@ export type RestResourceForm = {
   maxResponseBytes: string;
   ratePerMin: string;
   egressClass: "public" | "internal";
+  // S-269: optional per-resource metering (see lib/meteringFields).
+  metered: boolean;
+  pricePerCall: string;
   secrets: Record<string, string>;
 };
 
@@ -75,6 +80,8 @@ export function emptyRestForm(): RestResourceForm {
     maxResponseBytes: "",
     ratePerMin: "",
     egressClass: "public",
+    metered: false,
+    pricePerCall: "",
     secrets: {},
   };
 }
@@ -120,6 +127,8 @@ export function validateRestForm(form: RestResourceForm): string | null {
     return err instanceof Error ? err.message : "invalid numeric bound";
   }
   return null;
+  const meteringError = validateMeteringFields({ metered: form.metered, pricePerCall: form.pricePerCall });
+  if (meteringError) return meteringError;
 }
 
 // buildRestResourcePayload builds the CP create/patch body. `includeAuth`
@@ -152,6 +161,7 @@ export function buildRestResourcePayload(form: RestResourceForm, includeAuth: bo
     policy_ceiling: ceiling,
     risk_tier: "medium",
     egress_class: form.egressClass,
+    ...meteringPayload({ metered: form.metered, pricePerCall: form.pricePerCall }),
   };
   if (includeAuth) {
     const auth: Record<string, string> = {};
