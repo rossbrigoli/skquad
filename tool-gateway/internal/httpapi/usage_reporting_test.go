@@ -26,7 +26,7 @@ import (
 
 // recordingReporter captures usage reports for assertions.
 type recordingReporter struct {
-	mu     sync.Mutex
+	mu      sync.Mutex
 	reports []usage.Report
 }
 

@@ -98,7 +98,7 @@ func seedResourceUsage(t *testing.T, store *storage.MemoryStore, agentID, squadI
 	for i := 0; i < count; i++ {
 		require.NoError(t, store.RecordMetering(context.Background(), &domain.MeteringEvent{
 			AgentID: agentID, SquadID: squadID, Cost: cost, Currency: "USD",
-			Timestamp: ts.Add(time.Duration(i) * time.Second),
+			Timestamp:  ts.Add(time.Duration(i) * time.Second),
 			ResourceID: resourceID, ResourceType: resourceType,
 		}))
 	}
