@@ -127,6 +127,7 @@ describe("ResourceModal create + edit", () => {
         endpoint: "",
         auth_ref: "",
         manifest: '{"version": 1}',
+        metered: false,
       }),
     );
     await vi.waitFor(() => expect(env.refresh).toHaveBeenCalled());
@@ -167,8 +168,50 @@ describe("ResourceModal create + edit", () => {
         endpoint: "https://e",
         auth_ref: "vault/1",
         manifest: undefined,
+        metered: false,
       }),
     );
+  });
+
+  it("metering toggle: price box appears only when metered and posts the price", async () => {
+    const user = userEvent.setup();
+    env.items = [{ id: "r1", name: "s1", status: "active" }];
+    render(<ResourceRegistryPanel resourceType="skills" label="Skills" isAdmin />);
+    await user.click(screen.getByRole("button", { name: "+ Register skill" }));
+    const dialog = screen.getByRole("dialog", { name: "Register skill" });
+    // Off by default: no price textbox.
+    expect(within(dialog).queryByLabelText(/Price per call/)).toBeNull();
+    await user.type(within(dialog).getByLabelText(/Name/), "paid-skill");
+    await user.click(within(dialog).getByLabelText("Meter this resource"));
+    const price = within(dialog).getByLabelText(/Price per call/) as HTMLInputElement;
+    expect(price).toBeInTheDocument();
+    await user.type(price, "0.02");
+    await user.click(within(dialog).getByRole("button", { name: "Register" }));
+    await vi.waitFor(() =>
+      expect(env.apiPost).toHaveBeenCalledWith("/registry/skills", "tok", {
+        name: "paid-skill",
+        description: "",
+        endpoint: "",
+        auth_ref: "",
+        manifest: undefined,
+        metered: true,
+        price_per_call: 0.02,
+      }),
+    );
+  });
+
+  it("metering toggle: blank price while metered surfaces a validation error", async () => {
+    const user = userEvent.setup();
+    env.items = [{ id: "r1", name: "s1", status: "active" }];
+    render(<ResourceRegistryPanel resourceType="skills" label="Skills" isAdmin />);
+    await user.click(screen.getByRole("button", { name: "+ Register skill" }));
+    const dialog = screen.getByRole("dialog", { name: "Register skill" });
+    await user.type(within(dialog).getByLabelText(/Name/), "broken-price");
+    await user.click(within(dialog).getByLabelText("Meter this resource"));
+    await user.click(within(dialog).getByRole("button", { name: "Register" }));
+    const errEl = dialog.querySelector(".notice.error");
+    await vi.waitFor(() => expect(errEl?.textContent).toContain("price"));
+    expect(env.apiPost).not.toHaveBeenCalled();
   });
 
   it("cancel closes without any API call", async () => {

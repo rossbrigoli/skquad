@@ -131,6 +131,13 @@ export function ResourceModal({
   const [endpoint, setEndpoint] = useState(resource?.endpoint ?? "");
   const [authRef, setAuthRef] = useState(resource?.auth_ref ?? "");
   const [manifest, setManifest] = useState(resource?.manifest ? JSON.stringify(resource.manifest, null, 2) : "");
+  // S-269: optional per-resource metering. Default OFF — a
+  // non-metered resource needs no metering config and every call to
+  // it costs 0. The price textbox only renders while metered is on.
+  const [metered, setMetered] = useState(resource?.metered ?? false);
+  const [pricePerCall, setPricePerCall] = useState(
+    resource?.price_per_call != null ? String(resource.price_per_call) : "",
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -146,13 +153,23 @@ export function ResourceModal({
           setBusy(true);
           setError("");
           try {
-            const body = {
+            const body: Record<string, unknown> = {
               name: name.trim(),
               description: description.trim(),
               endpoint: endpoint.trim(),
               auth_ref: authRef.trim(),
               manifest: parseJsonField(manifest, "Manifest"),
+              metered,
             };
+            if (metered) {
+              const price = Number.parseFloat(pricePerCall);
+              if (!Number.isFinite(price) || price < 0) {
+                setError("Metered price per call must be a number \u2265 0");
+                setBusy(false);
+                return;
+              }
+              body.price_per_call = price;
+            }
             if (resource) {
               await apiPatch(`/registry/${resourceType}/${resource.id}`, token, body);
             } else {
@@ -187,6 +204,28 @@ export function ResourceModal({
           <span>Manifest (JSON, optional)</span>
           <textarea value={manifest} onChange={(e) => setManifest(e.target.value)} placeholder='{"version": 1, ...}' />
         </label>
+        <label className="field field-checkbox">
+          <input
+            type="checkbox"
+            checked={metered}
+            onChange={(e) => setMetered(e.target.checked)}
+            aria-label="Meter this resource"
+          />
+          <span>Meter this resource (billed per call; when off, every call costs 0)</span>
+        </label>
+        {metered ? (
+          <label className="field">
+            <span>Price per call (USD)</span>
+            <input
+              type="number"
+              min="0"
+              step="0.0001"
+              value={pricePerCall}
+              onChange={(e) => setPricePerCall(e.target.value)}
+              placeholder="0.0000"
+            />
+          </label>
+        ) : null}
       </ModalForm>
     </Modal>
   );

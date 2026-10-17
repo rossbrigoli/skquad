@@ -228,6 +228,11 @@ export type RegistryResource = {
   policy_ceiling?: unknown;
   risk_tier?: string;
   egress_class?: string;
+  // S-269: optional per-resource metering. Non-metered (default)
+  // means every call costs 0; metered requires price_per_call >= 0.
+  metered?: boolean;
+  price_per_call?: number | null;
+  currency?: string;
 };
 
 export type AgentPermission = {

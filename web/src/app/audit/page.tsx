@@ -6,10 +6,12 @@
 //   * "Audit log" — filterable event table (agent / task / resource /
 //     time range / decision) with a per-event detail drawer. Decision
 //     codes render human-readable via lib/audit (TG-8 stable codes).
-//   * "Resource metering" — per-resource call/decision rollups derived
-//     from the same audit window. Tokens/cost are NOT attributable per
-//     resource from the current API (metering aggregates per
-//     squad/agent only) — the panel says so instead of faking zeros.
+//   * "Resource metering" — real per-resource calls/cost from the
+//     control-plane per-resource metering API (S-269). Metering is
+//     optional per resource: non-metered rows show an explicit zero
+//     cost (every call to them costs 0), not missing data. The API is
+//     a platform-admin surface, so non-admins get an explanatory
+//     empty state here instead.
 //
 // Scoping mirrors what the backend enforces:
 //   * platform_admin → GET /audit (all squads, optional squad_id filter)
@@ -36,8 +38,12 @@ import {
   type AuditFilters,
   type DecisionKind,
 } from "../../lib/audit";
-import { aggregateResourceRollups, rollupTotals } from "../../lib/resourceMetering";
-import { formatRelativeTime } from "../../lib/format";
+import {
+  listResourceMeteringPath,
+  parseResourceMeteringRows,
+  resourceMeteringTotals,
+} from "../../lib/resourceMetering";
+import { formatMoney, formatRelativeTime } from "../../lib/format";
 
 type Tab = "log" | "metering";
 
@@ -277,43 +283,67 @@ function EventDetail({ entry, onClose }: { readonly entry: AuditEntry; readonly 
   );
 }
 
-function ResourceMeteringPanel({ entries }: { readonly entries: AuditEntry[] }) {
-  const rows = aggregateResourceRollups(entries);
-  const totals = rollupTotals(rows);
+function ResourceMeteringPanel({
+  since,
+  isAdmin,
+}: {
+  readonly since: string;
+  readonly isAdmin: boolean;
+}) {
+  if (!isAdmin) {
+    return (
+      <EmptyState
+        title="Platform-admin view"
+        hint="Per-resource metering (calls and cost per registered resource) is restricted to platform admins."
+      />
+    );
+  }
+  return <ResourceMeteringTable since={since} />;
+}
+
+function ResourceMeteringTable({ since }: { readonly since: string }) {
+  const metering = useApi<unknown>(listResourceMeteringPath(since || undefined));
+  const rows = parseResourceMeteringRows(metering.data);
+  const totals = resourceMeteringTotals(rows);
+
+  if (metering.loading && !metering.data) {
+    return <EmptyState title="Loading metering…" hint="Fetching per-resource usage rollups." />;
+  }
+  if (metering.error) {
+    return <div className="notice error">{metering.error}</div>;
+  }
   if (rows.length === 0) {
-    return <EmptyState title="No resource activity" hint="No audited events in the current window." />;
+    return <EmptyState title="No resource usage" hint="No metered resource activity in this window." />;
   }
   return (
     <>
       <p className="entity-meta">
-        Aggregated client-side from the audit window ({totals.calls} events across {totals.resources}{" "}
-        resources). Tokens and cost are not attributable per resource yet — the metering API only
-        aggregates per squad/agent (backend gap; see <span className="mono">docs/observability-metering.md</span>).
+        {totals.calls} calls across {totals.resources} resources ·{" "}
+        <span className="mono">{formatMoney(totals.cost, totals.currency || "USD")}</span> billed
+        (non-metered resources bill an explicit 0 per call).
       </p>
       <table className="audit-table">
         <thead>
           <tr>
             <th>Resource</th>
+            <th>Type</th>
+            <th>Metered</th>
             <th>Calls</th>
-            <th>Allowed</th>
-            <th>Denied</th>
-            <th>Pending</th>
-            <th>Tokens / cost</th>
+            <th>Cost</th>
             <th>Last seen</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.key}>
+            <tr key={row.resourceId}>
+              <td>{row.name || <span className="entity-meta">(deleted)</span>}</td>
               <td className="mono">
                 <span>{row.resourceType}</span>{" "}
                 <span title={row.resourceId}>{row.resourceId.slice(0, 8)}</span>
               </td>
+              <td>{row.metered ? "yes" : "no"}</td>
               <td>{row.calls}</td>
-              <td>{row.allowed}</td>
-              <td>{row.denied}</td>
-              <td>{row.pending}</td>
-              <td className="entity-meta">n/a</td>
+              <td className="mono">{formatMoney(row.cost, row.currency || "USD")}</td>
               <td className="mono" title={row.lastSeen}>
                 {row.lastSeen ? formatRelativeTime(row.lastSeen) : "—"}
               </td>
@@ -370,7 +400,7 @@ export default function AuditPage() {
       return <div className="notice error">{audit.error}</div>;
     }
     if (tab === "metering") {
-      return <ResourceMeteringPanel entries={visible} />;
+      return <ResourceMeteringPanel since={effectiveFilters.since ?? ""} isAdmin={isAdmin} />;
     }
     if (visible.length === 0) {
       return <EmptyState title="No matching events" hint="Widen the time window or clear filters." />;

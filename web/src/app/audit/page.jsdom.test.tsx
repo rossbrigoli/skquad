@@ -12,6 +12,7 @@ const env = vi.hoisted(() => ({
   auditEntries: [] as unknown[],
   auditError: "" as string,
   auditLoading: false as boolean,
+  meteringRows: [] as unknown[],
   paths: [] as string[],
 }));
 
@@ -40,6 +41,9 @@ vi.mock("../../lib/useApi", () => ({
     }
     if (path === "") {
       return { data: null, loading: false, error: "", refresh: vi.fn() };
+    }
+    if (path.startsWith("/metering/resources")) {
+      return { data: { rows: env.meteringRows }, loading: false, error: "", refresh: vi.fn() };
     }
     return {
       data: env.auditError ? null : env.auditEntries,
@@ -81,6 +85,7 @@ beforeEach(() => {
   env.auditEntries = [DENIED_ENTRY, ALLOWED_ENTRY];
   env.auditError = "";
   env.auditLoading = false;
+  env.meteringRows = [];
   env.paths = [];
 });
 
@@ -184,41 +189,76 @@ describe("client-side filters", () => {
     expect(within(drawer).queryByText("denied_replayed")).toBeNull();
   });
 
-  it("metering row without timestamps shows em dash for last seen", async () => {
-    env.auditEntries = [{ ...ALLOWED_ENTRY, timestamp: undefined }];
+  it("metering row without last_seen shows em dash", async () => {
+    env.meteringRows = [
+      { resource_id: "r1", resource_type: "rest", name: "api", metered: true, calls: 1, cost: 0.01 },
+    ];
     render(<AuditPage />);
     await userEvent.click(screen.getByRole("button", { name: "Resource metering" }));
     const table = await screen.findByRole("table");
-    const row = within(table).getByText("task").closest("tr")!;
-    expect(row.children[6].textContent).toBe("—");
+    const row = within(table).getByText("api").closest("tr")!;
+    expect(row.children[5].textContent).toBe("—");
   });
 });
 
-describe("resource metering tab", () => {
-  it("aggregates per-resource call and decision counts", async () => {
-    env.auditEntries = [
-      DENIED_ENTRY,
-      { ...DENIED_ENTRY, id: "1b", metadata: { gate: "auto" } },
-      ALLOWED_ENTRY,
+describe("resource metering tab (S-269 real per-resource API)", () => {
+  it("renders real per-resource calls and cost from the metering endpoint", async () => {
+    env.meteringRows = [
+      {
+        resource_id: "res-aaaa-1111",
+        resource_type: "rest",
+        name: "paid-api",
+        metered: true,
+        calls: 4,
+        cost: 0.2,
+        currency: "USD",
+        last_seen: "2026-10-16T00:00:00Z",
+      },
+      {
+        resource_id: "res-bbbb-2222",
+        resource_type: "skill",
+        name: "free-skill",
+        metered: false,
+        calls: 9,
+        cost: 0,
+        currency: "USD",
+        last_seen: "2026-10-15T00:00:00Z",
+      },
     ];
     render(<AuditPage />);
     await screen.findAllByText("Bob");
     await userEvent.click(screen.getByRole("button", { name: "Resource metering" }));
+    expect(env.paths.some((p) => p.startsWith("/metering/resources"))).toBe(true);
     const table = await screen.findByRole("table");
-    const toolRow = within(table).getByText("tool_resource").closest("tr")!;
-    const cells = [...toolRow.children].map((td) => td.textContent);
-    expect(cells[1]).toBe("2"); // calls
-    expect(cells[2]).toBe("1"); // allowed
-    expect(cells[3]).toBe("1"); // denied
-    expect(cells[4]).toBe("0"); // pending
-    expect(cells[5]).toBe("n/a"); // tokens/cost unavailable
+    const paidRow = within(table).getByText("paid-api").closest("tr")!;
+    const paidCells = [...paidRow.children].map((td) => td.textContent);
+    expect(paidCells[2]).toBe("yes"); // metered
+    expect(paidCells[3]).toBe("4"); // calls
+    expect(paidCells[4]).toBe("USD 0.2000"); // cost — real money, not "n/a"
+    const freeRow = within(table).getByText("free-skill").closest("tr")!;
+    const freeCells = [...freeRow.children].map((td) => td.textContent);
+    expect(freeCells[2]).toBe("no"); // non-metered
+    expect(freeCells[3]).toBe("9"); // usage still recorded
+    expect(freeCells[4]).toBe("USD 0.0000"); // explicit billed zero
   });
 
   it("empty metering shows the empty state", async () => {
-    env.auditEntries = [];
+    env.meteringRows = [];
     render(<AuditPage />);
     await userEvent.click(screen.getByRole("button", { name: "Resource metering" }));
-    expect(await screen.findByText("No resource activity")).toBeInTheDocument();
+    expect(await screen.findByText("No resource usage")).toBeInTheDocument();
+  });
+
+  it("non-admins get the admin-only empty state and never call the endpoint", async () => {
+    env.role = "member";
+    env.squads = [{ id: "s1", name: "Alpha Squad" }];
+    render(<AuditPage />);
+    const select = await screen.findByLabelText("Squad filter");
+    await userEvent.selectOptions(select, "s1");
+    await screen.findByText("Bob");
+    await userEvent.click(screen.getByRole("button", { name: "Resource metering" }));
+    expect(await screen.findByText("Platform-admin view")).toBeInTheDocument();
+    expect(env.paths.some((p) => p.startsWith("/metering/resources"))).toBe(false);
   });
 });
 
