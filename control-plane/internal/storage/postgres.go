@@ -2302,6 +2302,13 @@ func (p *PostgresStore) claimTodoTask(ctx context.Context, tx pgx.Tx, agentID st
 			SELECT id, board_id
 			FROM tasks
 			WHERE assignee_agent_id = $1 AND status = $2
+			  -- S-278: skip tasks blocked by unfinished dependencies.
+			  AND NOT EXISTS (
+			    SELECT 1
+			    FROM task_dependencies td
+			    JOIN tasks p ON p.id = td.depends_on_task_id
+			    WHERE td.task_id = tasks.id AND p.status <> 'done'
+			  )
 			ORDER BY position
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED

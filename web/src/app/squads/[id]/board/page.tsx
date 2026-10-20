@@ -150,6 +150,12 @@ export default function SquadBoardPage() {
                             {lease === "running" ? <StatusChip status="running" /> : null}
                             {lease === "stalled" ? <StatusChip status="stalled" /> : null}
                             {task.status === "blocked" ? <StatusChip status="blocked" /> : null}
+                            {/* S-278: dependency-blocked badge (agent pickup guard). */}
+                            {task.blocked_by_count ? (
+                              <span className="chip chip-blocked" title={`Blocked by ${task.blocked_by_count} unfinished dependency task(s)`}>
+                                🔒 {task.blocked_by_count}
+                              </span>
+                            ) : null}
                             {task.status === "in-review" ? <StatusChip status={taskStatus(task)} /> : null}
                             <span>{formatRelativeTime(task.updated_at)}</span>
                           </div>

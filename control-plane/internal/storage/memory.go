@@ -53,6 +53,8 @@ type MemoryStore struct {
 	wakeLatencyKey  map[string]string // agent|containerStart -> wake event id
 	auditLog        map[string]*domain.AuditEntry
 	tasks           map[string]*domain.Task
+	// taskDeps (S-278): taskID -> set of depends-on task IDs.
+	taskDeps        map[string]map[string]bool
 	taskExecs       map[string]*domain.TaskExecution
 	agentMemory     map[string]*domain.AgentMemory
 	messages        map[string]*domain.Message
@@ -130,6 +132,7 @@ func NewMemoryStore() *MemoryStore {
 		wakeLatencyKey:      map[string]string{},
 		auditLog:            map[string]*domain.AuditEntry{},
 		tasks:               map[string]*domain.Task{},
+		taskDeps:            map[string]map[string]bool{},
 		taskExecs:           map[string]*domain.TaskExecution{},
 		agentMemory:         map[string]*domain.AgentMemory{},
 		messages:            map[string]*domain.Message{},
@@ -1611,6 +1614,11 @@ func (m *MemoryStore) DeleteTask(ctx context.Context, id string) error {
 		return ErrNotFound
 	}
 	delete(m.tasks, id)
+	// S-278 cascade: drop every edge touching the deleted task.
+	delete(m.taskDeps, id)
+	for _, deps := range m.taskDeps {
+		delete(deps, id)
+	}
 	m.drainPendingAuditsLocked(ctx, id)
 	return nil
 }
@@ -1732,12 +1740,27 @@ func (m *MemoryStore) pickTopTodoTaskLocked(agentID string) *domain.Task {
 	var candidate *domain.Task
 	for _, task := range m.tasks {
 		if task.AssigneeAgentID == agentID && task.Status == domain.TaskTodo {
+			// S-278: skip tasks blocked by unfinished dependencies.
+			if m.taskBlockedLocked(task.ID) {
+				continue
+			}
 			if candidate == nil || task.Position < candidate.Position {
 				candidate = task
 			}
 		}
 	}
 	return candidate
+}
+
+// taskBlockedLocked (S-278) reports whether any depends-on task of
+// taskID is not done. Caller must hold m.mu.
+func (m *MemoryStore) taskBlockedLocked(taskID string) bool {
+	for depID := range m.taskDeps[taskID] {
+		if dep, ok := m.tasks[depID]; ok && dep.Status != domain.TaskDone {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *MemoryStore) HeartbeatTaskExecution(_ context.Context, agentID string, executionID string, fencingToken string, leaseFor time.Duration) (*domain.TaskExecution, error) {
