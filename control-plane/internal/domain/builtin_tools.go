@@ -27,10 +27,19 @@ const (
 	BuiltinToolNotifyOwner   = "notify_owner"
 	BuiltinToolMemorySearch  = "memory_search"
 	BuiltinToolSpawnSubagent = "spawn_subagent"
+	// S-279: first-class FILE tools so agents can do coding work in their
+	// task workspace exactly like in OpenClaw. All four are jailed to the
+	// agent's workspace_dir (the same directory exec runs in) — any path
+	// that resolves outside it (via ".." or symlinks) is rejected
+	// runtime-side. That jail is the security boundary for these tools.
+	BuiltinToolRead       = "read"
+	BuiltinToolWrite      = "write"
+	BuiltinToolEdit       = "edit"
+	BuiltinToolApplyPatch = "apply_patch"
 )
 
 // BuiltinToolNames lists the built-in tools in canonical order.
-var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent}
+var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent, BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch}
 
 // BuiltinToolDefaultEnabled reports whether a built-in ships enabled when
 // seeded. The original three are security-sensitive and ship disabled
@@ -51,8 +60,16 @@ var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToo
 // the subagent inherits the parent's model, grants and composed prompt,
 // so it can never reach beyond what the parent agent itself could; the
 // runtime additionally gates the capability on SKQUAD_SUBAGENTS_ENABLED.
+// The S-279 file tools (read/write/edit/apply_patch) ship enabled to
+// match their migration 0055 seed: their blast radius is already bounded
+// by the workspace jail (pod filesystem + realpath check), and an agent
+// without file tools cannot do coding work at all — disabling them by
+// default would make the capability invisible until an admin noticed.
 func BuiltinToolDefaultEnabled(name string) bool {
-	return name == BuiltinToolSendMessage || name == BuiltinToolSendInbox || name == BuiltinToolNotifyOwner || name == BuiltinToolMemorySearch || name == BuiltinToolSpawnSubagent
+	return name == BuiltinToolSendMessage || name == BuiltinToolSendInbox || name == BuiltinToolNotifyOwner ||
+		name == BuiltinToolMemorySearch || name == BuiltinToolSpawnSubagent ||
+		name == BuiltinToolRead || name == BuiltinToolWrite ||
+		name == BuiltinToolEdit || name == BuiltinToolApplyPatch
 }
 
 // SearchProviderNames lists the accepted web_search policy providers.
@@ -149,6 +166,21 @@ func ValidateBuiltinPolicy(name string, policy json.RawMessage) []string {
 		// policy keys yet. The empty allow-set means only "{}" validates;
 		// any key is rejected so a future key can be pinned deliberately.
 		allowed = map[string]func(string, json.RawMessage) []string{}
+	case BuiltinToolRead:
+		// S-279: timeoutSeconds bounds the file read; maxBytes caps the
+		// returned content so one read cannot flood the model context.
+		allowed = map[string]func(string, json.RawMessage) []string{
+			"timeoutSeconds": requirePositiveInt,
+			"maxBytes":       requirePositiveInt,
+		}
+	case BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch:
+		// S-279: maxBytes caps the total bytes written (for apply_patch,
+		// the sum across the patch's files) so a runaway agent cannot fill
+		// the workspace PVC. timeoutSeconds bounds the whole operation.
+		allowed = map[string]func(string, json.RawMessage) []string{
+			"timeoutSeconds": requirePositiveInt,
+			"maxBytes":       requirePositiveInt,
+		}
 	default:
 		return []string{fmt.Sprintf("unknown built-in tool %q", name)}
 	}
