@@ -747,6 +747,11 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Post("/tasks/{taskID}/messages", s.createTaskMessage)
 			r.Patch(routeTask, s.updateTask)
 			r.Post("/tasks/{taskID}/move", s.moveTask)
+			// S-278: task dependencies — declare/list/remove + picker search.
+			r.Get("/tasks/{taskID}/dependencies", s.getTaskDependencies)
+			r.Post("/tasks/{taskID}/dependencies", s.addTaskDependency)
+			r.Delete("/tasks/{taskID}/dependencies/{depTaskID}", s.removeTaskDependency)
+			r.Get("/squads/{squadID}/tasks/search", s.searchSquadTasks)
 			r.Delete(routeTask, s.deleteTask)
 			r.Get("/agents/{agentID}/metering", s.getAgentMetering)
 
@@ -4020,6 +4025,13 @@ func (s *Server) getBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	attachExecutionState(tasks, executions)
+	// S-278: annotate each task with its unfinished-dependency count so
+	// the board can render the blocked badge in one round trip.
+	if counts, err := s.store.BlockedCountsByBoard(r.Context(), board.ID); err == nil {
+		for _, t := range tasks {
+			t.BlockedByCount = counts[t.ID]
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"board": board,
 		"tasks": tasks,
@@ -5331,13 +5343,30 @@ func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	// only serves the TO DO column. A human moving the card out of Backlog is the
 	// instruction to start it. Missing/foreign tasks are still reported by
 	// updateCurrentAgentTaskStatus below.
-	if existing, err := s.store.GetTask(r.Context(), chi.URLParam(r, "taskID")); err == nil && !existing.Status.IsAgentPickupStatus() {
+	existing, existingErr := s.store.GetTask(r.Context(), chi.URLParam(r, "taskID"))
+	if existingErr == nil && !existing.Status.IsAgentPickupStatus() {
 		if existing.Status == domain.TaskBacklog {
 			writeError(w, http.StatusConflict, "task_in_backlog", "task is in the backlog and must be moved out by a human before it can be started")
 			return
 		}
 		writeError(w, http.StatusConflict, "task_not_claimable", fmt.Sprintf("task is in %q and is not ready to start; only TO DO column tasks are claimable", existing.Status))
 		return
+	}
+	// S-278: an agent may not start a task that depends on unfinished
+	// work. The claim path already skips blocked tasks; this guards the
+	// explicit start so the agent gets a machine-readable reason and
+	// the blocking list instead of silently succeeding.
+	if existingErr == nil {
+		if blocking, berr := s.store.UnsatisfiedDependencies(r.Context(), existing.ID); berr == nil && len(blocking) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": map[string]string{
+					"code":    "dependencies_unsatisfied",
+					"message": "task depends on unfinished work; complete the blocking tasks before starting",
+				},
+				"blocking": blocking,
+			})
+			return
+		}
 	}
 	updated, ok := s.updateCurrentAgentTaskStatus(w, r, domain.TaskInProgress, domain.AgentBusy, "task.start")
 	if !ok {
@@ -5770,6 +5799,10 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		task.WorkerID = exec.WorkerID
 		task.LeaseExpiresAt = exec.LeaseExpiresAt
 		task.PromptSHA = exec.PromptSHA
+	}
+	// S-278: blocked badge count for the task header.
+	if blocking, err := s.store.UnsatisfiedDependencies(r.Context(), task.ID); err == nil {
+		task.BlockedByCount = len(blocking)
 	}
 	writeJSON(w, http.StatusOK, task)
 }

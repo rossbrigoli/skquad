@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
@@ -21,6 +22,13 @@ var ErrConflict = errors.New("storage: conflict")
 // ErrInvalidInput is returned when a caller violates a method's input contract
 // (e.g. counting a correlation chain with an empty correlation ID).
 var ErrInvalidInput = errors.New("storage: invalid input")
+
+// ErrDependencyCycle (S-278) rejects a depends-on edge that would close
+// a cycle in the dependency graph (checked transitively at insert time).
+var ErrDependencyCycle = fmt.Errorf("%w: dependency cycle", ErrConflict)
+
+// ErrDependencyExists (S-278) rejects a duplicate depends-on edge.
+var ErrDependencyExists = fmt.Errorf("%w: dependency already exists", ErrConflict)
 
 // Store is the aggregate persistence interface used by the API server.
 type Store interface {
@@ -181,6 +189,25 @@ type TaskStore interface {
 	ListTasks(ctx context.Context, boardID string, status domain.TaskStatus) ([]*domain.Task, error) // status "" = all
 	ListAgentTasks(ctx context.Context, agentID string) ([]*domain.Task, error)
 	ClaimNextTask(ctx context.Context, agentID string, workerID string, leaseFor time.Duration) (*domain.Task, error)
+	// AddTaskDependency (S-278) records that taskID depends on
+	// dependsOnID. Both tasks must exist, belong to the same squad, must
+	// not be the same task, and the edge must not create a cycle.
+	AddTaskDependency(ctx context.Context, taskID string, dependsOnID string, createdByType string, createdByID string) (*domain.TaskDependencyRef, error)
+	// RemoveTaskDependency drops one depends-on edge.
+	RemoveTaskDependency(ctx context.Context, taskID string, dependsOnID string) error
+	// ListTaskDependencies returns the depends-on + dependents views.
+	ListTaskDependencies(ctx context.Context, taskID string) (*domain.TaskDependencies, error)
+	// UnsatisfiedDependencies returns the depends-on tasks that are not
+	// done — the blocking set for agent pickup (S-278).
+	UnsatisfiedDependencies(ctx context.Context, taskID string) ([]domain.TaskDependencyRef, error)
+	// BlockedCountsByBoard (S-278) returns per-task counts of unfinished
+	// depends-on tasks for one board — one query for the board badge.
+	BlockedCountsByBoard(ctx context.Context, boardID string) (map[string]int, error)
+	// SearchSquadTasks (S-278) finds tasks in a squad for the
+	// dependency picker: q matches title (case-insensitive substring)
+	// or the "T-<n>"/"<n>" task-number reference. Empty q returns the
+	// most recently updated tasks.
+	SearchSquadTasks(ctx context.Context, squadID string, q string, limit int) ([]*domain.Task, error)
 	// ListBoardTaskExecutions returns execution attempts still marked active for
 	// every task on a board. Attempts whose lease has already lapsed are
 	// included: an expired lease is the only signal that a worker stopped

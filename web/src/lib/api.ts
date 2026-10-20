@@ -93,6 +93,22 @@ export type Task = {
   result?: string;
   result_status?: string;
   result_at?: string;
+  // S-278: number of unfinished depends-on tasks (blocked badge).
+  blocked_by_count?: number;
+};
+
+// S-278: one edge of the task dependency graph.
+export type TaskDependencyRef = {
+  task_id: string;
+  task_number: number;
+  title: string;
+  status: TaskStatus;
+  satisfied: boolean;
+};
+
+export type TaskDependencies = {
+  depends_on: TaskDependencyRef[];
+  dependents: TaskDependencyRef[];
 };
 
 export type BoardPayload = {

@@ -313,6 +313,30 @@ type Task struct {
 	Result       string    `json:"result,omitempty"`
 	ResultStatus string    `json:"result_status,omitempty"`
 	ResultAt     time.Time `json:"result_at,omitempty"`
+	// BlockedByCount (S-278) is the number of unfinished depends-on
+	// tasks for this task — attached on read paths (board/task GETs)
+	// for the blocked badge. 0 when nothing blocks it.
+	BlockedByCount int `json:"blocked_by_count,omitempty"`
+}
+
+// TaskDependencyRef (S-278) is one edge of the task dependency graph,
+// rendered with enough context for the UI and for the claim guard's
+// 409 body (which tasks are blocking and their current status).
+type TaskDependencyRef struct {
+	TaskID     string     `json:"task_id"`
+	TaskNumber int        `json:"task_number"`
+	Title      string     `json:"title"`
+	Status     TaskStatus `json:"status"`
+	// Satisfied is true when the referenced task is done (for a
+	// depends-on edge) — i.e. it no longer blocks pickup.
+	Satisfied bool `json:"satisfied"`
+}
+
+// TaskDependencies is the full dependency view for one task: what it
+// depends on, and what is waiting on it.
+type TaskDependencies struct {
+	DependsOn  []TaskDependencyRef `json:"depends_on"`
+	Dependents []TaskDependencyRef `json:"dependents"`
 }
 
 // TaskExecutionStatus is the lifecycle of one runtime attempt for a task.
