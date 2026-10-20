@@ -45,7 +45,7 @@ describe("gating (platform_admin only)", () => {
     expect(isPlatformAdmin("")).toBe(false);
   });
 
-  it("knows exactly the eight contract tool names (S-232: every built-in must be listed)", () => {
+  it("knows exactly the twelve contract tool names (S-232: every built-in must be listed; S-279 adds the file tools)", () => {
     expect([...BUILTIN_TOOL_NAMES]).toEqual([
       "exec",
       "web_fetch",
@@ -55,6 +55,10 @@ describe("gating (platform_admin only)", () => {
       "notify_owner",
       "memory_search",
       "spawn_subagent",
+      "read",
+      "write",
+      "edit",
+      "apply_patch",
     ]);
     expect(isBuiltinToolName("exec")).toBe(true);
     expect(isBuiltinToolName("web_fetch")).toBe(true);
