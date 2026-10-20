@@ -1507,14 +1507,16 @@ func (p *PostgresStore) CreateResource(ctx context.Context, resource *domain.Reg
 			type, name, description, endpoint, auth_ref, manifest, status, registered_by,
 			endpoint_config, policy_ceiling, risk_tier, egress_class, owner_user_id,
 			tools_snapshot, tools_hash, tools_enumerated_at,
-			mcp_drift_pending, mcp_drift_checked_at
+			mcp_drift_pending, mcp_drift_checked_at,
+			metered, price_per_call, currency
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		RETURNING `+resourceColumns+`
 	`, domain.CanonicalResourceType(resource.Type), resource.Name, resource.Description, resource.Endpoint, resource.AuthRef, defaultJSON(resource.Manifest, "{}"), defaultResourceStatus(resource.Status), resource.RegisteredBy,
 		defaultJSON(resource.EndpointConfig, "{}"), defaultJSON(resource.PolicyCeiling, "{}"), defaultRiskTier(resource.RiskTier), defaultEgressClass(resource.EgressClass), nullableText(resource.OwnerUserID),
 		nullableJSON(resource.ToolsSnapshot), resource.ToolsHash, nullableTime(resource.ToolsEnumeratedAt),
-		nullableJSON(resource.MCPDriftPending), nullableTime(resource.MCPDriftCheckedAt))
+		nullableJSON(resource.MCPDriftPending), nullableTime(resource.MCPDriftCheckedAt),
+		resource.Metered, nullableFloat(resource.PricePerCall), defaultCurrency(resource.Currency))
 	created, err := scanResource(txRow)
 	if err != nil {
 		return nil, err
@@ -1570,13 +1572,17 @@ func (p *PostgresStore) UpdateResource(ctx context.Context, resource *domain.Reg
 		    tools_hash = $15,
 		    tools_enumerated_at = $16,
 		    mcp_drift_pending = $17,
-		    mcp_drift_checked_at = $18
+		    mcp_drift_checked_at = $18,
+		    metered = $19,
+		    price_per_call = $20,
+		    currency = $21
 		WHERE type = $1 AND id = $2
 		RETURNING `+resourceColumns+`
 	`, domain.CanonicalResourceType(resource.Type), resource.ID, resource.Name, resource.Description, resource.Endpoint, resource.AuthRef, defaultJSON(resource.Manifest, "{}"), defaultResourceStatus(resource.Status),
 		defaultJSON(resource.EndpointConfig, "{}"), defaultJSON(resource.PolicyCeiling, "{}"), defaultRiskTier(resource.RiskTier), defaultEgressClass(resource.EgressClass), nullableText(resource.OwnerUserID),
 		nullableJSON(resource.ToolsSnapshot), resource.ToolsHash, nullableTime(resource.ToolsEnumeratedAt),
-		nullableJSON(resource.MCPDriftPending), nullableTime(resource.MCPDriftCheckedAt))
+		nullableJSON(resource.MCPDriftPending), nullableTime(resource.MCPDriftCheckedAt),
+		resource.Metered, nullableFloat(resource.PricePerCall), defaultCurrency(resource.Currency))
 	created, err := scanResource(txRow)
 	if err != nil {
 		return nil, err
@@ -1779,11 +1785,12 @@ func (p *PostgresStore) RecordMetering(ctx context.Context, event *domain.Meteri
 			agent_id, squad_id, task_id, provider_id, model, input_tokens, output_tokens,
 			cost, currency, timestamp, model_used,
 			rate_input_per_1m, rate_cached_input_per_1m, rate_cache_write_per_1m,
-			rate_output_per_1m, rate_snapshot
+			rate_output_per_1m, rate_snapshot, resource_id, resource_type
 		)
-		VALUES ($1, $2, nullif($3, '')::uuid, nullif($4, '')::uuid, $5, $6, $7, $8, $9, coalesce(nullif($10, ''), now()::text)::timestamptz, $11, $12, $13, $14, $15, $16)
+		VALUES ($1, $2, nullif($3, '')::uuid, nullif($4, '')::uuid, $5, $6, $7, $8, $9, coalesce(nullif($10, ''), now()::text)::timestamptz, $11, $12, $13, $14, $15, $16, nullif($17, '')::uuid, $18)
 	`, event.AgentID, event.SquadID, event.TaskID, event.ProviderID, event.Model, event.InputTokens, event.OutputTokens, event.Cost, defaultCurrency(event.Currency), nullableTimeText(event.Timestamp), event.ModelUsed,
-		rateValue(event.RateInputPer1M), rateValue(event.RateCachedInputPer1M), rateValue(event.RateCacheWritePer1M), rateValue(event.RateOutputPer1M), event.RateSnapshot)
+		rateValue(event.RateInputPer1M), rateValue(event.RateCachedInputPer1M), rateValue(event.RateCacheWritePer1M), rateValue(event.RateOutputPer1M), event.RateSnapshot,
+		event.ResourceID, event.ResourceType)
 	return mapPgErr(err)
 }
 
@@ -1901,6 +1908,66 @@ func (p *PostgresStore) SumMeteringDaily(ctx context.Context, since time.Time, s
 		if err := rows.Scan(&row.Day, &row.SquadID, &row.SquadName, &row.AgentID, &row.AgentName,
 			&row.ProviderID, &row.ProviderName, &row.Model,
 			&row.InputTokens, &row.OutputTokens, &row.Cost, &row.Currency); err != nil {
+			return nil, mapPgErr(err)
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// SumMeteringByResource aggregates per-resource usage for the S-269
+// per-resource metering API. Only events carrying a resource_id count;
+// resourceID / resourceType are optional filters (empty = no filter).
+// Names and the metered flag come from a LEFT JOIN on the registry so
+// deleted resources degrade to empty labels rather than dropping
+// history (same pattern as SumMeteringDaily). Cost is summed from the
+// event-time billed values — non-metered resources sum to an explicit
+// zero, not missing data. Read-time rollup over the retained raw events
+// (S-203 retention alignment: no separate rollup table).
+func (p *PostgresStore) SumMeteringByResource(ctx context.Context, since time.Time, resourceID, resourceType string) ([]domain.ResourceMeteringRow, error) {
+	var sinceArg any
+	if !since.IsZero() {
+		sinceArg = since.UTC()
+	}
+	var resourceArg any
+	if strings.TrimSpace(resourceID) != "" {
+		resourceArg = strings.TrimSpace(resourceID)
+	}
+	// Canonicalise the filter type so callers can pass legacy 'api' and
+	// still match 'rest' rows (mirrors read-path canonicalisation).
+	typeFilter := strings.TrimSpace(resourceType)
+	if typeFilter != "" {
+		typeFilter = string(domain.CanonicalResourceType(domain.ResourceType(typeFilter)))
+	}
+
+	rows, err := p.pool.Query(ctx, `
+		SELECT m.resource_id::text,
+		       coalesce(nullif(m.resource_type, ''), coalesce(rr.type, '')),
+		       coalesce(rr.name, ''),
+		       coalesce(rr.metered, false),
+		       count(*)::bigint,
+		       coalesce(sum(m.cost), 0)::double precision,
+		       coalesce(max(m.currency), 'USD'),
+		       max(m.timestamp)
+		FROM metering m
+		LEFT JOIN registry_resources rr ON rr.id = m.resource_id
+		WHERE m.resource_id IS NOT NULL
+		  AND ($1::timestamptz IS NULL OR m.timestamp >= $1::timestamptz)
+		  AND ($2::uuid IS NULL OR m.resource_id = $2::uuid)
+		  AND ($3::text = '' OR coalesce(nullif(m.resource_type, ''), coalesce(rr.type, '')) = $3::text)
+		GROUP BY 1, 2, 3, 4
+		ORDER BY 6 DESC, 1
+	`, sinceArg, resourceArg, typeFilter)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+
+	out := []domain.ResourceMeteringRow{}
+	for rows.Next() {
+		var row domain.ResourceMeteringRow
+		if err := rows.Scan(&row.ResourceID, &row.ResourceType, &row.Name, &row.Metered,
+			&row.Calls, &row.Cost, &row.Currency, &row.LastSeen); err != nil {
 			return nil, mapPgErr(err)
 		}
 		out = append(out, row)
@@ -3865,6 +3932,7 @@ func scanResource(row scanner) (*domain.RegistryResource, error) {
 	var r domain.RegistryResource
 	var enumeratedAt sql.NullTime
 	var driftCheckedAt sql.NullTime
+	var pricePerCall sql.NullFloat64
 	if err := row.Scan(
 		&r.ID,
 		&r.Type,
@@ -3886,8 +3954,15 @@ func scanResource(row scanner) (*domain.RegistryResource, error) {
 		&enumeratedAt,
 		&r.MCPDriftPending,
 		&driftCheckedAt,
+		&r.Metered,
+		&pricePerCall,
+		&r.Currency,
 	); err != nil {
 		return nil, mapPgErr(err)
+	}
+	if pricePerCall.Valid {
+		p := pricePerCall.Float64
+		r.PricePerCall = &p
 	}
 	// TG-2: canonicalize the legacy 'api' type to 'rest' on read so
 	// existing consumers transparently see the migrated rows.
@@ -3920,7 +3995,8 @@ const resourceColumns = `
 		coalesce(endpoint_config, '{}'::jsonb), coalesce(policy_ceiling, '{}'::jsonb),
 		risk_tier, egress_class, coalesce(owner_user_id::text, ''),
 		coalesce(tools_snapshot, 'null'::jsonb), tools_hash, tools_enumerated_at,
-		coalesce(mcp_drift_pending, 'null'::jsonb), mcp_drift_checked_at`
+		coalesce(mcp_drift_pending, 'null'::jsonb), mcp_drift_checked_at,
+		metered, price_per_call, currency`
 
 func scanAgentPermission(row scanner) (*domain.AgentPermission, error) {
 	var p domain.AgentPermission
@@ -4243,6 +4319,14 @@ func defaultRiskTier(tier string) string {
 
 // nullableJSON renders an optional JSONB column: absent/JSON-null raw
 // becomes SQL NULL instead of an empty byte string (TG-5 B2a snapshot).
+// nullableFloat maps a nil *float64 to SQL NULL (S-269 price_per_call).
+func nullableFloat(p *float64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
 func nullableJSON(raw json.RawMessage) any {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil

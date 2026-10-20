@@ -30,6 +30,7 @@ import (
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/boundary"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/drivers"
 	"github.com/rossbrigoli/skquad/tool-gateway/internal/policy"
+	"github.com/rossbrigoli/skquad/tool-gateway/internal/usage"
 )
 
 // Deps are the server's collaborators, injected for testability.
@@ -56,6 +57,10 @@ type Deps struct {
 	// fails closed (503 confirmation_unavailable). Ungated grants never
 	// touch it.
 	Confirmation ConfirmationClient
+	// Usage reports executed resource calls to the CP for per-resource
+	// metering (S-269). Optional: nil disables reporting. Best-effort
+	// by contract — a failed report never affects the governed call.
+	Usage usage.Reporter
 }
 
 // Server implements http.Handler for the gateway.
@@ -229,6 +234,30 @@ func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, code, resp.Body)
 }
 
+// reportUsage fires a best-effort per-resource usage report for one
+// executed (governed-allowed) call (S-269). The POST runs on a
+// detached goroutine with its own timeout so request cancellation
+// cannot drop the report and telemetry latency/errors never leak into
+// the governed path. The CP computes cost from the resource's metered
+// flag (non-metered ⇒ explicit zero); the gateway never prices.
+func (s *Server) reportUsage(agentID string, grant *policy.Grant) {
+	if s.deps.Usage == nil || grant == nil || grant.ResourceID == "" {
+		return
+	}
+	rep := usage.Report{
+		Timestamp:    time.Now().UTC(),
+		AgentID:      agentID,
+		ResourceID:   grant.ResourceID,
+		ResourceType: grant.ResourceType,
+		Count:        1,
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.deps.Usage.Report(ctx, rep)
+	}()
+}
+
 // handleWebFetch runs the pipeline for the TG-3 `web` driver:
 // kill switch → authn → body cap → grant lookup (resource_type=web) →
 // driver dispatch → audit. Denials map to 403 with a client-safe
@@ -358,6 +387,7 @@ func (s *Server) handleWebFetch(w http.ResponseWriter, r *http.Request) {
 		code = http.StatusOK
 	}
 	emit(audit.DecisionAllow, code, "")
+	s.reportUsage(agentID, grant)
 	writeJSON(w, code, resp.Body)
 }
 
@@ -502,6 +532,7 @@ func (s *Server) handleRestCall(w http.ResponseWriter, r *http.Request) {
 		code = http.StatusOK
 	}
 	emit(audit.DecisionAllow, code, "")
+	s.reportUsage(agentID, grant)
 	writeJSON(w, code, resp.Body)
 }
 
@@ -689,6 +720,7 @@ func (s *Server) handleMCPCall(w http.ResponseWriter, r *http.Request) {
 		code = http.StatusOK
 	}
 	emit(audit.DecisionAllow, code, "")
+	s.reportUsage(agentID, grant)
 	writeJSON(w, code, resp.Body)
 }
 
@@ -848,6 +880,7 @@ func (s *Server) handleGitProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	emit(audit.DecisionAllow, result.StatusCode, gitAuditDetail(result, ""))
+	s.reportUsage(agentID, grant)
 }
 
 // gitAuditDetail renders the secret-free audit detail for a git

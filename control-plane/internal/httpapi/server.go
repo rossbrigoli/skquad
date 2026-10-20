@@ -599,6 +599,10 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 		// trust class as /policy — the gateway sends no app-layer auth.
 		r.Post("/confirmation/check", s.confirmationCheckHandler)
 		r.Post("/confirmation/consume", s.confirmationConsumeHandler)
+		// S-269: per-resource usage reports from the tool gateway
+		// (governed resource calls). Same internal trust class as
+		// /policy — netpol-internal, no app-layer auth.
+		r.Post("/resource-usage", s.ingestResourceUsage)
 		// TG-11 slice D: artifact drift surface for the terminal-service
 		// drift runner. Unlike /policy, this IS token-authenticated
 		// (Bearer SKQUAD_DRIFT_INGEST_TOKEN): the runner is a scheduled
@@ -846,6 +850,11 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Delete(routeRegistryResource, s.deleteRegistryResource)
 
 			r.Get("/metering/summary", s.getMeteringSummary)
+			// S-269: per-resource metering rollups (platform-admin
+			// views — About/Platform cost breakdown and the admin
+			// audit surface). Handlers enforce admin.
+			r.Get("/metering/resources", s.listResourceMetering)
+			r.Get("/resources/{resourceID}/metering", s.getResourceMetering)
 			// S-203 WP1: scoped cost aggregation for the WP2 Cost
 			// Management UI (admin sees all, users see owned+granted).
 			r.Get("/costs/summary", s.getCostSummary)
@@ -1541,6 +1550,11 @@ type createRegistryResourceReq struct {
 	RiskTier       string          `json:"risk_tier"`
 	EgressClass    string          `json:"egress_class"`
 	OwnerUserID    string          `json:"owner_user_id"`
+	// S-269: optional per-resource metering config (see
+	// resource_metering.go for the billing semantics).
+	Metered      *bool    `json:"metered,omitempty"`
+	PricePerCall *float64 `json:"price_per_call,omitempty"`
+	Currency     string   `json:"currency,omitempty"`
 }
 
 func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) {
@@ -1559,6 +1573,9 @@ func (s *Server) createRegistryResource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !validateCreateResourceShape(w, typ, &req) {
+		return
+	}
+	if !validateMeteringCreate(w, &req) {
 		return
 	}
 	byoAuth, ok := s.resolveBYOAuthForCreate(w, typ, &req)
@@ -1745,6 +1762,15 @@ func buildRegistryResource(typ domain.ResourceType, req *createRegistryResourceR
 	if len(req.PolicyCeiling) > 0 {
 		resource.PolicyCeiling = req.PolicyCeiling
 	}
+	// S-269: metering config (default Metered=false → every call to
+	// this resource costs 0, explicitly).
+	if req.Metered != nil {
+		resource.Metered = *req.Metered
+	}
+	resource.PricePerCall = req.PricePerCall
+	if req.Currency != "" {
+		resource.Currency = strings.TrimSpace(req.Currency)
+	}
 	return resource
 }
 
@@ -1831,6 +1857,10 @@ type updateRegistryResourceReq struct {
 	RiskTier       *string          `json:"risk_tier"`
 	EgressClass    *string          `json:"egress_class"`
 	OwnerUserID    *string          `json:"owner_user_id"`
+	// S-269: optional per-resource metering config update.
+	Metered      *bool    `json:"metered,omitempty"`
+	PricePerCall *float64 `json:"price_per_call,omitempty"`
+	Currency     *string  `json:"currency,omitempty"`
 }
 
 // updateEffective carries the post-request values of the typed fields
@@ -1877,6 +1907,9 @@ func (s *Server) updateRegistryResource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !applyUpdateScalarFields(w, resource, &req) {
+		return
+	}
+	if !applyMeteringUpdate(w, resource, &req) {
 		return
 	}
 	eff := resolveUpdateEffective(resource, &req)
