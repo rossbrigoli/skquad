@@ -128,6 +128,12 @@ func (f *pgFixture) cleanup(t *testing.T) {
 	if _, err := store.pool.Exec(ctx, `DELETE FROM squads WHERE id = $1`, f.squad.ID); err != nil {
 		t.Logf("cleanup squad %s: %v", f.squad.ID, err)
 	}
+	// Registry resources reference the user (registered_by FK); drop them
+	// before the user or the user delete fails with SQLSTATE 23503, and
+	// fixed-name resources collide on the next run.
+	if _, err := store.pool.Exec(ctx, `DELETE FROM registry_resources WHERE registered_by = $1`, f.user.ID); err != nil {
+		t.Logf("cleanup registry_resources for user %s: %v", f.user.ID, err)
+	}
 	if _, err := store.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, f.user.ID); err != nil {
 		t.Logf("cleanup user %s: %v", f.user.ID, err)
 	}

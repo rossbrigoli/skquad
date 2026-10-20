@@ -1785,11 +1785,12 @@ func (p *PostgresStore) RecordMetering(ctx context.Context, event *domain.Meteri
 			agent_id, squad_id, task_id, provider_id, model, input_tokens, output_tokens,
 			cost, currency, timestamp, model_used,
 			rate_input_per_1m, rate_cached_input_per_1m, rate_cache_write_per_1m,
-			rate_output_per_1m, rate_snapshot
+			rate_output_per_1m, rate_snapshot, resource_id, resource_type
 		)
-		VALUES ($1, $2, nullif($3, '')::uuid, nullif($4, '')::uuid, $5, $6, $7, $8, $9, coalesce(nullif($10, ''), now()::text)::timestamptz, $11, $12, $13, $14, $15, $16)
+		VALUES ($1, $2, nullif($3, '')::uuid, nullif($4, '')::uuid, $5, $6, $7, $8, $9, coalesce(nullif($10, ''), now()::text)::timestamptz, $11, $12, $13, $14, $15, $16, nullif($17, '')::uuid, $18)
 	`, event.AgentID, event.SquadID, event.TaskID, event.ProviderID, event.Model, event.InputTokens, event.OutputTokens, event.Cost, defaultCurrency(event.Currency), nullableTimeText(event.Timestamp), event.ModelUsed,
-		rateValue(event.RateInputPer1M), rateValue(event.RateCachedInputPer1M), rateValue(event.RateCacheWritePer1M), rateValue(event.RateOutputPer1M), event.RateSnapshot)
+		rateValue(event.RateInputPer1M), rateValue(event.RateCachedInputPer1M), rateValue(event.RateCacheWritePer1M), rateValue(event.RateOutputPer1M), event.RateSnapshot,
+		event.ResourceID, event.ResourceType)
 	return mapPgErr(err)
 }
 
