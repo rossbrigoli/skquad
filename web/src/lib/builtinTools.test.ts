@@ -45,7 +45,7 @@ describe("gating (platform_admin only)", () => {
     expect(isPlatformAdmin("")).toBe(false);
   });
 
-  it("knows exactly the thirteen contract tool names (S-232: every built-in must be listed; S-279 adds the file tools; S-280 adds process)", () => {
+  it("knows exactly the fourteen contract tool names (S-232: every built-in must be listed; S-279 adds the file tools; S-280 adds process; S-281 adds cron)", () => {
     expect([...BUILTIN_TOOL_NAMES]).toEqual([
       "exec",
       "web_fetch",
@@ -60,6 +60,7 @@ describe("gating (platform_admin only)", () => {
       "edit",
       "apply_patch",
       "process",
+      "cron",
     ]);
     expect(isBuiltinToolName("exec")).toBe(true);
     expect(isBuiltinToolName("web_fetch")).toBe(true);
@@ -156,6 +157,21 @@ describe("save payload shape (PATCH /admin/tools/{name})", () => {
     expect(keys("memory_search")).toEqual(["maxResults", "timeoutSeconds"]);
     expect(keys("spawn_subagent")).toEqual([]);
     expect(keys("process")).toEqual(["maxLogBytes", "maxSessions"]);
+    expect(keys("cron")).toEqual(["maxActiveJobs"]);
+  });
+
+  // S-281: cron pins exactly {maxActiveJobs} — no timeoutSeconds.
+  it("cron: {maxActiveJobs} only (S-281)", () => {
+    const payload = buildToolPayload(
+      "cron",
+      form("cron", { enabled: true, maxActiveJobs: "5" }),
+    );
+    expect(payload).toEqual({ enabled: true, policy: { maxActiveJobs: 5 } });
+    expect(validateToolForm("cron", form("cron", { maxActiveJobs: "0" }))).toMatch(/maxActiveJobs/);
+    expect(validateToolForm("cron", form("cron", { maxActiveJobs: "abc" }))).toMatch(/maxActiveJobs/);
+    expect(validateToolForm("cron", form("cron"))).toBeNull();
+    // The default form carries the control-plane default of 10.
+    expect(emptyToolForm("cron").maxActiveJobs).toBe("10");
   });
 
   it("process: {maxSessions,maxLogBytes} (S-280)", () => {
@@ -204,6 +220,13 @@ describe("form hydration", () => {
   it("formFromTool ignores non-string deniedPatterns entries", () => {
     const f = formFromTool(tool("exec", { policy: { deniedPatterns: ["ok", 42, null] } }));
     expect(f.deniedPatterns).toEqual(["ok"]);
+  });
+
+  it("formFromTool hydrates cron maxActiveJobs (S-281)", () => {
+    const f = formFromTool(tool("cron", { enabled: true, policy: { maxActiveJobs: 7 } }));
+    expect(f.maxActiveJobs).toBe("7");
+    const d = formFromTool(tool("cron", { policy: {} }));
+    expect(d.maxActiveJobs).toBe("10");
   });
 
   it("round-trips: form → policy → form is stable", () => {
