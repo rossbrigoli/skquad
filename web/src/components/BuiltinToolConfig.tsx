@@ -53,6 +53,8 @@ const TOOL_LABELS: Record<BuiltinToolName, string> = {
   sessions_list: "sessions_list — list visible sessions",
   sessions_history: "sessions_history — sanitized session/task history",
   session_status: "session_status — current run status card",
+  // S-283: built-in BROWSER (ADR-0014).
+  browser: "browser — quarantined headless browsing",
 };
 
 const TOOL_HINTS: Record<BuiltinToolName, string> = {
@@ -79,6 +81,11 @@ const TOOL_HINTS: Record<BuiltinToolName, string> = {
   sessions_list: "Read-only listing of what the agent can already see: its assigned tasks and its squad peer roster (GET /agents/me/tasks, /agents/me/peers). Never widens access; there are no policy knobs.",
   sessions_history: "Read-only sanitized history: one task's context (assigned tasks only), an agent's chat transcript, or the agent's own message history. Secret-shaped values are redacted, long bodies truncated, tool-call payloads hidden unless include_tools=true. No policy knobs.",
   session_status: "Read-only status card of the agent's own current run: agent id, bound model, task counts/active tasks, visible peers, elapsed time. Always self-scoped; unavailable fields are omitted, never fabricated. No policy knobs.",
+  // S-283: the browser never runs in the agent pod — it is the
+  // quarantined browser-service, driven through the tool gateway
+  // (ADR-0014). This policy only bounds the runtime side; the
+  // security-relevant ceilings live on the browser resource grant.
+  browser: "Drives the platform's quarantined Playwright service (never the agent pod) through the tool gateway: open/snapshot/screenshot/click/type/close. Agents need a granted browser resource for the tool to do anything — without one it fails closed. maxSnapshotChars caps rendered page text; maxScreenshotBytes caps what the runtime persists per screenshot (returned as a workspace file reference, never inlined). Navigation ceilings (deny_hosts, max_pages) and per-agent session caps are enforced by the browser resource grant, not this policy.",
 };
 
 // BuiltinToolConfig is the admin config surface for ONE built-in tool,
@@ -305,6 +312,30 @@ export function ToolCard({
               onChange={(e) => setField("maxActiveJobs", e.target.value)}
             />
           </label>
+        ) : null}
+        {tool.name === "browser" ? (
+          <>
+            <label className="field">
+              <span>Max snapshot chars</span>
+              <input
+                type="number"
+                min={1}
+                value={form.maxSnapshotChars}
+                disabled={busy}
+                onChange={(e) => setField("maxSnapshotChars", e.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>Max screenshot bytes</span>
+              <input
+                type="number"
+                min={1}
+                value={form.maxScreenshotBytes}
+                disabled={busy}
+                onChange={(e) => setField("maxScreenshotBytes", e.target.value)}
+              />
+            </label>
+          </>
         ) : null}
         {tool.name === "web_search" ? (
           <>

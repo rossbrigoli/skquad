@@ -45,7 +45,7 @@ describe("gating (platform_admin only)", () => {
     expect(isPlatformAdmin("")).toBe(false);
   });
 
-  it("knows exactly the seventeen contract tool names (S-232: every built-in must be listed; S-279 adds the file tools; S-280 adds process; S-281 adds cron; S-282 adds the session inspection tools)", () => {
+  it("knows exactly the eighteen contract tool names (S-232: every built-in must be listed; S-279 adds the file tools; S-280 adds process; S-281 adds cron; S-282 adds the session inspection tools; S-283 adds browser)", () => {
     expect([...BUILTIN_TOOL_NAMES]).toEqual([
       "exec",
       "web_fetch",
@@ -64,6 +64,7 @@ describe("gating (platform_admin only)", () => {
       "sessions_list",
       "sessions_history",
       "session_status",
+      "browser",
     ]);
     expect(isBuiltinToolName("exec")).toBe(true);
     expect(isBuiltinToolName("web_fetch")).toBe(true);
@@ -73,7 +74,63 @@ describe("gating (platform_admin only)", () => {
     expect(isBuiltinToolName("notify_owner")).toBe(true);
     expect(isBuiltinToolName("memory_search")).toBe(true);
     expect(isBuiltinToolName("spawn_subagent")).toBe(true);
+    expect(isBuiltinToolName("browser")).toBe(true);
     expect(isBuiltinToolName("something_else")).toBe(false);
+  });
+});
+
+// S-283: the browser builtin pins {timeoutSeconds, maxSnapshotChars,
+// maxScreenshotBytes} runtime-side. Navigation/session ceilings are the
+// resource grant's (ADR-0014) and must never appear in this policy.
+describe("browser policy (S-283)", () => {
+  it("builds the pinned browser policy shape", () => {
+    const policy = buildToolPolicy(
+      "browser",
+      form("browser", {
+        timeoutSeconds: "45",
+        maxSnapshotChars: "9000",
+        maxScreenshotBytes: "2097152",
+      }),
+    );
+    expect(policy).toEqual({
+      timeoutSeconds: 45,
+      maxSnapshotChars: 9000,
+      maxScreenshotBytes: 2097152,
+    });
+  });
+
+  it("defaults hydrate from an empty stored policy", () => {
+    const f = formFromTool(tool("browser", { enabled: true, policy: {} }));
+    expect(f.enabled).toBe(true);
+    expect(f.timeoutSeconds).toBe("30");
+    expect(f.maxSnapshotChars).toBe("12000");
+    expect(f.maxScreenshotBytes).toBe("5242880");
+  });
+
+  it("round-trips a stored browser policy", () => {
+    const f = formFromTool(
+      tool("browser", {
+        policy: { timeoutSeconds: 20, maxSnapshotChars: 4000, maxScreenshotBytes: 1024 },
+      }),
+    );
+    expect(buildToolPolicy("browser", f)).toEqual({
+      timeoutSeconds: 20,
+      maxSnapshotChars: 4000,
+      maxScreenshotBytes: 1024,
+    });
+  });
+
+  it("validates positive integers for every browser knob", () => {
+    expect(validateToolForm("browser", form("browser"))).toBeNull();
+    expect(validateToolForm("browser", form("browser", { maxSnapshotChars: "0" }))).toContain(
+      "maxSnapshotChars",
+    );
+    expect(validateToolForm("browser", form("browser", { maxScreenshotBytes: "-5" }))).toContain(
+      "maxScreenshotBytes",
+    );
+    expect(validateToolForm("browser", form("browser", { timeoutSeconds: "" }))).toContain(
+      "timeoutSeconds",
+    );
   });
 });
 

@@ -50,6 +50,8 @@ export const BUILTIN_TOOL_DESCRIPTIONS: Record<BuiltinToolName, string> = {
   sessions_list: "List the sessions an agent can see: its assigned tasks and visible squad peers.",
   sessions_history: "Sanitized history: a task's context, an agent's chat, or the agent's own message history.",
   session_status: "Status card for an agent's current run: model, active tasks, counts, elapsed time.",
+  // S-283: built-in BROWSER — quarantined browsing through the tool gateway.
+  browser: "Drive the quarantined headless browser: open, snapshot, screenshot, click, type.",
 };
 
 // builtinToolItems normalises loaded built-in configs into tile items,
