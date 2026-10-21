@@ -129,6 +129,7 @@ type Store interface {
 	storage.PromptTierStore
 	storage.PromptTemplateStore
 	storage.BuiltinToolStore
+	storage.ScheduledJobStore
 	storage.PlatformSettingsStore
 	storage.BudgetStore
 	storage.BudgetEnforcementStore
@@ -666,6 +667,16 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Get("/tools", s.getMyBuiltinTools)
 			// S-212: semantic recall over the agent's own long-term memory.
 			r.Get("/memory/search", s.searchMyAgentMemory)
+			// S-281: cron builtin — scheduled jobs scoped to the calling
+			// agent (create/list/get/delete/pause/resume). The scheduler
+			// goroutine (RunScheduledJobScheduler) fires due jobs from
+			// these rows through the canonical task-wake path.
+			r.Post("/scheduled-jobs", s.createScheduledJob)
+			r.Get("/scheduled-jobs", s.listScheduledJobs)
+			r.Get("/scheduled-jobs/{jobID}", s.getScheduledJob)
+			r.Delete("/scheduled-jobs/{jobID}", s.deleteScheduledJob)
+			r.Post("/scheduled-jobs/{jobID}/pause", s.pauseScheduledJob)
+			r.Post("/scheduled-jobs/{jobID}/resume", s.resumeScheduledJob)
 		})
 
 		// BT-2: built-in tool proxies (agent-credential auth). Keys stay
