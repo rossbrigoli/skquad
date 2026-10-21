@@ -24,6 +24,7 @@ import {
   toolsFromList,
   toolSaveErrorMessage,
   validateToolForm,
+  isFileToolName,
   type BuiltinTool,
   type BuiltinToolName,
   type BuiltinToolsList,
@@ -39,6 +40,11 @@ const TOOL_LABELS: Record<BuiltinToolName, string> = {
   notify_owner: "notify_owner — action_required inbox ping",
   memory_search: "memory_search — long-term memory recall",
   spawn_subagent: "spawn_subagent — nested subagent delegation",
+  // S-279: file tools.
+  read: "read — read workspace files",
+  write: "write — create/overwrite workspace files",
+  edit: "edit — atomic exact-match edits",
+  apply_patch: "apply_patch — structured atomic patches",
 };
 
 const TOOL_HINTS: Record<BuiltinToolName, string> = {
@@ -51,6 +57,11 @@ const TOOL_HINTS: Record<BuiltinToolName, string> = {
   notify_owner: "Files an action_required InboxMessage with your squad owner — no auto-action, one capped row per call.",
   memory_search: "Semantic recall over the agent's own agent_memory rows only (read-only, excludes rejected memories). No-ops unless memory embeddings are enabled platform-wide.",
   spawn_subagent: "Runs a nested agent loop inheriting this agent's model, grants, config and composed prompt from an empty context. The subagent cannot spawn further subagents. The runtime additionally requires subagents to be enabled (SKQUAD_SUBAGENTS_ENABLED).",
+  // S-279: file tools — the workspace jail is the security boundary.
+  read: "Reads text files from the agent's task workspace only. Paths that resolve outside the workspace (via .. or symlinks) are rejected. Images return an attachment marker instead of binary content. Max bytes caps the returned content.",
+  write: "Creates or overwrites files inside the agent's task workspace only (parent dirs created). maxBytes caps the content size. Path escapes outside the workspace are rejected.",
+  edit: "Exact-match edits applied atomically: every oldText must occur exactly once in the original file and edits must not overlap — any failure writes nothing. maxBytes caps the resulting file.",
+  apply_patch: "Applies a *** Begin Patch / *** End Patch changeset (Add/Update/Delete file with @@ context hunks) atomically inside the workspace. A failing hunk writes nothing. maxBytes caps the total bytes written across all patched files.",
 };
 
 // BuiltinToolConfig is the admin config surface for ONE built-in tool,
@@ -206,7 +217,7 @@ export function ToolCard({
             />
           </label>
         ) : null}
-        {tool.name === "web_fetch" ? (
+        {tool.name === "web_fetch" || isFileToolName(tool.name) ? (
           <label className="field">
             <span>Max bytes</span>
             <input

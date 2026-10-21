@@ -1055,6 +1055,599 @@ class MemorySearchTool:
         return ToolResult(content="\n\n".join(lines), ok=True)
 
 
+# ---------------------------------------------------------------------------
+# S-279: file tools (read / write / edit / apply_patch).
+#
+# All four are jailed to the agent's workspace_dir — the same directory
+# exec runs in. _resolve_in_workspace() is the single security boundary:
+# every path from a model goes through realpath resolution and must land
+# on the workspace root or strictly under it, so ".." traversals,
+# absolute paths elsewhere on the host, and symlinks pointing outside
+# the workspace are all rejected before any filesystem mutation.
+# ---------------------------------------------------------------------------
+
+# Extensions treated as images by `read`: binary content is never dumped
+# into the model context; a short attachment marker is returned instead.
+IMAGE_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+
+DEFAULT_FILE_MAX_BYTES = 262144  # 256 KiB, mirrors the web_fetch content cap
+
+
+class WorkspaceEscapeError(Exception):
+    """Raised when a requested path resolves outside the agent workspace."""
+
+
+def _resolve_in_workspace(workspace_dir: str, path: str) -> Path:
+    """Resolve ``path`` under ``workspace_dir`` or raise WorkspaceEscapeError.
+
+    Join + realpath (via Path.resolve, non-strict so not-yet-existing
+    targets still resolve lexically through symlinks that DO exist), then
+    assert the result is the workspace itself or strictly under
+    ``realpath(workspace) + os.sep``. This kills:
+      * ``../../etc/passwd`` style traversals,
+      * absolute paths pointing anywhere else on the host,
+      * symlinks inside the workspace that point outside it
+        (realpath follows the link before the containment check).
+    """
+    raw = str(path or "").strip()
+    if not raw:
+        raise WorkspaceEscapeError("path is required")
+    base = Path(workspace_dir).resolve()
+    candidate = Path(raw)
+    resolved = candidate if candidate.is_absolute() else (base / candidate)
+    resolved = resolved.resolve()
+    if resolved != base and not str(resolved).startswith(str(base) + os.sep):
+        raise WorkspaceEscapeError(
+            f"path escapes workspace: {raw!r} resolves to {str(resolved)!r}"
+        )
+    return resolved
+
+
+def _relpath_in_workspace(workspace_dir: str, resolved: Path) -> str:
+    base = Path(workspace_dir).resolve()
+    if resolved == base:
+        return "."
+    return str(resolved.relative_to(base))
+
+
+def _max_bytes(policy: dict) -> int:
+    try:
+        return int(policy.get("maxBytes", DEFAULT_FILE_MAX_BYTES))
+    except (TypeError, ValueError):
+        return DEFAULT_FILE_MAX_BYTES
+
+
+class ReadTool:
+    """Read a text file from the agent workspace (S-279)."""
+
+    name = "read"
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        self.policy = policy or {}
+        self.context = context
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read",
+                    "description": (
+                        "Read a text file from the agent's task workspace. "
+                        "Optional offset (1-indexed line) and limit (max lines). "
+                        "Image files return an attachment marker, not binary."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "File path relative to the workspace.",
+                            },
+                            "offset": {
+                                "type": "integer",
+                                "description": "First line to read (1-indexed).",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum number of lines to return.",
+                            },
+                        },
+                        "required": ["path"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        try:
+            target = _resolve_in_workspace(self.context.workspace_dir, call.arguments.get("path", ""))
+        except WorkspaceEscapeError as exc:
+            return ToolResult(content=f"read: {exc}", ok=False)
+
+        if not target.exists():
+            return ToolResult(content=f"read: file not found: {_relpath_in_workspace(self.context.workspace_dir, target)}", ok=False)
+        if target.is_dir():
+            return ToolResult(content=f"read: {target.name!r} is a directory, not a file", ok=False)
+        if target.suffix.lower() in IMAGE_EXTENSIONS:
+            size = target.stat().st_size
+            return ToolResult(
+                content=(
+                    f"[attachment: {_relpath_in_workspace(self.context.workspace_dir, target)} "
+                    f"({target.suffix.lower()} image, {size} bytes) — binary content not returned]"
+                ),
+                ok=True,
+            )
+
+        max_bytes = _max_bytes(self.policy)
+        try:
+            with open(target, "rb") as fh:
+                data = fh.read(max_bytes + 1)
+        except OSError as exc:
+            return ToolResult(content=f"read: {exc}", ok=False)
+
+        byte_truncated = len(data) > max_bytes
+        text = data[:max_bytes].decode("utf-8", errors="replace")
+        lines = text.split("\n")
+        if byte_truncated and text.endswith("\ufffd"):
+            # Drop a partial multi-byte char cut mid-sequence.
+            lines[-1] = lines[-1][:-1]
+
+        total_lines = len(lines)
+        offset = call.arguments.get("offset")
+        limit = call.arguments.get("limit")
+        start = 0
+        if offset is not None:
+            try:
+                start = max(int(offset) - 1, 0)
+            except (TypeError, ValueError):
+                return ToolResult(content="read: offset must be an integer", ok=False)
+        if start >= total_lines:
+            return ToolResult(content=f"read: offset {start + 1} is past end of file ({total_lines} lines)", ok=False)
+        end = total_lines
+        if limit is not None:
+            try:
+                end = min(start + max(int(limit), 0), total_lines)
+            except (TypeError, ValueError):
+                return ToolResult(content="read: limit must be an integer", ok=False)
+
+        selected = lines[start:end]
+        content = "\n".join(selected)
+        notices: list[str] = []
+        if byte_truncated:
+            notices.append(f"content truncated at maxBytes={max_bytes}")
+        if end < total_lines:
+            notices.append(f"showing lines {start + 1}-{end} of {total_lines} (limit reached)")
+        elif start > 0:
+            notices.append(f"showing lines {start + 1}-{end} of {total_lines}")
+        if notices:
+            content += "\n[" + "; ".join(notices) + "]"
+        return ToolResult(content=content, ok=True)
+
+
+class WriteTool:
+    """Create/overwrite a file in the agent workspace (S-279)."""
+
+    name = "write"
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        self.policy = policy or {}
+        self.context = context
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "write",
+                    "description": (
+                        "Create or overwrite a text file in the agent's task "
+                        "workspace. Parent directories are created as needed."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "File path relative to the workspace.",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Full file content.",
+                            },
+                        },
+                        "required": ["path", "content"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        if "content" not in call.arguments:
+            return ToolResult(content="write: missing content", ok=False)
+        content = str(call.arguments.get("content", ""))
+        try:
+            target = _resolve_in_workspace(self.context.workspace_dir, call.arguments.get("path", ""))
+        except WorkspaceEscapeError as exc:
+            return ToolResult(content=f"write: {exc}", ok=False)
+        if target.is_dir():
+            return ToolResult(content=f"write: {target.name!r} is a directory", ok=False)
+        payload = content.encode("utf-8")
+        max_bytes = _max_bytes(self.policy)
+        if len(payload) > max_bytes:
+            return ToolResult(
+                content=f"write: content exceeds maxBytes={max_bytes} (got {len(payload)})", ok=False
+            )
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+        except OSError as exc:
+            return ToolResult(content=f"write: {exc}", ok=False)
+        rel = _relpath_in_workspace(self.context.workspace_dir, target)
+        return ToolResult(content=f"wrote {len(payload)} bytes to {rel}", ok=True)
+
+
+class EditTool:
+    """Exact-match, all-or-nothing edits against one file (S-279).
+
+    Every oldText must occur EXACTLY ONCE in the ORIGINAL file and the
+    matched spans must not overlap. Any violation → error, nothing is
+    written. Applied in one pass so partial edits can never land.
+    """
+
+    name = "edit"
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        self.policy = policy or {}
+        self.context = context
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "edit",
+                    "description": (
+                        "Apply exact-match edits to a file in the agent's task "
+                        "workspace. Each oldText must occur exactly once in the "
+                        "original file; edits must not overlap. All edits apply "
+                        "atomically — any failure writes nothing."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "File path relative to the workspace.",
+                            },
+                            "edits": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "oldText": {"type": "string"},
+                                        "newText": {"type": "string"},
+                                    },
+                                    "required": ["oldText", "newText"],
+                                },
+                            },
+                        },
+                        "required": ["path", "edits"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        try:
+            target = _resolve_in_workspace(self.context.workspace_dir, call.arguments.get("path", ""))
+        except WorkspaceEscapeError as exc:
+            return ToolResult(content=f"edit: {exc}", ok=False)
+        if not target.is_file():
+            return ToolResult(content=f"edit: file not found: {_relpath_in_workspace(self.context.workspace_dir, target)}", ok=False)
+        edits = call.arguments.get("edits")
+        if not isinstance(edits, list) or not edits:
+            return ToolResult(content="edit: edits must be a non-empty array of {oldText,newText}", ok=False)
+
+        try:
+            original = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            return ToolResult(content=f"edit: cannot read file: {exc}", ok=False)
+
+        # Phase 1: locate every edit in the ORIGINAL text (validate-before-write).
+        spans: list[tuple[int, int, str]] = []  # (start, end, newText)
+        for idx, item in enumerate(edits):
+            if not isinstance(item, dict) or "oldText" not in item or "newText" not in item:
+                return ToolResult(content=f"edit: edits[{idx}] must have oldText and newText", ok=False)
+            old = str(item["oldText"])
+            new = str(item["newText"])
+            if old == "":
+                return ToolResult(content=f"edit: edits[{idx}].oldText must not be empty", ok=False)
+            occurrences = _find_all(original, old)
+            if not occurrences:
+                return ToolResult(
+                    content=f"edit: oldText not found in file (edit #{idx + 1}): {old[:80]!r}", ok=False
+                )
+            if len(occurrences) > 1:
+                return ToolResult(
+                    content=(
+                        f"edit: oldText is ambiguous — occurs {len(occurrences)} times "
+                        f"(edit #{idx + 1}); include more context. Nothing was written."
+                    ),
+                    ok=False,
+                )
+            spans.append((occurrences[0], occurrences[0] + len(old), new))
+
+        # Phase 2: overlap check on the original-text spans.
+        spans.sort(key=lambda s: s[0])
+        for prev, nxt in zip(spans, spans[1:]):
+            if nxt[0] < prev[1]:
+                return ToolResult(
+                    content="edit: edits overlap in the original file; nothing was written", ok=False
+                )
+
+        # Phase 3: build the new content in memory, then a single write.
+        out: list[str] = []
+        cursor = 0
+        for start, end, new in spans:
+            out.append(original[cursor:start])
+            out.append(new)
+            cursor = end
+        out.append(original[cursor:])
+        updated = "".join(out)
+
+        payload = updated.encode("utf-8")
+        max_bytes = _max_bytes(self.policy)
+        if len(payload) > max_bytes:
+            return ToolResult(
+                content=f"edit: result exceeds maxBytes={max_bytes} (got {len(payload)}); nothing was written", ok=False
+            )
+        try:
+            target.write_bytes(payload)
+        except OSError as exc:
+            return ToolResult(content=f"edit: write failed: {exc}", ok=False)
+        rel = _relpath_in_workspace(self.context.workspace_dir, target)
+        return ToolResult(content=f"applied {len(edits)} edit(s) to {rel}", ok=True)
+
+
+def _find_all(haystack: str, needle: str) -> list[int]:
+    """All (non-overlapping-by-nature, exact) start indices of needle."""
+    idxs: list[int] = []
+    start = haystack.find(needle)
+    while start != -1:
+        idxs.append(start)
+        start = haystack.find(needle, start + 1)
+    return idxs
+
+
+class ApplyPatchTool:
+    """Apply an OpenClaw-style *** Begin Patch / End Patch changeset (S-279).
+
+    Supports Add File / Update File (with @@ context hunks) / Delete
+    File. Fully atomic: the whole patch is parsed and applied in memory
+    first; any hunk mismatch reports the offending file/hunk and writes
+    nothing.
+    """
+
+    name = "apply_patch"
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        self.policy = policy or {}
+        self.context = context
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "apply_patch",
+                    "description": (
+                        "Apply a structured patch (*** Begin Patch / *** End Patch) "
+                        "with Add File / Update File / Delete File sections. "
+                        "All-or-nothing: a failing hunk writes nothing."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "patch": {
+                                "type": "string",
+                                "description": "The full patch text.",
+                            }
+                        },
+                        "required": ["patch"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        patch = str(call.arguments.get("patch", ""))
+        if "*** Begin Patch" not in patch or "*** End Patch" not in patch:
+            return ToolResult(content="apply_patch: patch must contain *** Begin Patch / *** End Patch", ok=False)
+
+        try:
+            adds, updates, deletes = self._parse(patch)
+        except ValueError as exc:
+            return ToolResult(content=f"apply_patch: {exc}", ok=False)
+
+        ws = self.context.workspace_dir
+        # Resolve every touched path BEFORE touching the filesystem.
+        try:
+            add_paths = [(self._check_path(ws, p), content) for p, content in adds]
+            update_paths = [(self._check_path(ws, p), hunks) for p, hunks in updates]
+            delete_paths = [self._check_path(ws, p) for p in deletes]
+        except WorkspaceEscapeError as exc:
+            return ToolResult(content=f"apply_patch: {exc}", ok=False)
+
+        # Phase 1: compute all new contents in memory.
+        new_files: dict[Path, bytes] = {}
+        for path, content in add_paths:
+            if path.exists():
+                return ToolResult(content=f"apply_patch: cannot add, file already exists: {_relpath_in_workspace(ws, path)}", ok=False)
+            new_files[path] = content.encode("utf-8")
+
+        for path, hunks in update_paths:
+            if not path.is_file():
+                return ToolResult(content=f"apply_patch: cannot update, file not found: {_relpath_in_workspace(ws, path)}", ok=False)
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                return ToolResult(content=f"apply_patch: cannot read {_relpath_in_workspace(ws, path)}: {exc}", ok=False)
+            updated_text, err = self._apply_hunks(text, hunks, _relpath_in_workspace(ws, path))
+            if err:
+                return ToolResult(content=f"apply_patch: {err}; no files were written", ok=False)
+            new_files[path] = updated_text.encode("utf-8")
+
+        # maxBytes caps the total bytes written across the patch's files.
+        max_bytes = _max_bytes(self.policy)
+        total = sum(len(b) for b in new_files.values())
+        if total > max_bytes:
+            return ToolResult(
+                content=f"apply_patch: total write {total} bytes exceeds maxBytes={max_bytes}; no files were written", ok=False
+            )
+
+        # Phase 2: commit — writes then deletes.
+        try:
+            for path, payload in new_files.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payload)
+            for path in delete_paths:
+                if path.is_file():
+                    path.unlink()
+                elif not path.exists():
+                    return ToolResult(content=f"apply_patch: cannot delete, file not found: {_relpath_in_workspace(ws, path)}", ok=False)
+        except OSError as exc:
+            return ToolResult(content=f"apply_patch: write phase failed: {exc}", ok=False)
+
+        parts = []
+        if adds:
+            parts.append(f"added {len(adds)}")
+        if updates:
+            parts.append(f"updated {len(updates)}")
+        if deletes:
+            parts.append(f"deleted {len(deletes)}")
+        return ToolResult(content="apply_patch ok: " + ", ".join(parts) + " file(s)", ok=True)
+
+    @staticmethod
+    def _check_path(ws: str, rel: str) -> Path:
+        return _resolve_in_workspace(ws, rel)
+
+    @staticmethod
+    def _parse(patch: str) -> tuple[list[tuple[str, str]], list[tuple[str, list[list[str]]]], list[str]]:
+        """Parse the patch into (adds, updates, deletes).
+
+        adds:    [(path, full_content)]
+        updates: [(path, [hunk_lines, ...])]  (hunk = raw +/-/context lines)
+        deletes: [path]
+        Raises ValueError with a clear message on malformed input.
+        """
+        lines = patch.split("\n")
+        try:
+            begin = lines.index("*** Begin Patch")
+            end = lines.index("*** End Patch")
+        except ValueError:
+            raise ValueError("malformed patch: missing Begin/End markers")
+        if end < begin:
+            raise ValueError("malformed patch: End Patch before Begin Patch")
+
+        adds: list[tuple[str, str]] = []
+        updates: list[tuple[str, list[list[str]]]] = []
+        deletes: list[str] = []
+
+        body = lines[begin + 1 : end]
+        i = 0
+        while i < len(body):
+            line = body[i]
+            if line.startswith("*** Add File: "):
+                path = line[len("*** Add File: "):].strip()
+                i += 1
+                content: list[str] = []
+                while i < len(body) and not body[i].startswith("*** "):
+                    if not body[i].startswith("+"):
+                        raise ValueError(f"Add File {path!r}: expected '+' lines, got {body[i]!r}")
+                    content.append(body[i][1:])
+                    i += 1
+                adds.append((path, "\n".join(content) + ("\n" if content else "")))
+            elif line.startswith("*** Update File: "):
+                path = line[len("*** Update File: "):].strip()
+                i += 1
+                hunks: list[list[str]] = []
+                current: list[str] | None = None
+                while i < len(body) and not body[i].startswith("*** Add File: ") and not body[i].startswith("*** Update File: ") and not body[i].startswith("*** Delete File: "):
+                    hline = body[i]
+                    if hline.startswith("@@"):
+                        if current:
+                            hunks.append(current)
+                        current = []
+                    elif hline.startswith("*** Move to:"):
+                        raise ValueError(f"Update File {path!r}: 'Move to' (rename) is not supported")
+                    elif hline.startswith("***"):
+                        break
+                    else:
+                        if current is None:
+                            current = []
+                        current.append(hline)
+                    i += 1
+                if current:
+                    hunks.append(current)
+                if not hunks:
+                    raise ValueError(f"Update File {path!r}: no hunks")
+                updates.append((path, hunks))
+            elif line.startswith("*** Delete File: "):
+                path = line[len("*** Delete File: "):].strip()
+                deletes.append(path)
+                i += 1
+            elif line.strip() == "":
+                i += 1
+            else:
+                raise ValueError(f"unexpected patch line: {line!r}")
+        return adds, updates, deletes
+
+    @staticmethod
+    def _apply_hunks(text: str, hunks: list[list[str]], fname: str) -> tuple[str, str]:
+        """Apply hunks to text; return (new_text, "") or (text, error).
+
+        Each hunk is a sequence of ' ' context, '-' removal and '+'
+        addition lines. The search block (context+removal) is located in
+        the current text and replaced by the replacement block
+        (context+addition). Matches are applied sequentially through the
+        file (hunks are expected in order).
+        """
+        lines = text.split("\n")
+        trailing_newline = text.endswith("\n")
+        if trailing_newline:
+            lines = lines[:-1]
+        cursor = 0
+        for h_idx, hunk in enumerate(hunks, start=1):
+            search = [l[1:] for l in hunk if l[:1] in (" ", "-") or (l == "")]
+            replace = [l[1:] for l in hunk if l[:1] in (" ", "+") or (l == "")]
+            # Normalise: lines that are exactly "" in a hunk mean an empty
+            # context line; keep them as "".
+            if not search:
+                # Pure-addition hunk: insert at cursor.
+                lines[cursor:cursor] = replace
+                continue
+            found = -1
+            for start in range(cursor, len(lines) - len(search) + 1):
+                if lines[start : start + len(search)] == search:
+                    found = start
+                    break
+            if found == -1:
+                # Retry from the top of the file (hunks not strictly ordered).
+                for start in range(0, len(lines) - len(search) + 1):
+                    if lines[start : start + len(search)] == search:
+                        found = start
+                        break
+            if found == -1:
+                return text, f"hunk {h_idx} in {fname!r} did not match (context line: {search[0][:80]!r})"
+            lines[found : found + len(search)] = replace
+            cursor = found + len(replace)
+        new_text = "\n".join(lines)
+        if trailing_newline:
+            new_text += "\n"
+        return new_text, ""
+
+
 _BUILTIN_REGISTRY: dict[str, type] = {
     "exec": ExecTool,
     "web_fetch": WebFetchTool,
@@ -1063,6 +1656,12 @@ _BUILTIN_REGISTRY: dict[str, type] = {
     "send_inbox": SendInboxTool,
     "notify_owner": NotifyOwnerTool,
     "memory_search": MemorySearchTool,
+    # S-279: file tools, jailed to context.workspace_dir via
+    # _resolve_in_workspace (the security boundary).
+    "read": ReadTool,
+    "write": WriteTool,
+    "edit": EditTool,
+    "apply_patch": ApplyPatchTool,
 }
 
 # Built-ins that are listed in the platform catalog (S-232) for admin

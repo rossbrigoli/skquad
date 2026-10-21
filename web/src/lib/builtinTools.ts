@@ -20,7 +20,11 @@ export type BuiltinToolName =
   | "send_inbox"
   | "notify_owner"
   | "memory_search"
-  | "spawn_subagent";
+  | "spawn_subagent"
+  | "read"
+  | "write"
+  | "edit"
+  | "apply_patch";
 
 // S-232: every built-in the control-plane catalog ships (domain.BuiltinToolNames)
 // must be listed here too — anything missing silently vanishes from the
@@ -34,7 +38,19 @@ export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = [
   "notify_owner",
   "memory_search",
   "spawn_subagent",
+  // S-279: file tools, jailed to the agent's task workspace runtime-side.
+  "read",
+  "write",
+  "edit",
+  "apply_patch",
 ];
+
+// S-279: the four file tools share one policy shape {timeoutSeconds, maxBytes}.
+export const FILE_TOOL_NAMES: readonly BuiltinToolName[] = ["read", "write", "edit", "apply_patch"];
+
+export function isFileToolName(name: BuiltinToolName): boolean {
+  return FILE_TOOL_NAMES.includes(name);
+}
 
 export const SEARCH_PROVIDERS: readonly string[] = ["duckduckgo", "brave", "perplexity"];
 
@@ -79,12 +95,20 @@ export const TOOL_DEFAULTS: Record<BuiltinToolName, { timeoutSeconds: number }> 
   notify_owner: { timeoutSeconds: 15 },
   memory_search: { timeoutSeconds: 20 },
   spawn_subagent: { timeoutSeconds: 15 },
+  // S-279 file tools
+  read: { timeoutSeconds: 30 },
+  write: { timeoutSeconds: 30 },
+  edit: { timeoutSeconds: 30 },
+  apply_patch: { timeoutSeconds: 30 },
 };
 
 const EXEC_DEFAULTS = { timeoutSeconds: 60, maxOutputBytes: 65536 };
 const WEB_FETCH_DEFAULTS = { timeoutSeconds: 30, maxBytes: 262144 };
 const WEB_SEARCH_DEFAULTS = { timeoutSeconds: 20, maxResults: 8, provider: "duckduckgo" };
 const SEND_MESSAGE_DEFAULTS = { timeoutSeconds: 15, maxMessageChars: 8000 };
+// S-279: file tools share {timeoutSeconds, maxBytes}; maxBytes caps read
+// output and total written bytes (for apply_patch, summed across files).
+const FILE_TOOL_DEFAULTS = { timeoutSeconds: 30, maxBytes: 262144 };
 
 export function isBuiltinToolName(name: string): name is BuiltinToolName {
   return (BUILTIN_TOOL_NAMES as readonly string[]).includes(name);
@@ -146,6 +170,10 @@ export function formFromTool(tool: BuiltinTool): ToolFormValues {
   if (tool.name === "memory_search") {
     base.maxResults = num(policy.maxResults, base.maxResults);
   }
+  // S-279: read/write/edit/apply_patch carry {timeoutSeconds, maxBytes}.
+  if (isFileToolName(tool.name)) {
+    base.maxBytes = num(policy.maxBytes, String(FILE_TOOL_DEFAULTS.maxBytes));
+  }
   return base;
 }
 
@@ -179,6 +207,10 @@ export function buildToolPolicy(name: BuiltinToolName, form: ToolFormValues): Re
     // the parent runtime's limits. Sending "{}" keeps the PATCH valid
     // against the server's empty allow-set for this tool.
     return {};
+  }
+  if (isFileToolName(name)) {
+    // S-279: file tools pin exactly {timeoutSeconds, maxBytes}.
+    return { timeoutSeconds: timeout, maxBytes: Number(form.maxBytes) };
   }
   return {
     timeoutSeconds: timeout,
@@ -232,6 +264,10 @@ export function validateToolForm(name: BuiltinToolName, form: ToolFormValues): s
   }
   if (name === "spawn_subagent") {
     return null;
+  }
+  if (isFileToolName(name)) {
+    // S-279: mirror the server's {timeoutSeconds, maxBytes} schema.
+    return checkPositiveInt(form.maxBytes, "maxBytes");
   }
   const resultsErr = checkPositiveInt(form.maxResults, "maxResults");
   if (resultsErr) return resultsErr;

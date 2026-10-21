@@ -25,10 +25,12 @@ func TestMemoryStoreSeedsBuiltinTools(t *testing.T) {
 	// like send_message — bounded blast radius, own squad owner's inbox.
 	// S-232 adds spawn_subagent so the runtime-provided subagent
 	// capability is visible (and toggleable) on the Settings Tools page.
-	if len(tools) != 8 {
-		t.Fatalf("seeded tools = %d, want 8", len(tools))
+	// S-279 adds the four file tools (read/write/edit/apply_patch), all
+	// seeded ENABLED like the other squad primitives.
+	if len(tools) != 12 {
+		t.Fatalf("seeded tools = %d, want 12", len(tools))
 	}
-	wantNames := []string{"exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner", "memory_search", "spawn_subagent"}
+	wantNames := []string{"exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner", "memory_search", "spawn_subagent", "read", "write", "edit", "apply_patch"}
 	for i, tool := range tools {
 		if tool.Name != wantNames[i] {
 			t.Fatalf("tool[%d] = %q, want %q", i, tool.Name, wantNames[i])

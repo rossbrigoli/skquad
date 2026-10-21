@@ -37,6 +37,11 @@ export const BUILTIN_TOOL_DESCRIPTIONS: Record<BuiltinToolName, string> = {
   notify_owner: "File an action_required message in your squad owner's inbox.",
   memory_search: "Semantic recall over the agent's own long-term memory.",
   spawn_subagent: "Spawn a nested subagent inheriting the parent's model, grants and prompt.",
+  // S-279: file tools, jailed to the agent's task workspace.
+  read: "Read text files from the agent's task workspace.",
+  write: "Create or overwrite files in the agent's task workspace.",
+  edit: "Exact-match atomic edits on a workspace file.",
+  apply_patch: "Apply a structured Begin/End patch atomically in the workspace.",
 };
 
 // builtinToolItems normalises loaded built-in configs into tile items,
