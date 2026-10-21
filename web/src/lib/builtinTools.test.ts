@@ -45,7 +45,7 @@ describe("gating (platform_admin only)", () => {
     expect(isPlatformAdmin("")).toBe(false);
   });
 
-  it("knows exactly the fourteen contract tool names (S-232: every built-in must be listed; S-279 adds the file tools; S-280 adds process; S-281 adds cron)", () => {
+  it("knows exactly the seventeen contract tool names (S-232: every built-in must be listed; S-279 adds the file tools; S-280 adds process; S-281 adds cron; S-282 adds the session inspection tools)", () => {
     expect([...BUILTIN_TOOL_NAMES]).toEqual([
       "exec",
       "web_fetch",
@@ -61,6 +61,9 @@ describe("gating (platform_admin only)", () => {
       "apply_patch",
       "process",
       "cron",
+      "sessions_list",
+      "sessions_history",
+      "session_status",
     ]);
     expect(isBuiltinToolName("exec")).toBe(true);
     expect(isBuiltinToolName("web_fetch")).toBe(true);
@@ -172,6 +175,17 @@ describe("save payload shape (PATCH /admin/tools/{name})", () => {
     expect(validateToolForm("cron", form("cron"))).toBeNull();
     // The default form carries the control-plane default of 10.
     expect(emptyToolForm("cron").maxActiveJobs).toBe("10");
+  });
+
+  // S-282: the session inspection tools pin exactly {} — read-only
+  // clients over existing endpoints, no admin-tunable policy knobs.
+  it("session inspection tools: {} only (S-282)", () => {
+    for (const name of ["sessions_list", "sessions_history", "session_status"] as const) {
+      expect(Object.keys(buildToolPolicy(name, form(name)))).toEqual([]);
+      const payload = buildToolPayload(name, form(name, { enabled: true }));
+      expect(payload).toEqual({ enabled: true, policy: {} });
+      expect(validateToolForm(name, form(name))).toBeNull();
+    }
   });
 
   it("process: {maxSessions,maxLogBytes} (S-280)", () => {

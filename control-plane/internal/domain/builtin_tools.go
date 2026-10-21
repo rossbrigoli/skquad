@@ -52,10 +52,23 @@ const (
 	// task + busy mirror), so fires survive restarts and cannot
 	// double-run.
 	BuiltinToolCron = "cron"
+	// S-282: session inspection tools. Read-only mirrors of OpenClaw's
+	// sessions_list / sessions_history / session_status: an agent can
+	// inspect its own tasks, message history, task context, peer roster
+	// and current-run status beyond the intra-squad send_message. Every
+	// read rides an EXISTING agent-scoped endpoint (/agents/me/tasks,
+	// /agents/me/peers, /agents/me/messages/history,
+	// /agents/me/tasks/{id}/context, /agents/{id}/chat, /agents/me/model)
+	// under the same bearer credential — the server's existing
+	// authorization is the visibility boundary; these tools never widen
+	// it and cannot mutate anything.
+	BuiltinToolSessionsList    = "sessions_list"
+	BuiltinToolSessionsHistory = "sessions_history"
+	BuiltinToolSessionStatus   = "session_status"
 )
 
 // BuiltinToolNames lists the built-in tools in canonical order.
-var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent, BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch, BuiltinToolProcess, BuiltinToolCron}
+var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent, BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch, BuiltinToolProcess, BuiltinToolCron, BuiltinToolSessionsList, BuiltinToolSessionsHistory, BuiltinToolSessionStatus}
 
 // BuiltinToolDefaultEnabled reports whether a built-in ships enabled when
 // seeded. The original three are security-sensitive and ship disabled
@@ -91,7 +104,16 @@ func BuiltinToolDefaultEnabled(name string) bool {
 		// The blast radius is bounded control-plane-side: jobs are scoped
 		// to the creating agent, capped by maxActiveJobs, throttled by
 		// the scheduler tick, and auto-disabled after repeated failures.
-		name == BuiltinToolCron
+		name == BuiltinToolCron ||
+		// S-282: the session inspection tools ship enabled to match
+		// their migration 0058 seed. They are strictly read-only (GET-
+		// only clients over endpoints the agent's own credential already
+		// authorizes) and render sanitized output, so their blast radius
+		// is "the agent can read what it could already read" — disabling
+		// them by default would make the capability invisible.
+		name == BuiltinToolSessionsList ||
+		name == BuiltinToolSessionsHistory ||
+		name == BuiltinToolSessionStatus
 }
 
 // SearchProviderNames lists the accepted web_search policy providers.
@@ -220,6 +242,14 @@ func ValidateBuiltinPolicy(name string, policy json.RawMessage) []string {
 		allowed = map[string]func(string, json.RawMessage) []string{
 			"maxActiveJobs": requirePositiveInt,
 		}
+	case BuiltinToolSessionsList, BuiltinToolSessionsHistory, BuiltinToolSessionStatus:
+		// S-282: the session inspection tools have no admin-tunable
+		// policy knobs — they are GET-only clients over existing
+		// endpoints with fixed runtime-side sanitization. The empty
+		// allow-set means only "{}" validates; any key is rejected so a
+		// future knob is pinned deliberately (same posture as
+		// spawn_subagent).
+		allowed = map[string]func(string, json.RawMessage) []string{}
 	default:
 		return []string{fmt.Sprintf("unknown built-in tool %q", name)}
 	}

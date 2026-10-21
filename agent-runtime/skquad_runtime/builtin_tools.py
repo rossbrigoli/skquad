@@ -2673,6 +2673,552 @@ class CronTool:
         return f"HTTP {exc.code}" + (f" — {detail}" if detail else "")
 
 
+# ---------------------------------------------------------------------------
+# S-282: session inspection builtins (sessions_list / sessions_history /
+# session_status).
+#
+# Read-only mirrors of OpenClaw's sessions_list / sessions_history /
+# session_status: an agent can inspect its own tasks, message history,
+# task context, peer roster and current-run status beyond the intra-squad
+# send_message. Every call is a GET against an EXISTING agent-scoped
+# control-plane endpoint (/agents/me/*, or /agents/{id}/chat which the
+# server already authorizes for this credential) — no new endpoints and
+# no widened visibility: whatever the server returns is exactly what the
+# caller was already allowed to see, and 403/404 surface as clean tool
+# errors. Rendered output is sanitized: secret-looking keys/values are
+# redacted and long bodies truncated so fetched content cannot flood the
+# model context or leak credentials into transcripts.
+# ---------------------------------------------------------------------------
+
+SESSIONS_DEFAULT_LIMIT = 50
+SESSION_BODY_MAX_CHARS = 800  # per-field truncation cap on rendered bodies
+REDACTED = "[REDACTED]"
+
+# Key names that mark a JSON field as secret-bearing at any nesting depth.
+_SECRET_KEY_RE = re.compile(
+    r"(?i)(token|secret|password|passwd|credential|api[_-]?key|authorization|access[_-]?key|private[_-]?key)"
+)
+# Value shapes that look like live credentials wherever they appear in text.
+_SECRET_VALUE_RES = (
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{12,}"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{12,}"),
+    re.compile(r"\b(?:kb|squ|ghp|gho|ghu|ghs|ghr|xox[baprs])_[A-Za-z0-9]{10,}"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_\-]{10,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+)
+
+# Payload keys that carry tool-call data; hidden from the rendering unless
+# include_tools=true so large tool inputs/outputs never bloat a history read.
+_TOOL_PAYLOAD_KEYS = frozenset({"tool_calls", "tool_call", "tools", "function_call"})
+
+
+def _redact_text(text: str) -> str:
+    """Replace credential-shaped substrings with a redaction marker."""
+    out = text
+    for rx in _SECRET_VALUE_RES:
+        out = rx.sub(REDACTED, out)
+    return out
+
+
+def _sanitize(value: object, max_chars: int = SESSION_BODY_MAX_CHARS) -> object:
+    """Recursively redact secret-looking keys/values and truncate long strings.
+
+    Dict keys matching the secret-name pattern have their values replaced
+    wholesale (the key itself is kept so the reader knows something was
+    there). Long strings are cut with an explicit truncation notice so
+    the model can tell a body was shortened rather than complete.
+    """
+    if isinstance(value, dict):
+        cleaned: dict = {}
+        for key, inner in value.items():
+            if _SECRET_KEY_RE.search(str(key)):
+                cleaned[key] = REDACTED
+            else:
+                cleaned[key] = _sanitize(inner, max_chars)
+        return cleaned
+    if isinstance(value, list):
+        return [_sanitize(inner, max_chars) for inner in value]
+    if isinstance(value, str):
+        red = _redact_text(value)
+        if len(red) > max_chars:
+            return red[:max_chars] + f"… [truncated, {len(red)} chars total]"
+        return red
+    return value
+
+
+def _parse_limit(raw: object, default: int) -> int:
+    """Parse a limit argument; non-positive/garbage falls back to default."""
+    if raw is None:
+        return default
+    try:
+        limit = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return limit if limit > 0 else default
+
+
+def _payload_dict(message: Mapping[str, object]) -> dict:
+    """Extract a message's payload as a dict (tolerates JSON-string payloads)."""
+    payload = message.get("payload")
+    if isinstance(payload, (str, bytes)):
+        try:
+            payload = json.loads(payload)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload = {}
+    return payload if isinstance(payload, dict) else {}
+
+
+class _SessionToolBase:
+    """Shared GET-only control-plane access for the S-282 inspection tools.
+
+    Deliberately has no POST/PUT/DELETE helper: these tools cannot mutate
+    anything, and the test-suite asserts every request is a GET.
+    """
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        self.policy = policy or {}
+        self.context = context
+
+    def _get(self, path: str):
+        url = self.context.control_plane_url.rstrip("/") + path
+        req = request.Request(
+            url,
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.context.agent_credential}",
+                "X-Skquad-Agent-ID": self.context.agent_id,
+                "Accept": JSON_CONTENT_TYPE,
+            },
+        )
+        timeout = int(self.policy.get("timeoutSeconds", 15))
+        with request.urlopen(req, timeout=timeout) as response:
+            raw = response.read()
+        if not raw:
+            return None
+        return json.loads(raw.decode("utf-8"))
+
+    @staticmethod
+    def _http_detail(exc: error.HTTPError) -> str:
+        detail = ""
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            err = body.get("error", "")
+            if isinstance(err, dict):
+                detail = str(err.get("message", ""))
+            else:
+                detail = str(err)
+        except Exception:  # noqa: BLE001 — error body is best-effort
+            pass
+        return f"HTTP {exc.code}" + (f" — {detail}" if detail else "")
+
+
+class SessionsListTool(_SessionToolBase):
+    """S-282: list the calling agent's visible sessions (tasks / peers).
+
+    kind=tasks (default) lists tasks assigned to this agent
+    (GET /agents/me/tasks); kind=peers lists the visible squad roster
+    (GET /agents/me/peers); kind=all renders both sections. The status
+    filter narrows tasks by Kanban column (case-insensitive). Read-only:
+    the server already scopes every row to this agent's credential.
+    """
+
+    name = "sessions_list"
+
+    KINDS = ("tasks", "peers", "all")
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "sessions_list",
+                    "description": (
+                        "List the sessions you can see: tasks assigned "
+                        "to you and/or your visible squad peers. "
+                        "Read-only — shows exactly what your agent "
+                        "credential can already access, never more. "
+                        "kind=tasks (default) lists your tasks, "
+                        "kind=peers lists squad-mates, kind=all shows "
+                        "both. Optionally filter tasks by status "
+                        "(backlog, todo, in-progress, in-review, done, "
+                        "blocked) and cap rows with limit."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "enum": ["tasks", "peers", "all"],
+                                "description": "What to list. Default: tasks.",
+                            },
+                            "status": {
+                                "type": "string",
+                                "description": (
+                                    "tasks only: keep only tasks in this "
+                                    "column, e.g. 'in-progress'."
+                                ),
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max rows per section (default 50).",
+                            },
+                        },
+                        "required": [],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        kind = str(call.arguments.get("kind", "") or "tasks").strip().lower()
+        if kind not in self.KINDS:
+            return ToolResult(
+                content=f"sessions_list: kind must be one of {', '.join(self.KINDS)}",
+                ok=False,
+            )
+        status_filter = str(call.arguments.get("status", "") or "").strip().lower()
+        limit = _parse_limit(call.arguments.get("limit"), SESSIONS_DEFAULT_LIMIT)
+
+        sections: list[str] = []
+        if kind in ("tasks", "all"):
+            try:
+                tasks = self._get("/api/v1/agents/me/tasks")
+            except error.HTTPError as exc:
+                return ToolResult(
+                    content=f"sessions_list: tasks lookup failed: {self._http_detail(exc)}",
+                    ok=False,
+                )
+            except (error.URLError, OSError, json.JSONDecodeError) as exc:
+                return ToolResult(
+                    content=f"sessions_list: tasks lookup failed: {exc}", ok=False
+                )
+            if not isinstance(tasks, list):
+                return ToolResult(
+                    content="sessions_list: tasks lookup returned an unexpected shape",
+                    ok=False,
+                )
+            rows: list[str] = []
+            skipped = 0
+            for task in tasks:
+                if not isinstance(task, dict):
+                    continue
+                status = str(task.get("status", "?"))
+                if status_filter and status.lower() != status_filter:
+                    skipped += 1
+                    continue
+                if len(rows) >= limit:
+                    skipped += 1
+                    continue
+                number = task.get("task_number")
+                label = f"T-{number}" if number else str(task.get("id", "?"))[:8]
+                title = str(task.get("title", "")).strip() or "(untitled)"
+                updated = str(task.get("updated_at", "")) or "—"
+                rows.append(
+                    f"{label} [{status}] {_redact_text(title)} "
+                    f"(id={task.get('id', '?')}, updated={updated})"
+                )
+            header = f"TASKS — {len(rows)} shown"
+            if skipped:
+                header += f" ({skipped} filtered out / over limit)"
+            sections.append(header + "\n" + ("\n".join(rows) if rows else "(none)"))
+
+        if kind in ("peers", "all"):
+            try:
+                peers = self._get("/api/v1/agents/me/peers")
+            except error.HTTPError as exc:
+                return ToolResult(
+                    content=f"sessions_list: peers lookup failed: {self._http_detail(exc)}",
+                    ok=False,
+                )
+            except (error.URLError, OSError, json.JSONDecodeError) as exc:
+                return ToolResult(
+                    content=f"sessions_list: peers lookup failed: {exc}", ok=False
+                )
+            if not isinstance(peers, list):
+                return ToolResult(
+                    content="sessions_list: peers lookup returned an unexpected shape",
+                    ok=False,
+                )
+            rows = []
+            for peer in peers[:limit]:
+                if not isinstance(peer, dict):
+                    continue
+                rows.append(
+                    f"{peer.get('name', '?')} [{peer.get('status', '?')}] "
+                    f"role={peer.get('role', '?')} (id={peer.get('id', '?')})"
+                )
+            sections.append(
+                f"PEERS — {len(rows)} shown\n" + ("\n".join(rows) if rows else "(none)")
+            )
+
+        return ToolResult(content="\n\n".join(sections), ok=True)
+
+
+class SessionsHistoryTool(_SessionToolBase):
+    """S-282: sanitized history for a task, an agent chat, or your own history.
+
+    task_id -> GET /agents/me/tasks/{id}/context (server 403s tasks not
+    assigned to you — surfaced as a clean error). agent_id ->
+    GET /agents/{id}/chat (server-side access control decides what this
+    credential may read; we never bypass it). Neither -> the caller's own
+    message history via GET /agents/me/messages/history. Tool-call
+    payloads are omitted unless include_tools=true; everything rendered
+    is sanitized (secrets redacted, long bodies truncated).
+    """
+
+    name = "sessions_history"
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "sessions_history",
+                    "description": (
+                        "Read sanitized history for inspection: pass "
+                        "task_id for one of your tasks' context, "
+                        "agent_id for an agent's chat transcript, or "
+                        "neither for your own full message history. "
+                        "Secret-looking values are redacted and long "
+                        "bodies truncated. Tool-call payloads are "
+                        "hidden unless include_tools=true. Read-only."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task UUID (must be assigned to you).",
+                            },
+                            "agent_id": {
+                                "type": "string",
+                                "description": "Agent UUID whose chat to read.",
+                            },
+                            "include_tools": {
+                                "type": "boolean",
+                                "description": (
+                                    "Include tool-call payloads in the "
+                                    "history (default false)."
+                                ),
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max entries to render (default 50).",
+                            },
+                        },
+                        "required": [],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        task_id = str(call.arguments.get("task_id", "") or "").strip()
+        agent_id = str(call.arguments.get("agent_id", "") or "").strip()
+        if task_id and agent_id:
+            return ToolResult(
+                content="sessions_history: pass at most one of task_id or agent_id",
+                ok=False,
+            )
+        include_tools = bool(call.arguments.get("include_tools", False))
+        limit = _parse_limit(call.arguments.get("limit"), SESSIONS_DEFAULT_LIMIT)
+
+        try:
+            if task_id:
+                data = self._get(
+                    f"/api/v1/agents/me/tasks/{quote(task_id, safe='')}/context"
+                )
+                return self._render_task_context(data)
+            if agent_id:
+                data = self._get(f"/api/v1/agents/{quote(agent_id, safe='')}/chat")
+                return self._render_messages(
+                    data, include_tools, limit, header=f"CHAT HISTORY — agent {agent_id}"
+                )
+            data = self._get("/api/v1/agents/me/messages/history")
+            return self._render_messages(
+                data, include_tools, limit, header="YOUR MESSAGE HISTORY"
+            )
+        except error.HTTPError as exc:
+            return ToolResult(
+                content=f"sessions_history: {self._http_detail(exc)}", ok=False
+            )
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return ToolResult(content=f"sessions_history: {exc}", ok=False)
+
+    def _render_task_context(self, data: object) -> ToolResult:
+        if not isinstance(data, dict):
+            return ToolResult(
+                content="sessions_history: task context returned an unexpected shape",
+                ok=False,
+            )
+        task = data.get("task") if isinstance(data.get("task"), dict) else {}
+        lines = [
+            "TASK CONTEXT",
+            f"id: {task.get('id', '?')}  ref: T-{task.get('task_number', '?')}",
+            f"title: {_sanitize(task.get('title', ''))}",
+            f"status: {task.get('status', '?')}  updated: {task.get('updated_at', '—')}",
+        ]
+        description = str(task.get("description", "") or "").strip()
+        if description:
+            lines.append("description:\n" + _indent(str(_sanitize(description))))
+        result = str(task.get("result", "") or "").strip()
+        if result:
+            lines.append("result:\n" + _indent(str(_sanitize(result))))
+        for key, label in (("workspace_branch", "workspace branch"), ("workspace_commit_sha", "commit")):
+            value = str(task.get(key, "") or "").strip()
+            if value:
+                lines.append(f"{label}: {value}")
+        return ToolResult(content="\n".join(lines), ok=True)
+
+    def _render_messages(
+        self, data: object, include_tools: bool, limit: int, header: str
+    ) -> ToolResult:
+        if not isinstance(data, list):
+            return ToolResult(
+                content="sessions_history: history returned an unexpected shape", ok=False
+            )
+        lines: list[str] = []
+        shown = 0
+        for message in data:
+            if not isinstance(message, dict):
+                continue
+            if shown >= limit:
+                break
+            payload = _payload_dict(message)
+            had_tools = any(key in payload for key in _TOOL_PAYLOAD_KEYS)
+            if not include_tools:
+                payload = {k: v for k, v in payload.items() if k not in _TOOL_PAYLOAD_KEYS}
+            sanitized = _sanitize(payload)
+            text_main = sanitized.get("message") if isinstance(sanitized, dict) else None
+            extras = {
+                k: v
+                for k, v in (sanitized.items() if isinstance(sanitized, dict) else [])
+                if k != "message"
+            }
+            parts: list[str] = []
+            if text_main:
+                parts.append(str(text_main))
+            if extras:
+                parts.append("extras: " + json.dumps(extras, default=str))
+            if not parts:
+                parts.append(
+                    "[tool payload hidden — pass include_tools=true]"
+                    if had_tools and not include_tools
+                    else "(empty)"
+                )
+            text = " | ".join(parts)
+            sender = str(
+                message.get("from_display")
+                or message.get("from_id")
+                or message.get("from_type")
+                or "?"
+            )
+            created = str(message.get("created_at", "")) or "—"
+            mtype = str(message.get("type", "?"))
+            status = str(message.get("status", "?"))
+            lines.append(f"[{created}] {sender} ({mtype}/{status}): {text}")
+            shown += 1
+        remaining = sum(1 for m in data if isinstance(m, dict)) - shown
+        notice = f"\n[{remaining} more entries omitted (limit {limit})]" if remaining > 0 else ""
+        return ToolResult(
+            content=header + f" — {shown} shown\n" + ("\n".join(lines) if lines else "(none)") + notice,
+            ok=True,
+        )
+
+
+def _indent(text: str) -> str:
+    return "\n".join("  " + line for line in text.splitlines())
+
+
+class SessionStatusTool(_SessionToolBase):
+    """S-282: a status card for the current run — always about THIS agent.
+
+    Aggregates only what the existing endpoints expose: agent id (from
+    the runtime context), bound model name (GET /agents/me/model),
+    task counts + active tasks (GET /agents/me/tasks), and visible peer
+    count (GET /agents/me/peers). Each section is best-effort: a field
+    that isn't available is omitted gracefully, never fabricated. Takes
+    no target argument by design — an agent can only ask about itself.
+    """
+
+    name = "session_status"
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        super().__init__(policy, context)
+        # Tool instances are built at wake time, so this approximates the
+        # runtime session's elapsed time for the current wake.
+        self._started_at = time.time()
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "session_status",
+                    "description": (
+                        "A status card for your current session: your "
+                        "agent id, bound model, task counts and active "
+                        "tasks, visible peers, and elapsed time since "
+                        "this wake. No arguments — always about you. "
+                        "Unavailable fields are omitted, not guessed. "
+                        "Read-only."
+                    ),
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        lines: list[str] = ["SESSION STATUS"]
+        lines.append(f"agent_id: {self.context.agent_id or '(unknown)'}")
+        elapsed = int(time.time() - self._started_at)
+        lines.append(f"wake_elapsed_seconds: {elapsed}")
+
+        # Model: best-effort — an unbound/unresolvable model returns an
+        # empty projection; omit the line rather than show a blank.
+        try:
+            model = self._get("/api/v1/agents/me/model")
+            if isinstance(model, dict) and model.get("model_name"):
+                lines.append(f"model: {model['model_name']}")
+        except Exception:  # noqa: BLE001 — status degrades, never fails on one field
+            pass
+
+        # Tasks: counts by status + the active (in-progress) ones.
+        try:
+            tasks = self._get("/api/v1/agents/me/tasks")
+            if isinstance(tasks, list):
+                counts: dict[str, int] = {}
+                active: list[str] = []
+                for task in tasks:
+                    if not isinstance(task, dict):
+                        continue
+                    status = str(task.get("status", "?"))
+                    counts[status] = counts.get(status, 0) + 1
+                    if status == "in-progress":
+                        number = task.get("task_number")
+                        label = f"T-{number}" if number else str(task.get("id", "?"))[:8]
+                        title = str(task.get("title", "")).strip() or "(untitled)"
+                        active.append(f"{label} {_redact_text(title)}")
+                counts_text = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+                lines.append(f"tasks: {len(tasks)} total" + (f" ({counts_text})" if counts_text else ""))
+                if active:
+                    lines.append("active: " + "; ".join(active))
+            else:
+                lines.append("tasks: unavailable")
+        except Exception:  # noqa: BLE001 — graceful omission per contract
+            lines.append("tasks: unavailable")
+
+        # Peers: count only, best-effort.
+        try:
+            peers = self._get("/api/v1/agents/me/peers")
+            if isinstance(peers, list):
+                lines.append(f"visible_peers: {len(peers)}")
+        except Exception:  # noqa: BLE001
+            pass
+
+        return ToolResult(content="\n".join(lines), ok=True)
+
+
 _BUILTIN_REGISTRY: dict[str, type] = {
     "exec": ExecTool,
     "web_fetch": WebFetchTool,
@@ -2692,6 +3238,12 @@ _BUILTIN_REGISTRY: dict[str, type] = {
     # S-281: built-in CRON — thin client over the control-plane
     # scheduled-jobs API (scheduler fires the wakes, not the runtime).
     "cron": CronTool,
+    # S-282: session inspection — GET-only clients over the existing
+    # agent-scoped read endpoints (tasks, peers, message history, task
+    # context, agent chat, model). No new endpoints, no widened access.
+    "sessions_list": SessionsListTool,
+    "sessions_history": SessionsHistoryTool,
+    "session_status": SessionStatusTool,
 }
 
 # Built-ins that are listed in the platform catalog (S-232) for admin

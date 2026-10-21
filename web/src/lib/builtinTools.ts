@@ -27,7 +27,12 @@ export type BuiltinToolName =
   | "apply_patch"
   | "process"
   // S-281: built-in CRON (control-plane scheduled jobs).
-  | "cron";
+  | "cron"
+  // S-282: session inspection (read-only views over existing agent-scoped
+  // endpoints: tasks, peers, message history, task context, agent chat).
+  | "sessions_list"
+  | "sessions_history"
+  | "session_status";
 
 // S-232: every built-in the control-plane catalog ships (domain.BuiltinToolNames)
 // must be listed here too — anything missing silently vanishes from the
@@ -50,7 +55,24 @@ export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = [
   "process",
   // S-281: built-in CRON — the scheduler lives in the control plane.
   "cron",
+  // S-282: session inspection — read-only, self-scoped session/task views.
+  "sessions_list",
+  "sessions_history",
+  "session_status",
 ];
+
+// S-282: the three session inspection tools share one trait — no policy
+// knobs at all (empty allow-set server-side, "{}" only), because they are
+// GET-only clients over existing endpoints with fixed sanitization.
+export const SESSION_INSPECTION_TOOL_NAMES: readonly BuiltinToolName[] = [
+  "sessions_list",
+  "sessions_history",
+  "session_status",
+];
+
+export function isSessionInspectionTool(name: BuiltinToolName): boolean {
+  return SESSION_INSPECTION_TOOL_NAMES.includes(name);
+}
 
 // S-279: the four file tools share one policy shape {timeoutSeconds, maxBytes}.
 export const FILE_TOOL_NAMES: readonly BuiltinToolName[] = ["read", "write", "edit", "apply_patch"];
@@ -117,6 +139,11 @@ export const TOOL_DEFAULTS: Record<BuiltinToolName, { timeoutSeconds: number }> 
   // S-281 cron: no per-call timeout is surfaced (the form hides it);
   // the entry keeps the Record total. The runtime uses a 15s HTTP timeout.
   cron: { timeoutSeconds: 15 },
+  // S-282 session inspection: no surfaced knobs (policy is "{}"); the
+  // runtime uses a 15s HTTP timeout on its GET round trips.
+  sessions_list: { timeoutSeconds: 15 },
+  sessions_history: { timeoutSeconds: 15 },
+  session_status: { timeoutSeconds: 15 },
 };
 
 const EXEC_DEFAULTS = { timeoutSeconds: 60, maxOutputBytes: 65536 };
@@ -256,6 +283,11 @@ export function buildToolPolicy(name: BuiltinToolName, form: ToolFormValues): Re
     // (the scheduler runs control-plane-side; there is no per-call timeout).
     return { maxActiveJobs: Number(form.maxActiveJobs) };
   }
+  if (isSessionInspectionTool(name)) {
+    // S-282: the session inspection tools pin exactly {} — read-only
+    // clients with no admin-tunable policy (server empty allow-set).
+    return {};
+  }
   return {
     timeoutSeconds: timeout,
     maxResults: Number(form.maxResults),
@@ -294,6 +326,10 @@ export function validateToolForm(name: BuiltinToolName, form: ToolFormValues): s
     // S-281: cron's policy is {maxActiveJobs} only — timeoutSeconds is
     // hidden in the form and must not be validated here.
     return checkPositiveInt(form.maxActiveJobs, "maxActiveJobs");
+  }
+  if (isSessionInspectionTool(name)) {
+    // S-282: nothing to validate — the policy is always {}.
+    return null;
   }
   const timeoutErr = checkPositiveInt(form.timeoutSeconds, "timeoutSeconds");
   if (timeoutErr) return timeoutErr;

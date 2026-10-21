@@ -49,6 +49,10 @@ const TOOL_LABELS: Record<BuiltinToolName, string> = {
   process: "process — manage background exec sessions",
   // S-281: built-in CRON.
   cron: "cron — scheduled tasks",
+  // S-282: session inspection.
+  sessions_list: "sessions_list — list visible sessions",
+  sessions_history: "sessions_history — sanitized session/task history",
+  session_status: "session_status — current run status card",
 };
 
 const TOOL_HINTS: Record<BuiltinToolName, string> = {
@@ -70,6 +74,11 @@ const TOOL_HINTS: Record<BuiltinToolName, string> = {
   process: "Controls background commands started with exec(background=true): list, poll, log, write (stdin), kill (whole process group) and clear. maxSessions caps concurrently-running background sessions per task; maxLogBytes caps each captured log (the session is killed when its log exceeds the cap).",
   // S-281: the scheduler runs in the control plane — jobs fire even when no pod is up.
   cron: "Lets agents schedule their own future work (one-shot 'at', fixed 'every' interval, or 5-field 'cron' with IANA timezone). Each fire materializes a task on the agent's board with the job's prompt, exactly like a delegate. maxActiveJobs caps how many enabled jobs one agent may hold; there is no per-call timeout because scheduling is control-plane-side.",
+  // S-282: read-only inspection over existing agent-scoped endpoints —
+  // the server's own authorization is the visibility boundary.
+  sessions_list: "Read-only listing of what the agent can already see: its assigned tasks and its squad peer roster (GET /agents/me/tasks, /agents/me/peers). Never widens access; there are no policy knobs.",
+  sessions_history: "Read-only sanitized history: one task's context (assigned tasks only), an agent's chat transcript, or the agent's own message history. Secret-shaped values are redacted, long bodies truncated, tool-call payloads hidden unless include_tools=true. No policy knobs.",
+  session_status: "Read-only status card of the agent's own current run: agent id, bound model, task counts/active tasks, visible peers, elapsed time. Always self-scoped; unavailable fields are omitted, never fabricated. No policy knobs.",
 };
 
 // BuiltinToolConfig is the admin config surface for ONE built-in tool,
