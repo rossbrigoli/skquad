@@ -36,10 +36,17 @@ const (
 	BuiltinToolWrite      = "write"
 	BuiltinToolEdit       = "edit"
 	BuiltinToolApplyPatch = "apply_patch"
+	// S-280: background process management (paired with exec's
+	// background/yieldMs). Lets agents start long-running commands
+	// detached in their task workspace and control them afterwards —
+	// list/poll/log/write-stdin/kill/clear — mirroring the OpenClaw
+	// process tool. Kill terminates the whole process group so spawned
+	// children die too.
+	BuiltinToolProcess = "process"
 )
 
 // BuiltinToolNames lists the built-in tools in canonical order.
-var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent, BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch}
+var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent, BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch, BuiltinToolProcess}
 
 // BuiltinToolDefaultEnabled reports whether a built-in ships enabled when
 // seeded. The original three are security-sensitive and ship disabled
@@ -69,7 +76,8 @@ func BuiltinToolDefaultEnabled(name string) bool {
 	return name == BuiltinToolSendMessage || name == BuiltinToolSendInbox || name == BuiltinToolNotifyOwner ||
 		name == BuiltinToolMemorySearch || name == BuiltinToolSpawnSubagent ||
 		name == BuiltinToolRead || name == BuiltinToolWrite ||
-		name == BuiltinToolEdit || name == BuiltinToolApplyPatch
+		name == BuiltinToolEdit || name == BuiltinToolApplyPatch ||
+		name == BuiltinToolProcess
 }
 
 // SearchProviderNames lists the accepted web_search policy providers.
@@ -180,6 +188,15 @@ func ValidateBuiltinPolicy(name string, policy json.RawMessage) []string {
 		allowed = map[string]func(string, json.RawMessage) []string{
 			"timeoutSeconds": requirePositiveInt,
 			"maxBytes":       requirePositiveInt,
+		}
+	case BuiltinToolProcess:
+		// S-280: maxSessions caps concurrently-running background sessions
+		// per task workspace; maxLogBytes caps each session's captured log
+		// (process killed when the cap is exceeded) so a chatty loop cannot
+		// fill the workspace PVC. Both are runtime-enforced limits.
+		allowed = map[string]func(string, json.RawMessage) []string{
+			"maxSessions": requirePositiveInt,
+			"maxLogBytes": requirePositiveInt,
 		}
 	default:
 		return []string{fmt.Sprintf("unknown built-in tool %q", name)}
