@@ -848,6 +848,11 @@ class RuntimeResource:
     # .Constraints, secret-stripped, TG-2 surfacing). MCP uses it for the
     # allowed-tool list (tools_allow) and the per_tool confirmation flags.
     constraints: Mapping[str, object] = field(default_factory=dict)
+    # S-283: the resource's (secret-stripped) endpoint config
+    # (agentRuntimeResource.EndpointConfig, TG-2 surfacing). The browser
+    # builtin uses it to recognize the managed browser resource
+    # (`driver: "browser"` on an mcp-typed grant, ADR-0014).
+    endpoint_config: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1450,6 +1455,11 @@ def runtime_resource(payload: Mapping[str, object]) -> RuntimeResource:
     constraints: Mapping[str, object] = (
         raw_constraints if isinstance(raw_constraints, Mapping) else {}
     )
+    # S-283: endpoint config passthrough (browser-resource recognition).
+    raw_endpoint_config = payload.get("endpoint_config")
+    endpoint_config: Mapping[str, object] = (
+        raw_endpoint_config if isinstance(raw_endpoint_config, Mapping) else {}
+    )
     return RuntimeResource(
         resource_type=str(payload.get("resource_type", "")),
         resource_id=str(payload.get("resource_id", "")),
@@ -1459,6 +1469,7 @@ def runtime_resource(payload: Mapping[str, object]) -> RuntimeResource:
         manifest=manifest,
         tools=tools,
         constraints=constraints,
+        endpoint_config=endpoint_config,
     )
 
 
@@ -2041,7 +2052,7 @@ class LLMMessageHandler:
         synthetic = build_synthetic_tools(resources, config)
         try:
             plugins = compose_builtin_and_plugins(
-                load_builtin_tools(config), list(self.plugins) + synthetic
+                load_builtin_tools(config, resources), list(self.plugins) + synthetic
             )
         except BuiltinToolsFetchError as exc:
             return [], [], MessageResult(ok=False, summary=f"builtin-tools fetch failed: {exc}")
@@ -2640,7 +2651,7 @@ class LiteLLMTaskHandler:
         # handler — the wake fails loudly (ADR-0011 D4 pattern).
         from .builtin_tools import compose_builtin_and_plugins
 
-        plugins = compose_builtin_and_plugins(load_builtin_tools(config), plugins)
+        plugins = compose_builtin_and_plugins(load_builtin_tools(config, resources), plugins)
         resume_note = self._resume_note(config, task)
         # S-PROMPT WP3: fetch-at-wake. The system message is the
         # control-plane composed prompt; a fetch failure raises before any
@@ -3003,16 +3014,21 @@ def builtin_tools_cache(config: BootstrapConfig) -> BuiltinToolsConfigCache:
         return _BUILTIN_TOOLS_CACHE
 
 
-def load_builtin_tools(config: BootstrapConfig) -> list:
+def load_builtin_tools(config: BootstrapConfig, resources: list | None = None) -> list:
     """Enabled builtin tools for this wake, or [] (BT-RUNTIME).
 
     - Kill switch ``SKQUAD_BUILTIN_TOOLS_ENABLED`` false -> [] with no
       fetch at all (plugins unchanged).
-    - ``LEGACY_NO_ENDPOINT`` (404) -> [] (control plane predates the
-      endpoint; plugins unchanged).
+    - ``LEGACY_NO_ENDPOINT`` (404) -> [] (plugins unchanged).
     - Network/5xx/malformed -> :class:`BuiltinToolsFetchError` propagates;
       callers must fail the wake loudly, never run with a partially-known
       tool set (mirrors the ADR-0011 D4 prompt policy).
+
+    S-283: ``resources`` (the wake's granted resource surface) lets the
+    browser builtin discover the managed browser resource — an mcp-typed
+    grant whose endpoint_config declares ``driver: "browser"``. Absent
+    resources/gateway URL => the browser tool stays inert (fail-closed:
+    every action errors without touching the network).
     """
     from .builtin_tools import BuiltinToolContext, build_builtin_tools
     from .builtin_tools_config import builtin_tools_enabled
@@ -3035,8 +3051,32 @@ def load_builtin_tools(config: BootstrapConfig) -> list:
         control_plane_url=config.control_plane_url,
         agent_credential=read_secret_value(config.agent_credential_path) or "",
         agent_id=config.agent_id,
+        # S-283: gateway-driven browser builtin inputs.
+        tool_gateway_url=config.tool_gateway_url,
+        browser_resource_id=browser_resource_id(resources or []),
     )
     return build_builtin_tools({"tools": result.tools}, context)
+
+
+def browser_resource_id(resources: list) -> str:
+    """First granted mcp resource that declares the TG-6 browser driver.
+
+    Mirrors the gateway's selection (grantRequestsBrowserDriver /
+    egresspolicy.IsBrowserConfig): an ``mcp``-typed resource whose
+    endpoint_config carries ``driver: "browser"`` (case-insensitive).
+    Empty string when no such grant exists — the browser builtin then
+    fails closed without any network activity.
+    """
+    for resource in resources:
+        if getattr(resource, "resource_type", "") != "mcp":
+            continue
+        cfg = getattr(resource, "endpoint_config", None)
+        if not isinstance(cfg, Mapping):
+            continue
+        driver = str(cfg.get("driver", "") or "").strip().lower()
+        if driver == "browser" and getattr(resource, "resource_id", ""):
+            return str(resource.resource_id)
+    return ""
 
 
 def load_runtime_plugins(

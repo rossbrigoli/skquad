@@ -65,10 +65,22 @@ const (
 	BuiltinToolSessionsList    = "sessions_list"
 	BuiltinToolSessionsHistory = "sessions_history"
 	BuiltinToolSessionStatus   = "session_status"
+	// S-283: built-in BROWSER tool (ADR-0014 Browser-as-a-Service).
+	// A thin client over the Tool Gateway's browser driver: the runtime
+	// dispatches MCP tool calls (browser.navigate/click/type/screenshot/
+	// extract/close_session) to the quarantined browser-service via
+	// POST {gateway}/v1/mcp/{resourceID}/call. The agent never holds a
+	// browser session token or talks to the service directly — session
+	// brokering, navigation ceilings (deny_hosts, max_pages) and the
+	// egress quarantine live gateway/service-side. The builtin policy
+	// below only bounds the RUNTIME side of the round trip (timeout,
+	// rendered text size, accepted screenshot size); the security-
+	// relevant ceilings are the resource grant's (egresspolicy/browser.go).
+	BuiltinToolBrowser = "browser"
 )
 
 // BuiltinToolNames lists the built-in tools in canonical order.
-var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent, BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch, BuiltinToolProcess, BuiltinToolCron, BuiltinToolSessionsList, BuiltinToolSessionsHistory, BuiltinToolSessionStatus}
+var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent, BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch, BuiltinToolProcess, BuiltinToolCron, BuiltinToolSessionsList, BuiltinToolSessionsHistory, BuiltinToolSessionStatus, BuiltinToolBrowser}
 
 // BuiltinToolDefaultEnabled reports whether a built-in ships enabled when
 // seeded. The original three are security-sensitive and ship disabled
@@ -113,7 +125,13 @@ func BuiltinToolDefaultEnabled(name string) bool {
 		// them by default would make the capability invisible.
 		name == BuiltinToolSessionsList ||
 		name == BuiltinToolSessionsHistory ||
-		name == BuiltinToolSessionStatus
+		name == BuiltinToolSessionStatus ||
+		// S-283: browser ships enabled to match its migration 0059 seed.
+		// The tool is inert without a granted browser resource and a
+		// configured tool gateway (both fail-closed runtime-side, and the
+		// gateway denies without a grant), so default-enablement cannot
+		// widen reach — invisible-if-disabled would defeat the purpose.
+		name == BuiltinToolBrowser
 }
 
 // SearchProviderNames lists the accepted web_search policy providers.
@@ -241,6 +259,19 @@ func ValidateBuiltinPolicy(name string, policy json.RawMessage) []string {
 		// pile up an unbounded queue of future wakes.
 		allowed = map[string]func(string, json.RawMessage) []string{
 			"maxActiveJobs": requirePositiveInt,
+		}
+	case BuiltinToolBrowser:
+		// S-283: runtime-side bounds only. timeoutSeconds bounds the
+		// gateway round trip; maxSnapshotChars caps rendered page text;
+		// maxScreenshotBytes caps what the runtime will persist for a
+		// screenshot (the service caps capture at its own ceiling).
+		// Session/navigation ceilings (max_sessions_per_agent, deny_hosts,
+		// max_pages) are NOT builtin policy — they are the resource
+		// grant's ceiling (egresspolicy/browser.go, ADR-0014).
+		allowed = map[string]func(string, json.RawMessage) []string{
+			"timeoutSeconds":     requirePositiveInt,
+			"maxSnapshotChars":   requirePositiveInt,
+			"maxScreenshotBytes": requirePositiveInt,
 		}
 	case BuiltinToolSessionsList, BuiltinToolSessionsHistory, BuiltinToolSessionStatus:
 		// S-282: the session inspection tools have no admin-tunable

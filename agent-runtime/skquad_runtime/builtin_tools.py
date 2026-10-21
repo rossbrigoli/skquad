@@ -53,6 +53,13 @@ class BuiltinToolContext:
     control_plane_url: str
     agent_credential: str
     agent_id: str = ""
+    # S-283: tool-gateway base URL (SKQUAD_TOOL_GATEWAY_URL, operator-
+    # injected). Empty is legal: the browser builtin then fails closed.
+    tool_gateway_url: str = ""
+    # S-283: resource id of the granted managed browser resource (an
+    # mcp-typed grant whose endpoint_config declares driver: "browser").
+    # Empty when the agent holds no such grant — the builtin stays inert.
+    browser_resource_id: str = ""
 
 
 def _scrubbed_env() -> dict[str, str]:
@@ -3130,6 +3137,346 @@ def _indent(text: str) -> str:
     return "\n".join("  " + line for line in text.splitlines())
 
 
+# ---------------------------------------------------------------------------
+# S-283: built-in BROWSER tool (ADR-0014 Browser-as-a-Service).
+#
+# Thin client over the Tool Gateway's browser driver. Every action is an
+# MCP tool call dispatched to the quarantined browser-service via
+# POST {gateway}/v1/mcp/{resource_id}/call with the caller's own
+# credential (Bearer + X-Skquad-Agent-ID) — the same governed path the
+# synthetic mcp_call uses. The runtime NEVER talks to the browser
+# service directly: session brokering, navigation ceilings
+# (deny_hosts, max_pages), the per-agent session cap and the egress
+# quarantine are enforced gateway/service-side. Without a granted
+# browser resource or a configured gateway URL the tool fails closed
+# before any network activity, and the gateway denies without a grant.
+#
+# Action → MCP mapping (verified against the LIVE deployed service,
+# docs/tg6-browser-protocol.md §3):
+#   open        -> browser.navigate {url}   (+ browser.extract summary)
+#   snapshot    -> browser.extract          (visible page text; the
+#                      service exposes no aria-tree snapshot — elements
+#                      are addressed by CSS selector, not refs)
+#   screenshot  -> browser.screenshot {full_page?}; the PNG is written
+#                      into the workspace and only a REFERENCE is
+#                      returned — base64 never enters model context
+#   click       -> browser.click {selector}
+#   type        -> browser.type {selector, text, submit?}
+#   close       -> browser.close_session
+#
+# NOTE: the deployed TG-6 surface has no key-press tool, so `press` is
+# deliberately absent (type with submit=true covers the common Enter
+# case). Adding press requires a browser-service change, out of S-283.
+# ---------------------------------------------------------------------------
+
+BROWSER_UNTRUSTED_OPEN = "<skquad_untrusted"
+BROWSER_UNTRUSTED_CLOSE = "</skquad_untrusted>"
+BROWSER_SCREENSHOT_DIR = "browser/screenshots"
+BROWSER_DEFAULT_MAX_SNAPSHOT_CHARS = 12000
+BROWSER_DEFAULT_MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024
+
+
+def _unwrap_untrusted(text: str) -> str:
+    """Strip the gateway's S-PROMPT WP3 wrapper to reach the payload.
+
+    The gateway browser driver wraps every tool result as
+    ``<skquad_untrusted ...>payload</skquad_untrusted>``; the browser
+    payload itself is a JSON string. Non-wrapped text passes through.
+    """
+    s = text.strip()
+    if s.startswith(BROWSER_UNTRUSTED_OPEN) and s.endswith(BROWSER_UNTRUSTED_CLOSE):
+        gt = s.find(">")
+        end = s.rfind(BROWSER_UNTRUSTED_CLOSE)
+        if gt != -1 and end > gt:
+            return s[gt + 1 : end]
+    return s
+
+
+def _truncate_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"… [truncated, {len(text)} chars total]"
+
+
+class BrowserTool:
+    """S-283: governed headless browsing via the tool gateway's browser
+    driver (ADR-0014). See the section comment above for the mapping."""
+
+    name = "browser"
+
+    ACTIONS = ("open", "snapshot", "screenshot", "click", "type", "close")
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        self.policy = policy or {}
+        self.context = context
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "browser",
+                    "description": (
+                        "Drive the platform's quarantined headless "
+                        "browser (JS-rendered pages, forms, "
+                        "screenshots). Actions: open {url} navigates "
+                        "and returns a page summary; snapshot returns "
+                        "the visible page text; screenshot captures a "
+                        "PNG saved into your workspace (a file "
+                        "reference is returned, not the image data); "
+                        "click {selector} and type {selector, text, "
+                        "submit?} act on CSS selectors from the "
+                        "snapshot; close releases the session. All "
+                        "calls are routed and audited through the "
+                        "tool gateway — you never see browser "
+                        "credentials or session tokens, and browsing "
+                        "is subject to the platform navigation "
+                        "ceiling. Requires a granted browser resource."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": list(self.ACTIONS),
+                                "description": "Browser action to perform.",
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "http(s) URL (action=open).",
+                            },
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS selector (action=click/type).",
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Text to type (action=type).",
+                            },
+                            "submit": {
+                                "type": "boolean",
+                                "description": "Press Enter after typing (action=type).",
+                            },
+                            "full_page": {
+                                "type": "boolean",
+                                "description": "Full-page capture (action=screenshot).",
+                            },
+                        },
+                        "required": ["action"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        args = call.arguments if isinstance(call.arguments, Mapping) else {}
+        action = str(args.get("action", "") or "").strip().lower()
+        if action not in self.ACTIONS:
+            return ToolResult(
+                content=f"browser: unknown action {action!r} (expected one of: "
+                + ", ".join(self.ACTIONS) + ")",
+                ok=False,
+            )
+        # Fail-closed pre-flight: no grant / no gateway => no network.
+        if not self.context.tool_gateway_url:
+            return ToolResult(
+                content="browser: tool gateway is not configured (fail-closed)",
+                ok=False,
+            )
+        if not self.context.browser_resource_id:
+            return ToolResult(
+                content="browser: no browser resource granted to this agent (fail-closed)",
+                ok=False,
+            )
+        try:
+            if action == "open":
+                return self._open(str(args.get("url", "") or "").strip())
+            if action == "snapshot":
+                return self._snapshot()
+            if action == "screenshot":
+                return self._screenshot(bool(args.get("full_page", False)))
+            if action == "click":
+                selector = str(args.get("selector", "") or "").strip()
+                if not selector:
+                    return ToolResult(content="browser click: selector is required", ok=False)
+                return self._call("browser.click", {"selector": selector})
+            if action == "type":
+                selector = str(args.get("selector", "") or "").strip()
+                if not selector:
+                    return ToolResult(content="browser type: selector is required", ok=False)
+                text = str(args.get("text", "") or "")
+                payload: dict[str, object] = {"selector": selector, "text": text}
+                if args.get("submit") is not None:
+                    payload["submit"] = bool(args.get("submit"))
+                return self._call("browser.type", payload)
+            return self._call("browser.close_session", {})
+        except error.HTTPError as exc:
+            return ToolResult(content=f"browser {action}: {self._http_detail(exc)}", ok=False)
+        except (error.URLError, OSError) as exc:
+            return ToolResult(
+                content=f"browser {action}: gateway request failed: {type(exc).__name__}",
+                ok=False,
+            )
+
+    # -- action implementations -------------------------------------------
+
+    def _open(self, url: str) -> ToolResult:
+        if not url:
+            return ToolResult(content="browser open: url is required", ok=False)
+        scheme = url.split(":", 1)[0].lower() if ":" in url else ""
+        if scheme not in ("http", "https"):
+            return ToolResult(
+                content=f"browser open: unsupported scheme {scheme!r} (http/https only)",
+                ok=False,
+            )
+        nav = self._call("browser.navigate", {"url": url})
+        if not nav.ok:
+            return nav
+        lines = [f"opened: {url}"]
+        nav_info = _parse_browser_payload(nav.content)
+        if isinstance(nav_info, dict):
+            title = str(nav_info.get("title", "") or "").strip()
+            if title:
+                lines.append(f"title: {title}")
+            if "page_index" in nav_info:
+                lines.append(f"page_index: {nav_info['page_index']}")
+        # Initial snapshot summary (best-effort — the page is open even
+        # if the summary call fails).
+        try:
+            snap = self._call("browser.extract", {})
+            if snap.ok:
+                info = _parse_browser_payload(snap.content)
+                text = str(info.get("text", "")) if isinstance(info, dict) else snap.content
+                lines.append("")
+                lines.append(_truncate_text(text, self._max_snapshot_chars()))
+            else:
+                lines.append("(initial snapshot failed: " + snap.content + ")")
+        except Exception:  # noqa: BLE001 — summary is best-effort
+            lines.append("(initial snapshot failed)")
+        return ToolResult(content="\n".join(lines), ok=True)
+
+    def _snapshot(self) -> ToolResult:
+        result = self._call("browser.extract", {})
+        if not result.ok:
+            return result
+        info = _parse_browser_payload(result.content)
+        text = str(info.get("text", "")) if isinstance(info, dict) else result.content
+        return ToolResult(content=_truncate_text(text, self._max_snapshot_chars()), ok=True)
+
+    def _screenshot(self, full_page: bool) -> ToolResult:
+        result = self._call("browser.screenshot", {"full_page": full_page})
+        if not result.ok:
+            return result
+        info = _parse_browser_payload(result.content)
+        if not isinstance(info, dict) or "screenshot_b64" not in info:
+            return ToolResult(
+                content="browser screenshot: unexpected service response shape", ok=False
+            )
+        try:
+            blob = base64.b64decode(str(info["screenshot_b64"]).encode("ascii"))
+        except Exception:  # noqa: BLE001 — malformed base64 from service
+            return ToolResult(content="browser screenshot: malformed image data", ok=False)
+        cap = int(self.policy.get("maxScreenshotBytes", BROWSER_DEFAULT_MAX_SCREENSHOT_BYTES))
+        if len(blob) > cap:
+            return ToolResult(
+                content=f"browser screenshot: image is {len(blob)} bytes, over the "
+                f"{cap}-byte policy cap (not saved)",
+                ok=False,
+            )
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+        name = f"screenshot-{stamp}-{os.urandom(4).hex()}.png"
+        target_dir = Path(self.context.workspace_dir) / BROWSER_SCREENSHOT_DIR
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / name
+        target.write_bytes(blob)
+        rel = f"{BROWSER_SCREENSHOT_DIR}/{name}"
+        mime = str(info.get("mime", "image/png"))
+        return ToolResult(
+            content=f"screenshot saved: {rel} ({len(blob)} bytes, {mime}) — "
+            "reference only; the image bytes are not inlined",
+            ok=True,
+        )
+
+    # -- gateway round trip -------------------------------------------------
+
+    def _call(self, tool: str, arguments: dict) -> ToolResult:
+        """Dispatch one browser MCP tool call through the gateway.
+
+        Mirrors the synthetic mcp_call contract: POST
+        /v1/mcp/{resource_id}/call with {tool, arguments}; the gateway
+        browser driver brokers the session, injects the session token,
+        enforces ceilings and wraps the result as untrusted content.
+        """
+        url = (
+            self.context.tool_gateway_url.rstrip("/")
+            + "/v1/mcp/"
+            + quote(self.context.browser_resource_id, safe="")
+            + "/call"
+        )
+        payload = json.dumps({"tool": tool, "arguments": arguments}).encode("utf-8")
+        req = request.Request(
+            url,
+            data=payload,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.context.agent_credential}",
+                "X-Skquad-Agent-ID": self.context.agent_id,
+                "Content-Type": JSON_CONTENT_TYPE,
+                "Accept": JSON_CONTENT_TYPE,
+            },
+        )
+        timeout = int(self.policy.get("timeoutSeconds", 30))
+        with request.urlopen(req, timeout=timeout) as response:
+            raw = response.read()
+        try:
+            envelope = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return ToolResult(
+                content=f"browser: malformed gateway response for {tool}", ok=False
+            )
+        if not isinstance(envelope, dict):
+            return ToolResult(
+                content=f"browser: malformed gateway response for {tool}", ok=False
+            )
+        content = str(envelope.get("content", "") or "")
+        if envelope.get("isError"):
+            return ToolResult(
+                content=f"browser tool error ({tool}): {_truncate_text(content, 512)}",
+                ok=False,
+            )
+        return ToolResult(content=content, ok=True)
+
+    def _max_snapshot_chars(self) -> int:
+        try:
+            value = int(self.policy.get("maxSnapshotChars", BROWSER_DEFAULT_MAX_SNAPSHOT_CHARS))
+        except (TypeError, ValueError):
+            return BROWSER_DEFAULT_MAX_SNAPSHOT_CHARS
+        return value if value > 0 else BROWSER_DEFAULT_MAX_SNAPSHOT_CHARS
+
+    @staticmethod
+    def _http_detail(exc: error.HTTPError) -> str:
+        detail = ""
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            if isinstance(body, dict):
+                detail = str(body.get("message") or body.get("error") or "")
+        except Exception:  # noqa: BLE001 — error body is best-effort
+            pass
+        return f"HTTP {exc.code}" + (f" — {detail}" if detail else "")
+
+
+def _parse_browser_payload(content: str) -> object:
+    """Parse a browser-service tool payload (JSON inside the gateway's
+    untrusted wrapper). Returns {} when the payload isn't JSON so
+    callers can degrade to the raw text."""
+    inner = _unwrap_untrusted(content)
+    try:
+        return json.loads(inner)
+    except ValueError:
+        return {}
+
+
 class SessionStatusTool(_SessionToolBase):
     """S-282: a status card for the current run — always about THIS agent.
 
@@ -3244,6 +3591,10 @@ _BUILTIN_REGISTRY: dict[str, type] = {
     "sessions_list": SessionsListTool,
     "sessions_history": SessionsHistoryTool,
     "session_status": SessionStatusTool,
+    # S-283: built-in BROWSER — gateway-driven client over the
+    # quarantined browser-service (ADR-0014). Fail-closed without a
+    # granted browser resource or a configured tool gateway.
+    "browser": BrowserTool,
 }
 
 # Built-ins that are listed in the platform catalog (S-232) for admin

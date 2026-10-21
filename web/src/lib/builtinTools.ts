@@ -32,7 +32,12 @@ export type BuiltinToolName =
   // endpoints: tasks, peers, message history, task context, agent chat).
   | "sessions_list"
   | "sessions_history"
-  | "session_status";
+  | "session_status"
+  // S-283: built-in BROWSER (ADR-0014) — gateway-driven browsing via
+  // the quarantined browser-service. Runtime-side bounds only; the
+  // security-relevant ceilings (deny_hosts, max_pages, session caps)
+  // live on the browser resource grant, not this policy.
+  | "browser";
 
 // S-232: every built-in the control-plane catalog ships (domain.BuiltinToolNames)
 // must be listed here too — anything missing silently vanishes from the
@@ -59,6 +64,8 @@ export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = [
   "sessions_list",
   "sessions_history",
   "session_status",
+  // S-283: built-in BROWSER — quarantined browsing through the tool gateway.
+  "browser",
 ];
 
 // S-282: the three session inspection tools share one trait — no policy
@@ -116,6 +123,9 @@ export type ToolFormValues = {
   maxLogBytes: string;
   // cron only (S-281)
   maxActiveJobs: string;
+  // browser only (S-283)
+  maxSnapshotChars: string;
+  maxScreenshotBytes: string;
 };
 
 // Contract defaults (ADR-0012 §3). Used as empty-form placeholders and
@@ -144,6 +154,8 @@ export const TOOL_DEFAULTS: Record<BuiltinToolName, { timeoutSeconds: number }> 
   sessions_list: { timeoutSeconds: 15 },
   sessions_history: { timeoutSeconds: 15 },
   session_status: { timeoutSeconds: 15 },
+  // S-283 browser: bounds the gateway round trip.
+  browser: { timeoutSeconds: 30 },
 };
 
 const EXEC_DEFAULTS = { timeoutSeconds: 60, maxOutputBytes: 65536 };
@@ -159,6 +171,11 @@ const PROCESS_DEFAULTS = { maxSessions: 16, maxLogBytes: 5242880 };
 // S-281: cron pins exactly {maxActiveJobs} — the per-agent cap on
 // enabled scheduled jobs (mirrors the control-plane default of 10).
 const CRON_DEFAULTS = { maxActiveJobs: 10 };
+// S-283: browser runtime-side bounds — rendered page-text cap and the
+// max screenshot size the runtime will persist. The service caps
+// capture at its own ceiling; navigation/session ceilings are the
+// resource grant's (ADR-0014).
+const BROWSER_DEFAULTS = { maxSnapshotChars: 12000, maxScreenshotBytes: 5242880 };
 
 export function isBuiltinToolName(name: string): name is BuiltinToolName {
   return (BUILTIN_TOOL_NAMES as readonly string[]).includes(name);
@@ -188,6 +205,8 @@ export function emptyToolForm(name: BuiltinToolName): ToolFormValues {
     maxSessions: String(PROCESS_DEFAULTS.maxSessions),
     maxLogBytes: String(PROCESS_DEFAULTS.maxLogBytes),
     maxActiveJobs: String(CRON_DEFAULTS.maxActiveJobs),
+    maxSnapshotChars: String(BROWSER_DEFAULTS.maxSnapshotChars),
+    maxScreenshotBytes: String(BROWSER_DEFAULTS.maxScreenshotBytes),
   };
 }
 
@@ -235,6 +254,11 @@ export function formFromTool(tool: BuiltinTool): ToolFormValues {
   // S-281: cron carries {maxActiveJobs}.
   if (tool.name === "cron") {
     base.maxActiveJobs = num(policy.maxActiveJobs, base.maxActiveJobs);
+  }
+  // S-283: browser carries {timeoutSeconds, maxSnapshotChars, maxScreenshotBytes}.
+  if (tool.name === "browser") {
+    base.maxSnapshotChars = num(policy.maxSnapshotChars, base.maxSnapshotChars);
+    base.maxScreenshotBytes = num(policy.maxScreenshotBytes, base.maxScreenshotBytes);
   }
   return base;
 }
@@ -287,6 +311,17 @@ export function buildToolPolicy(name: BuiltinToolName, form: ToolFormValues): Re
     // S-282: the session inspection tools pin exactly {} — read-only
     // clients with no admin-tunable policy (server empty allow-set).
     return {};
+  }
+  if (name === "browser") {
+    // S-283: browser pins exactly {timeoutSeconds, maxSnapshotChars,
+    // maxScreenshotBytes} — runtime-side bounds only. Navigation/session
+    // ceilings (deny_hosts, max_pages, max_sessions_per_agent) are the
+    // browser resource grant's job (ADR-0014), NOT this policy.
+    return {
+      timeoutSeconds: timeout,
+      maxSnapshotChars: Number(form.maxSnapshotChars),
+      maxScreenshotBytes: Number(form.maxScreenshotBytes),
+    };
   }
   return {
     timeoutSeconds: timeout,
@@ -359,6 +394,13 @@ export function validateToolForm(name: BuiltinToolName, form: ToolFormValues): s
     const sessionsErr = checkPositiveInt(form.maxSessions, "maxSessions");
     if (sessionsErr) return sessionsErr;
     return checkPositiveInt(form.maxLogBytes, "maxLogBytes");
+  }
+  if (name === "browser") {
+    // S-283: mirror the server's {timeoutSeconds, maxSnapshotChars,
+    // maxScreenshotBytes} schema (timeout already checked above).
+    const snapErr = checkPositiveInt(form.maxSnapshotChars, "maxSnapshotChars");
+    if (snapErr) return snapErr;
+    return checkPositiveInt(form.maxScreenshotBytes, "maxScreenshotBytes");
   }
   const resultsErr = checkPositiveInt(form.maxResults, "maxResults");
   if (resultsErr) return resultsErr;

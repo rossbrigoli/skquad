@@ -131,3 +131,31 @@ func TestSessionInspectionToolsDefaultEnabled(t *testing.T) {
 		}
 	}
 }
+
+// S-283: the browser builtin ships enabled (migration 0059 seed), is a
+// known name, and validates the runtime-side policy bounds
+// {timeoutSeconds, maxSnapshotChars, maxScreenshotBytes}. Unknown keys
+// (including the gateway-ceiling fields like deny_hosts) are rejected —
+// those ceilings belong to the resource grant, not the builtin policy.
+func TestBrowserBuiltinDefaultEnabled(t *testing.T) {
+	t.Parallel()
+	name := BuiltinToolBrowser
+	if !BuiltinToolDefaultEnabled(name) {
+		t.Fatalf("%s should ship enabled by default (migration 0059 seed)", name)
+	}
+	if !IsBuiltinToolName(name) {
+		t.Fatalf("%s missing from BuiltinToolNames", name)
+	}
+	if errs := ValidateBuiltinPolicy(name, json.RawMessage(`{}`)); len(errs) != 0 {
+		t.Fatalf("%s: empty policy rejected: %v", name, errs)
+	}
+	if errs := ValidateBuiltinPolicy(name, json.RawMessage(`{"timeoutSeconds": 30, "maxSnapshotChars": 12000, "maxScreenshotBytes": 5242880}`)); len(errs) != 0 {
+		t.Fatalf("%s: valid policy rejected: %v", name, errs)
+	}
+	if errs := ValidateBuiltinPolicy(name, json.RawMessage(`{"maxSnapshotChars": 0}`)); len(errs) == 0 || !strings.Contains(errs[0], "positive") {
+		t.Fatalf("%s: zero maxSnapshotChars must be rejected, got %v", name, errs)
+	}
+	if errs := ValidateBuiltinPolicy(name, json.RawMessage(`{"deny_hosts": ["evil.com"]}`)); len(errs) == 0 || !strings.Contains(errs[0], "unknown policy key") {
+		t.Fatalf("%s: gateway-ceiling keys must not be builtin policy, got %v", name, errs)
+	}
+}
