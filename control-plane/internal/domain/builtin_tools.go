@@ -43,10 +43,19 @@ const (
 	// process tool. Kill terminates the whole process group so spawned
 	// children die too.
 	BuiltinToolProcess = "process"
+	// S-281: built-in CRON / scheduled tasks. Lets an agent schedule a
+	// future agent turn (prompt delivery) for itself: one-shot ('at'),
+	// fixed interval ('every') or 5-field cron expression with IANA
+	// timezone ('cron'), plus list/cancel/pause/resume. The control
+	// plane owns the clock: a scheduler goroutine claims due jobs and
+	// fires them through the canonical agent-run path (materialized
+	// task + busy mirror), so fires survive restarts and cannot
+	// double-run.
+	BuiltinToolCron = "cron"
 )
 
 // BuiltinToolNames lists the built-in tools in canonical order.
-var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent, BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch, BuiltinToolProcess}
+var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent, BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch, BuiltinToolProcess, BuiltinToolCron}
 
 // BuiltinToolDefaultEnabled reports whether a built-in ships enabled when
 // seeded. The original three are security-sensitive and ship disabled
@@ -77,7 +86,12 @@ func BuiltinToolDefaultEnabled(name string) bool {
 		name == BuiltinToolMemorySearch || name == BuiltinToolSpawnSubagent ||
 		name == BuiltinToolRead || name == BuiltinToolWrite ||
 		name == BuiltinToolEdit || name == BuiltinToolApplyPatch ||
-		name == BuiltinToolProcess
+		name == BuiltinToolProcess ||
+		// S-281: cron ships enabled to match its migration 0057 seed.
+		// The blast radius is bounded control-plane-side: jobs are scoped
+		// to the creating agent, capped by maxActiveJobs, throttled by
+		// the scheduler tick, and auto-disabled after repeated failures.
+		name == BuiltinToolCron
 }
 
 // SearchProviderNames lists the accepted web_search policy providers.
@@ -197,6 +211,14 @@ func ValidateBuiltinPolicy(name string, policy json.RawMessage) []string {
 		allowed = map[string]func(string, json.RawMessage) []string{
 			"maxSessions": requirePositiveInt,
 			"maxLogBytes": requirePositiveInt,
+		}
+	case BuiltinToolCron:
+		// S-281: maxActiveJobs caps how many enabled scheduled jobs one
+		// agent may hold at a time (default 10 when unset). Enforced
+		// control-plane-side at create/resume so a runaway agent cannot
+		// pile up an unbounded queue of future wakes.
+		allowed = map[string]func(string, json.RawMessage) []string{
+			"maxActiveJobs": requirePositiveInt,
 		}
 	default:
 		return []string{fmt.Sprintf("unknown built-in tool %q", name)}

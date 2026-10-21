@@ -65,6 +65,12 @@ type MemoryStore struct {
 	// TG-11 slice D: drift-check report history (mirrors the Postgres
 	// drift_reports table). Append-only.
 	driftReports  []*domain.DriftReport
+	// S-281: cron scheduled jobs (mirrors the Postgres scheduled_jobs
+	// table, migration 0057).
+	scheduledJobs map[string]*domain.ScheduledJob
+	// scheduledJobOrder keeps creation order for ListScheduledJobs
+	// (map iteration would otherwise randomize it).
+	scheduledJobOrder []string
 	notifications map[string]*domain.Notification
 	// S-199: per-user notification mute lists, mirroring the Postgres
 	// user_notification_preferences table. Absent key ⇒ all enabled.
@@ -132,6 +138,7 @@ func NewMemoryStore() *MemoryStore {
 		wakeLatencyKey:      map[string]string{},
 		auditLog:            map[string]*domain.AuditEntry{},
 		tasks:               map[string]*domain.Task{},
+		scheduledJobs:       map[string]*domain.ScheduledJob{},
 		taskDeps:            map[string]map[string]bool{},
 		taskExecs:           map[string]*domain.TaskExecution{},
 		agentMemory:         map[string]*domain.AgentMemory{},

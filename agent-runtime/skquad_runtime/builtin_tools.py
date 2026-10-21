@@ -2225,6 +2225,454 @@ class ApplyPatchTool:
         return new_text, ""
 
 
+# ---------------------------------------------------------------------------
+# S-281: built-in CRON / scheduled tasks.
+#
+# The scheduler lives in the control plane (httpapi/scheduled_jobs.go):
+# due jobs are claimed atomically and fired through the canonical
+# agent-run path (materialized task + busy mirror). This tool is a thin
+# client over the agent-scoped REST surface
+# (/api/v1/agents/me/scheduled-jobs) using the same bearer credential
+# as send_inbox/notify_owner — the runtime never schedules anything
+# itself, so jobs survive pod restarts and scale-to-zero.
+#
+# Client-side pre-validation mirrors the server's bounds (domain/
+# scheduled_jobs.go) so the model gets a friendly error instead of a
+# round-trip 400: every interval 60..7_776_000s, message <= 10000
+# chars, kind in {at, every, cron}, cron = standard 5-field expression.
+# The server remains the source of truth; maxActiveJobs enforcement
+# here is best-effort (racy by design).
+# ---------------------------------------------------------------------------
+
+CRON_MIN_INTERVAL_SECONDS = 60
+CRON_MAX_INTERVAL_SECONDS = 90 * 24 * 60 * 60  # 90 days, mirrors domain.MaxEverySeconds
+CRON_MAX_MESSAGE_CHARS = 10000  # mirrors domain.MaxScheduledMessageChars
+CRON_DEFAULT_MAX_ACTIVE_JOBS = 10
+CRON_KINDS: frozenset[str] = frozenset({"at", "every", "cron"})
+
+
+def _parse_rfc3339(raw: str) -> "datetime | None":
+    """Parse an RFC3339 timestamp ('Z' suffix accepted); None on failure."""
+    from datetime import datetime, timezone  # noqa: PLC0415 - keep module stdlib-light
+
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        # RFC3339 requires an offset; treat naive input as invalid rather
+        # than silently assuming a local zone.
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _validate_cron_expression(expr: str) -> str:
+    """Cheap client-side check: standard 5-field cron. Returns '' or an error."""
+    fields = str(expr or "").split()
+    if len(fields) != 5:
+        return (
+            f"cron expression must have exactly 5 fields "
+            f"(minute hour day-of-month month day-of-week), got {len(fields)}"
+        )
+    for field in fields:
+        if not re.fullmatch(r"[0-9A-Za-z*,/\-]+", field):
+            return f"cron field {field!r} contains invalid characters"
+    return ""
+
+
+def _validate_cron_timezone(tz: str) -> str:
+    """Validate an IANA timezone name; '' when valid or unverifiable."""
+    name = str(tz or "").strip()
+    if not name:
+        return ""  # server defaults to UTC
+    try:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # noqa: PLC0415
+    except ImportError:  # pragma: no cover - py<3.9
+        return ""
+    try:
+        ZoneInfo("UTC")
+    except ZoneInfoNotFoundError:
+        return ""  # no tz database on this host — let the server validate
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return f"{tz!r} is not a valid IANA timezone (e.g. Australia/Adelaide)"
+    return ""
+
+
+class CronTool:
+    """S-281: manage this agent's scheduled jobs (built-in CRON).
+
+    Actions: add (create a job), list (this agent's jobs), remove
+    (delete), pause (enabled=false), resume (enabled=true, next run
+    recomputed from now). Jobs fire control-plane-side: each fire
+    materializes a task on the agent's board with the job's message as
+    the prompt, exactly like a delegate/handoff.
+    """
+
+    name = "cron"
+
+    ACTIONS = ("add", "list", "remove", "pause", "resume")
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        self.policy = policy or {}
+        self.context = context
+
+    @property
+    def max_active_jobs(self) -> int:
+        try:
+            return int(self.policy.get("maxActiveJobs", CRON_DEFAULT_MAX_ACTIVE_JOBS))
+        except (TypeError, ValueError):
+            return CRON_DEFAULT_MAX_ACTIVE_JOBS
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "cron",
+                    "description": (
+                        "Schedule your own future work. Actions: add "
+                        "(create a scheduled job), list (your jobs "
+                        "with next_run times), remove (delete a job), "
+                        "pause, resume (next run recomputed from now). "
+                        "When a job fires it creates a task on your "
+                        "board with the job's message as the prompt, so "
+                        "you wake and run it like any assigned task. "
+                        "Schedules: kind='at' with an RFC3339 timestamp "
+                        "(one-shot, must be in the future), "
+                        "kind='every' with interval_seconds "
+                        "(60..7776000), or kind='cron' with a standard "
+                        "5-field expression plus optional IANA timezone "
+                        "(default UTC)."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["add", "list", "remove", "pause", "resume"],
+                                "description": "Management action to perform.",
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": (
+                                    "add only: the prompt delivered to "
+                                    "you on each fire (<= 10000 chars)."
+                                ),
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": (
+                                    "add only: optional title for the "
+                                    "task created when the job fires."
+                                ),
+                            },
+                            "schedule": {
+                                "type": "object",
+                                "description": (
+                                    "add only: {kind, at?, "
+                                    "interval_seconds?, expression?, "
+                                    "timezone?}. kind=at needs at; "
+                                    "kind=every needs interval_seconds; "
+                                    "kind=cron needs expression "
+                                    "(timezone optional, default UTC)."
+                                ),
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": ["at", "every", "cron"],
+                                    },
+                                    "at": {
+                                        "type": "string",
+                                        "description": (
+                                            "RFC3339 timestamp, e.g. "
+                                            "2026-10-21T19:30:00+10:30"
+                                        ),
+                                    },
+                                    "interval_seconds": {"type": "integer"},
+                                    "expression": {
+                                        "type": "string",
+                                        "description": "5-field cron, e.g. '0 9 * * 1-5'",
+                                    },
+                                    "timezone": {
+                                        "type": "string",
+                                        "description": "IANA tz, e.g. Australia/Adelaide",
+                                    },
+                                },
+                                "required": ["kind"],
+                            },
+                            "job_id": {
+                                "type": "string",
+                                "description": (
+                                    "Required for remove/pause/resume."
+                                ),
+                            },
+                        },
+                        "required": ["action"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        action = str(call.arguments.get("action", "")).strip().lower()
+        if action == "list":
+            return self._list()
+        if action == "add":
+            return self._add(call)
+        if action in ("remove", "pause", "resume"):
+            return self._job_action(action, call)
+        return ToolResult(
+            content="cron: action must be one of add/list/remove/pause/resume", ok=False
+        )
+
+    # -- actions -------------------------------------------------------------
+
+    def _add(self, call: ToolCall) -> ToolResult:
+        message = str(call.arguments.get("message", "")).strip()
+        if not message:
+            return ToolResult(content="cron add: message is required", ok=False)
+        if len(message) > CRON_MAX_MESSAGE_CHARS:
+            return ToolResult(
+                content=(
+                    f"cron add: message exceeds {CRON_MAX_MESSAGE_CHARS} "
+                    f"characters (got {len(message)})"
+                ),
+                ok=False,
+            )
+        schedule = call.arguments.get("schedule")
+        if not isinstance(schedule, dict):
+            return ToolResult(
+                content=(
+                    "cron add: schedule must be an object "
+                    "{kind, at?/interval_seconds?/expression+timezone?}"
+                ),
+                ok=False,
+            )
+        kind = str(schedule.get("kind", "")).strip().lower()
+        if kind not in CRON_KINDS:
+            return ToolResult(
+                content=f"cron add: unknown schedule kind {kind!r} (want at, every or cron)",
+                ok=False,
+            )
+        body: dict[str, object] = {"message": message, "schedule": {"kind": kind}}
+        title = str(call.arguments.get("title", "") or "").strip()
+        if title:
+            body["title"] = title
+        if kind == "at":
+            at = str(schedule.get("at", "") or "").strip()
+            if not at:
+                return ToolResult(content="cron add: schedule.at is required for kind=at", ok=False)
+            if _parse_rfc3339(at) is None:
+                return ToolResult(
+                    content=(
+                        "cron add: schedule.at must be an RFC3339 timestamp "
+                        "with a UTC offset (e.g. 2026-10-21T19:30:00+10:30)"
+                    ),
+                    ok=False,
+                )
+            body["schedule"]["at"] = at
+        elif kind == "every":
+            raw_interval = schedule.get("interval_seconds")
+            if raw_interval is None:
+                return ToolResult(
+                    content="cron add: schedule.interval_seconds is required for kind=every",
+                    ok=False,
+                )
+            try:
+                interval = int(raw_interval)
+            except (TypeError, ValueError):
+                return ToolResult(
+                    content="cron add: schedule.interval_seconds must be a whole number of seconds",
+                    ok=False,
+                )
+            if interval < CRON_MIN_INTERVAL_SECONDS or interval > CRON_MAX_INTERVAL_SECONDS:
+                return ToolResult(
+                    content=(
+                        f"cron add: interval_seconds {interval} out of range "
+                        f"[{CRON_MIN_INTERVAL_SECONDS}, {CRON_MAX_INTERVAL_SECONDS}] "
+                        "(1 minute to 90 days)"
+                    ),
+                    ok=False,
+                )
+            body["schedule"]["interval_seconds"] = interval
+        else:  # cron
+            expression = str(schedule.get("expression", "") or "").strip()
+            if not expression:
+                return ToolResult(
+                    content="cron add: schedule.expression is required for kind=cron",
+                    ok=False,
+                )
+            expr_err = _validate_cron_expression(expression)
+            if expr_err:
+                return ToolResult(content=f"cron add: {expr_err}", ok=False)
+            tz = str(schedule.get("timezone", "") or "").strip()
+            tz_err = _validate_cron_timezone(tz)
+            if tz_err:
+                return ToolResult(content=f"cron add: {tz_err}", ok=False)
+            body["schedule"]["expression"] = expression
+            if tz:
+                body["schedule"]["timezone"] = tz
+
+        cap_err = self._check_active_cap()
+        if cap_err:
+            return ToolResult(content=f"cron add: {cap_err}", ok=False)
+
+        try:
+            data = self._request("POST", "/api/v1/agents/me/scheduled-jobs", body)
+        except error.HTTPError as exc:
+            return ToolResult(content=f"cron add: {self._http_detail(exc)}", ok=False)
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return ToolResult(content=f"cron add: {exc}", ok=False)
+        job_id = str(data.get("id", "")) if isinstance(data, dict) else ""
+        next_run = str(data.get("next_run_at", "")) if isinstance(data, dict) else ""
+        return ToolResult(
+            content=(
+                f"created scheduled job {job_id} ({kind})"
+                + (f" — next run {next_run}" if next_run else "")
+            ),
+            ok=True,
+        )
+
+    def _check_active_cap(self) -> str:
+        """Best-effort client-side maxActiveJobs guard (server is authoritative)."""
+        jobs, err = self._get_jobs()
+        if err:
+            # Cap check is best-effort: if the list fails, let the server
+            # enforce and surface its own error on the POST.
+            return ""
+        active = sum(1 for job in jobs if job.get("enabled"))
+        if active >= self.max_active_jobs:
+            return (
+                f"you already have {active} active scheduled jobs "
+                f"(maxActiveJobs={self.max_active_jobs}); cancel or "
+                "pause one first"
+            )
+        return ""
+
+    def _list(self) -> ToolResult:
+        jobs, err = self._get_jobs()
+        if err:
+            return ToolResult(content=f"cron list: {err}", ok=False)
+        if not jobs:
+            return ToolResult(content="cron: no scheduled jobs", ok=True)
+        lines: list[str] = []
+        for job in jobs:
+            job_id = str(job.get("id", "?"))
+            state = "enabled" if job.get("enabled") else "paused"
+            summary = self._schedule_summary(job)
+            next_run = str(job.get("next_run_at", "")) or "—"
+            last = str(job.get("last_run_status", "") or "")
+            extras = []
+            if last:
+                extras.append(f"last={last}")
+            fail_count = job.get("fail_count")
+            if isinstance(fail_count, int) and fail_count > 0:
+                extras.append(f"fails={fail_count}")
+            reason = str(job.get("disabled_reason", "") or "")
+            if reason:
+                extras.append(reason)
+            title = str(job.get("title", "") or "")
+            label = f" {title!r}" if title else ""
+            suffix = f" ({'; '.join(extras)})" if extras else ""
+            lines.append(f"{job_id} [{state}] {summary} next={next_run}{label}{suffix}")
+        return ToolResult(content="\n".join(lines), ok=True)
+
+    @staticmethod
+    def _schedule_summary(job: Mapping[str, object]) -> str:
+        kind = str(job.get("schedule_kind", "?"))
+        spec = job.get("schedule_spec")
+        if isinstance(spec, (str, bytes)):
+            try:
+                spec = json.loads(spec)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                spec = {}
+        if not isinstance(spec, dict):
+            spec = {}
+        if kind == "at":
+            return f"at {spec.get('at', '?')}"
+        if kind == "every":
+            return f"every {spec.get('interval_seconds', '?')}s"
+        tz = spec.get("timezone") or "UTC"
+        return f"cron {spec.get('expression', '?')} ({tz})"
+
+    def _job_action(self, action: str, call: ToolCall) -> ToolResult:
+        job_id = str(call.arguments.get("job_id", "")).strip()
+        if not job_id:
+            return ToolResult(content=f"cron {action}: job_id is required", ok=False)
+        if action == "remove":
+            method, path, body = "DELETE", f"/api/v1/agents/me/scheduled-jobs/{job_id}", None
+            verb = "cancelled"
+        else:
+            method, path, body = "POST", f"/api/v1/agents/me/scheduled-jobs/{job_id}/{action}", {}
+            verb = "paused" if action == "pause" else "resumed"
+        try:
+            data = self._request(method, path, body)
+        except error.HTTPError as exc:
+            return ToolResult(content=f"cron {action}: {self._http_detail(exc)}", ok=False)
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return ToolResult(content=f"cron {action}: {exc}", ok=False)
+        state = ""
+        if isinstance(data, dict) and "enabled" in data:
+            state = " (enabled)" if data.get("enabled") else " (paused)"
+        return ToolResult(content=f"scheduled job {job_id} {verb}{state}", ok=True)
+
+    # -- control-plane round trips -------------------------------------------
+
+    def _request(self, method: str, path: str, body: dict | None = None):
+        url = self.context.control_plane_url.rstrip("/") + path
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+        req = request.Request(
+            url,
+            data=payload,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {self.context.agent_credential}",
+                "X-Skquad-Agent-ID": self.context.agent_id,
+                "Content-Type": JSON_CONTENT_TYPE,
+                "Accept": JSON_CONTENT_TYPE,
+            },
+        )
+        timeout = int(self.policy.get("timeoutSeconds", 15))
+        with request.urlopen(req, timeout=timeout) as response:
+            raw = response.read()
+        if not raw:
+            return {}
+        return json.loads(raw.decode("utf-8"))
+
+    def _get_jobs(self) -> tuple[list, str]:
+        try:
+            data = self._request("GET", "/api/v1/agents/me/scheduled-jobs")
+        except error.HTTPError as exc:
+            return [], f"jobs lookup failed: {self._http_detail(exc)}"
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return [], f"jobs lookup failed: {exc}"
+        jobs = data.get("jobs") if isinstance(data, dict) else None
+        if not isinstance(jobs, list):
+            return [], "jobs lookup returned an unexpected shape"
+        return [j for j in jobs if isinstance(j, dict)], ""
+
+    @staticmethod
+    def _http_detail(exc: error.HTTPError) -> str:
+        detail = ""
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            err = body.get("error", "")
+            if isinstance(err, dict):
+                detail = str(err.get("message", ""))
+            else:
+                detail = str(err)
+        except Exception:  # noqa: BLE001 — error body is best-effort
+            pass
+        return f"HTTP {exc.code}" + (f" — {detail}" if detail else "")
+
+
 _BUILTIN_REGISTRY: dict[str, type] = {
     "exec": ExecTool,
     "web_fetch": WebFetchTool,
@@ -2241,6 +2689,9 @@ _BUILTIN_REGISTRY: dict[str, type] = {
     "apply_patch": ApplyPatchTool,
     # S-280: background process management (paired with exec background).
     "process": ProcessTool,
+    # S-281: built-in CRON — thin client over the control-plane
+    # scheduled-jobs API (scheduler fires the wakes, not the runtime).
+    "cron": CronTool,
 }
 
 # Built-ins that are listed in the platform catalog (S-232) for admin

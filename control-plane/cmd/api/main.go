@@ -65,6 +65,13 @@ func main() {
 	go httpapi.RunNotificationRetention(context.Background(), store, cfg.NotificationSweepInterval, cfg.NotificationRetention)
 	slog.Info("started notification retention sweep", "interval", cfg.NotificationSweepInterval, "retention", cfg.NotificationRetention)
 
+	// S-281: scheduled-job (cron) scheduler. Claims due jobs atomically
+	// (SKIP LOCKED) and fires them through the canonical agent-run path
+	// (materialized task + busy mirror). Safe on every replica; the
+	// claim guarantees a job fires once per due instant per claimant.
+	go httpapi.RunScheduledJobScheduler(context.Background(), store, httpapi.DefaultScheduledJobTick)
+	slog.Info("started scheduled job scheduler", "interval", httpapi.DefaultScheduledJobTick)
+
 	providerKeys := setupProviderKeys(cfg, store)
 
 	handler := httpapi.NewWithGrantLinting(cfg, store, oidcAuth, crWriter, providerKeys)

@@ -53,6 +53,7 @@ type Store interface {
 	PromptTierStore
 	PromptTemplateStore
 	BuiltinToolStore
+	ScheduledJobStore
 	UploadStore
 	BudgetStore
 	DriftStore
@@ -68,6 +69,38 @@ type DriftStore interface {
 	// after `since`. When driftedOnly is true only in_sync=false rows
 	// count — the batch-window probe used before filing a digest.
 	CountDriftReports(ctx context.Context, resourceID string, since time.Time, driftedOnly bool) (int, error)
+}
+
+// ScheduledJobStore persists S-281 cron scheduled jobs. Claiming is
+// atomic by contract: ClaimDueScheduledJobs must hand each due job to
+// exactly one claimant (Postgres FOR UPDATE SKIP LOCKED; the memory
+// store under its mutex) and bump next_run_at to a safety-net value so
+// a crashed worker's job is retried rather than lost (at-least-once
+// firing; the post-run update pins the real next run).
+type ScheduledJobStore interface {
+	CreateScheduledJob(ctx context.Context, job *domain.ScheduledJob) (*domain.ScheduledJob, error)
+	GetScheduledJob(ctx context.Context, id string) (*domain.ScheduledJob, error)
+	// ListScheduledJobs returns the agent's jobs (enabled and disabled)
+	// in creation order.
+	ListScheduledJobs(ctx context.Context, agentID string) ([]*domain.ScheduledJob, error)
+	DeleteScheduledJob(ctx context.Context, id string) error
+	// ClaimDueScheduledJobs atomically claims up to `limit` enabled jobs
+	// with next_run_at <= now, marking them last_run_at=now /
+	// last_run_status='running' and pushing next_run_at to
+	// now+claimSafetyNet until FinishScheduledJobRun / FailScheduledJobRun
+	// pins the real outcome.
+	ClaimDueScheduledJobs(ctx context.Context, now time.Time, limit int, claimSafetyNet time.Duration) ([]*domain.ScheduledJob, error)
+	// FinishScheduledJobRun records a successful fire: last_run_at,
+	// last_run_status, fail_count reset to 0, the computed next_run_at,
+	// and enabled (false for one-shot 'at' jobs).
+	FinishScheduledJobRun(ctx context.Context, id string, firedAt time.Time, nextRunAt time.Time, enabled bool) error
+	// FailScheduledJobRun records a failed fire: fail_count++ and, once
+	// fail_count reaches maxFailures, enabled=false with disabled_reason.
+	FailScheduledJobRun(ctx context.Context, id string, firedAt time.Time, maxFailures int, reason string) error
+	// SetScheduledJobEnabled pauses (false) or resumes (true) a job.
+	// A non-zero nextRunAt overwrites next_run_at (resume recomputes so
+	// missed intervals are not replayed); zero keeps the stored value.
+	SetScheduledJobEnabled(ctx context.Context, id string, enabled bool, nextRunAt time.Time) (*domain.ScheduledJob, error)
 }
 
 // UploadStore persists image uploads (S-194). Uploads are squad-scoped:

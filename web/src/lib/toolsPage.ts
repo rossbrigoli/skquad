@@ -44,6 +44,8 @@ export const BUILTIN_TOOL_DESCRIPTIONS: Record<BuiltinToolName, string> = {
   apply_patch: "Apply a structured Begin/End patch atomically in the workspace.",
   // S-280: background process management.
   process: "Manage background exec sessions: poll, log, stdin, kill, clear.",
+  // S-281: built-in CRON.
+  cron: "Schedule an agent's future work: one-shot, interval, or cron expression.",
 };
 
 // builtinToolItems normalises loaded built-in configs into tile items,

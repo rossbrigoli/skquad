@@ -30,6 +30,9 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-require github.com/rossbrigoli/skquad/shared v0.0.0
+require (
+	github.com/robfig/cron/v3 v3.0.1
+	github.com/rossbrigoli/skquad/shared v0.0.0
+)
 
 replace github.com/rossbrigoli/skquad/shared => ../shared

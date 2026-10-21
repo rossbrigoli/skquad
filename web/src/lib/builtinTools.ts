@@ -25,7 +25,9 @@ export type BuiltinToolName =
   | "write"
   | "edit"
   | "apply_patch"
-  | "process";
+  | "process"
+  // S-281: built-in CRON (control-plane scheduled jobs).
+  | "cron";
 
 // S-232: every built-in the control-plane catalog ships (domain.BuiltinToolNames)
 // must be listed here too — anything missing silently vanishes from the
@@ -46,6 +48,8 @@ export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = [
   "apply_patch",
   // S-280: background process management (paired with exec background=true).
   "process",
+  // S-281: built-in CRON — the scheduler lives in the control plane.
+  "cron",
 ];
 
 // S-279: the four file tools share one policy shape {timeoutSeconds, maxBytes}.
@@ -88,6 +92,8 @@ export type ToolFormValues = {
   // process only (S-280)
   maxSessions: string;
   maxLogBytes: string;
+  // cron only (S-281)
+  maxActiveJobs: string;
 };
 
 // Contract defaults (ADR-0012 §3). Used as empty-form placeholders and
@@ -108,6 +114,9 @@ export const TOOL_DEFAULTS: Record<BuiltinToolName, { timeoutSeconds: number }> 
   apply_patch: { timeoutSeconds: 30 },
   // S-280 background process management
   process: { timeoutSeconds: 15 },
+  // S-281 cron: no per-call timeout is surfaced (the form hides it);
+  // the entry keeps the Record total. The runtime uses a 15s HTTP timeout.
+  cron: { timeoutSeconds: 15 },
 };
 
 const EXEC_DEFAULTS = { timeoutSeconds: 60, maxOutputBytes: 65536 };
@@ -120,6 +129,9 @@ const FILE_TOOL_DEFAULTS = { timeoutSeconds: 30, maxBytes: 262144 };
 // S-280: process pins {maxSessions, maxLogBytes} — concurrent session
 // cap per task and per-session captured-log cap (process killed on excess).
 const PROCESS_DEFAULTS = { maxSessions: 16, maxLogBytes: 5242880 };
+// S-281: cron pins exactly {maxActiveJobs} — the per-agent cap on
+// enabled scheduled jobs (mirrors the control-plane default of 10).
+const CRON_DEFAULTS = { maxActiveJobs: 10 };
 
 export function isBuiltinToolName(name: string): name is BuiltinToolName {
   return (BUILTIN_TOOL_NAMES as readonly string[]).includes(name);
@@ -148,6 +160,7 @@ export function emptyToolForm(name: BuiltinToolName): ToolFormValues {
     maxMessageChars: String(SEND_MESSAGE_DEFAULTS.maxMessageChars),
     maxSessions: String(PROCESS_DEFAULTS.maxSessions),
     maxLogBytes: String(PROCESS_DEFAULTS.maxLogBytes),
+    maxActiveJobs: String(CRON_DEFAULTS.maxActiveJobs),
   };
 }
 
@@ -192,6 +205,10 @@ export function formFromTool(tool: BuiltinTool): ToolFormValues {
     base.maxSessions = num(policy.maxSessions, base.maxSessions);
     base.maxLogBytes = num(policy.maxLogBytes, base.maxLogBytes);
   }
+  // S-281: cron carries {maxActiveJobs}.
+  if (tool.name === "cron") {
+    base.maxActiveJobs = num(policy.maxActiveJobs, base.maxActiveJobs);
+  }
   return base;
 }
 
@@ -234,6 +251,11 @@ export function buildToolPolicy(name: BuiltinToolName, form: ToolFormValues): Re
     // S-280: process pins exactly {maxSessions, maxLogBytes}.
     return { maxSessions: Number(form.maxSessions), maxLogBytes: Number(form.maxLogBytes) };
   }
+  if (name === "cron") {
+    // S-281: cron pins exactly {maxActiveJobs} — no timeoutSeconds
+    // (the scheduler runs control-plane-side; there is no per-call timeout).
+    return { maxActiveJobs: Number(form.maxActiveJobs) };
+  }
   return {
     timeoutSeconds: timeout,
     maxResults: Number(form.maxResults),
@@ -268,6 +290,11 @@ function checkDeniedPatterns(patterns: string[]): string | null {
 }
 
 export function validateToolForm(name: BuiltinToolName, form: ToolFormValues): string | null {
+  if (name === "cron") {
+    // S-281: cron's policy is {maxActiveJobs} only — timeoutSeconds is
+    // hidden in the form and must not be validated here.
+    return checkPositiveInt(form.maxActiveJobs, "maxActiveJobs");
+  }
   const timeoutErr = checkPositiveInt(form.timeoutSeconds, "timeoutSeconds");
   if (timeoutErr) return timeoutErr;
   if (name === "exec") {

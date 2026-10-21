@@ -27,10 +27,10 @@ func TestMemoryStoreSeedsBuiltinTools(t *testing.T) {
 	// capability is visible (and toggleable) on the Settings Tools page.
 	// S-279 adds the four file tools (read/write/edit/apply_patch), all
 	// seeded ENABLED like the other squad primitives.
-	if len(tools) != 13 {
-		t.Fatalf("seeded tools = %d, want 13", len(tools))
+	if len(tools) != 14 {
+		t.Fatalf("seeded tools = %d, want 14", len(tools))
 	}
-	wantNames := []string{"exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner", "memory_search", "spawn_subagent", "read", "write", "edit", "apply_patch", "process"}
+	wantNames := []string{"exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner", "memory_search", "spawn_subagent", "read", "write", "edit", "apply_patch", "process", "cron"}
 	for i, tool := range tools {
 		if tool.Name != wantNames[i] {
 			t.Fatalf("tool[%d] = %q, want %q", i, tool.Name, wantNames[i])

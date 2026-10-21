@@ -47,6 +47,8 @@ const TOOL_LABELS: Record<BuiltinToolName, string> = {
   apply_patch: "apply_patch — structured atomic patches",
   // S-280: background process management.
   process: "process — manage background exec sessions",
+  // S-281: built-in CRON.
+  cron: "cron — scheduled tasks",
 };
 
 const TOOL_HINTS: Record<BuiltinToolName, string> = {
@@ -66,6 +68,8 @@ const TOOL_HINTS: Record<BuiltinToolName, string> = {
   apply_patch: "Applies a *** Begin Patch / *** End Patch changeset (Add/Update/Delete file with @@ context hunks) atomically inside the workspace. A failing hunk writes nothing. maxBytes caps the total bytes written across all patched files.",
   // S-280: background process management.
   process: "Controls background commands started with exec(background=true): list, poll, log, write (stdin), kill (whole process group) and clear. maxSessions caps concurrently-running background sessions per task; maxLogBytes caps each captured log (the session is killed when its log exceeds the cap).",
+  // S-281: the scheduler runs in the control plane — jobs fire even when no pod is up.
+  cron: "Lets agents schedule their own future work (one-shot 'at', fixed 'every' interval, or 5-field 'cron' with IANA timezone). Each fire materializes a task on the agent's board with the job's prompt, exactly like a delegate. maxActiveJobs caps how many enabled jobs one agent may hold; there is no per-call timeout because scheduling is control-plane-side.",
 };
 
 // BuiltinToolConfig is the admin config surface for ONE built-in tool,
@@ -197,7 +201,7 @@ export function ToolCard({
       </p>
 
       <div className="field-row">
-        {tool.name !== "spawn_subagent" && tool.name !== "process" ? (
+        {tool.name !== "spawn_subagent" && tool.name !== "process" && tool.name !== "cron" ? (
           <label className="field">
             <span>Timeout (seconds)</span>
             <input
@@ -280,6 +284,18 @@ export function ToolCard({
               />
             </label>
           </>
+        ) : null}
+        {tool.name === "cron" ? (
+          <label className="field">
+            <span>Max active jobs</span>
+            <input
+              type="number"
+              min={1}
+              value={form.maxActiveJobs}
+              disabled={busy}
+              onChange={(e) => setField("maxActiveJobs", e.target.value)}
+            />
+          </label>
         ) : null}
         {tool.name === "web_search" ? (
           <>
