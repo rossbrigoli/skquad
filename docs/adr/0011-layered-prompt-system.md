@@ -103,7 +103,7 @@ text; `len(content)/3.5` conservative for mixed) — no live tokenizer call:
 
 | Tier | Soft warn | Hard cap |
 |------|-----------|----------|
-| Platform override | 3,000 tok | 4,000 tok |
+| Platform override | 4,200 tok | 4,600 tok |
 | Organization | 3,000 tok | 4,000 tok |
 | Squad | 1,500 tok | 2,000 tok |
 | Agent | 6,000 tok | 8,000 tok |
@@ -118,6 +118,13 @@ text; `len(content)/3.5` conservative for mixed) — no live tokenizer call:
 > simultaneously maxed the worst-case composed size is 18k against the 16k
 > composed hard cap; the composed cap was intentionally left unchanged —
 > operators can raise it via `SKQUAD_PROMPT_MAX_TOKENS_COMPOSED` if needed.
+>
+> S-284 (2026-10-21, pending Ross's review): platform tier raised to
+> 4,600 tok hard (soft 4,200). The platform prompt now carries the
+> descriptive built-in tool catalog (~600 tok); with the full 18-tool
+> enabled inventory rendered into `{{tools.enabled}}` the platform tier
+> reaches ~4.5k tok worst-case and no longer fits the old 4,000 hard cap.
+> Composed caps unchanged.
 
 Caps are operator-configurable via env (`SKQUAD_PROMPT_MAX_TOKENS_*`).
 Exceeding hard cap → HTTP 400; soft warn surfaced in UI.
