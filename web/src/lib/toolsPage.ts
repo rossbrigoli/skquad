@@ -46,6 +46,10 @@ export const BUILTIN_TOOL_DESCRIPTIONS: Record<BuiltinToolName, string> = {
   process: "Manage background exec sessions: poll, log, stdin, kill, clear.",
   // S-281: built-in CRON.
   cron: "Schedule an agent's future work: one-shot, interval, or cron expression.",
+  // S-282: session inspection — read-only, self-scoped session/task views.
+  sessions_list: "List the sessions an agent can see: its assigned tasks and visible squad peers.",
+  sessions_history: "Sanitized history: a task's context, an agent's chat, or the agent's own message history.",
+  session_status: "Status card for an agent's current run: model, active tasks, counts, elapsed time.",
 };
 
 // builtinToolItems normalises loaded built-in configs into tile items,

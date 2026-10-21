@@ -109,3 +109,25 @@ func TestFileToolsUnknownToolRejected(t *testing.T) {
 		t.Fatalf("expected unknown tool rejection, got %v", errs)
 	}
 }
+
+// S-282: the session inspection tools (sessions_list / sessions_history /
+// session_status) ship enabled (migration 0058 seed), are known names, and
+// carry no policy knobs — only "{}" validates (same posture as
+// spawn_subagent), so a typo can never silently change behaviour.
+func TestSessionInspectionToolsDefaultEnabled(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{BuiltinToolSessionsList, BuiltinToolSessionsHistory, BuiltinToolSessionStatus} {
+		if !BuiltinToolDefaultEnabled(name) {
+			t.Fatalf("%s should ship enabled by default (migration 0058 seed)", name)
+		}
+		if !IsBuiltinToolName(name) {
+			t.Fatalf("%s missing from BuiltinToolNames", name)
+		}
+		if errs := ValidateBuiltinPolicy(name, json.RawMessage(`{}`)); len(errs) != 0 {
+			t.Fatalf("%s: empty policy rejected: %v", name, errs)
+		}
+		if errs := ValidateBuiltinPolicy(name, json.RawMessage(`{"timeoutSeconds": 15}`)); len(errs) == 0 || !strings.Contains(errs[0], "unknown policy key") {
+			t.Fatalf("%s: policy keys must be rejected (no knobs yet), got %v", name, errs)
+		}
+	}
+}
