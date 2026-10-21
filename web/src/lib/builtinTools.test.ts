@@ -45,7 +45,7 @@ describe("gating (platform_admin only)", () => {
     expect(isPlatformAdmin("")).toBe(false);
   });
 
-  it("knows exactly the twelve contract tool names (S-232: every built-in must be listed; S-279 adds the file tools)", () => {
+  it("knows exactly the thirteen contract tool names (S-232: every built-in must be listed; S-279 adds the file tools; S-280 adds process)", () => {
     expect([...BUILTIN_TOOL_NAMES]).toEqual([
       "exec",
       "web_fetch",
@@ -59,6 +59,7 @@ describe("gating (platform_admin only)", () => {
       "write",
       "edit",
       "apply_patch",
+      "process",
     ]);
     expect(isBuiltinToolName("exec")).toBe(true);
     expect(isBuiltinToolName("web_fetch")).toBe(true);
@@ -154,6 +155,18 @@ describe("save payload shape (PATCH /admin/tools/{name})", () => {
     expect(keys("notify_owner")).toEqual(["maxMessageChars", "timeoutSeconds"]);
     expect(keys("memory_search")).toEqual(["maxResults", "timeoutSeconds"]);
     expect(keys("spawn_subagent")).toEqual([]);
+    expect(keys("process")).toEqual(["maxLogBytes", "maxSessions"]);
+  });
+
+  it("process: {maxSessions,maxLogBytes} (S-280)", () => {
+    const payload = buildToolPayload(
+      "process",
+      form("process", { enabled: true, maxSessions: "8", maxLogBytes: "1048576" }),
+    );
+    expect(payload).toEqual({ enabled: true, policy: { maxSessions: 8, maxLogBytes: 1048576 } });
+    expect(validateToolForm("process", form("process", { maxSessions: "0" }))).toMatch(/maxSessions/);
+    expect(validateToolForm("process", form("process", { maxLogBytes: "abc" }))).toMatch(/maxLogBytes/);
+    expect(validateToolForm("process", form("process"))).toBeNull();
   });
 
   it("disabled tools still save with enabled:false (merge semantics)", () => {

@@ -24,7 +24,8 @@ export type BuiltinToolName =
   | "read"
   | "write"
   | "edit"
-  | "apply_patch";
+  | "apply_patch"
+  | "process";
 
 // S-232: every built-in the control-plane catalog ships (domain.BuiltinToolNames)
 // must be listed here too — anything missing silently vanishes from the
@@ -43,6 +44,8 @@ export const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = [
   "write",
   "edit",
   "apply_patch",
+  // S-280: background process management (paired with exec background=true).
+  "process",
 ];
 
 // S-279: the four file tools share one policy shape {timeoutSeconds, maxBytes}.
@@ -82,6 +85,9 @@ export type ToolFormValues = {
   maxResults: string;
   // send_message only (S-164)
   maxMessageChars: string;
+  // process only (S-280)
+  maxSessions: string;
+  maxLogBytes: string;
 };
 
 // Contract defaults (ADR-0012 §3). Used as empty-form placeholders and
@@ -100,6 +106,8 @@ export const TOOL_DEFAULTS: Record<BuiltinToolName, { timeoutSeconds: number }> 
   write: { timeoutSeconds: 30 },
   edit: { timeoutSeconds: 30 },
   apply_patch: { timeoutSeconds: 30 },
+  // S-280 background process management
+  process: { timeoutSeconds: 15 },
 };
 
 const EXEC_DEFAULTS = { timeoutSeconds: 60, maxOutputBytes: 65536 };
@@ -109,6 +117,9 @@ const SEND_MESSAGE_DEFAULTS = { timeoutSeconds: 15, maxMessageChars: 8000 };
 // S-279: file tools share {timeoutSeconds, maxBytes}; maxBytes caps read
 // output and total written bytes (for apply_patch, summed across files).
 const FILE_TOOL_DEFAULTS = { timeoutSeconds: 30, maxBytes: 262144 };
+// S-280: process pins {maxSessions, maxLogBytes} — concurrent session
+// cap per task and per-session captured-log cap (process killed on excess).
+const PROCESS_DEFAULTS = { maxSessions: 16, maxLogBytes: 5242880 };
 
 export function isBuiltinToolName(name: string): name is BuiltinToolName {
   return (BUILTIN_TOOL_NAMES as readonly string[]).includes(name);
@@ -135,6 +146,8 @@ export function emptyToolForm(name: BuiltinToolName): ToolFormValues {
     provider: WEB_SEARCH_DEFAULTS.provider,
     maxResults: String(WEB_SEARCH_DEFAULTS.maxResults),
     maxMessageChars: String(SEND_MESSAGE_DEFAULTS.maxMessageChars),
+    maxSessions: String(PROCESS_DEFAULTS.maxSessions),
+    maxLogBytes: String(PROCESS_DEFAULTS.maxLogBytes),
   };
 }
 
@@ -174,6 +187,11 @@ export function formFromTool(tool: BuiltinTool): ToolFormValues {
   if (isFileToolName(tool.name)) {
     base.maxBytes = num(policy.maxBytes, String(FILE_TOOL_DEFAULTS.maxBytes));
   }
+  // S-280: process carries {maxSessions, maxLogBytes}.
+  if (tool.name === "process") {
+    base.maxSessions = num(policy.maxSessions, base.maxSessions);
+    base.maxLogBytes = num(policy.maxLogBytes, base.maxLogBytes);
+  }
   return base;
 }
 
@@ -211,6 +229,10 @@ export function buildToolPolicy(name: BuiltinToolName, form: ToolFormValues): Re
   if (isFileToolName(name)) {
     // S-279: file tools pin exactly {timeoutSeconds, maxBytes}.
     return { timeoutSeconds: timeout, maxBytes: Number(form.maxBytes) };
+  }
+  if (name === "process") {
+    // S-280: process pins exactly {maxSessions, maxLogBytes}.
+    return { maxSessions: Number(form.maxSessions), maxLogBytes: Number(form.maxLogBytes) };
   }
   return {
     timeoutSeconds: timeout,
@@ -268,6 +290,12 @@ export function validateToolForm(name: BuiltinToolName, form: ToolFormValues): s
   if (isFileToolName(name)) {
     // S-279: mirror the server's {timeoutSeconds, maxBytes} schema.
     return checkPositiveInt(form.maxBytes, "maxBytes");
+  }
+  if (name === "process") {
+    // S-280: mirror the server's {maxSessions, maxLogBytes} schema.
+    const sessionsErr = checkPositiveInt(form.maxSessions, "maxSessions");
+    if (sessionsErr) return sessionsErr;
+    return checkPositiveInt(form.maxLogBytes, "maxLogBytes");
   }
   const resultsErr = checkPositiveInt(form.maxResults, "maxResults");
   if (resultsErr) return resultsErr;

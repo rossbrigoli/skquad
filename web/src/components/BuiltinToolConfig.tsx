@@ -45,6 +45,8 @@ const TOOL_LABELS: Record<BuiltinToolName, string> = {
   write: "write — create/overwrite workspace files",
   edit: "edit — atomic exact-match edits",
   apply_patch: "apply_patch — structured atomic patches",
+  // S-280: background process management.
+  process: "process — manage background exec sessions",
 };
 
 const TOOL_HINTS: Record<BuiltinToolName, string> = {
@@ -62,6 +64,8 @@ const TOOL_HINTS: Record<BuiltinToolName, string> = {
   write: "Creates or overwrites files inside the agent's task workspace only (parent dirs created). maxBytes caps the content size. Path escapes outside the workspace are rejected.",
   edit: "Exact-match edits applied atomically: every oldText must occur exactly once in the original file and edits must not overlap — any failure writes nothing. maxBytes caps the resulting file.",
   apply_patch: "Applies a *** Begin Patch / *** End Patch changeset (Add/Update/Delete file with @@ context hunks) atomically inside the workspace. A failing hunk writes nothing. maxBytes caps the total bytes written across all patched files.",
+  // S-280: background process management.
+  process: "Controls background commands started with exec(background=true): list, poll, log, write (stdin), kill (whole process group) and clear. maxSessions caps concurrently-running background sessions per task; maxLogBytes caps each captured log (the session is killed when its log exceeds the cap).",
 };
 
 // BuiltinToolConfig is the admin config surface for ONE built-in tool,
@@ -193,7 +197,7 @@ export function ToolCard({
       </p>
 
       <div className="field-row">
-        {tool.name !== "spawn_subagent" ? (
+        {tool.name !== "spawn_subagent" && tool.name !== "process" ? (
           <label className="field">
             <span>Timeout (seconds)</span>
             <input
@@ -252,6 +256,30 @@ export function ToolCard({
               onChange={(e) => setField("maxResults", e.target.value)}
             />
           </label>
+        ) : null}
+        {tool.name === "process" ? (
+          <>
+            <label className="field">
+              <span>Max sessions</span>
+              <input
+                type="number"
+                min={1}
+                value={form.maxSessions}
+                disabled={busy}
+                onChange={(e) => setField("maxSessions", e.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>Max log bytes</span>
+              <input
+                type="number"
+                min={1}
+                value={form.maxLogBytes}
+                disabled={busy}
+                onChange={(e) => setField("maxLogBytes", e.target.value)}
+              />
+            </label>
+          </>
         ) : null}
         {tool.name === "web_search" ? (
           <>

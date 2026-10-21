@@ -30,6 +30,31 @@ func TestFileToolsDefaultEnabled(t *testing.T) {
 	}
 }
 
+func TestProcessToolDefaultEnabledAndPolicy(t *testing.T) {
+	t.Parallel()
+	if !BuiltinToolDefaultEnabled(BuiltinToolProcess) {
+		t.Fatal("process should ship enabled by default (migration 0056 seed)")
+	}
+	if !IsBuiltinToolName(BuiltinToolProcess) {
+		t.Fatal("process missing from BuiltinToolNames")
+	}
+	if errs := ValidateBuiltinPolicy(BuiltinToolProcess, json.RawMessage(`{"maxSessions": 16, "maxLogBytes": 5242880}`)); len(errs) != 0 {
+		t.Fatalf("process: valid policy rejected: %v", errs)
+	}
+	if errs := ValidateBuiltinPolicy(BuiltinToolProcess, json.RawMessage(`{}`)); len(errs) != 0 {
+		t.Fatalf("process: empty policy rejected: %v", errs)
+	}
+	if errs := ValidateBuiltinPolicy(BuiltinToolProcess, json.RawMessage(`{"maxSessions": 0}`)); len(errs) == 0 || !strings.Contains(errs[0], "positive") {
+		t.Fatalf("process: maxSessions=0 must be rejected as non-positive, got %v", errs)
+	}
+	if errs := ValidateBuiltinPolicy(BuiltinToolProcess, json.RawMessage(`{"maxLogBytes": "lots"}`)); len(errs) == 0 || !strings.Contains(errs[0], "integer") {
+		t.Fatalf("process: non-integer maxLogBytes must be rejected, got %v", errs)
+	}
+	if errs := ValidateBuiltinPolicy(BuiltinToolProcess, json.RawMessage(`{"allowedCommands": ["ls"]}`)); len(errs) == 0 || !strings.Contains(errs[0], "allowedCommands") {
+		t.Fatalf("process: unknown policy key must be rejected, got %v", errs)
+	}
+}
+
 func TestFileToolsPolicyValidKeys(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch} {

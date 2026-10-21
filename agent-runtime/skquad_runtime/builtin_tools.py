@@ -15,7 +15,10 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -115,7 +118,28 @@ class ExecTool:
                             "command": {
                                 "type": "string",
                                 "description": "Shell command to run.",
-                            }
+                            },
+                            "background": {
+                                "type": "boolean",
+                                "description": (
+                                    "S-280: start the command detached in "
+                                    "the background with stdout/stderr "
+                                    "captured to a log. Returns a session "
+                                    "id you control with the process tool "
+                                    "(poll/log/write/kill). If the command "
+                                    "finishes before yieldMs elapses, its "
+                                    "result is returned normally instead."
+                                ),
+                            },
+                            "yieldMs": {
+                                "type": "integer",
+                                "description": (
+                                    "S-280 background only: how long to "
+                                    "wait (milliseconds, default 10000) "
+                                    "for a quick finish before returning "
+                                    "the session id."
+                                ),
+                            },
                         },
                         "required": ["command"],
                     },
@@ -157,6 +181,10 @@ class ExecTool:
                 ),
                 ok=False,
             )
+
+        if bool(call.arguments.get("background", False)):
+            return self._invoke_background(call, command, max_bytes)
+
         try:
             proc = subprocess.run(
                 ["/bin/sh", "-c", command],
@@ -181,6 +209,555 @@ class ExecTool:
             content=f"exit code: {proc.returncode}\n{combined}",
             ok=proc.returncode == 0,
         )
+
+    def _invoke_background(self, call: ToolCall, command: str, max_bytes: int) -> ToolResult:
+        """S-280: detached start with yieldMs early-return on fast exit."""
+        try:
+            yield_ms = int(self.policy.get("yieldMs", DEFAULT_YIELD_MS))
+        except (TypeError, ValueError):
+            yield_ms = DEFAULT_YIELD_MS
+        raw_yield = call.arguments.get("yieldMs")
+        if raw_yield is not None:
+            try:
+                yield_ms = int(raw_yield)
+            except (TypeError, ValueError):
+                return ToolResult(content="exec: yieldMs must be an integer", ok=False)
+        if yield_ms < 0:
+            yield_ms = 0
+        proc_tool = ProcessTool(self.policy, self.context)
+        session, err = _start_background_session(
+            self.context.workspace_dir,
+            command,
+            proc_tool.max_sessions,
+            proc_tool.max_log_bytes,
+        )
+        if err:
+            return ToolResult(content=f"exec background: {err}", ok=False)
+        sid = session["id"]
+        proc = _PROCESS_HANDLES.get(sid)
+        # Give a quick command its normal foreground-style result.
+        rc = None
+        if proc is not None:
+            try:
+                rc = proc.wait(timeout=max(yield_ms / 1000.0, 0.05))
+            except subprocess.TimeoutExpired:
+                rc = None
+        if rc is None:
+            _refresh_session(session)
+        else:
+            session["status"] = "exited"
+            session["exit_code"] = rc
+            _PROCESS_HANDLES.pop(sid, None)
+            sessions = _load_sessions(self.context.workspace_dir)
+            sessions[sid] = session
+            _save_sessions(self.context.workspace_dir, sessions)
+        if rc is not None:
+            text, truncated = _read_capped(
+                Path(self.context.workspace_dir) / session["log_path"], max_bytes
+            )
+            notice = "\n[output truncated]" if truncated else ""
+            return ToolResult(content=f"exit code: {rc}\n{text}{notice}", ok=rc == 0)
+        return ToolResult(
+            content=(
+                f"started background session {sid} (pid {session['pid']}). "
+                f"Use process(action=poll/log/write/kill, sessionId={sid}) "
+                f"to control it. Log: {session['log_path']}"
+            ),
+            ok=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# S-280: background process management (exec background + process tool).
+#
+# A background session is a command started detached (start_new_session=True,
+# i.e. its own process group) inside the agent's task workspace, with
+# stdout/stderr captured to a log file under <workspace>/.skquad-process/.
+# The session registry is a JSON file in that same directory — the same
+# durable-file pattern as the crash-resume journal (.skquad-journal.json) —
+# so sessions survive across tool calls and wakes. Kill uses os.killpg so
+# the whole process group dies, children included. All paths stay inside
+# the workspace jail; the log cap (maxLogBytes) kills the process when the
+# captured output exceeds it so a runaway loop cannot fill the PVC.
+# ---------------------------------------------------------------------------
+
+PROCESS_STATE_DIRNAME = ".skquad-process"
+PROCESS_REGISTRY_NAME = "sessions.json"
+DEFAULT_MAX_SESSIONS = 16
+DEFAULT_MAX_LOG_BYTES = 5 * 1024 * 1024  # 5 MiB per session
+DEFAULT_YIELD_MS = 10_000
+MAX_POLL_WAIT_SECONDS = 30
+
+# In-process handle to still-running Popen objects (stdin writes and fast
+# status polling). The registry JSON is the durable source of truth; this
+# map is best-effort liveness within the current wake.
+_PROCESS_HANDLES: dict[str, subprocess.Popen] = {}
+_PROCESS_LOCK = threading.Lock()
+
+
+def _process_state_dir(workspace_dir: str) -> Path:
+    d = Path(workspace_dir) / PROCESS_STATE_DIRNAME
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _registry_path(workspace_dir: str) -> Path:
+    return _process_state_dir(workspace_dir) / PROCESS_REGISTRY_NAME
+
+
+def _load_sessions(workspace_dir: str) -> dict[str, dict]:
+    path = _registry_path(workspace_dir)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError):
+        logger.warning("process: registry unreadable at %s; treating as empty", path)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict)}
+
+
+def _save_sessions(workspace_dir: str, sessions: dict[str, dict]) -> None:
+    path = _registry_path(workspace_dir)
+    tmp = path.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(sessions, fh)
+    os.replace(tmp, path)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _refresh_session(session: dict) -> None:
+    """Update a running session's status from the live process (no wait).
+
+    With a held Popen handle we poll cheaply and reap properly. Without one
+    (a later wake in the same pod is still the parent, so waitpid works;
+    ECHILD means the process was reaped elsewhere or was never ours) we
+    fall back to os.waitpid(WNOHANG) and finally to liveness probing.
+    """
+    if session.get("status") != "running":
+        return
+    sid = str(session.get("id", ""))
+    proc = _PROCESS_HANDLES.get(sid)
+    if proc is not None:
+        rc = proc.poll()
+        if rc is not None:
+            session["status"] = "killed" if session.get("kill_requested") else "exited"
+            session["exit_code"] = rc
+            _PROCESS_HANDLES.pop(sid, None)
+        return
+    pid = int(session.get("pid", -1))
+    if pid <= 0:
+        session["status"] = "exited"
+        session["exit_code"] = None
+        return
+    try:
+        waited, status = os.waitpid(pid, os.WNOHANG)
+        if waited == pid:
+            session["status"] = "killed" if session.get("kill_requested") else "exited"
+            session["exit_code"] = os.waitstatus_to_exitcode(status)
+            return
+    except ChildProcessError:
+        # Not our child anymore (or never was): fall back to liveness only.
+        pass
+    except OSError:
+        pass
+    if not _pid_alive(pid):
+        session["status"] = "exited"
+        session["exit_code"] = session.get("exit_code")
+
+
+def _running_count(sessions: dict[str, dict]) -> int:
+    return sum(1 for s in sessions.values() if s.get("status") == "running")
+
+
+def _new_session_id() -> str:
+    return "p" + os.urandom(4).hex()
+
+
+def _start_background_session(
+    workspace_dir: str, command: str, max_sessions: int, max_log_bytes: int
+) -> tuple[dict | None, str]:
+    """Start ``command`` detached; returns (session, error_message)."""
+    with _PROCESS_LOCK:
+        sessions = _load_sessions(workspace_dir)
+        for s in sessions.values():
+            _refresh_session(s)
+        if _running_count(sessions) >= max_sessions:
+            return None, (
+                f"cannot start: {max_sessions} background sessions already running "
+                "(cap reached; kill or clear some first)"
+            )
+        sid = _new_session_id()
+        log_path = _process_state_dir(workspace_dir) / f"{sid}.log"
+        try:
+            log_fh = open(log_path, "ab")
+        except OSError as exc:
+            return None, f"cannot open session log: {exc}"
+        try:
+            proc = subprocess.Popen(
+                ["/bin/sh", "-c", command],
+                cwd=workspace_dir,
+                stdin=subprocess.PIPE,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                env=_scrubbed_env(),
+                start_new_session=True,
+            )
+        except OSError as exc:
+            log_fh.close()
+            return None, f"cannot start background command: {exc}"
+        log_fh.close()
+        session = {
+            "id": sid,
+            "command": command,
+            "pid": proc.pid,
+            "pgid": os.getpgid(proc.pid),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "status": "running",
+            "exit_code": None,
+            "log_path": str(log_path.relative_to(Path(workspace_dir))),
+        }
+        _PROCESS_HANDLES[sid] = proc
+        sessions[sid] = session
+        _save_sessions(workspace_dir, sessions)
+        return session, ""
+
+
+def _kill_session(workspace_dir: str, session: dict) -> str:
+    """SIGTERM the process group, then SIGKILL after a short grace."""
+    pgid = int(session.get("pgid", session.get("pid", -1)))
+    if pgid <= 0:
+        return "no process group to kill"
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except PermissionError as exc:
+        return f"kill failed: {exc}"
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        sid = str(session.get("id", ""))
+        proc = _PROCESS_HANDLES.get(sid)
+        if proc is not None and proc.poll() is not None:
+            break
+        if not _pgid_alive(pgid):
+            break
+        time.sleep(0.1)
+    else:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    session["kill_requested"] = True
+    _refresh_session(session)
+    if session.get("status") == "running":
+        session["status"] = "killed"
+    sessions = _load_sessions(workspace_dir)
+    if session.get("id") in sessions:
+        sessions[session["id"]] = session
+        _save_sessions(workspace_dir, sessions)
+    return ""
+
+
+def _pgid_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _enforce_log_cap(workspace_dir: str, session: dict, max_log_bytes: int) -> bool:
+    """Kill a running session whose captured log exceeded the cap."""
+    if session.get("status") != "running":
+        return False
+    try:
+        size = os.path.getsize(Path(workspace_dir) / str(session.get("log_path", "")))
+    except OSError:
+        return False
+    if size <= max_log_bytes:
+        return False
+    _kill_session(workspace_dir, session)
+    session["note"] = f"killed: log exceeded maxLogBytes={max_log_bytes}"
+    sessions = _load_sessions(workspace_dir)
+    if session.get("id") in sessions:
+        sessions[session["id"]] = session
+        _save_sessions(workspace_dir, sessions)
+    return True
+
+
+def _read_capped(path: Path, max_bytes: int) -> tuple[str, bool]:
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read(max_bytes + 1)
+    except OSError as exc:
+        return f"[cannot read log: {exc}]", False
+    truncated = len(data) > max_bytes
+    return data[:max_bytes].decode("utf-8", errors="replace"), truncated
+
+
+class ProcessTool:
+    """S-280: manage background exec sessions started by this agent task.
+
+    Actions: list, poll, log, write (stdin), kill (process group), clear.
+    Sessions live in <workspace>/.skquad-process/sessions.json with one
+    captured log per session; kill uses os.killpg so children die too.
+    """
+
+    name = "process"
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        self.policy = policy or {}
+        self.context = context
+
+    @property
+    def max_sessions(self) -> int:
+        try:
+            return int(self.policy.get("maxSessions", DEFAULT_MAX_SESSIONS))
+        except (TypeError, ValueError):
+            return DEFAULT_MAX_SESSIONS
+
+    @property
+    def max_log_bytes(self) -> int:
+        try:
+            return int(self.policy.get("maxLogBytes", DEFAULT_MAX_LOG_BYTES))
+        except (TypeError, ValueError):
+            return DEFAULT_MAX_LOG_BYTES
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "process",
+                    "description": (
+                        "Manage background commands started with "
+                        "exec(background=true). Actions: list (all "
+                        "sessions for this task), poll (status + exit "
+                        "code, optionally wait up to 30s for completion), "
+                        "log (captured stdout/stderr, with line "
+                        "offset/limit), write (send data to the "
+                        "session's stdin), kill (terminate the whole "
+                        "process group), clear (remove a finished "
+                        "session record)."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["list", "poll", "log", "write", "kill", "clear"],
+                                "description": "Management action to perform.",
+                            },
+                            "sessionId": {
+                                "type": "string",
+                                "description": (
+                                    "Session id returned by "
+                                    "exec(background=true). Required for "
+                                    "poll/log/write/kill/clear."
+                                ),
+                            },
+                            "timeoutSeconds": {
+                                "type": "integer",
+                                "description": (
+                                    "poll only: wait up to this many "
+                                    "seconds (max 30) for the session "
+                                    "to finish."
+                                ),
+                            },
+                            "data": {
+                                "type": "string",
+                                "description": "write only: text sent to stdin.",
+                            },
+                            "offset": {
+                                "type": "integer",
+                                "description": "log only: first line (1-indexed).",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "log only: max lines to return.",
+                            },
+                        },
+                        "required": ["action"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        action = str(call.arguments.get("action", "")).strip().lower()
+        if action == "list":
+            return self._list()
+        sid = str(call.arguments.get("sessionId", "")).strip()
+        if not sid:
+            return ToolResult(content=f"process {action}: sessionId is required", ok=False)
+        sessions = _load_sessions(self.context.workspace_dir)
+        session = sessions.get(sid)
+        if session is None:
+            return ToolResult(content=f"process {action}: unknown session {sid!r}", ok=False)
+        _refresh_session(session)
+        if action == "poll":
+            return self._poll(session, call)
+        if action == "log":
+            return self._log(session, call)
+        if action == "write":
+            return self._write(session, call)
+        if action == "kill":
+            return self._kill(sessions, session)
+        if action == "clear":
+            return self._clear(sessions, session)
+        return ToolResult(
+            content="process: action must be one of list/poll/log/write/kill/clear", ok=False
+        )
+
+    def _list(self) -> ToolResult:
+        sessions = _load_sessions(self.context.workspace_dir)
+        for s in sessions.values():
+            _refresh_session(s)
+            _enforce_log_cap(self.context.workspace_dir, s, self.max_log_bytes)
+        if sessions:
+            _save_sessions(self.context.workspace_dir, sessions)
+        if not sessions:
+            return ToolResult(content="process: no background sessions", ok=True)
+        lines = []
+        for s in sessions.values():
+            rc = s.get("exit_code")
+            rc_text = f" exit={rc}" if rc is not None else ""
+            note = f" ({s.get('note')})" if s.get("note") else ""
+            lines.append(
+                f"{s['id']} [{s['status']}]{rc_text}{note} pid={s['pid']} "
+                f"started={s['started_at']} :: {s['command'][:120]}"
+            )
+        return ToolResult(content="\n".join(lines), ok=True)
+
+    def _poll(self, session: dict, call: ToolCall) -> ToolResult:
+        try:
+            wait = min(int(call.arguments.get("timeoutSeconds", 0) or 0), MAX_POLL_WAIT_SECONDS)
+        except (TypeError, ValueError):
+            wait = 0
+        if wait < 0:
+            wait = 0
+        if wait > 0 and session.get("status") == "running":
+            deadline = time.monotonic() + wait
+            while time.monotonic() < deadline and session.get("status") == "running":
+                _refresh_session(session)
+                if session.get("status") != "running":
+                    break
+                if _enforce_log_cap(self.context.workspace_dir, session, self.max_log_bytes):
+                    break
+                time.sleep(0.2)
+        _enforce_log_cap(self.context.workspace_dir, session, self.max_log_bytes)
+        sessions = _load_sessions(self.context.workspace_dir)
+        sessions[session["id"]] = session
+        _save_sessions(self.context.workspace_dir, sessions)
+        rc = session.get("exit_code")
+        rc_text = f" exit={rc}" if rc is not None else ""
+        note = f" ({session.get('note')})" if session.get("note") else ""
+        return ToolResult(
+            content=f"{session['id']} [{session['status']}]{rc_text}{note}", ok=True
+        )
+
+    def _log(self, session: dict, call: ToolCall) -> ToolResult:
+        log_file = Path(self.context.workspace_dir) / str(session.get("log_path", ""))
+        # Defence in depth: the log must stay inside the workspace jail.
+        try:
+            log_file = _resolve_in_workspace(self.context.workspace_dir, str(session.get("log_path", "")))
+        except WorkspaceEscapeError as exc:
+            return ToolResult(content=f"process log: {exc}", ok=False)
+        if not log_file.is_file():
+            return ToolResult(content=f"process log: no output captured for {session['id']}", ok=True)
+        text, truncated = _read_capped(log_file, self.max_log_bytes)
+        lines = text.split("\n")
+        offset = call.arguments.get("offset")
+        limit = call.arguments.get("limit")
+        start = 0
+        if offset is not None:
+            try:
+                start = max(int(offset) - 1, 0)
+            except (TypeError, ValueError):
+                return ToolResult(content="process log: offset must be an integer", ok=False)
+        end = len(lines)
+        if limit is not None:
+            try:
+                end = min(start + max(int(limit), 0), len(lines))
+            except (TypeError, ValueError):
+                return ToolResult(content="process log: limit must be an integer", ok=False)
+        content = "\n".join(lines[start:end])
+        notices = []
+        if start > 0 or end < len(lines):
+            notices.append(f"showing lines {start + 1}-{end} of {len(lines)}")
+        if truncated:
+            notices.append(f"log truncated at maxLogBytes={self.max_log_bytes}")
+        if notices:
+            content += "\n[" + "; ".join(notices) + "]"
+        return ToolResult(content=content, ok=True)
+
+    def _write(self, session: dict, call: ToolCall) -> ToolResult:
+        if session.get("status") != "running":
+            return ToolResult(
+                content=f"process write: session {session['id']} is not running", ok=False
+            )
+        data = call.arguments.get("data")
+        if data is None:
+            return ToolResult(content="process write: data is required", ok=False)
+        proc = _PROCESS_HANDLES.get(str(session.get("id", "")))
+        if proc is None or proc.stdin is None:
+            return ToolResult(
+                content=(
+                    f"process write: stdin not attached for {session['id']} "
+                    "(session started in a previous wake)"
+                ),
+                ok=False,
+            )
+        try:
+            proc.stdin.write(str(data).encode("utf-8"))
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            return ToolResult(content=f"process write: failed: {exc}", ok=False)
+        return ToolResult(content=f"wrote {len(str(data))} chars to {session['id']} stdin", ok=True)
+
+    def _kill(self, sessions: dict, session: dict) -> ToolResult:
+        if session.get("status") != "running":
+            return ToolResult(
+                content=f"process kill: session {session['id']} already {session.get('status')}",
+                ok=True,
+            )
+        err = _kill_session(self.context.workspace_dir, session)
+        if err:
+            return ToolResult(content=f"process kill: {err}", ok=False)
+        return ToolResult(
+            content=f"killed session {session['id']} (process group {session.get('pgid')})", ok=True
+        )
+
+    def _clear(self, sessions: dict, session: dict) -> ToolResult:
+        if session.get("status") == "running":
+            return ToolResult(
+                content=f"process clear: session {session['id']} is still running; kill it first",
+                ok=False,
+            )
+        sessions.pop(session["id"], None)
+        _save_sessions(self.context.workspace_dir, sessions)
+        try:
+            log_file = Path(self.context.workspace_dir) / str(session.get("log_path", ""))
+            if log_file.is_file():
+                log_file.unlink()
+        except OSError:
+            pass
+        return ToolResult(content=f"cleared session {session['id']}", ok=True)
 
 
 class WebFetchTool:
@@ -1662,6 +2239,8 @@ _BUILTIN_REGISTRY: dict[str, type] = {
     "write": WriteTool,
     "edit": EditTool,
     "apply_patch": ApplyPatchTool,
+    # S-280: background process management (paired with exec background).
+    "process": ProcessTool,
 }
 
 # Built-ins that are listed in the platform catalog (S-232) for admin

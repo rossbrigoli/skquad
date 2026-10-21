@@ -42,6 +42,8 @@ export const BUILTIN_TOOL_DESCRIPTIONS: Record<BuiltinToolName, string> = {
   write: "Create or overwrite files in the agent's task workspace.",
   edit: "Exact-match atomic edits on a workspace file.",
   apply_patch: "Apply a structured Begin/End patch atomically in the workspace.",
+  // S-280: background process management.
+  process: "Manage background exec sessions: poll, log, stdin, kill, clear.",
 };
 
 // builtinToolItems normalises loaded built-in configs into tile items,
