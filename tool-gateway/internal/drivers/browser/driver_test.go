@@ -255,6 +255,30 @@ func TestFirstCallCreatesSessionAndInjectsToken(t *testing.T) {
 	assert.Contains(t, body.Content, `{"ok":true}`)
 }
 
+func TestEmptyTaskIDSynthesizesBindingTaskID(t *testing.T) {
+	// Regression: the browser service rejects an empty task_id with
+	// 400 binding_required (server.ts binding_required). A caller that
+	// omits task_id must still get a non-empty synthetic binding so
+	// session creation succeeds; repeat calls reuse the one session.
+	f := newFakeService("internal-tok")
+	d, srv := newTestDriver(f, t)
+	req := callReq("agent-1", `{"tool":"browser.navigate","arguments":{"url":"https://example.com"}}`, browserGrant(srv.URL, `{"deny_hosts":["*.internal"]}`, ""))
+
+	resp, err := d.Handle(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	creates := f.snapshotCreates()
+	require.Len(t, creates, 1)
+	assert.Equal(t, "agent:agent-1", creates[0]["task_id"])
+
+	// Second unnamed-task call reuses the same session (no new create).
+	resp2, err := d.Handle(context.Background(), callReq("agent-1", `{"tool":"browser.extract","arguments":{}}`, browserGrant(srv.URL, `{"deny_hosts":["*.internal"]}`, "")))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+	assert.Len(t, f.snapshotCreates(), 1)
+}
+
 func TestSecondCallReusesSession(t *testing.T) {
 	f := newFakeService("internal-tok")
 	d, srv := newTestDriver(f, t)

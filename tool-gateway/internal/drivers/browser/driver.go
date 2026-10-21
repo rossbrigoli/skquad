@@ -255,9 +255,18 @@ func (d *Driver) acquireSession(ctx context.Context, req *drivers.Request, pol *
 		return nil, drivers.Denied("session_limit")
 	}
 
+	// The browser service binds sessions to a NON-EMPTY task_id
+	// (POST /v1/sessions -> 400 binding_required when missing).
+	// Callers that don't name a task get a stable per-agent synthetic
+	// so the create path validates and repeat calls still reuse one
+	// session (the reuse rule above already matches empty taskIDs).
+	bindingTaskID := strings.TrimSpace(taskID)
+	if bindingTaskID == "" {
+		bindingTaskID = "agent:" + agentID
+	}
 	binding := map[string]any{
 		"agent_id":    agentID,
-		"task_id":     taskID,
+		"task_id":     bindingTaskID,
 		"resource_id": req.Resource,
 		"policy": map[string]any{
 			"deny_hosts":           pol.DenyHosts,
