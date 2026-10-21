@@ -291,6 +291,59 @@ func TestEstimateTokensAgainstCl100kBaseline(t *testing.T) {
 	}
 }
 
+// S-284: the embedded platform prompt must carry a descriptive catalog of
+// every built-in tool so agents can reason about tool selection, not just
+// see bare names.
+func TestPlatformPromptCatalogCoversAllBuiltins(t *testing.T) {
+	// Mirrors _BUILTIN_REGISTRY + _BUILTIN_WIRED_ELSEWHERE in
+	// skquad_runtime/builtin_tools.py (18 tools).
+	builtins := []string{
+		"exec", "process", "read", "write", "edit", "apply_patch",
+		"web_fetch", "web_search",
+		"send_message", "send_inbox", "notify_owner",
+		"memory_search",
+		"spawn_subagent",
+		"cron",
+		"sessions_list", "sessions_history", "session_status",
+		"browser",
+	}
+	if len(builtins) != 18 {
+		t.Fatalf("expected 18 built-ins, listed %d", len(builtins))
+	}
+	prompt := EmbeddedPlatformPrompt()
+	for _, name := range builtins {
+		if !strings.Contains(prompt, name) {
+			t.Errorf("platform prompt catalog missing built-in %q", name)
+		}
+	}
+	// The catalog must explain HOW, not just name: spot-check governance
+	// and usage markers.
+	for _, frag := range []string{
+		"BUILT-IN TOOL CATALOG",
+		"jailed to your workspace",
+		"FAIL-CLOSED",
+		"unauthenticated only",
+		"read-only",
+		"10,000-char cap",
+	} {
+		if !strings.Contains(prompt, frag) {
+			t.Errorf("platform prompt catalog missing marker %q", frag)
+		}
+	}
+}
+
+// S-284: composing with the embedded prompt and fully-populated facts
+// must leave no unrendered {{...}} placeholders anywhere.
+func TestComposedPromptNoUnrenderedPlaceholders(t *testing.T) {
+	c, err := Compose("", "o", "s", "a", testFacts)
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	if strings.Contains(c.Prompt, "{{") || strings.Contains(c.Prompt, "}}") {
+		t.Error("composed prompt contains unrendered template placeholder(s)")
+	}
+}
+
 func TestGoldenComposition(t *testing.T) {
 	c, err := Compose("",
 		"Organization: Acme. All agents follow company style: concise, kind, no snark in tickets.",

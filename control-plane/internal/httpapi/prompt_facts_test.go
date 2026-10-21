@@ -7,6 +7,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -57,9 +58,32 @@ func TestComposePromptToolsInventory(t *testing.T) {
 	// the inventory.
 	require.Contains(t, platform, "- notify_owner — drop an action_required message directly into your squad owner's inbox")
 	require.Contains(t, platform, "- send_inbox — deliver content a HUMAN asked you to send to your squad owner's inbox")
-	require.NotContains(t, platform, "- web_fetch")
-	require.NotContains(t, platform, "- web_search")
 	require.NotContains(t, platform, "(none — you have no tools this run)")
+	// S-284: the descriptive built-in catalog legitimately names all 18
+	// built-ins, so "disabled tools must not appear" must target only the
+	// enabled inventory block rendered between the catalog header and the
+	// policy paragraph.
+	inv := enabledInventorySection(t, platform)
+	require.NotContains(t, inv, "web_fetch")
+	require.NotContains(t, inv, "web_search")
+	require.Contains(t, inv, "- exec")
+}
+
+// enabledInventorySection extracts the {{tools.enabled}} inventory block
+// from the rendered platform tier (S-284).
+func enabledInventorySection(t *testing.T, platform string) string {
+	t.Helper()
+	header := "the gateway enforces that, not this list.\n\n"
+	start := strings.Index(platform, header)
+	if start < 0 {
+		t.Fatal("tools section header not found in platform tier")
+	}
+	start += len(header)
+	end := strings.Index(platform[start:], "\n\nEach tool operates under")
+	if end < 0 {
+		t.Fatal("enabled inventory block end not found in platform tier")
+	}
+	return platform[start : start+end]
 }
 
 func TestComposePromptNoToolsEnabled(t *testing.T) {
