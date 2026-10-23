@@ -1874,6 +1874,43 @@ func (m *MemoryStore) taskBlockedLocked(taskID string) bool {
 	return false
 }
 
+// StartTaskExecution mints a new active, fenced execution attempt for
+// (agent, task) without touching the task row — the board.claim path
+// (S-292, ADR-0016 D1) where the caller (start handler) has already
+// validated transition legality. Refuses with ErrConflict when the
+// agent already holds a live execution on another task, preserving the
+// one-live-attempt-per-agent posture of the claim path.
+func (m *MemoryStore) StartTaskExecution(_ context.Context, agentID string, taskID string, workerID string, leaseFor time.Duration) (*domain.TaskExecution, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tasks[taskID]; !ok {
+		return nil, ErrNotFound
+	}
+	now := time.Now().UTC()
+	if leaseFor <= 0 {
+		leaseFor = 5 * time.Minute
+	}
+	if workerID == "" {
+		workerID = agentID
+	}
+	if m.hasActiveExecutionForAgentLocked(agentID, now) {
+		return nil, ErrConflict
+	}
+	exec := &domain.TaskExecution{
+		ID:             uuid.NewString(),
+		TaskID:         taskID,
+		AgentID:        agentID,
+		WorkerID:       workerID,
+		FencingToken:   uuid.NewString(),
+		Status:         domain.TaskExecutionActive,
+		LeaseExpiresAt: now.Add(leaseFor),
+		StartedAt:      now,
+		UpdatedAt:      now,
+	}
+	m.taskExecs[exec.ID] = exec
+	return exec, nil
+}
+
 func (m *MemoryStore) HeartbeatTaskExecution(_ context.Context, agentID string, executionID string, fencingToken string, leaseFor time.Duration) (*domain.TaskExecution, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

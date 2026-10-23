@@ -2470,6 +2470,44 @@ func (p *PostgresStore) createTaskExecutionTx(ctx context.Context, tx pgx.Tx, ta
 	return scanTaskExecution(row)
 }
 
+// StartTaskExecution mints a new active, fenced execution attempt for
+// (agent, task) without touching the task row — the board.claim path
+// (S-292, ADR-0016 D1) where the caller (start handler) has already
+// validated transition legality. Refuses with ErrConflict when the
+// agent already holds a live execution on another task, preserving the
+// one-live-attempt-per-agent posture of the claim path.
+func (p *PostgresStore) StartTaskExecution(ctx context.Context, agentID string, taskID string, workerID string, leaseFor time.Duration) (*domain.TaskExecution, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+	if leaseFor <= 0 {
+		leaseFor = 5 * time.Minute
+	}
+	if workerID == "" {
+		workerID = agentID
+	}
+	if _, err := p.GetTask(ctx, taskID); err != nil {
+		return nil, err
+	}
+	active, err := p.agentHasActiveTaskExecution(ctx, tx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if active {
+		return nil, ErrConflict
+	}
+	exec, err := p.createTaskExecutionTx(ctx, tx, taskID, agentID, workerID, leaseFor)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return exec, nil
+}
+
 func (p *PostgresStore) ListBoardTaskExecutions(ctx context.Context, boardID string) ([]*domain.TaskExecution, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT e.id::text, e.task_id::text, e.agent_id::text, e.worker_id, e.fencing_token,

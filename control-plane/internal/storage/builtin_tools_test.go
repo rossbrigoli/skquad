@@ -31,10 +31,13 @@ func TestMemoryStoreSeedsBuiltinTools(t *testing.T) {
 	// session_status), all seeded ENABLED — read-only, self-scoped.
 	// S-283 adds the browser builtin (gateway-driven, ADR-0014), seeded
 	// ENABLED — inert without a granted browser resource + gateway URL.
-	if len(tools) != 18 {
-		t.Fatalf("seeded tools = %d, want 18", len(tools))
+	// S-292 adds the seven board.* verbs (ADR-0016 D1), all seeded
+	// ENABLED — thin clients over server-guarded transitions, so the
+	// guards (not the tool surface) bound what an agent may do.
+	if len(tools) != 25 {
+		t.Fatalf("seeded tools = %d, want 25", len(tools))
 	}
-	wantNames := []string{"exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner", "memory_search", "spawn_subagent", "read", "write", "edit", "apply_patch", "process", "cron", "sessions_list", "sessions_history", "session_status", "browser"}
+	wantNames := []string{"exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner", "memory_search", "spawn_subagent", "read", "write", "edit", "apply_patch", "process", "cron", "sessions_list", "sessions_history", "session_status", "browser", "board.create_task", "board.assign", "board.claim", "board.complete", "board.block", "board.reopen", "board.request_changes"}
 	for i, tool := range tools {
 		if tool.Name != wantNames[i] {
 			t.Fatalf("tool[%d] = %q, want %q", i, tool.Name, wantNames[i])

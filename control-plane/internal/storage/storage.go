@@ -233,6 +233,14 @@ type TaskStore interface {
 	ListTasks(ctx context.Context, boardID string, status domain.TaskStatus) ([]*domain.Task, error) // status "" = all
 	ListAgentTasks(ctx context.Context, agentID string) ([]*domain.Task, error)
 	ClaimNextTask(ctx context.Context, agentID string, workerID string, leaseFor time.Duration) (*domain.Task, error)
+	// StartTaskExecution mints a new active, fenced execution attempt for
+	// (agent, task) — the board.claim path (S-292, ADR-0016 D1) where no
+	// prior claim created the execution. Transition legality (pickup
+	// column, assignee) is validated by the caller; this only creates the
+	// fence. ErrConflict when the agent already holds a live execution on
+	// a different task (one live attempt per agent, matching the claim
+	// posture) or the task does not exist (ErrNotFound).
+	StartTaskExecution(ctx context.Context, agentID string, taskID string, workerID string, leaseFor time.Duration) (*domain.TaskExecution, error)
 	// AddTaskDependency (S-278) records that taskID depends on
 	// dependsOnID. Both tasks must exist, belong to the same squad, must
 	// not be the same task, and the edge must not create a cycle.
