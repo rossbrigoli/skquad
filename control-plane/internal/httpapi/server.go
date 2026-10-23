@@ -655,6 +655,9 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Post("/tasks/{taskID}/start", s.startCurrentAgentTask)
 			r.Post("/tasks/{taskID}/complete", s.completeCurrentAgentTask)
 			r.Post("/tasks/{taskID}/block", s.blockCurrentAgentTask)
+			// S-290 (ADR-0016 D3): assignee-only reopen, in-review →
+			// in-progress with a NEW fenced execution attempt.
+			r.Post("/tasks/{taskID}/reopen", s.reopenCurrentAgentTask)
 			r.Post("/tasks/{taskID}/workspace", s.reportCurrentAgentTaskWorkspace)
 			// S-183: the runtime streams the agent's working turns into the
 			// task thread while the task runs.
@@ -5425,13 +5428,24 @@ func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	principal := currentAgent(r.Context())
 	if promptSHA != "" {
-		principal := currentAgent(r.Context())
 		if _, err := s.store.SetTaskExecutionPromptSHA(r.Context(), principal.Agent.ID, updated.ID, promptSHA); err != nil {
 			writeStorageError(w, err)
 			return
 		}
 		updated.PromptSHA = promptSHA
+	}
+	// S-290 (ADR-0016 D3): surface the active execution's reviewer_feedback
+	// (carried when the attempt was created by a reopen) plus the live
+	// fencing details, so the runtime's task brief can include the
+	// reviewer's message immediately.
+	if exec, execErr := s.store.GetLatestTaskExecution(r.Context(), updated.ID); execErr == nil &&
+		exec.AgentID == principal.Agent.ID && exec.Status == domain.TaskExecutionActive {
+		updated.ExecutionID = exec.ID
+		updated.WorkerID = exec.WorkerID
+		updated.LeaseExpiresAt = exec.LeaseExpiresAt
+		updated.ReviewerFeedback = exec.ReviewerFeedback
 	}
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -5500,6 +5514,14 @@ type taskCompletionRequest struct {
 	PersistMemory bool              `json:"persist_memory"`
 	ExecutionID   string            `json:"execution_id"`
 	FencingToken  string            `json:"fencing_token"`
+	// ReviewNeeded is the agent's review decision (S-290, ADR-0016 D2).
+	// nil or true keeps today's behaviour (in-review); false self-approves
+	// straight to done — gated by EffectiveSelfApprove and a required
+	// justification.
+	ReviewNeeded *bool `json:"review_needed"`
+	// Justification is the one-line reason no human review is warranted.
+	// Required when ReviewNeeded is false; recorded in the audit trail.
+	Justification string `json:"justification"`
 }
 
 func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
@@ -5516,14 +5538,42 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "bad_request", "status must be in-review or done")
 		return
 	}
+	principal := currentAgent(r.Context())
+	taskID := chi.URLParam(r, "taskID")
+	// S-290 (ADR-0016 D2): review_needed=false is the self-approval
+	// path — straight to done, but only with a recorded justification and
+	// only when the effective policy allows it. Rejections apply nothing:
+	// the task stays in-progress.
+	selfApproved := req.ReviewNeeded != nil && !*req.ReviewNeeded
+	justification := trimRunes(strings.TrimSpace(req.Justification), maxAgentMemoryContentChars)
+	if selfApproved {
+		if justification == "" {
+			writeError(w, http.StatusBadRequest, "self_approval_justification_required", "completing without review requires a non-empty justification")
+			return
+		}
+		squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		if !domain.EffectiveSelfApprove(principal.Agent, squad) {
+			writeError(w, http.StatusConflict, "self_approval_disabled", "self-approval is disabled for this agent; complete with review_needed=true instead")
+			return
+		}
+		req.Status = domain.TaskDone
+	}
 	executionID, fencingToken, ok := requireExecutionFence(w, req.ExecutionID, req.FencingToken)
 	if !ok {
 		return
 	}
-	principal := currentAgent(r.Context())
-	taskID := chi.URLParam(r, "taskID")
 	summary := trimRunes(strings.TrimSpace(req.Summary), maxAgentMemoryContentChars)
-	updated, err := s.store.CompleteTaskExecution(s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.complete", "task", taskID, principal.Agent.SquadID, nil), principal.Agent.ID, taskID, executionID, fencingToken, req.Status, summary)
+	var auditMeta json.RawMessage
+	if selfApproved {
+		if meta, err := json.Marshal(map[string]any{"self_approved": true, "justification": justification}); err == nil {
+			auditMeta = meta
+		}
+	}
+	updated, err := s.store.CompleteTaskExecution(s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.complete", "task", taskID, principal.Agent.SquadID, auditMeta), principal.Agent.ID, taskID, executionID, fencingToken, req.Status, summary)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -5664,6 +5714,90 @@ func (s *Server) reportCurrentAgentTaskWorkspace(w http.ResponseWriter, r *http.
 		writeStorageError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// reopenCurrentAgentTask S-290 (ADR-0016 D3): the assignee moves its own
+// in-review task back to in-progress with a NEW fenced execution attempt
+// (new fencing token + lease, prior completed attempt retained), so the
+// chat-driven "not happy → fix it" loop works immediately. Valid only
+// for the current assignee and only from in-review — `done` is never
+// agent-reopenable (D4). The rolling-24h reopen cap (squad board policy,
+// default 3) breaks the loop with 429 when the agent cannot fix the
+// issue; the cap counts agent reopens only.
+func (s *Server) reopenCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Reason           string `json:"reason"`
+		ReviewerFeedback string `json:"reviewer_feedback"`
+		WorkerID         string `json:"worker_id"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		writeError(w, http.StatusBadRequest, "reopen_reason_required", "reason must not be empty")
+		return
+	}
+	principal := currentAgent(r.Context())
+	taskID := chi.URLParam(r, "taskID")
+	task, err := s.store.GetTask(r.Context(), taskID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if task.Status == domain.TaskDone {
+		writeError(w, http.StatusConflict, "reopen_final_status", "done is the approved terminal state; only a human may reopen it (ADR-0016 D4)")
+		return
+	}
+	if task.AssigneeAgentID != principal.Agent.ID {
+		writeError(w, http.StatusConflict, "reopen_not_allowed", "only the assigned agent can reopen this task")
+		return
+	}
+	if task.Status != domain.TaskInReview {
+		writeError(w, http.StatusConflict, "reopen_wrong_status", fmt.Sprintf("task is in %q; only in-review tasks can be reopened", task.Status))
+		return
+	}
+	squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	reopenCap := domain.EffectiveReopenCap(squad)
+	feedback := trimRunes(strings.TrimSpace(req.ReviewerFeedback), maxAgentMemoryContentChars)
+	workerID := strings.TrimSpace(req.WorkerID)
+	if workerID == "" {
+		workerID = workerIDFromRequest(r, principal.Agent.ID)
+	}
+	auditMeta, _ := json.Marshal(map[string]string{"reason": reason, "reviewer_feedback": feedback})
+	updated, err := s.store.ReopenTaskExecution(
+		s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.reopen", "task", taskID, principal.Agent.SquadID, auditMeta),
+		principal.Agent.ID,
+		taskID,
+		workerID,
+		feedback,
+		defaultTaskExecutionLease,
+		reopenCap,
+	)
+	if err != nil {
+		if errors.Is(err, storage.ErrReopenCapExceeded) {
+			writeError(w, http.StatusTooManyRequests, "reopen_cap_exceeded", fmt.Sprintf("reopen cap of %d per rolling 24h reached; the task stays in-review and needs human intervention", reopenCap))
+			return
+		}
+		if errors.Is(err, storage.ErrConflict) {
+			writeError(w, http.StatusConflict, "reopen_wrong_status", "task is no longer reopenable (state changed concurrently)")
+			return
+		}
+		writeStorageError(w, err)
+		return
+	}
+	if err := s.setAgentStatusAndMirror(r.Context(), principal.Agent.ID, domain.AgentBusy); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
+		return
+	}
+	s.appendTaskThreadEvent(r.Context(), updated, "agent", principal.Agent.ID, domain.MessageReply, trimRunes("Reopened this task: "+reason, maxTaskThreadTurnChars))
 	writeJSON(w, http.StatusOK, updated)
 }
 

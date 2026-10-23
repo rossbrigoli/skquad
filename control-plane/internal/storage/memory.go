@@ -1928,6 +1928,29 @@ func (m *MemoryStore) GetLatestTaskExecution(_ context.Context, taskID string) (
 	return cloneTaskExecution(latest), nil
 }
 
+// ListTaskExecutions returns every execution attempt for a task, oldest
+// first (S-290: reopen retains prior attempts).
+func (m *MemoryStore) ListTaskExecutions(_ context.Context, taskID string) ([]*domain.TaskExecution, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []*domain.TaskExecution{}
+	for _, exec := range m.taskExecs {
+		if exec.TaskID == taskID {
+			out = append(out, cloneTaskExecution(exec))
+		}
+	}
+	slices.SortFunc(out, func(a, b *domain.TaskExecution) int {
+		if a.StartedAt.Equal(b.StartedAt) {
+			return strings.Compare(a.ID, b.ID)
+		}
+		if a.StartedAt.Before(b.StartedAt) {
+			return -1
+		}
+		return 1
+	})
+	return out, nil
+}
+
 func (m *MemoryStore) CompleteTaskExecution(ctx context.Context, agentID string, taskID string, executionID string, fencingToken string, status domain.TaskStatus, summary string) (*domain.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1965,6 +1988,64 @@ func (m *MemoryStore) CompleteTaskExecution(ctx context.Context, agentID string,
 	exec.ResultSummary = summary
 	exec.CompletedAt = now
 	exec.UpdatedAt = now
+	m.drainPendingAuditsLocked(ctx, taskID)
+	return taskWithExecution(task, exec), nil
+}
+
+// ReopenTaskExecution implements the agent reopen (ADR-0016 D3, S-290).
+// Only the assignee may reopen, only from in-review; the prior completed
+// attempt is retained and a NEW active attempt (new fencing token, fresh
+// lease, reopen_seq) is created. The rolling-24h cap counts reopen_seq
+// attempts for this task, so it governs agent reopens only.
+func (m *MemoryStore) ReopenTaskExecution(ctx context.Context, agentID string, taskID string, workerID string, reviewerFeedback string, leaseFor time.Duration, maxReopens int) (*domain.Task, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	task, ok := m.tasks[taskID]
+	if !ok || task.AssigneeAgentID != agentID {
+		return nil, ErrNotFound
+	}
+	if task.Status != domain.TaskInReview {
+		return nil, ErrConflict
+	}
+	if m.hasActiveExecutionForAgentLocked(agentID, now) {
+		return nil, ErrConflict
+	}
+	if maxReopens >= 0 {
+		windowStart := now.Add(-24 * time.Hour)
+		reopens := 0
+		for _, exec := range m.taskExecs {
+			if exec.TaskID == taskID && exec.ReopenSeq && !exec.StartedAt.Before(windowStart) {
+				reopens++
+			}
+		}
+		if reopens >= maxReopens {
+			return nil, ErrReopenCapExceeded
+		}
+	}
+	if leaseFor <= 0 {
+		leaseFor = 5 * time.Minute
+	}
+	if workerID == "" {
+		workerID = agentID
+	}
+	task.Status = domain.TaskInProgress
+	task.Position = m.nextTaskPosition(task.BoardID, domain.TaskInProgress)
+	task.UpdatedAt = now
+	exec := &domain.TaskExecution{
+		ID:               uuid.NewString(),
+		TaskID:           taskID,
+		AgentID:          agentID,
+		WorkerID:         workerID,
+		FencingToken:     uuid.NewString(),
+		Status:           domain.TaskExecutionActive,
+		LeaseExpiresAt:   now.Add(leaseFor),
+		ReviewerFeedback: reviewerFeedback,
+		ReopenSeq:        true,
+		StartedAt:        now,
+		UpdatedAt:        now,
+	}
+	m.taskExecs[exec.ID] = exec
 	m.drainPendingAuditsLocked(ctx, taskID)
 	return taskWithExecution(task, exec), nil
 }
@@ -3057,6 +3138,7 @@ func taskWithExecution(t *domain.Task, exec *domain.TaskExecution) *domain.Task 
 	out.WorkerID = exec.WorkerID
 	out.FencingToken = exec.FencingToken
 	out.LeaseExpiresAt = exec.LeaseExpiresAt
+	out.ReviewerFeedback = exec.ReviewerFeedback
 	return out
 }
 

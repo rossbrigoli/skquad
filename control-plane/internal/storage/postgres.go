@@ -2465,7 +2465,7 @@ func (p *PostgresStore) createTaskExecutionTx(ctx context.Context, tx pgx.Tx, ta
 		VALUES ($1, $2, $3, now() + ($4::text)::interval)
 		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
 		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
-		          prompt_sha, started_at, completed_at, updated_at
+		          prompt_sha, started_at, completed_at, updated_at, coalesce(reviewer_feedback, ''), reopen_seq
 	`, taskID, agentID, workerID, fmt.Sprintf(secondsFormat, int(leaseFor/time.Second)))
 	return scanTaskExecution(row)
 }
@@ -2474,7 +2474,7 @@ func (p *PostgresStore) ListBoardTaskExecutions(ctx context.Context, boardID str
 	rows, err := p.pool.Query(ctx, `
 		SELECT e.id::text, e.task_id::text, e.agent_id::text, e.worker_id, e.fencing_token,
 		       e.status, e.lease_expires_at, coalesce(e.result_status, ''), e.result_summary,
-		       e.prompt_sha, e.started_at, e.completed_at, e.updated_at
+		       e.prompt_sha, e.started_at, e.completed_at, e.updated_at, coalesce(e.reviewer_feedback, ''), e.reopen_seq
 		FROM task_executions e
 		JOIN tasks t ON t.id = e.task_id
 		WHERE t.board_id = $1 AND e.status = $2
@@ -2510,7 +2510,7 @@ func (p *PostgresStore) HeartbeatTaskExecution(ctx context.Context, agentID stri
 		  AND status = 'active'
 		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
 		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
-		          prompt_sha, started_at, completed_at, updated_at
+		          prompt_sha, started_at, completed_at, updated_at, coalesce(reviewer_feedback, ''), reopen_seq
 	`, executionID, agentID, fencingToken, fmt.Sprintf(secondsFormat, int(leaseFor/time.Second)))
 	exec, err := scanTaskExecution(row)
 	if errors.Is(err, ErrNotFound) {
@@ -2667,6 +2667,109 @@ func (p *PostgresStore) CompleteTaskExecution(ctx context.Context, agentID strin
 		return nil, mapPgErr(err)
 	}
 	return task, nil
+}
+
+// ReopenTaskExecution implements the agent reopen (ADR-0016 D3, S-290).
+// Only the assignee may reopen, only from in-review; the prior completed
+// attempt is retained and a NEW active attempt (new fencing token, fresh
+// lease, reopen_seq) is created. The rolling-24h cap counts reopen_seq
+// attempts for this task, so it governs agent reopens only.
+func (p *PostgresStore) ReopenTaskExecution(ctx context.Context, agentID string, taskID string, workerID string, reviewerFeedback string, leaseFor time.Duration, maxReopens int) (*domain.Task, error) {
+	if leaseFor <= 0 {
+		leaseFor = 5 * time.Minute
+	}
+	if workerID == "" {
+		workerID = agentID
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock the task row: assignee-scoped, then enforce the status guard.
+	var status domain.TaskStatus
+	if err := tx.QueryRow(ctx, `
+		SELECT status FROM tasks
+		WHERE id = $1 AND assignee_agent_id = $2
+		FOR UPDATE
+	`, taskID, agentID).Scan(&status); err != nil {
+		return nil, mapPgErr(err)
+	}
+	if status != domain.TaskInReview {
+		return nil, ErrConflict
+	}
+
+	// Rolling-24h reopen cap over reopen_seq attempts (agent-only).
+	if maxReopens >= 0 {
+		var reopens int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM task_executions
+			WHERE task_id = $1 AND reopen_seq
+			  AND started_at > now() - interval '24 hours'
+		`, taskID).Scan(&reopens); err != nil {
+			return nil, mapPgErr(err)
+		}
+		if reopens >= maxReopens {
+			return nil, ErrReopenCapExceeded
+		}
+	}
+
+	// The agent must not hold another live execution lease.
+	var live bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM task_executions
+			WHERE agent_id = $1 AND status = $2 AND lease_expires_at > now()
+		)
+	`, agentID, domain.TaskExecutionActive).Scan(&live); err != nil {
+		return nil, mapPgErr(err)
+	}
+	if live {
+		return nil, ErrConflict
+	}
+
+	row := tx.QueryRow(ctx, `
+		WITH next_position AS (
+			SELECT coalesce(max(position) + 1, 1) AS position
+			FROM tasks
+			WHERE board_id = (SELECT board_id FROM tasks WHERE id = $1)
+			  AND status = $2
+		)
+		UPDATE tasks
+		SET status = $2,
+		    position = (SELECT position FROM next_position),
+		    updated_at = now()
+		WHERE id = $1 AND assignee_agent_id = $3 AND status = $4
+		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
+		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
+		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
+	`, taskID, domain.TaskInProgress, agentID, domain.TaskInReview)
+	task, err := scanTask(row)
+	if err != nil {
+		return nil, err
+	}
+
+	execRow := tx.QueryRow(ctx, `
+		INSERT INTO task_executions (
+			task_id, agent_id, worker_id, lease_expires_at, reviewer_feedback, reopen_seq
+		)
+		VALUES ($1, $2, $3, now() + ($4::text)::interval, $5, TRUE)
+		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
+		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
+		          prompt_sha, started_at, completed_at, updated_at, coalesce(reviewer_feedback, ''), reopen_seq
+	`, taskID, agentID, workerID, fmt.Sprintf(secondsFormat, int(leaseFor/time.Second)), reviewerFeedback)
+	exec, err := scanTaskExecution(execRow)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, task.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return taskWithExecution(task, exec), nil
 }
 
 func (p *PostgresStore) CreateAgentMemory(ctx context.Context, memory *domain.AgentMemory) (*domain.AgentMemory, error) {
@@ -4132,7 +4235,7 @@ func (p *PostgresStore) SetTaskExecutionPromptSHA(ctx context.Context, agentID s
 		WHERE agent_id = $1 AND task_id = $2 AND status = $4
 		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
 		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
-		          prompt_sha, started_at, completed_at, updated_at
+		          prompt_sha, started_at, completed_at, updated_at, coalesce(reviewer_feedback, ''), reopen_seq
 	`, agentID, taskID, promptSHA, domain.TaskExecutionActive)
 	return scanTaskExecution(row)
 }
@@ -4143,13 +4246,40 @@ func (p *PostgresStore) GetLatestTaskExecution(ctx context.Context, taskID strin
 	row := p.pool.QueryRow(ctx, `
 		SELECT id::text, task_id::text, agent_id::text, worker_id, fencing_token,
 		       status, lease_expires_at, coalesce(result_status, ''), result_summary,
-		       prompt_sha, started_at, completed_at, updated_at
+		       prompt_sha, started_at, completed_at, updated_at, coalesce(reviewer_feedback, ''), reopen_seq
 		FROM task_executions
 		WHERE task_id = $1
 		ORDER BY started_at DESC, id
 		LIMIT 1
 	`, taskID)
 	return scanTaskExecution(row)
+}
+
+// ListTaskExecutions returns every execution attempt for a task, oldest
+// first (S-290: reopen retains prior attempts).
+func (p *PostgresStore) ListTaskExecutions(ctx context.Context, taskID string) ([]*domain.TaskExecution, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id::text, task_id::text, agent_id::text, worker_id, fencing_token,
+		       status, lease_expires_at, coalesce(result_status, ''), result_summary,
+		       prompt_sha, started_at, completed_at, updated_at, coalesce(reviewer_feedback, ''), reopen_seq
+		FROM task_executions
+		WHERE task_id = $1
+		ORDER BY started_at, id
+	`, taskID)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+
+	executions := []*domain.TaskExecution{}
+	for rows.Next() {
+		exec, err := scanTaskExecution(rows)
+		if err != nil {
+			return nil, err
+		}
+		executions = append(executions, exec)
+	}
+	return executions, mapPgErr(rows.Err())
 }
 
 func scanTaskExecution(row scanner) (*domain.TaskExecution, error) {
@@ -4169,6 +4299,8 @@ func scanTaskExecution(row scanner) (*domain.TaskExecution, error) {
 		&exec.StartedAt,
 		&completedAt,
 		&exec.UpdatedAt,
+		&exec.ReviewerFeedback,
+		&exec.ReopenSeq,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}

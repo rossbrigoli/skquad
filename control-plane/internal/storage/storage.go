@@ -30,6 +30,11 @@ var ErrDependencyCycle = fmt.Errorf("%w: dependency cycle", ErrConflict)
 // ErrDependencyExists (S-278) rejects a duplicate depends-on edge.
 var ErrDependencyExists = fmt.Errorf("%w: dependency already exists", ErrConflict)
 
+// ErrReopenCapExceeded (S-290, ADR-0016 D3) is returned by
+// ReopenTaskExecution when the task already carries maxReopens
+// agent-reopen attempts in the rolling 24h window. Maps to HTTP 429.
+var ErrReopenCapExceeded = fmt.Errorf("%w: reopen cap exceeded", ErrConflict)
+
 // Store is the aggregate persistence interface used by the API server.
 type Store interface {
 	UserStore
@@ -262,7 +267,21 @@ type TaskStore interface {
 	// task regardless of status (task-detail run-audit). ErrNotFound
 	// when the task has never executed.
 	GetLatestTaskExecution(ctx context.Context, taskID string) (*domain.TaskExecution, error)
+	// ListTaskExecutions returns every execution attempt for a task,
+	// oldest first (S-290: reopen retains prior attempts; the read path
+	// backs the visible attempt count).
+	ListTaskExecutions(ctx context.Context, taskID string) ([]*domain.TaskExecution, error)
 	CompleteTaskExecution(ctx context.Context, agentID string, taskID string, executionID string, fencingToken string, status domain.TaskStatus, summary string) (*domain.Task, error)
+	// ReopenTaskExecution implements the agent reopen (ADR-0016 D3, S-290):
+	// the assignee moves its own in-review task back to in-progress with a
+	// NEW active execution attempt (new fencing token, lease), retaining the
+	// prior completed attempt. reviewerFeedback is persisted on the new
+	// attempt and surfaced on the task payload. maxReopens is the resolved
+	// rolling-24h cap on reopen-created attempts for this task; exceeding
+	// it returns ErrReopenCapExceeded and applies nothing. ErrConflict when
+	// the task is not in-review, the agent already holds a live execution,
+	// or the assignee does not match.
+	ReopenTaskExecution(ctx context.Context, agentID string, taskID string, workerID string, reviewerFeedback string, leaseFor time.Duration, maxReopens int) (*domain.Task, error)
 	// ReapExpiredTaskExecutions marks active executions whose lease expired
 	// before cutoff as expired and re-queues their tasks (in-progress → TO DO)
 	// when no other live execution remains. Returns the reaped executions
