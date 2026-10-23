@@ -3003,6 +3003,12 @@ type updateAgentRequest struct {
 	// ThinkingLevel (S-178). Pointer semantics: nil = leave unchanged,
 	// "" = unset (provider default), one of low|medium|high = set.
 	ThinkingLevel *string `json:"thinking_level"`
+	// SelfApproveAllowed (S-291, ADR-0016 D2). Tri-state via raw JSON:
+	// field absent = leave unchanged, null = clear the per-agent override
+	// (inherit the squad's self_approve_default), true/false = set the
+	// override. json.RawMessage is required because *bool cannot tell
+	// "null" apart from "missing".
+	SelfApproveAllowed json.RawMessage `json:"self_approve_allowed"`
 }
 
 // applyAgentScalarUpdates copies the non-binding scalar fields from the
@@ -3032,6 +3038,9 @@ func (s *Server) applyAgentScalarUpdates(agent *domain.Agent, req updateAgentReq
 		return err
 	}
 	if err := applyThinkingLevelUpdate(agent, req.ThinkingLevel); err != nil {
+		return err
+	}
+	if err := applySelfApproveUpdate(agent, req.SelfApproveAllowed); err != nil {
 		return err
 	}
 	if agent.StorageEnabled && agent.StorageSize == "" {
@@ -3083,6 +3092,25 @@ func applyThinkingLevelUpdate(agent *domain.Agent, v *string) error {
 	default:
 		return errors.New("thinking_level must be one of low, medium, high (or empty to unset)")
 	}
+	return nil
+}
+
+// applySelfApproveUpdate stages the S-291 (ADR-0016 D2) per-agent
+// self-approval override. Raw-JSON tri-state: absent = leave unchanged,
+// null = clear the override (inherit squad default), bool = set it.
+func applySelfApproveUpdate(agent *domain.Agent, raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(string(raw)) == "null" {
+		agent.SelfApproveAllowed = nil
+		return nil
+	}
+	var allowed bool
+	if err := json.Unmarshal(raw, &allowed); err != nil {
+		return errors.New("self_approve_allowed must be true, false, or null (null clears the override)")
+	}
+	agent.SelfApproveAllowed = &allowed
 	return nil
 }
 

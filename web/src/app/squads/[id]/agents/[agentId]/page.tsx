@@ -653,6 +653,11 @@ function AgentConfigPane({
   const [prompt, setPrompt] = useState(agent.system_prompt ?? "");
   const [primary, setPrimary] = useState(agent.ai_model_id ?? "");
   const [fallback, setFallback] = useState(agent.fallback_ai_model_id ?? "");
+  // S-291 (ADR-0016 D2): tri-state self-approve override — null =
+  // inherit the squad's self_approve_default, true/false = explicit
+  // per-agent override. Sent in the PATCH only when changed.
+  const selfApproveInitial = agent.self_approve_allowed ?? null;
+  const [selfApprove, setSelfApprove] = useState<boolean | null>(selfApproveInitial);
   const [promptBlocked, setPromptBlocked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -668,7 +673,8 @@ function AgentConfigPane({
     storageEnabled !== (agent.storage_enabled ?? false) ||
     storageSizeDirty ||
     primary !== (agent.ai_model_id ?? "") ||
-    fallback !== (agent.fallback_ai_model_id ?? "");
+    fallback !== (agent.fallback_ai_model_id ?? "") ||
+    selfApprove !== selfApproveInitial;
 
   async function saveAll() {
     setBusy(true);
@@ -687,6 +693,12 @@ function AgentConfigPane({
         ai_model_id: binding.ai_model_id,
         fallback_ai_model_id: binding.fallback_ai_model_id,
       };
+      // S-291: only send the override when it changed — an unchanged
+      // field stays out of the PATCH so "inherit" never clobbers a
+      // server-side value the form has not touched.
+      if (selfApprove !== selfApproveInitial) {
+        body.self_approve_allowed = selfApprove;
+      }
       await apiPatch(`/agents/${agent.id}`, token, body);
       setSavedNote("Configuration saved.");
       onSaved();
@@ -733,6 +745,26 @@ function AgentConfigPane({
               inputMode="numeric"
               placeholder="Platform default (15 min)"
             />
+          </label>
+          {/* S-291 (ADR-0016 D2): per-agent self-approval override. */}
+          <label className="field">
+            <span>Self-approve allowed</span>
+            <select
+              aria-label="Self-approve allowed"
+              value={selfApprove === null ? "inherit" : selfApprove ? "allowed" : "blocked"}
+              onChange={(e) => {
+                const next = e.target.value;
+                setSelfApprove(next === "inherit" ? null : next === "allowed");
+                setSavedNote("");
+              }}
+            >
+              <option value="inherit">Inherit (squad default)</option>
+              <option value="allowed">Allowed</option>
+              <option value="blocked">Blocked</option>
+            </select>
+            <span className="field-hint">
+              Overrides the squad&rsquo;s self-approve default for this agent (ADR-0016 D2).
+            </span>
           </label>
         </div>
         <StorageWorkspaceField
