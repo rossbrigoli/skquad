@@ -64,11 +64,19 @@ pull cards off other agents, or write `backlog` state.
   `self_approval_justification` (required; the prompt instructs the agent
   to state why no human review is warranted).
 - `review_needed=true` → `in-review`, exactly as today.
-- **Policy knob:** `agents.self_approve_allowed` (default `true`, per-agent
-  overridable; squad-level default via Helm). Agents with
+- **Policy knob:** `agents.self_approve_allowed` — **configurable on the
+  agent configuration page** (default `true`), per-agent overridable;
+  squad-level default via Helm. Agents with
   `self_approve_allowed=false` get a 409 `self_approval_disabled` when
   requesting `done` — their completions always land in `in-review`.
   Recommended `false` for deploy/infra-flavoured agents.
+- **Condition (prompt-governed, not server-enforced):** self-approval is
+  to be used **only for straightforward, self-evident tasks** — the
+  composed prompt instructs the agent that anything involving judgment,
+  irreversible side effects, or partial confidence must go to
+  `in-review`. The server cannot classify "straightforward", so the
+  `self_approval_justification` field plus the distinct UI marker make
+  misuse visible and reviewable after the fact.
 - The board UI renders self-approved `done` cards with a distinct marker
   so the owner can spot-check the population.
 
@@ -87,9 +95,15 @@ auditable and policy-governable, rather than implicit in LLM phrasing.
   agent calls `board.reopen` → the task brief for the new attempt includes
   a `reviewer_feedback` section carrying Ross's message verbatim (see
   [subagent-task-execution.md](../subagent-task-execution.md) §4).
-- **Reopen cap:** max 3 reopens per task per rolling 24h (configurable).
-  Beyond that, 429 `reopen_cap_exceeded` — prevents in-review↔in-progress
-  churn burning tokens. The card stays `in-review`; escalation is human.
+- **Reopen cap (circuit breaker):** max 3 agent-initiated reopens per
+  task per rolling 24h (configurable `SKQUAD_REOPEN_CAP=3`). Beyond
+  that, 429 `reopen_cap_exceeded` — the card stays `in-review` and the
+  loop is broken for the agent. **The cap governs the agent only:** the
+  human owner can move the card from the board UI without any limit.
+  Rationale: prevents an agent that cannot fix the issue from churning
+  in-review↔in-progress burning tokens indefinitely; after 3 failed
+  attempts the task needs human intervention (rewrite, reassign, or
+  manual fix).
 
 ### D4 — `done` is not agent-reopenable
 
@@ -161,11 +175,15 @@ recorded here so the requirement is pinned against regressions.
   roughly combinatorially. Mitigate with a table-driven transition
   matrix test in `httpapi`.
 
-**Open questions for Ross**
+**Resolved decisions (Ross, 2026-10-24)**
 
-1. Should a leader agent be able to approve (`in-review → done`) other
-   agents' work, or is approval strictly human? (Current decision:
-   strictly human; leader gets `request_changes` only.)
-2. Default for `self_approve_allowed` on *existing* agents after rollout:
-   all-on, or all-off until opted in per agent?
-3. Reopen cap value: 3/24h proposed — agree?
+1. **Approval is strictly human.** A leader agent may NOT move
+   `in-review → done` on others' work. Leader gets `request_changes`
+   (→ `todo` for reassignment) only. `done` via human approval, or via
+   the assignee's own policy-gated self-approval (D2) — nothing else.
+2. **`self_approve_allowed` is configurable on the agent configuration
+   page**, default `true`, with the prompt-governed condition that
+   self-approval is for straightforward, self-evident tasks only (D2).
+3. **Reopen cap:** 3 per rolling 24h, configurable
+   (`SKQUAD_REOPEN_CAP`). Circuit breaker for agent churn only; human
+   board moves are unlimited (D3).
