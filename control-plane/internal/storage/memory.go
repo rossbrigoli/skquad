@@ -54,24 +54,24 @@ type MemoryStore struct {
 	auditLog        map[string]*domain.AuditEntry
 	tasks           map[string]*domain.Task
 	// taskDeps (S-278): taskID -> set of depends-on task IDs.
-	taskDeps        map[string]map[string]bool
-	taskExecs       map[string]*domain.TaskExecution
-	agentMemory     map[string]*domain.AgentMemory
-	messages        map[string]*domain.Message
-	inbox           map[string]*domain.InboxMessage
+	taskDeps    map[string]map[string]bool
+	taskExecs   map[string]*domain.TaskExecution
+	agentMemory map[string]*domain.AgentMemory
+	messages    map[string]*domain.Message
+	inbox       map[string]*domain.InboxMessage
 	// S-216: inbox attachments, keyed by attachment id. Cascade with
 	// the message delete mirrors the Postgres ON DELETE CASCADE.
 	inboxAttachments map[string]*domain.InboxAttachment
 	// TG-11 slice D: drift-check report history (mirrors the Postgres
 	// drift_reports table). Append-only.
-	driftReports  []*domain.DriftReport
+	driftReports []*domain.DriftReport
 	// S-281: cron scheduled jobs (mirrors the Postgres scheduled_jobs
 	// table, migration 0057).
 	scheduledJobs map[string]*domain.ScheduledJob
 	// scheduledJobOrder keeps creation order for ListScheduledJobs
 	// (map iteration would otherwise randomize it).
 	scheduledJobOrder []string
-	notifications map[string]*domain.Notification
+	notifications     map[string]*domain.Notification
 	// S-199: per-user notification mute lists, mirroring the Postgres
 	// user_notification_preferences table. Absent key ⇒ all enabled.
 	notifPrefs map[string][]domain.NotificationType
@@ -394,6 +394,35 @@ func (m *MemoryStore) UpdateSquad(ctx context.Context, s *domain.Squad) (*domain
 	m.squads[s.ID] = updated
 	m.enqueueSquadOutboxLocked(domain.KubernetesOpUpsertSquad, updated)
 	m.drainPendingAuditsLocked(ctx, updated.ID)
+	return cloneSquad(updated), nil
+}
+
+// GetBoardPolicy returns the raw squad board-policy document (ADR-0016 D8).
+func (m *MemoryStore) GetBoardPolicy(_ context.Context, squadID string) (domain.BoardPolicy, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s, ok := m.squads[squadID]
+	if !ok {
+		return domain.BoardPolicy{}, ErrNotFound
+	}
+	return cloneBoardPolicy(s.BoardPolicy), nil
+}
+
+// UpdateBoardPolicy replaces the whole board-policy document (S-289).
+// Board policy is control-plane-only state (transition guards read it at
+// transition time), so no Kubernetes outbox event is enqueued.
+func (m *MemoryStore) UpdateBoardPolicy(ctx context.Context, squadID string, policy domain.BoardPolicy) (*domain.Squad, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	existing, ok := m.squads[squadID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	updated := cloneSquad(existing)
+	updated.BoardPolicy = cloneBoardPolicy(policy)
+	updated.UpdatedAt = time.Now().UTC()
+	m.squads[squadID] = updated
+	m.drainPendingAuditsLocked(ctx, squadID)
 	return cloneSquad(updated), nil
 }
 
@@ -2895,7 +2924,27 @@ func cloneSquad(s *domain.Squad) *domain.Squad {
 	}
 	v := *s
 	v.OperatingModel = slices.Clone(s.OperatingModel)
+	v.BoardPolicy = cloneBoardPolicy(s.BoardPolicy)
 	return &v
+}
+
+// cloneBoardPolicy deep-copies the pointer fields so stored policies are
+// immune to caller mutation.
+func cloneBoardPolicy(p domain.BoardPolicy) domain.BoardPolicy {
+	var out domain.BoardPolicy
+	if p.ReopenCapPerDay != nil {
+		v := *p.ReopenCapPerDay
+		out.ReopenCapPerDay = &v
+	}
+	if p.SelfApproveDefault != nil {
+		v := *p.SelfApproveDefault
+		out.SelfApproveDefault = &v
+	}
+	if p.LeaderApprovalAllowed != nil {
+		v := *p.LeaderApprovalAllowed
+		out.LeaderApprovalAllowed = &v
+	}
+	return out
 }
 
 func cloneAgent(a *domain.Agent) *domain.Agent {

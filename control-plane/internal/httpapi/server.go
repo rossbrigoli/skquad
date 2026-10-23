@@ -754,6 +754,9 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Put("/agents/{agentID}/permissions", s.setAgentPermissions)
 
 			r.Get("/squads/{squadID}/board", s.getBoard)
+			// S-289 (ADR-0016 D8): squad board policy (owner-only, audited).
+			r.Get("/squads/{squadID}/board-policy", s.getBoardPolicy)
+			r.Put("/squads/{squadID}/board-policy", s.putBoardPolicy)
 			r.Get("/squads/{squadID}/metering", s.getSquadMetering)
 			r.Get("/squads/{squadID}/audit", s.listSquadAudit)
 			r.Post("/squads/{squadID}/board/tasks", s.createTask)

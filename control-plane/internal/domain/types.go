@@ -52,11 +52,15 @@ type Squad struct {
 	// the organization and agent blocks.
 	Prompt         string          `json:"prompt,omitempty"`
 	OperatingModel json.RawMessage `json:"operating_model"`
-	OwnerID        string          `json:"owner_id"`
-	Namespace      string          `json:"namespace"`
-	Status         SquadStatus     `json:"status"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	// BoardPolicy is the typed squad board-policy document (ADR-0016 D8).
+	// The zero value (empty struct / stored '{}') means "platform
+	// defaults"; use Effective()/Effective* helpers to resolve.
+	BoardPolicy BoardPolicy `json:"board_policy"`
+	OwnerID     string      `json:"owner_id"`
+	Namespace   string      `json:"namespace"`
+	Status      SquadStatus `json:"status"`
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
 }
 
 // AgentStatus is the lifecycle state of an agent.
@@ -91,6 +95,10 @@ type Agent struct {
 	// (SKQUAD_THINKING_LEVEL) and lands on LLM requests as litellm's
 	// reasoning_effort parameter. The UI defaults the selector to medium.
 	ThinkingLevel string `json:"thinking_level,omitempty"`
+	// SelfApproveAllowed is the per-agent override for the squad's
+	// self_approve_default (ADR-0016 D2/D8). NULL (nil) = no per-agent
+	// override; the squad default, then the platform default, applies.
+	SelfApproveAllowed *bool `json:"self_approve_allowed,omitempty"`
 	// StorageEnabled and StorageSize configure the agent's durable workspace
 	// PVC (S-138). They flow into the Agent CR's spec.storage via the
 	// outbox writer. StorageClass is deliberately NOT part of this surface:

@@ -178,6 +178,12 @@ type SquadStore interface {
 	// same squad name must not collide).
 	SquadNamespaceExists(ctx context.Context, namespace string) (bool, error)
 	UpdateSquad(ctx context.Context, s *domain.Squad) (*domain.Squad, error)
+	// GetBoardPolicy returns the raw squad board-policy document
+	// (ADR-0016 D8). Effective values are resolved in the domain layer.
+	GetBoardPolicy(ctx context.Context, squadID string) (domain.BoardPolicy, error)
+	// UpdateBoardPolicy replaces the whole board-policy document
+	// (S-289). Pending same-transaction audits are drained with the update.
+	UpdateBoardPolicy(ctx context.Context, squadID string, policy domain.BoardPolicy) (*domain.Squad, error)
 	DeleteSquad(ctx context.Context, id string) error
 	ListSquads(ctx context.Context, ownerID string) ([]*domain.Squad, error) // ownerID "" = all
 }
