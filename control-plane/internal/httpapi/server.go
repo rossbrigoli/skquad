@@ -4537,6 +4537,12 @@ func (s *Server) validateTaskAssignee(w http.ResponseWriter, r *http.Request, sq
 // created assigned task and syncs the assignee's pending-work status
 // (S-181; S-189 split out of createTask).
 func (s *Server) seedTaskThreadOnCreate(w http.ResponseWriter, r *http.Request, created *domain.Task, userID string) bool {
+	// ADR-0016 D6: a backlog task is invisible in the agent's chat until
+	// a human prioritises it, so no thread event is seeded while the task
+	// sits in Backlog. The event fires on the backlog→todo move instead.
+	if created.Status == domain.TaskBacklog {
+		return true
+	}
 	// S-181: seed the task thread so the page is not empty for tasks
 	// that actually ran — the creation itself is the opening message.
 	threadText := created.Title
@@ -5988,7 +5994,9 @@ func (s *Server) updateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	// S-181: assigning a task later (board drag-drop / edit) is the moment
 	// the agent joins — record it in the thread just like create-with-assignee.
-	if updated.AssigneeAgentID != "" && updated.AssigneeAgentID != previousAssignee {
+	// ADR-0016 D6: suppressed while the task is in Backlog; the event is
+	// deferred to the backlog→todo move in moveTask.
+	if updated.AssigneeAgentID != "" && updated.AssigneeAgentID != previousAssignee && updated.Status != domain.TaskBacklog {
 		if u := currentUser(r.Context()); u != nil {
 			s.appendTaskThreadEvent(r.Context(), updated, "user", u.ID, domain.MessageConsult, "Task assigned to you: "+updated.Title)
 		}
@@ -6038,11 +6046,22 @@ func (s *Server) moveTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	previousAssignee := task.AssigneeAgentID
+	previousStatus := task.Status
 	task.Status = req.Status
 	updated, err := s.store.UpdateTask(s.pendingUserAuditCtx(r, "task.move", "task", task.ID, task.SquadID, nil), task)
 	if err != nil {
 		writeStorageError(w, err)
 		return
+	}
+	// ADR-0016 D6: a human promoting a task from Backlog to Todo is the
+	// moment it becomes claimable — emit the assignment thread event then,
+	// attributed to the human who moved it. Only for assigned tasks; this
+	// handler is human-only (agents move tasks via their own status paths,
+	// which never target todo).
+	if previousStatus == domain.TaskBacklog && updated.Status == domain.TaskTodo && updated.AssigneeAgentID != "" {
+		if u := currentUser(r.Context()); u != nil {
+			s.appendTaskThreadEvent(r.Context(), updated, "user", u.ID, domain.MessageConsult, "Task assigned to you: "+updated.Title)
+		}
 	}
 	if err := s.syncAffectedAgentsFromTaskChange(r.Context(), previousAssignee, updated.AssigneeAgentID); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
