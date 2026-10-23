@@ -64,12 +64,13 @@ pull cards off other agents, or write `backlog` state.
   `self_approval_justification` (required; the prompt instructs the agent
   to state why no human review is warranted).
 - `review_needed=true` → `in-review`, exactly as today.
-- **Policy knob:** `agents.self_approve_allowed` — **configurable on the
-  agent configuration page** (default `true`), per-agent overridable;
-  squad-level default via Helm. Agents with
-  `self_approve_allowed=false` get a 409 `self_approval_disabled` when
-  requesting `done` — their completions always land in `in-review`.
-  Recommended `false` for deploy/infra-flavoured agents.
+- **Policy knob:** `self_approve_allowed` — **two-level config**:
+  squad-level default set on the new **Squad Configuration page** (D8),
+  overridable per-agent on the agent configuration page. Default `true`
+  everywhere. Agents with the effective value `false` get a 409
+  `self_approval_disabled` when requesting `done` — their completions
+  always land in `in-review`. Recommended `false` for deploy/infra-
+  flavoured agents.
 - **Condition (prompt-governed, not server-enforced):** self-approval is
   to be used **only for straightforward, self-evident tasks** — the
   composed prompt instructs the agent that anything involving judgment,
@@ -96,14 +97,16 @@ auditable and policy-governable, rather than implicit in LLM phrasing.
   a `reviewer_feedback` section carrying Ross's message verbatim (see
   [subagent-task-execution.md](../subagent-task-execution.md) §4).
 - **Reopen cap (circuit breaker):** max 3 agent-initiated reopens per
-  task per rolling 24h (configurable `SKQUAD_REOPEN_CAP=3`). Beyond
-  that, 429 `reopen_cap_exceeded` — the card stays `in-review` and the
-  loop is broken for the agent. **The cap governs the agent only:** the
-  human owner can move the card from the board UI without any limit.
+  task per rolling 24h by default. **Configurable on the Squad
+  Configuration page** (D8, field `reopen_cap_per_day`); the Helm env
+  `SKQUAD_REOPEN_CAP` only seeds the platform default. Beyond
+  the cap, 429 `reopen_cap_exceeded` — the card stays `in-review` and
+  the loop is broken for the agent. **The cap governs the agent only:**
+  the human owner can move the card from the board UI without any limit.
   Rationale: prevents an agent that cannot fix the issue from churning
-  in-review↔in-progress burning tokens indefinitely; after 3 failed
-  attempts the task needs human intervention (rewrite, reassign, or
-  manual fix).
+  in-review↔in-progress burning tokens indefinitely; after the cap is
+  hit the task needs human intervention (rewrite, reassign, or manual
+  fix).
 
 ### D4 — `done` is not agent-reopenable
 
@@ -125,6 +128,37 @@ delegate/handoff materialization machinery
 (`materializeDelegatedTask`) rather than forking it — the leader path is
 the delegation path with the message step made optional. Without it,
 agents create tasks only in `backlog` and can only assign to themselves.
+
+Leader approval of others' work is a **separate, opt-in squad setting**
+— see D8 (`leader_approval_allowed`).
+
+### D8 — Squad Configuration page with Board Policy
+
+There is **no squad configuration UI today** (only global `/settings`
+and the `/squads` list). Create **`/squads/{id}/settings`** — the
+Squad Configuration page — owned by the squad owner, holding a
+**Board Policy** section:
+
+| Setting | Type | Default | Governs |
+|---|---|---|---|
+| `reopen_cap_per_day` | int ≥ 0 | 3 | Agent-initiated `board.reopen` per task per rolling 24h (D3). 0 = reopens disabled for agents. |
+| `self_approve_default` | bool | `true` | Squad-level default for agents' `self_approve_allowed` (D2); per-agent override on the agent config page wins. |
+| `leader_approval_allowed` | bool | `false` | If `true`, agents with the leader capability (D5) may move `in-review → done` on tasks assigned to **other** agents in the squad. If `false` (default), approval is strictly human (original Q1 decision preserved as the default). |
+
+**Data model:** add a typed `board_policy JSONB` column to `squad`
+(migration; default `{}` interpreted as the defaults above). Do **not**
+overload the existing untyped `operating_model` blob — board policy is
+versioned, validated, UI-edited state and deserves its own schema.
+
+**API:** `GET/PUT /api/v1/squads/{id}/board-policy` (squad owner only;
+audited). Effective-value resolution lives in the control plane:
+`agent_override ?? squad_default ?? platform_default` — evaluated at
+transition time so config changes take effect immediately with no
+agent restart.
+
+**UI notes:** the page starts with just the Board Policy section; it is
+the natural future home for other squad-level knobs (idle timeouts,
+budget overrides, member grants) so later settings don't need new pages.
 
 ### D6 — Backlog surfacing fix (bug)
 
@@ -175,15 +209,16 @@ recorded here so the requirement is pinned against regressions.
   roughly combinatorially. Mitigate with a table-driven transition
   matrix test in `httpapi`.
 
-**Resolved decisions (Ross, 2026-10-24)**
+**Resolved decisions (Ross, 2026-10-24, revised 01:04)**
 
-1. **Approval is strictly human.** A leader agent may NOT move
-   `in-review → done` on others' work. Leader gets `request_changes`
-   (→ `todo` for reassignment) only. `done` via human approval, or via
-   the assignee's own policy-gated self-approval (D2) — nothing else.
-2. **`self_approve_allowed` is configurable on the agent configuration
-   page**, default `true`, with the prompt-governed condition that
-   self-approval is for straightforward, self-evident tasks only (D2).
-3. **Reopen cap:** 3 per rolling 24h, configurable
-   (`SKQUAD_REOPEN_CAP`). Circuit breaker for agent churn only; human
-   board moves are unlimited (D3).
+1. **Approval default is strictly human**, but **leader approval is
+   configurable**: `leader_approval_allowed` (D8, default `false`) lets
+   leader-capable agents move `in-review → done` on others' tasks when
+   the owner opts in.
+2. **Self-approval is configurable** at both levels: squad default on
+   the Squad Configuration page + per-agent override (D2, D8).
+   Condition remains prompt-governed: straightforward, self-evident
+   tasks only.
+3. **Reopen cap: 3/24h default, configurable on the Squad
+   Configuration page** (`reopen_cap_per_day`, D3 + D8). Agent-only
+   circuit breaker; human board moves unlimited.
