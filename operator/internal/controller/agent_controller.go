@@ -407,6 +407,15 @@ func agentEnv(agent *skquadv1.Agent) []corev1.EnvVar {
 		// runtime treats false/0/no as disabled; per-tool enablement and
 		// policies still come from the control plane at wake.
 		{Name: "SKQUAD_BUILTIN_TOOLS_ENABLED", Value: envOrDefault("SKQUAD_AGENT_BUILTIN_TOOLS_ENABLED", "true")},
+		// S-293: run the claimed task's work inside a nested task-subagent,
+		// so the agent's main loop pays one reviewed summary per task
+		// instead of carrying the whole work transcript. Operator-level
+		// switch, default "true" (Ross, 2026-10-25: enabled for all
+		// squads). Set SKQUAD_AGENT_TASK_SUBAGENT_ENABLED=false to kill
+		// the feature fleet-wide without a redeploy of the runtime. Note
+		// the runtime's OWN default is false — an agent pod that does not
+		// get this env keeps the legacy in-loop execution path.
+		{Name: "SKQUAD_TASK_SUBAGENT_ENABLED", Value: envOrDefault("SKQUAD_AGENT_TASK_SUBAGENT_ENABLED", "true")},
 	}
 	// S-139 (S-136 follow-up): tell the runtime where the workspace PVC
 	// is actually mounted so its auto-resolution matches the real mount

@@ -99,6 +99,14 @@ agent:
   # regardless of control-plane config. Flows to the operator as
   # SKQUAD_AGENT_BUILTIN_TOOLS_ENABLED, which injects it into every agent pod.
   builtinToolsEnabled: "true"
+  # S-293: task-subagent switch for every agent pod
+  # (SKQUAD_TASK_SUBAGENT_ENABLED). "true" = a claimed task executes
+  # inside a nested task-subagent and the agent's main loop only reviews
+  # the structured TaskResult and makes the board transition. Enabled
+  # fleet-wide by Ross (2026-10-25). Set "false" to restore the legacy
+  # in-loop execution everywhere. The runtime's own default is false,
+  # so only pods injected by this chart get the feature.
+  taskSubagentEnabled: "true"
 
 # TG-9 slice B: netpol startup-race mitigation for AGENT pods.
 # TG-9 drill finding 1 (CRITICAL, 2026-10-07): freshly-scheduled pods in

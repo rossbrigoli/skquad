@@ -30,6 +30,11 @@ var ErrDependencyCycle = fmt.Errorf("%w: dependency cycle", ErrConflict)
 // ErrDependencyExists (S-278) rejects a duplicate depends-on edge.
 var ErrDependencyExists = fmt.Errorf("%w: dependency already exists", ErrConflict)
 
+// ErrReopenCapExceeded (S-290, ADR-0016 D3) is returned by
+// ReopenTaskExecution when the task already carries maxReopens
+// agent-reopen attempts in the rolling 24h window. Maps to HTTP 429.
+var ErrReopenCapExceeded = fmt.Errorf("%w: reopen cap exceeded", ErrConflict)
+
 // Store is the aggregate persistence interface used by the API server.
 type Store interface {
 	UserStore
@@ -178,6 +183,12 @@ type SquadStore interface {
 	// same squad name must not collide).
 	SquadNamespaceExists(ctx context.Context, namespace string) (bool, error)
 	UpdateSquad(ctx context.Context, s *domain.Squad) (*domain.Squad, error)
+	// GetBoardPolicy returns the raw squad board-policy document
+	// (ADR-0016 D8). Effective values are resolved in the domain layer.
+	GetBoardPolicy(ctx context.Context, squadID string) (domain.BoardPolicy, error)
+	// UpdateBoardPolicy replaces the whole board-policy document
+	// (S-289). Pending same-transaction audits are drained with the update.
+	UpdateBoardPolicy(ctx context.Context, squadID string, policy domain.BoardPolicy) (*domain.Squad, error)
 	DeleteSquad(ctx context.Context, id string) error
 	ListSquads(ctx context.Context, ownerID string) ([]*domain.Squad, error) // ownerID "" = all
 }
@@ -222,6 +233,14 @@ type TaskStore interface {
 	ListTasks(ctx context.Context, boardID string, status domain.TaskStatus) ([]*domain.Task, error) // status "" = all
 	ListAgentTasks(ctx context.Context, agentID string) ([]*domain.Task, error)
 	ClaimNextTask(ctx context.Context, agentID string, workerID string, leaseFor time.Duration) (*domain.Task, error)
+	// StartTaskExecution mints a new active, fenced execution attempt for
+	// (agent, task) — the board.claim path (S-292, ADR-0016 D1) where no
+	// prior claim created the execution. Transition legality (pickup
+	// column, assignee) is validated by the caller; this only creates the
+	// fence. ErrConflict when the agent already holds a live execution on
+	// a different task (one live attempt per agent, matching the claim
+	// posture) or the task does not exist (ErrNotFound).
+	StartTaskExecution(ctx context.Context, agentID string, taskID string, workerID string, leaseFor time.Duration) (*domain.TaskExecution, error)
 	// AddTaskDependency (S-278) records that taskID depends on
 	// dependsOnID. Both tasks must exist, belong to the same squad, must
 	// not be the same task, and the edge must not create a cycle.
@@ -256,7 +275,21 @@ type TaskStore interface {
 	// task regardless of status (task-detail run-audit). ErrNotFound
 	// when the task has never executed.
 	GetLatestTaskExecution(ctx context.Context, taskID string) (*domain.TaskExecution, error)
+	// ListTaskExecutions returns every execution attempt for a task,
+	// oldest first (S-290: reopen retains prior attempts; the read path
+	// backs the visible attempt count).
+	ListTaskExecutions(ctx context.Context, taskID string) ([]*domain.TaskExecution, error)
 	CompleteTaskExecution(ctx context.Context, agentID string, taskID string, executionID string, fencingToken string, status domain.TaskStatus, summary string) (*domain.Task, error)
+	// ReopenTaskExecution implements the agent reopen (ADR-0016 D3, S-290):
+	// the assignee moves its own in-review task back to in-progress with a
+	// NEW active execution attempt (new fencing token, lease), retaining the
+	// prior completed attempt. reviewerFeedback is persisted on the new
+	// attempt and surfaced on the task payload. maxReopens is the resolved
+	// rolling-24h cap on reopen-created attempts for this task; exceeding
+	// it returns ErrReopenCapExceeded and applies nothing. ErrConflict when
+	// the task is not in-review, the agent already holds a live execution,
+	// or the assignee does not match.
+	ReopenTaskExecution(ctx context.Context, agentID string, taskID string, workerID string, reviewerFeedback string, leaseFor time.Duration, maxReopens int) (*domain.Task, error)
 	// ReapExpiredTaskExecutions marks active executions whose lease expired
 	// before cutoff as expired and re-queues their tasks (in-progress → TO DO)
 	// when no other live execution remains. Returns the reaped executions

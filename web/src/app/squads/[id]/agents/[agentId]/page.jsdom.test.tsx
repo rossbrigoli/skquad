@@ -615,6 +615,48 @@ describe("configuration tab", () => {
     expect(env.patches[0].body).toMatchObject({ storage_enabled: false, storage_size: "" });
   });
 
+  it("self-approve select defaults to Inherit and stays out of an untouched payload", async () => {
+    render(<AgentProfilePage />);
+    await openConfigTab();
+    expect(screen.getByLabelText("Self-approve allowed")).toHaveValue("inherit");
+  });
+
+  it("self-approve Blocked maps to false in the PATCH payload", async () => {
+    render(<AgentProfilePage />);
+    await openConfigTab();
+    await userEvent.selectOptions(screen.getByLabelText("Self-approve allowed"), "blocked");
+    await userEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await vi.waitFor(() => expect(env.patches).toHaveLength(1));
+    expect(env.patches[0].body).toMatchObject({ self_approve_allowed: false });
+  });
+
+  it("self-approve Allowed maps to true in the PATCH payload", async () => {
+    render(<AgentProfilePage />);
+    await openConfigTab();
+    await userEvent.selectOptions(screen.getByLabelText("Self-approve allowed"), "allowed");
+    await userEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await vi.waitFor(() => expect(env.patches).toHaveLength(1));
+    expect(env.patches[0].body).toMatchObject({ self_approve_allowed: true });
+  });
+
+  it("existing override prefills the select and Inherit sends null (clears)", async () => {
+    env.agents = [agent({ self_approve_allowed: true })];
+    render(<AgentProfilePage />);
+    await openConfigTab();
+    expect(screen.getByLabelText("Self-approve allowed")).toHaveValue("allowed");
+    await userEvent.selectOptions(screen.getByLabelText("Self-approve allowed"), "inherit");
+    await userEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await vi.waitFor(() => expect(env.patches).toHaveLength(1));
+    expect(env.patches[0].body).toMatchObject({ self_approve_allowed: null });
+  });
+
+  it("blocked override prefills the select", async () => {
+    env.agents = [agent({ self_approve_allowed: false })];
+    render(<AgentProfilePage />);
+    await openConfigTab();
+    expect(screen.getByLabelText("Self-approve allowed")).toHaveValue("blocked");
+  });
+
   it("no granted models shows the access notice", async () => {
     env.models = [];
     render(<AgentProfilePage />);

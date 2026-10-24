@@ -114,16 +114,18 @@ func TestAdminToolsListShowsSeededTools(t *testing.T) {
 	// ENABLED) so EVERY tool — including the ones the owner called out as
 	// missing — shows up on the Settings Tools page. S-279 adds the four
 	// file tools (read/write/edit/apply_patch), all seeded ENABLED. S-282
-	// adds the three session inspection tools, all seeded ENABLED.
-	require.Len(t, resp.Tools, 18)
-	names := make([]string, 0, 18)
+	// adds the three session inspection tools, all seeded ENABLED. S-292
+	// adds the seven board.* verbs (ADR-0016 D1), all seeded ENABLED —
+	// thin clients over server-guarded transitions.
+	require.Len(t, resp.Tools, 25)
+	names := make([]string, 0, 25)
 	for _, tool := range resp.Tools {
 		names = append(names, tool.Name)
 		require.Equal(t, domain.BuiltinToolDefaultEnabled(tool.Name), tool.Enabled, "tool %s enabled-by-default mismatch", tool.Name)
 		require.JSONEq(t, "{}", string(tool.Policy))
 		require.NotEmpty(t, tool.UpdatedAt)
 	}
-	require.Equal(t, []string{"exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner", "memory_search", "spawn_subagent", "read", "write", "edit", "apply_patch", "process", "cron", "sessions_list", "sessions_history", "session_status", "browser"}, names)
+	require.Equal(t, []string{"exec", "web_fetch", "web_search", "send_message", "send_inbox", "notify_owner", "memory_search", "spawn_subagent", "read", "write", "edit", "apply_patch", "process", "cron", "sessions_list", "sessions_history", "session_status", "browser", "board.create_task", "board.assign", "board.claim", "board.complete", "board.block", "board.reopen", "board.request_changes"}, names)
 }
 
 // S-232: built-in tools are permanently undeletable — the API rejects
@@ -182,7 +184,7 @@ func TestAdminToolsRBAC(t *testing.T) {
 		Tools []builtinToolAdminView `json:"tools"`
 	}
 	doJSONAuth(t, handler, authAdmin, http.MethodGet, pathAdminTools, nil, http.StatusOK, &ok)
-	require.Len(t, ok.Tools, 18)
+	require.Len(t, ok.Tools, 25)
 }
 
 func TestAdminPatchMergeSemantics(t *testing.T) {
@@ -303,7 +305,7 @@ func TestAgentToolsETagRound(t *testing.T) {
 		Tools []builtinToolAgentView `json:"tools"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Len(t, resp.Tools, 18)
+	require.Len(t, resp.Tools, 25)
 	for _, tool := range resp.Tools {
 		// S-164: send_message is enabled by default; notify_owner too
 		// (platform-prompt awareness); memory_search (S-212) as well;

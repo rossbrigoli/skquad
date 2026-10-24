@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { IconBoard, IconContext, IconCosts, IconOverview } from "./icons";
+import { IconBoard, IconContext, IconCosts, IconOverview, IconSettings } from "./icons";
 
 // S-167: squad section navigation. Was a contextual second sidebar
 // column (SquadRail); now a horizontal tab bar rendered at the top of
@@ -19,6 +19,8 @@ export function SquadTabs({ squadId }: { readonly squadId: string }) {
     { href: `/squads/${squadId}/board`, label: "Board", exact: false, Icon: IconBoard },
     { href: `/squads/${squadId}/prompt`, label: "Squad Context", exact: false, Icon: IconContext },
     { href: `/squads/${squadId}/cost`, label: "Cost", exact: false, Icon: IconCosts },
+    // S-291 (ADR-0016 D8): Squad Configuration — Board Policy lives here.
+    { href: `/squads/${squadId}/settings`, label: "Settings", exact: false, Icon: IconSettings },
   ];
   return (
     <nav className="squad-tabs" aria-label="Squad sections">

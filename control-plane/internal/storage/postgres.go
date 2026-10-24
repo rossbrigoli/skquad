@@ -273,7 +273,7 @@ func (p *PostgresStore) enqueueAgentOutboxTx(ctx context.Context, tx pgx.Tx, ope
 func getAgentTx(ctx context.Context, tx pgx.Tx, id string) (*domain.Agent, error) {
 	row := tx.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at, self_approve_allowed
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -396,10 +396,10 @@ func (p *PostgresStore) CreateSquad(ctx context.Context, s *domain.Squad) (*doma
 	defer tx.Rollback(ctx)
 
 	row := tx.QueryRow(ctx, `
-		INSERT INTO squads (name, mission, prompt, operating_model, owner_id, namespace, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
-	`, s.Name, s.Mission, s.Prompt, defaultJSON(s.OperatingModel, "{}"), s.OwnerID, s.Namespace, defaultSquadStatus(s.Status))
+		INSERT INTO squads (name, mission, prompt, operating_model, owner_id, namespace, status, board_policy)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at, board_policy
+	`, s.Name, s.Mission, s.Prompt, defaultJSON(s.OperatingModel, "{}"), s.OwnerID, s.Namespace, defaultSquadStatus(s.Status), boardPolicyJSON(s.BoardPolicy))
 	created, err := scanSquad(row)
 	if err != nil {
 		return nil, err
@@ -434,7 +434,7 @@ func (p *PostgresStore) CreateSquad(ctx context.Context, s *domain.Squad) (*doma
 
 func (p *PostgresStore) GetSquad(ctx context.Context, id string) (*domain.Squad, error) {
 	row := p.pool.QueryRow(ctx, `
-		SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
+		SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at, board_policy
 		FROM squads
 		WHERE id = $1
 	`, id)
@@ -443,7 +443,7 @@ func (p *PostgresStore) GetSquad(ctx context.Context, id string) (*domain.Squad,
 
 func (p *PostgresStore) GetSquadByName(ctx context.Context, ownerID, name string) (*domain.Squad, error) {
 	row := p.pool.QueryRow(ctx, `
-		SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
+		SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at, board_policy
 		FROM squads
 		WHERE owner_id = $1 AND lower(name) = lower($2)
 	`, ownerID, name)
@@ -466,7 +466,7 @@ func (p *PostgresStore) SquadNamespaceExists(ctx context.Context, namespace stri
 func (p *PostgresStore) GetAgentByNameForOwner(ctx context.Context, ownerID, name string) (*domain.Agent, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT a.id::text, a.squad_id::text, a.name, a.role, a.system_prompt, coalesce(a.identity_id::text, ''),
-		       coalesce(a.ai_model_id::text, ''), coalesce(a.fallback_ai_model_id::text, ''), a.permissions, a.idle_timeout_sec, a.thinking_level, a.storage_enabled, a.storage_size, a.deployment_name, a.chat_reset_at, a.status, a.created_at, a.updated_at
+		       coalesce(a.ai_model_id::text, ''), coalesce(a.fallback_ai_model_id::text, ''), a.permissions, a.idle_timeout_sec, a.thinking_level, a.storage_enabled, a.storage_size, a.deployment_name, a.chat_reset_at, a.status, a.created_at, a.updated_at, a.self_approve_allowed
 		FROM agents a
 		JOIN squads s ON s.id = a.squad_id
 		WHERE s.owner_id = $1 AND lower(a.name) = lower($2)
@@ -496,10 +496,11 @@ func (p *PostgresStore) UpdateSquad(ctx context.Context, s *domain.Squad) (*doma
 		    prompt = $4,
 		    operating_model = $5,
 		    status = $6,
+		    board_policy = $7,
 		    updated_at = now()
 		WHERE id = $1
-		RETURNING id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
-	`, s.ID, s.Name, s.Mission, s.Prompt, defaultJSON(s.OperatingModel, "{}"), defaultSquadStatus(s.Status))
+		RETURNING id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at, board_policy
+	`, s.ID, s.Name, s.Mission, s.Prompt, defaultJSON(s.OperatingModel, "{}"), defaultSquadStatus(s.Status), boardPolicyJSON(s.BoardPolicy))
 	updated, err := scanSquad(row)
 	if err != nil {
 		return nil, err
@@ -516,6 +517,63 @@ func (p *PostgresStore) UpdateSquad(ctx context.Context, s *domain.Squad) (*doma
 	return updated, nil
 }
 
+// GetBoardPolicy returns the raw squad board-policy document (ADR-0016 D8).
+func (p *PostgresStore) GetBoardPolicy(ctx context.Context, squadID string) (domain.BoardPolicy, error) {
+	var raw []byte
+	err := p.pool.QueryRow(ctx, `SELECT board_policy FROM squads WHERE id = $1`, squadID).Scan(&raw)
+	if err != nil {
+		return domain.BoardPolicy{}, mapPgErr(err)
+	}
+	var policy domain.BoardPolicy
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &policy); err != nil {
+			return domain.BoardPolicy{}, fmt.Errorf("decode squad board_policy: %w", err)
+		}
+	}
+	return policy, nil
+}
+
+// UpdateBoardPolicy replaces the whole board-policy document (S-289).
+// Board policy is control-plane-only state (transition guards read it at
+// transition time), so no Kubernetes outbox event is enqueued.
+func (p *PostgresStore) UpdateBoardPolicy(ctx context.Context, squadID string, policy domain.BoardPolicy) (*domain.Squad, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
+		UPDATE squads
+		SET board_policy = $2, updated_at = now()
+		WHERE id = $1
+		RETURNING id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at, board_policy
+	`, squadID, boardPolicyJSON(policy))
+	updated, err := scanSquad(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, updated.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return updated, nil
+}
+
+// boardPolicyJSON marshals a BoardPolicy for its JSONB column. An empty
+// document marshals to '{}', the column's interpretation of "platform
+// defaults"; a marshal failure (unreachable for this struct) degrades to
+// the same empty document rather than corrupting the row.
+func boardPolicyJSON(policy domain.BoardPolicy) []byte {
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		return []byte("{}")
+	}
+	return raw
+}
+
 func (p *PostgresStore) DeleteSquad(ctx context.Context, id string) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -524,7 +582,7 @@ func (p *PostgresStore) DeleteSquad(ctx context.Context, id string) error {
 	defer tx.Rollback(ctx)
 
 	row := tx.QueryRow(ctx, `
-		SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
+		SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at, board_policy
 		FROM squads
 		WHERE id = $1
 	`, id)
@@ -534,7 +592,7 @@ func (p *PostgresStore) DeleteSquad(ctx context.Context, id string) error {
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at, self_approve_allowed
 		FROM agents
 		WHERE squad_id = $1
 		ORDER BY name
@@ -580,13 +638,13 @@ func (p *PostgresStore) ListSquads(ctx context.Context, ownerID string) ([]*doma
 	var err error
 	if ownerID == "" {
 		rows, err = p.pool.Query(ctx, `
-			SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
+			SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at, board_policy
 			FROM squads
 			ORDER BY name
 		`)
 	} else {
 		rows, err = p.pool.Query(ctx, `
-			SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at
+			SELECT id::text, name, mission, prompt, operating_model, owner_id::text, namespace, status, created_at, updated_at, board_policy
 			FROM squads
 			WHERE owner_id = $1
 			ORDER BY name
@@ -630,11 +688,11 @@ func (p *PostgresStore) CreateAgent(ctx context.Context, a *domain.Agent) (*doma
 	}
 
 	row := tx.QueryRow(ctx, `
-		INSERT INTO agents (squad_id, name, role, system_prompt, ai_model_id, fallback_ai_model_id, permissions, idle_timeout_sec, status, storage_enabled, storage_size, deployment_name, thinking_level)
-		VALUES ($1, $2, $3, $4, nullif($5, '')::uuid, nullif($6, '')::uuid, $7, $8, $9, $10, $11, $12, $13)
+		INSERT INTO agents (squad_id, name, role, system_prompt, ai_model_id, fallback_ai_model_id, permissions, idle_timeout_sec, status, storage_enabled, storage_size, deployment_name, thinking_level, self_approve_allowed)
+		VALUES ($1, $2, $3, $4, nullif($5, '')::uuid, nullif($6, '')::uuid, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
-	`, a.SquadID, a.Name, a.Role, a.SystemPrompt, a.AIModelID, a.FallbackAIModelID, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status), a.StorageEnabled, defaultStorageSize(a.StorageSize), a.DeploymentName, a.ThinkingLevel)
+		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at, self_approve_allowed
+	`, a.SquadID, a.Name, a.Role, a.SystemPrompt, a.AIModelID, a.FallbackAIModelID, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status), a.StorageEnabled, defaultStorageSize(a.StorageSize), a.DeploymentName, a.ThinkingLevel, a.SelfApproveAllowed)
 	created, err := scanAgent(row)
 	if err != nil {
 		return nil, err
@@ -727,7 +785,7 @@ func stampWorkspacePVCName(ctx context.Context, tx pgx.Tx, created *domain.Agent
 func (p *PostgresStore) GetAgent(ctx context.Context, id string) (*domain.Agent, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at, self_approve_allowed
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -765,11 +823,12 @@ func (p *PostgresStore) UpdateAgent(ctx context.Context, a *domain.Agent) (*doma
 		    storage_enabled = $10,
 		    storage_size = $11,
 		    thinking_level = $12,
+		    self_approve_allowed = $13,
 		    updated_at = now()
 		WHERE id = $1
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
-	`, a.ID, a.Name, a.Role, a.SystemPrompt, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status), a.AIModelID, a.FallbackAIModelID, a.StorageEnabled, defaultStorageSize(a.StorageSize), a.ThinkingLevel)
+		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at, self_approve_allowed
+	`, a.ID, a.Name, a.Role, a.SystemPrompt, defaultJSON(a.Permissions, "[]"), a.IdleTimeoutSec, defaultAgentStatus(a.Status), a.AIModelID, a.FallbackAIModelID, a.StorageEnabled, defaultStorageSize(a.StorageSize), a.ThinkingLevel, a.SelfApproveAllowed)
 	updated, err := scanAgent(row)
 	if err != nil {
 		return nil, err
@@ -795,7 +854,7 @@ func (p *PostgresStore) DeleteAgent(ctx context.Context, id string) error {
 
 	row := tx.QueryRow(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at, self_approve_allowed
 		FROM agents
 		WHERE id = $1
 	`, id)
@@ -822,7 +881,7 @@ func (p *PostgresStore) DeleteAgent(ctx context.Context, id string) error {
 func (p *PostgresStore) ListAgents(ctx context.Context, squadID string) ([]*domain.Agent, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at, self_approve_allowed
 		FROM agents
 		WHERE squad_id = $1
 		ORDER BY name
@@ -855,7 +914,7 @@ func (p *PostgresStore) SetAgentStatus(ctx context.Context, id string, status do
 		SET status = $2, updated_at = now()
 		WHERE id = $1
 		RETURNING id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
+		          coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at, self_approve_allowed
 	`, id, status)
 	agent, err := scanAgent(row)
 	if err != nil {
@@ -974,7 +1033,7 @@ func (p *PostgresStore) SetAgentIdentityGatewayKey(ctx context.Context, agentID 
 func (p *PostgresStore) ListAllAgents(ctx context.Context) ([]*domain.Agent, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id::text, squad_id::text, name, role, system_prompt, coalesce(identity_id::text, ''),
-		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at
+		       coalesce(ai_model_id::text, ''), coalesce(fallback_ai_model_id::text, ''), permissions, idle_timeout_sec, thinking_level, storage_enabled, storage_size, deployment_name, workspace_pvc_name, chat_reset_at, status, created_at, updated_at, self_approve_allowed
 		FROM agents
 		ORDER BY name
 	`)
@@ -2406,16 +2465,54 @@ func (p *PostgresStore) createTaskExecutionTx(ctx context.Context, tx pgx.Tx, ta
 		VALUES ($1, $2, $3, now() + ($4::text)::interval)
 		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
 		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
-		          prompt_sha, started_at, completed_at, updated_at
+		          prompt_sha, started_at, completed_at, updated_at, coalesce(reviewer_feedback, ''), reopen_seq
 	`, taskID, agentID, workerID, fmt.Sprintf(secondsFormat, int(leaseFor/time.Second)))
 	return scanTaskExecution(row)
+}
+
+// StartTaskExecution mints a new active, fenced execution attempt for
+// (agent, task) without touching the task row — the board.claim path
+// (S-292, ADR-0016 D1) where the caller (start handler) has already
+// validated transition legality. Refuses with ErrConflict when the
+// agent already holds a live execution on another task, preserving the
+// one-live-attempt-per-agent posture of the claim path.
+func (p *PostgresStore) StartTaskExecution(ctx context.Context, agentID string, taskID string, workerID string, leaseFor time.Duration) (*domain.TaskExecution, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+	if leaseFor <= 0 {
+		leaseFor = 5 * time.Minute
+	}
+	if workerID == "" {
+		workerID = agentID
+	}
+	if _, err := p.GetTask(ctx, taskID); err != nil {
+		return nil, err
+	}
+	active, err := p.agentHasActiveTaskExecution(ctx, tx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if active {
+		return nil, ErrConflict
+	}
+	exec, err := p.createTaskExecutionTx(ctx, tx, taskID, agentID, workerID, leaseFor)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return exec, nil
 }
 
 func (p *PostgresStore) ListBoardTaskExecutions(ctx context.Context, boardID string) ([]*domain.TaskExecution, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT e.id::text, e.task_id::text, e.agent_id::text, e.worker_id, e.fencing_token,
 		       e.status, e.lease_expires_at, coalesce(e.result_status, ''), e.result_summary,
-		       e.prompt_sha, e.started_at, e.completed_at, e.updated_at
+		       e.prompt_sha, e.started_at, e.completed_at, e.updated_at, coalesce(e.reviewer_feedback, ''), e.reopen_seq
 		FROM task_executions e
 		JOIN tasks t ON t.id = e.task_id
 		WHERE t.board_id = $1 AND e.status = $2
@@ -2451,7 +2548,7 @@ func (p *PostgresStore) HeartbeatTaskExecution(ctx context.Context, agentID stri
 		  AND status = 'active'
 		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
 		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
-		          prompt_sha, started_at, completed_at, updated_at
+		          prompt_sha, started_at, completed_at, updated_at, coalesce(reviewer_feedback, ''), reopen_seq
 	`, executionID, agentID, fencingToken, fmt.Sprintf(secondsFormat, int(leaseFor/time.Second)))
 	exec, err := scanTaskExecution(row)
 	if errors.Is(err, ErrNotFound) {
@@ -2608,6 +2705,109 @@ func (p *PostgresStore) CompleteTaskExecution(ctx context.Context, agentID strin
 		return nil, mapPgErr(err)
 	}
 	return task, nil
+}
+
+// ReopenTaskExecution implements the agent reopen (ADR-0016 D3, S-290).
+// Only the assignee may reopen, only from in-review; the prior completed
+// attempt is retained and a NEW active attempt (new fencing token, fresh
+// lease, reopen_seq) is created. The rolling-24h cap counts reopen_seq
+// attempts for this task, so it governs agent reopens only.
+func (p *PostgresStore) ReopenTaskExecution(ctx context.Context, agentID string, taskID string, workerID string, reviewerFeedback string, leaseFor time.Duration, maxReopens int) (*domain.Task, error) {
+	if leaseFor <= 0 {
+		leaseFor = 5 * time.Minute
+	}
+	if workerID == "" {
+		workerID = agentID
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock the task row: assignee-scoped, then enforce the status guard.
+	var status domain.TaskStatus
+	if err := tx.QueryRow(ctx, `
+		SELECT status FROM tasks
+		WHERE id = $1 AND assignee_agent_id = $2
+		FOR UPDATE
+	`, taskID, agentID).Scan(&status); err != nil {
+		return nil, mapPgErr(err)
+	}
+	if status != domain.TaskInReview {
+		return nil, ErrConflict
+	}
+
+	// Rolling-24h reopen cap over reopen_seq attempts (agent-only).
+	if maxReopens >= 0 {
+		var reopens int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM task_executions
+			WHERE task_id = $1 AND reopen_seq
+			  AND started_at > now() - interval '24 hours'
+		`, taskID).Scan(&reopens); err != nil {
+			return nil, mapPgErr(err)
+		}
+		if reopens >= maxReopens {
+			return nil, ErrReopenCapExceeded
+		}
+	}
+
+	// The agent must not hold another live execution lease.
+	var live bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM task_executions
+			WHERE agent_id = $1 AND status = $2 AND lease_expires_at > now()
+		)
+	`, agentID, domain.TaskExecutionActive).Scan(&live); err != nil {
+		return nil, mapPgErr(err)
+	}
+	if live {
+		return nil, ErrConflict
+	}
+
+	row := tx.QueryRow(ctx, `
+		WITH next_position AS (
+			SELECT coalesce(max(position) + 1, 1) AS position
+			FROM tasks
+			WHERE board_id = (SELECT board_id FROM tasks WHERE id = $1)
+			  AND status = $2
+		)
+		UPDATE tasks
+		SET status = $2,
+		    position = (SELECT position FROM next_position),
+		    updated_at = now()
+		WHERE id = $1 AND assignee_agent_id = $3 AND status = $4
+		RETURNING id::text, board_id::text, squad_id::text, title, description, status,
+		          coalesce(assignee_agent_id::text, ''), created_by_type, created_by_id::text,
+		          position, created_at, updated_at, coalesce(origin_message_id, ''), coalesce(workspace_resource_id, ''), coalesce(workspace_branch, ''), coalesce(workspace_commit_sha, ''), coalesce(result, ''), coalesce(result_status, ''), result_at, task_number
+	`, taskID, domain.TaskInProgress, agentID, domain.TaskInReview)
+	task, err := scanTask(row)
+	if err != nil {
+		return nil, err
+	}
+
+	execRow := tx.QueryRow(ctx, `
+		INSERT INTO task_executions (
+			task_id, agent_id, worker_id, lease_expires_at, reviewer_feedback, reopen_seq
+		)
+		VALUES ($1, $2, $3, now() + ($4::text)::interval, $5, TRUE)
+		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
+		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
+		          prompt_sha, started_at, completed_at, updated_at, coalesce(reviewer_feedback, ''), reopen_seq
+	`, taskID, agentID, workerID, fmt.Sprintf(secondsFormat, int(leaseFor/time.Second)), reviewerFeedback)
+	exec, err := scanTaskExecution(execRow)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writePendingAuditsTx(ctx, tx, task.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+	return taskWithExecution(task, exec), nil
 }
 
 func (p *PostgresStore) CreateAgentMemory(ctx context.Context, memory *domain.AgentMemory) (*domain.AgentMemory, error) {
@@ -3733,6 +3933,7 @@ func scanUser(row scanner) (*domain.User, error) {
 
 func scanSquad(row scanner) (*domain.Squad, error) {
 	var s domain.Squad
+	var boardPolicyRaw []byte
 	if err := row.Scan(
 		&s.ID,
 		&s.Name,
@@ -3744,8 +3945,14 @@ func scanSquad(row scanner) (*domain.Squad, error) {
 		&s.Status,
 		&s.CreatedAt,
 		&s.UpdatedAt,
+		&boardPolicyRaw,
 	); err != nil {
 		return nil, mapPgErr(err)
+	}
+	if len(boardPolicyRaw) > 0 {
+		if err := json.Unmarshal(boardPolicyRaw, &s.BoardPolicy); err != nil {
+			return nil, fmt.Errorf("decode squad board_policy: %w", err)
+		}
 	}
 	return &s, nil
 }
@@ -3753,6 +3960,7 @@ func scanSquad(row scanner) (*domain.Squad, error) {
 func scanAgent(row scanner) (*domain.Agent, error) {
 	var a domain.Agent
 	var chatResetAt sql.NullTime
+	var selfApproveAllowed sql.NullBool
 	if err := row.Scan(
 		&a.ID,
 		&a.SquadID,
@@ -3773,11 +3981,15 @@ func scanAgent(row scanner) (*domain.Agent, error) {
 		&a.Status,
 		&a.CreatedAt,
 		&a.UpdatedAt,
+		&selfApproveAllowed,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}
 	if chatResetAt.Valid {
 		a.ChatResetAt = chatResetAt.Time
+	}
+	if selfApproveAllowed.Valid {
+		a.SelfApproveAllowed = &selfApproveAllowed.Bool
 	}
 	return &a, nil
 }
@@ -4061,7 +4273,7 @@ func (p *PostgresStore) SetTaskExecutionPromptSHA(ctx context.Context, agentID s
 		WHERE agent_id = $1 AND task_id = $2 AND status = $4
 		RETURNING id::text, task_id::text, agent_id::text, worker_id, fencing_token,
 		          status, lease_expires_at, coalesce(result_status, ''), result_summary,
-		          prompt_sha, started_at, completed_at, updated_at
+		          prompt_sha, started_at, completed_at, updated_at, coalesce(reviewer_feedback, ''), reopen_seq
 	`, agentID, taskID, promptSHA, domain.TaskExecutionActive)
 	return scanTaskExecution(row)
 }
@@ -4072,13 +4284,40 @@ func (p *PostgresStore) GetLatestTaskExecution(ctx context.Context, taskID strin
 	row := p.pool.QueryRow(ctx, `
 		SELECT id::text, task_id::text, agent_id::text, worker_id, fencing_token,
 		       status, lease_expires_at, coalesce(result_status, ''), result_summary,
-		       prompt_sha, started_at, completed_at, updated_at
+		       prompt_sha, started_at, completed_at, updated_at, coalesce(reviewer_feedback, ''), reopen_seq
 		FROM task_executions
 		WHERE task_id = $1
 		ORDER BY started_at DESC, id
 		LIMIT 1
 	`, taskID)
 	return scanTaskExecution(row)
+}
+
+// ListTaskExecutions returns every execution attempt for a task, oldest
+// first (S-290: reopen retains prior attempts).
+func (p *PostgresStore) ListTaskExecutions(ctx context.Context, taskID string) ([]*domain.TaskExecution, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id::text, task_id::text, agent_id::text, worker_id, fencing_token,
+		       status, lease_expires_at, coalesce(result_status, ''), result_summary,
+		       prompt_sha, started_at, completed_at, updated_at, coalesce(reviewer_feedback, ''), reopen_seq
+		FROM task_executions
+		WHERE task_id = $1
+		ORDER BY started_at, id
+	`, taskID)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+
+	executions := []*domain.TaskExecution{}
+	for rows.Next() {
+		exec, err := scanTaskExecution(rows)
+		if err != nil {
+			return nil, err
+		}
+		executions = append(executions, exec)
+	}
+	return executions, mapPgErr(rows.Err())
 }
 
 func scanTaskExecution(row scanner) (*domain.TaskExecution, error) {
@@ -4098,6 +4337,8 @@ func scanTaskExecution(row scanner) (*domain.TaskExecution, error) {
 		&exec.StartedAt,
 		&completedAt,
 		&exec.UpdatedAt,
+		&exec.ReviewerFeedback,
+		&exec.ReopenSeq,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}
