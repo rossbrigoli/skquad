@@ -222,6 +222,46 @@ def commit_and_push(
     return WorkspaceResult(branch=work_branch, commit_sha=sha, pushed=True, changed=True)
 
 
+def head_sha(repo_dir: Path) -> str:
+    """Current ``HEAD`` sha of ``repo_dir``, or ``''`` if it is not a
+    readable repo.
+
+    S-293 I4: the parent reads this to cross-check the commit a task
+    subagent claims, so verification is against the real workspace
+    rather than the subagent's prose. Never raises — an unreadable repo
+    reads as "no evidence", which forces review instead of passing it.
+    """
+    try:
+        proc = _run(["git", "rev-parse", "HEAD"], cwd=Path(repo_dir), check=False)
+    except Exception:  # noqa: BLE001 - review evidence is best-effort
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def dirty_files(repo_dir: Path) -> tuple[str, ...]:
+    """Uncommitted paths in ``repo_dir`` (empty when clean or unknown).
+
+    S-293: surfaced into the parent's review so a subagent that ran out
+    of turns mid-edit leaves its evidence on the table instead of
+    losing it."""
+    try:
+        proc = _run(["git", "status", "--porcelain"], cwd=Path(repo_dir), check=False)
+    except Exception:  # noqa: BLE001
+        return ()
+    if proc.returncode != 0:
+        return ()
+    paths = []
+    for line in proc.stdout.splitlines():
+        line = line.rstrip()
+        if not line:
+            continue
+        # ``XY path`` (or ``XY old -> new``): keep the path portion.
+        paths.append(line[3:].split(" -> ")[-1])
+    return tuple(paths)
+
+
 def work_branch_for(agent_id: str, task_id: str) -> str:
     """Deterministic branch name: ``skquad/<agent>/<task>`` (sanitized)."""
     def sanitize(value: str) -> str:

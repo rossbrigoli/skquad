@@ -830,6 +830,12 @@ class RuntimeTask:
     worker_id: str = ""
     fencing_token: str = ""
     lease_expires_at: str = ""
+    # S-293: the per-squad display reference and the reviewer text an
+    # agent reopen carried (ADR-0016 D3, surfaced by the CP from the
+    # active execution). Both go into the task subagent's TaskBrief —
+    # the feedback verbatim, so nothing is lost in paraphrase.
+    task_number: int = 0
+    reviewer_feedback: str = ""
 
 
 @dataclass(frozen=True)
@@ -904,6 +910,14 @@ class TaskResult:
     # the task, read from the gateway response (WP5 / ADR-0010 Risk 3).
     # It can differ from the requested model when the gateway fell back.
     model_used: str = ""
+    # S-293: the parent's review decision, mapped onto the S-290 CP
+    # contract. None = no opinion (CP keeps the task in review).
+    # False = self-approved straight to done, which requires
+    # `justification` and can be refused by squad policy (409) — the
+    # finalize path then re-completes with review_needed=True so the
+    # work still lands, just with human eyes on it.
+    review_needed: bool | None = None
+    justification: str = ""
 
 
 @dataclass(frozen=True)
@@ -1306,18 +1320,28 @@ class ControlPlaneClient:
         status: str = "in-review",
         summary: str = "",
         persist_memory: bool = False,
+        review_needed: bool | None = None,
+        justification: str = "",
     ) -> RuntimeTask:
         task_id, execution_id, fencing_token = task_fence(task)
+        body: dict[str, object] = {
+            "status": status,
+            "summary": summary,
+            "persist_memory": persist_memory,
+            "execution_id": execution_id,
+            "fencing_token": fencing_token,
+        }
+        # S-293 -> S-290: only send the review fields when the runtime
+        # actually has a decision. Omitting them keeps the pre-S-290
+        # behaviour byte-identical for every non-subagent completion.
+        if review_needed is not None:
+            body["review_needed"] = review_needed
+        if justification:
+            body["justification"] = justification
         payload = self._json(
             "POST",
             f"/api/v1/agents/me/tasks/{task_id}/complete",
-            {
-                "status": status,
-                "summary": summary,
-                "persist_memory": persist_memory,
-                "execution_id": execution_id,
-                "fencing_token": fencing_token,
-            },
+            body,
         )
         return runtime_task(payload)
 
@@ -1427,6 +1451,8 @@ def runtime_task(payload: Mapping[str, object]) -> RuntimeTask:
         worker_id=str(payload.get("worker_id", "")),
         fencing_token=str(payload.get("fencing_token", "")),
         lease_expires_at=str(payload.get("lease_expires_at", "")),
+        task_number=int_value(payload.get("task_number")),
+        reviewer_feedback=str(payload.get("reviewer_feedback", "")),
     )
 
 
@@ -2615,6 +2641,136 @@ class LiteLLMTaskHandler:
             origin=f"task:{task.id}",
         )
 
+    def attach_review_workspace(self, workspace: object) -> None:
+        """S-293 I4: ``run_task_once`` hands the prepared workspace handle
+        to the handler so the parent's review can read the REAL git
+        state (HEAD sha, dirty files) instead of trusting the subagent's
+        prose. Duck-typed like ``attach_thread_sink`` — handlers that do
+        not implement it simply never get the handle."""
+        self._review_workspace = workspace
+
+    def _workspace_review_facts(self) -> tuple[bool, str, tuple[str, ...]]:
+        """``(has_workspace, head_sha, dirty_files)`` for the review."""
+        workspace = getattr(self, "_review_workspace", None)
+        if workspace is None:
+            return False, "", ()
+        from . import git_workspace
+
+        path = getattr(workspace, "path", None)
+        if path is None:
+            return False, "", ()
+        return True, git_workspace.head_sha(path), git_workspace.dirty_files(path)
+
+    def _task_brief(self, task: RuntimeTask, *, attempt: int = 1) -> "object":
+        from .task_subagent import TaskBrief
+
+        workspace = getattr(self, "_review_workspace", None)
+        branch_hint = str(getattr(workspace, "branch", "") or "")
+        return TaskBrief(
+            task_id=task.id,
+            task_number=task.task_number,
+            title=task.title,
+            description=task.description,
+            workspace={"branch_hint": branch_hint} if branch_hint else {},
+            reviewer_feedback=task.reviewer_feedback,
+            attempt=attempt,
+        )
+
+    def _handle_task_via_subagent(
+        self,
+        *,
+        task: RuntimeTask,
+        config: BootstrapConfig,
+        plugins: list,
+        tools: list,
+        system_prompt: str,
+        completion: object,
+        model: str,
+        virtual_key: str,
+    ) -> TaskResult:
+        """S-293: run the task in a nested subagent, then review.
+
+        The lease stays here (I1): the subagent is never given the
+        execution fence, and every board transition is made by this
+        process through the normal complete/block path."""
+        from . import task_subagent as ts
+
+        ts.configure_runner_plugins(plugins)
+        rework_max = ts.task_rework_max()
+        reworks_used = 0
+        brief = self._task_brief(task)
+
+        while True:
+            if self.thread_sink is not None:
+                label = (
+                    "Delegating this task to a task subagent"
+                    if brief.attempt == 1
+                    else f"Re-spawning the task subagent (rework {reworks_used}/{rework_max})"
+                )
+                self.thread_sink(trim_text(label, TASK_THREAD_TURN_MAX_CHARS))
+
+            run = ts.run_task_subagent(
+                brief,
+                system_prompt=system_prompt,
+                completion=completion,
+                tools=tools,
+                kwargs_factory=lambda msgs, child_tools: self._completion_kwargs(
+                    model, msgs, config, virtual_key, task.id, child_tools
+                ),
+                origin=f"task:{task.id}",
+            )
+            # Re-read the workspace AFTER the subagent worked — that is
+            # the state its claimed SHA has to match (I4).
+            has_ws, ws_sha, dirty = self._workspace_review_facts()
+            result = run.result
+            decision = ts.review_task_result(
+                result,
+                has_workspace=has_ws,
+                workspace_sha=ws_sha,
+                workspace_dirty=bool(dirty),
+                reworks_used=reworks_used,
+                rework_max=rework_max,
+            )
+            ts.record_task_subagent_run(
+                outcome=decision.action,
+                failure_class=result.failure_class,
+                turns_used=result.turns_used,
+            )
+            if dirty and decision.action == "complete":
+                # Name the leftover files in the trail so the reviewer is
+                # not left guessing what the concern refers to.
+                decision = replace(
+                    decision,
+                    summary=decision.summary
+                    + "\n- uncommitted: "
+                    + ", ".join(dirty[:10]),
+                )
+
+            if decision.action == "rework":
+                reworks_used += 1
+                ts.note_rework()
+                brief = replace(
+                    self._task_brief(task, attempt=brief.attempt + 1),
+                    prior_result=result.to_payload(),
+                    fix_instructions=decision.fix_instructions,
+                )
+                continue
+
+            if decision.action == "block":
+                return TaskResult(
+                    status="blocked",
+                    summary=trim_text(decision.summary, config.task_summary_max_chars),
+                    model_used=model,
+                )
+
+            return TaskResult(
+                status=decision.status,
+                summary=trim_text(decision.summary, config.task_summary_max_chars),
+                model_used=model,
+                review_needed=decision.review_needed,
+                justification=decision.justification,
+            )
+
     def _run_task_tool_round(
         self,
         content: str,
@@ -2679,6 +2835,23 @@ class LiteLLMTaskHandler:
         plugins, tools = self._setup_task_subagents(
             plugins, tools, system_prompt, completion, model, config, virtual_key, task
         )
+        # S-293: with the feature on, the task executes inside a nested
+        # task-subagent and this method returns only the parent's
+        # reviewed decision. With it off (the default) the loop below
+        # runs exactly as before.
+        from .task_subagent import task_subagent_enabled
+
+        if task_subagent_enabled():
+            return self._handle_task_via_subagent(
+                task=task,
+                config=config,
+                plugins=plugins,
+                tools=tools,
+                system_prompt=system_prompt,
+                completion=completion,
+                model=model,
+                virtual_key=virtual_key,
+            )
         last_content = ""
         last_model_used = model
         # S-263: consecutive all-failed tool rounds (reset by any
@@ -3464,12 +3637,40 @@ def _finalize_task_result(
         ws_result = finalize_task_workspace(workspace, f"skquad: {task.title}")
         if ws_result is not None:
             _report_workspace_best_effort(control_plane, task, workspace, ws_result)
-    return control_plane.complete_task(
-        task,
-        result.status,
-        summary=summary,
-        persist_memory=bool(summary.strip()),
-    )
+    complete_kwargs: dict[str, object] = {
+        "summary": summary,
+        "persist_memory": bool(summary.strip()),
+    }
+    # Only pass the S-290 review fields when the handler actually has a
+    # decision — a legacy (non-subagent) completion keeps the exact
+    # pre-S-293 call shape.
+    if result.review_needed is not None:
+        complete_kwargs["review_needed"] = result.review_needed
+    if result.justification:
+        complete_kwargs["justification"] = result.justification
+    try:
+        return control_plane.complete_task(task, result.status, **complete_kwargs)
+    except RuntimeError as exc:
+        # S-293: squad policy can refuse self-approval (CP 409
+        # self_approval_disabled). The work is still good — land it as
+        # in-review instead of failing the task, and say why in the
+        # summary so the reviewer knows the agent meant to self-approve.
+        if result.review_needed is not False or "409" not in str(exc):
+            raise
+        LOGGER.info(
+            "self-approval refused by policy; completing with review instead",
+            extra={"task_id": task.id},
+        )
+        return control_plane.complete_task(
+            task,
+            "in-review",
+            summary=trim_text(
+                summary + "\n\n(Self-approval refused by squad policy — routed to review.)",
+                config.task_summary_max_chars,
+            ),
+            persist_memory=bool(summary.strip()),
+            review_needed=True,
+        )
 
 
 def _block_disk_full(
@@ -3638,6 +3839,13 @@ def run_task_once(
     workspace = _prepare_task_workspace(config, control_plane, task, resumed=resumed)
     if workspace is not None and workspace.resume_note:
         _persist_resume_note(workspace, task)
+    # S-293 I4: give the handler the workspace handle so the parent's
+    # review of a task-subagent result can be checked against the real
+    # git state. Duck-typed like attach_thread_sink; the legacy path
+    # ignores it entirely.
+    ws_attacher = getattr(handler, "attach_review_workspace", None)
+    if callable(ws_attacher):
+        ws_attacher(workspace)
     try:
         with TaskLeaseHeartbeat(control_plane, task, config.heartbeat_interval_seconds):
             result = handle_task_with_timeout(handler, task, config)
@@ -4020,6 +4228,35 @@ def runtime_metrics_text(status_result: BootstrapStatus, snapshot: RuntimeSnapsh
         "# TYPE skquad_agent_active_task gauge",
         f"skquad_agent_active_task{{{labels}}} {1 if snapshot.active_task_id else 0}",
     ]
+    # S-293 §8: task-subagent rollups. Read from the module's own
+    # counters because this function is signature-stable (the app calls
+    # it with (status, snapshot) only).
+    from .task_subagent import task_subagent_metrics
+
+    subagent = task_subagent_metrics()
+    lines.append(
+        "# HELP skquad_task_subagent_runs_total Task-subagent runs by parent outcome and failure class."
+    )
+    lines.append("# TYPE skquad_task_subagent_runs_total counter")
+    runs = subagent.get("runs", {}) or {}
+    assert isinstance(runs, dict)
+    for key, count in sorted(runs.items()):
+        outcome, _, failure_class = str(key).partition("|")
+        lines.append(
+            f'skquad_task_subagent_runs_total{{{labels},outcome="{outcome}",'
+            f'failure_class="{failure_class}"}} {count}'
+        )
+    lines.append("# HELP skquad_task_rework_total Task-subagent rework respawns.")
+    lines.append("# TYPE skquad_task_rework_total counter")
+    lines.append(f"skquad_task_rework_total{{{labels}}} {subagent.get('reworks', 0)}")
+    lines.append(
+        "# HELP skquad_task_subagent_turns_used Task-subagent turns consumed (sum and count)."
+    )
+    lines.append("# TYPE skquad_task_subagent_turns_used counter")
+    lines.append(f"skquad_task_subagent_turns_used_sum{{{labels}}} {subagent.get('turns_total', 0)}")
+    lines.append(
+        f"skquad_task_subagent_turns_used_count{{{labels}}} {subagent.get('turns_count', 0)}"
+    )
     return "\n".join(lines) + "\n"
 
 
