@@ -43,9 +43,7 @@ export function AttentionProvider({ children }: { readonly children: ReactNode }
     if (!authed) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setItems([]);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setInboxUnread(0);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAgentNames({});
       setLoading(false);
       return;

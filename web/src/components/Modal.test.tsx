@@ -3,18 +3,14 @@
 // min(70vw, 1200px), near-full-width on mobile). Rendered to static markup
 // per the repo's node-environment test philosophy.
 import { describe, expect, it } from "vitest";
-import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Modal } from "./Modal";
 
 function render(props: { wide?: boolean; danger?: boolean; wider?: boolean } = {}): string {
   return renderToStaticMarkup(
-    createElement(Modal, {
-      title: "Effective prompt — test agent",
-      onClose: () => undefined,
-      children: "body",
-      ...props,
-    }),
+    <Modal title="Effective prompt — test agent" onClose={() => undefined} {...props}>
+      body
+    </Modal>,
   );
 }
 

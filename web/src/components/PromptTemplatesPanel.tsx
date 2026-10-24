@@ -12,7 +12,7 @@
 // (header checkbox with indeterminate state) and a top "Delete selected"
 // bulk action backed by DELETE /prompt-templates/bulk.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Modal, ModalForm } from "./Modal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
@@ -141,7 +141,9 @@ export function PromptTemplatesPanel({
 
   // Selection is pruned against the live list at render time so deleted
   // or vanished templates can never linger in the selection.
-  const selected = useMemo(() => pruneTemplateSelection(selectedIds, templates), [selectedIds, templates]);
+  // (No manual useMemo: the React Compiler memoizes this automatically;
+  // a manual useMemo here could not be preserved and broke compilation.)
+  const selected = pruneTemplateSelection(selectedIds, templates);
   const selectionSize = selected.size;
   const allSelected = templates.length > 0 && templates.every((t) => selected.has(t.id));
   const someSelected = selectionSize > 0 && !allSelected;

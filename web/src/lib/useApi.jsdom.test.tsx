@@ -90,7 +90,7 @@ describe("useApi", () => {
   it("polls on an interval only while the document is visible", async () => {
     vi.useFakeTimers();
     mockedGet.mockResolvedValue("v");
-    const { result } = renderHook(() => useApi<string>("/poll", 1000));
+    renderHook(() => useApi<string>("/poll", 1000));
     await act(async () => {
       vi.advanceTimersByTime(0);
     });

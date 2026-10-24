@@ -265,6 +265,9 @@ export default function InboxPage() {
   }, [authed, token, unreadOnly, effectiveUserId, page, pageSize]);
 
   useEffect(() => {
+    // Reload-on-filter effect by design; every setState in load() lands
+    // after an await, never synchronously during the effect body.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load().catch(() => undefined);
   }, [load]);
 

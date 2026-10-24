@@ -123,6 +123,10 @@ function LoginChooser() {
           className="btn btn-primary"
           style={{ width: "100%", justifyContent: "center", marginTop: "var(--space-3)" }}
           onClick={() => {
+            // Full-page navigation is intentional: /auth/login is a route
+            // handler that starts the OAuth redirect — router.push cannot
+            // drive a server route handler.
+            // eslint-disable-next-line @next/next/no-location-assign-relative-destination
             window.location.href = "/auth/login";
           }}
         >

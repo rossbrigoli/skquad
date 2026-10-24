@@ -21,7 +21,9 @@ vi.mock("next/link", () => ({
 }));
 
 vi.mock("next/image", () => ({
-  default: ({ src, alt }: { src: string; alt: string }) => <img src={src} alt={alt ?? ""} />,
+  default: ({ src, alt }: { src: string; alt: string }) => (
+    <span data-src={src} role="img" aria-label={alt ?? ""} />
+  ),
 }));
 
 vi.mock("next/navigation", () => ({

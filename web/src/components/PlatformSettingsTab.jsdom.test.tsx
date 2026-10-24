@@ -95,7 +95,6 @@ describe("PlatformSettingsTab load", () => {
 
   it("oidc mode sends the empty bearer token (cookie session)", async () => {
     env.mode = "oidc";
-    let seenToken: string | undefined;
     // Re-mock capture isn't possible post-import; assert via the PUT path instead.
     env.loadResponse = { idle_scale_to_zero_minutes: 5, embedder_runtime: "cpu" };
     render(<PlatformSettingsTab />);
@@ -104,7 +103,7 @@ describe("PlatformSettingsTab load", () => {
     await userEvent.type(screen.getByLabelText("Scale to zero after minutes of inactivity"), "7");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     await vi.waitFor(() => expect(env.putCalls).toHaveLength(1));
-    seenToken = env.putCalls[0].token;
+    const seenToken = env.putCalls[0].token;
     expect(seenToken).toBe("");
   });
 });
