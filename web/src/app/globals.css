@@ -73,7 +73,8 @@
   --text-2xl: 26px;
 
   /* --- layout --- */
-  --rail-primary: 208px;
+  /* S-286: main menu pane widened 20% (208px -> 249.6px). */
+  --rail-primary: 249.6px;
   --rail-secondary: 232px;
 
   /* --- motion --- */
