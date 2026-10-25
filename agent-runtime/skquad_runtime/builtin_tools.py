@@ -3695,9 +3695,10 @@ class BoardCreateTaskTool(_BoardToolBase):
                         "Create a task on your own squad's board. It "
                         "lands in BACKLOG: not claimable and invisible "
                         "in agent chat until a human prioritises it. "
-                        "ready=true would create it directly in TO DO "
-                        "(claimable) but requires the squad leader "
-                        "capability — without it the call fails 403 "
+                        "ready=true creates it directly in TO DO "
+                        "(claimable) and requires the can_prioritize "
+                        "leader capability granted by your squad "
+                        "owner — without it the call fails 403 "
                         "leader_capability_required. squad_id is "
                         "optional and must be your own squad."
                     ),
@@ -3772,12 +3773,13 @@ class BoardAssignTool(_BoardToolBase):
                     "description": (
                         "Set a task's assignee. The task must live in "
                         "your squad and the assignee must be a squad "
-                        "member. Today you may only assign tasks to "
-                        "YOURSELF — assigning to another agent requires "
-                        "the squad leader capability and returns 403 "
-                        "leader_capability_required until granted. A "
-                        "newly assigned agent in a claimable column is "
-                        "woken automatically."
+                        "member. Assigning to ANOTHER agent requires "
+                        "the can_assign_others leader capability "
+                        "granted by your squad owner — without it the "
+                        "call fails 403 leader_capability_required. "
+                        "Self-assign always works. A newly assigned "
+                        "agent in a claimable column is woken "
+                        "automatically."
                     ),
                     "parameters": {
                         "type": "object",
@@ -4224,6 +4226,79 @@ class BoardRequestChangesTool(_BoardToolBase):
         )
 
 
+class BoardApproveTool(_BoardToolBase):
+    """S-294: board.approve — leader-approve ANOTHER agent's in-review
+    task straight to DONE. Requires a leader capability grant on the
+    squad (ADR-0016 D5) AND the squad's leader_approval_allowed knob
+    (D8, default off — approval strictly human). Self-approval is NOT
+    reachable here; your own card self-approves at board.complete time."""
+
+    name = "board.approve"
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "board.approve",
+                    "description": (
+                        "Leader approval: move ANOTHER agent's "
+                        "in-review task to DONE. Only for agents the "
+                        "squad owner granted a leader capability "
+                        "(can_prioritize / can_assign_others) AND only "
+                        "while the squad's leader_approval_allowed "
+                        "policy is on — otherwise 403 "
+                        "leader_capability_required or "
+                        "leader_approval_disabled. You cannot approve "
+                        "your own task (403) — self-approval happens "
+                        "at board.complete time. Optional comment is "
+                        "recorded in the audit trail and the task "
+                        "thread. Wrong column -> 409."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task UUID to approve.",
+                            },
+                            "comment": {
+                                "type": "string",
+                                "description": (
+                                    "Optional approval note (audit "
+                                    "trail + task thread)."
+                                ),
+                            },
+                        },
+                        "required": ["task_id"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        task_id = str(call.arguments.get("task_id", "")).strip()
+        if not task_id:
+            return ToolResult(
+                content="board.approve: task_id is required", ok=False
+            )
+        comment = str(call.arguments.get("comment", "") or "").strip()
+        body: dict[str, object] = {}
+        if comment:
+            body["comment"] = comment
+        data, err = self._call(
+            "POST",
+            f"/api/v1/agents/me/tasks/{task_id}/approve",
+            body,
+        )
+        if err:
+            return ToolResult(content=f"board.approve: {err}", ok=False)
+        status = str(data.get("status", "done"))
+        return ToolResult(
+            content=f"leader-approved task {task_id} -> {status.upper()}", ok=True
+        )
+
+
 _BUILTIN_REGISTRY: dict[str, type] = {
     "exec": ExecTool,
     "web_fetch": WebFetchTool,
@@ -4262,6 +4337,9 @@ _BUILTIN_REGISTRY: dict[str, type] = {
     "board.block": BoardBlockTool,
     "board.reopen": BoardReopenTool,
     "board.request_changes": BoardRequestChangesTool,
+    # S-294 (ADR-0016 D5/D8): leader approval of others' in-review
+    # tasks — server-side default-deny (grant + leader_approval_allowed).
+    "board.approve": BoardApproveTool,
 }
 
 # Built-ins that are listed in the platform catalog (S-232) for admin

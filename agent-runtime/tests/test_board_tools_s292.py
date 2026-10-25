@@ -83,13 +83,15 @@ class BoardToolRegistrationTests(unittest.TestCase):
         "board.block",
         "board.reopen",
         "board.request_changes",
+        # S-294 (ADR-0016 D5/D8): leader approval of others' tasks.
+        "board.approve",
     ]
 
-    def test_all_seven_registered_with_exact_names(self):
+    def test_all_board_verbs_registered_with_exact_names(self):
         for name in self.EXPECTED:
             self.assertIn(name, bt._BUILTIN_REGISTRY, f"{name} missing from registry")
 
-    def test_build_builtin_tools_instantiates_all_seven(self):
+    def test_build_builtin_tools_instantiates_all_board_verbs(self):
         config = {"tools": [{"name": n, "enabled": True, "policy": {}} for n in self.EXPECTED]}
         built = bt.build_builtin_tools(config, make_context())
         self.assertEqual(sorted(t.name for t in built), sorted(self.EXPECTED))
@@ -107,6 +109,7 @@ class BoardToolRegistrationTests(unittest.TestCase):
             "board.block": ["task_id", "reason"],
             "board.reopen": ["task_id", "reason"],
             "board.request_changes": ["task_id", "comment"],
+            "board.approve": ["task_id"],
         }
         for name, req in required.items():
             schemas = tool(name).tools()
@@ -449,6 +452,66 @@ class BoardToolHTTPTests(unittest.TestCase):
             )
         self.assertFalse(res.ok)
         self.assertIn("comment is required", res.content)
+        self.assertEqual(rec.calls, [])
+
+    # -- board.approve (S-294) ----------------------------------------------
+
+    def test_approve_posts_to_approve_endpoint(self):
+        rec = _Recorder([FakeResponse(200, {"id": "t-1", "status": "done"})])
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=rec):
+            res = tool("board.approve").invoke(
+                call("board.approve", task_id="t-1", comment="looks good"), None
+            )
+        self.assertTrue(res.ok)
+        method, url, body, _ = rec.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(url, CP + "/api/v1/agents/me/tasks/t-1/approve")
+        self.assertEqual(json.loads(body), {"comment": "looks good"})
+        self.assertIn("DONE", res.content)
+
+    def test_approve_without_comment_sends_empty_body(self):
+        rec = _Recorder([FakeResponse(200, {"id": "t-1", "status": "done"})])
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=rec):
+            res = tool("board.approve").invoke(call("board.approve", task_id="t-1"), None)
+        self.assertTrue(res.ok)
+        self.assertEqual(json.loads(rec.calls[0][2]), {})
+
+    def test_approve_surfaces_leader_capability_403(self):
+        rec = _Recorder([http_error(403, "leader_capability_required", "no grant")])
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=rec):
+            res = tool("board.approve").invoke(call("board.approve", task_id="t-1"), None)
+        self.assertFalse(res.ok)
+        self.assertIn("403", res.content)
+        self.assertIn("leader_capability_required", res.content)
+
+    def test_approve_surfaces_approval_disabled_403(self):
+        rec = _Recorder([http_error(403, "leader_approval_disabled", "knob off")])
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=rec):
+            res = tool("board.approve").invoke(call("board.approve", task_id="t-1"), None)
+        self.assertFalse(res.ok)
+        self.assertIn("leader_approval_disabled", res.content)
+
+    def test_approve_surfaces_self_approval_denial_403(self):
+        rec = _Recorder([http_error(403, "leader_approval_self_not_allowed", "own card")])
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=rec):
+            res = tool("board.approve").invoke(call("board.approve", task_id="t-1"), None)
+        self.assertFalse(res.ok)
+        self.assertIn("leader_approval_self_not_allowed", res.content)
+
+    def test_approve_surfaces_wrong_status_409(self):
+        rec = _Recorder([http_error(409, "approve_wrong_status", "not in-review")])
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=rec):
+            res = tool("board.approve").invoke(call("board.approve", task_id="t-1"), None)
+        self.assertFalse(res.ok)
+        self.assertIn("409", res.content)
+        self.assertIn("approve_wrong_status", res.content)
+
+    def test_approve_requires_task_id(self):
+        rec = _Recorder([FakeResponse(200, {})])
+        with mock.patch("skquad_runtime.builtin_tools.request.urlopen", side_effect=rec):
+            res = tool("board.approve").invoke(call("board.approve", task_id="  "), None)
+        self.assertFalse(res.ok)
+        self.assertIn("task_id is required", res.content)
         self.assertEqual(rec.calls, [])
 
     # -- transport errors -------------------------------------------------------

@@ -19,6 +19,13 @@ export type Squad = {
   created_at?: string;
 };
 
+// S-294 (ADR-0016 D5): per-agent leader capability grants, keyed by
+// agent id. Managed via the board-policy API; default absent = none.
+export type LeaderGrant = {
+  can_prioritize: boolean;
+  can_assign_others: boolean;
+};
+
 // S-291 (ADR-0016 D8): squad board policy. The raw document carries
 // pointer-style overrides (null/absent = platform default); effective
 // values are resolved server-side at read time.
@@ -26,6 +33,7 @@ export type BoardPolicy = {
   reopen_cap_per_day?: number | null;
   self_approve_default?: boolean | null;
   leader_approval_allowed?: boolean | null;
+  leader_grants?: Record<string, LeaderGrant> | null;
 };
 
 export type EffectiveBoardPolicy = {

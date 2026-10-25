@@ -95,10 +95,14 @@ const (
 	BuiltinToolBoardBlock          = "board.block"
 	BuiltinToolBoardReopen         = "board.reopen"
 	BuiltinToolBoardRequestChanges = "board.request_changes"
+	// S-294 (ADR-0016 D5/D8): leader approval of others' in-review
+	// tasks. Ships enabled; the real gate is server-side (leader grant +
+	// leader_approval_allowed, default deny).
+	BuiltinToolBoardApprove = "board.approve"
 )
 
 // BuiltinToolNames lists the built-in tools in canonical order.
-var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent, BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch, BuiltinToolProcess, BuiltinToolCron, BuiltinToolSessionsList, BuiltinToolSessionsHistory, BuiltinToolSessionStatus, BuiltinToolBrowser, BuiltinToolBoardCreateTask, BuiltinToolBoardAssign, BuiltinToolBoardClaim, BuiltinToolBoardComplete, BuiltinToolBoardBlock, BuiltinToolBoardReopen, BuiltinToolBoardRequestChanges}
+var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent, BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch, BuiltinToolProcess, BuiltinToolCron, BuiltinToolSessionsList, BuiltinToolSessionsHistory, BuiltinToolSessionStatus, BuiltinToolBrowser, BuiltinToolBoardCreateTask, BuiltinToolBoardAssign, BuiltinToolBoardClaim, BuiltinToolBoardComplete, BuiltinToolBoardBlock, BuiltinToolBoardReopen, BuiltinToolBoardRequestChanges, BuiltinToolBoardApprove}
 
 // BuiltinToolDefaultEnabled reports whether a built-in ships enabled when
 // seeded. The original three are security-sensitive and ship disabled
@@ -160,7 +164,11 @@ func BuiltinToolDefaultEnabled(name string) bool {
 		name == BuiltinToolBoardComplete ||
 		name == BuiltinToolBoardBlock ||
 		name == BuiltinToolBoardReopen ||
-		name == BuiltinToolBoardRequestChanges
+		name == BuiltinToolBoardRequestChanges ||
+		// S-294 (ADR-0016 D5/D8): board.approve ships enabled to match
+		// its migration 0064 seed — the server-side leader-grant +
+		// leader_approval_allowed guards (default deny) are the boundary.
+		name == BuiltinToolBoardApprove
 }
 
 // SearchProviderNames lists the accepted web_search policy providers.

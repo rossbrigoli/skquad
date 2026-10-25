@@ -3062,6 +3062,12 @@ func cloneBoardPolicy(p domain.BoardPolicy) domain.BoardPolicy {
 		v := *p.LeaderApprovalAllowed
 		out.LeaderApprovalAllowed = &v
 	}
+	if p.LeaderGrants != nil {
+		out.LeaderGrants = make(map[string]domain.LeaderGrant, len(p.LeaderGrants))
+		for k, g := range p.LeaderGrants {
+			out.LeaderGrants[k] = g
+		}
+	}
 	return out
 }
 

@@ -708,6 +708,9 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			// S-292 (ADR-0016 D1): assignee returns its own reviewed card
 			// to the pool — in-review → todo, assignee cleared.
 			r.Post("/tasks/{taskID}/request-changes", s.requestChangesOnMyTask)
+			// S-294 (ADR-0016 D5/D8): leader approval of others' tasks —
+			// in-review → done, gated on leader grant + leader_approval_allowed.
+			r.Post("/tasks/{taskID}/approve", s.approveTaskAsLeader)
 			r.Post("/tasks/{taskID}/workspace", s.reportCurrentAgentTaskWorkspace)
 			// S-183: the runtime streams the agent's working turns into the
 			// task thread while the task runs.
@@ -5918,10 +5921,10 @@ func (s *Server) reopenCurrentAgentTask(w http.ResponseWriter, r *http.Request) 
 // createMyTask S-292 (ADR-0016 D1): the board.create_task builtin — an
 // agent creates a task on its OWN squad's board. The task lands in
 // BACKLOG: not claimable and (per D6) invisible in agent chat until a
-// human prioritises it. ready=true would put it straight into TO DO and
-// requires the squad leader capability (can_prioritize, D5) which S-294
-// wires; until that capability exists for any agent this is a clean 403
-// and the tool surfaces it verbatim.
+// human prioritises it. ready=true (S-294, D5) creates it directly in
+// TO DO (claimable) but only when the squad granted this agent
+// can_prioritize; without the grant the call is a clean 403 and the
+// backlog default stands.
 func (s *Server) createMyTask(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		SquadID     string `json:"squad_id"`
@@ -5943,8 +5946,19 @@ func (s *Server) createMyTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Ready {
-		writeError(w, http.StatusForbidden, "leader_capability_required", "creating a task directly in TO DO requires the squad leader capability (ADR-0016 D5), which this agent does not hold")
-		return
+		// S-294 (ADR-0016 D5): ready=true is the leader path — the task
+		// is created directly in TO DO (claimable). Requires the squad's
+		// can_prioritize grant for this agent; without it the backlog
+		// default stands and the call is rejected.
+		squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		if !squad.BoardPolicy.CanPrioritize(principal.Agent.ID) {
+			writeError(w, http.StatusForbidden, "leader_capability_required", "creating a task directly in TO DO requires the can_prioritize leader capability (ADR-0016 D5), which this agent has not been granted on this squad")
+			return
+		}
 	}
 	squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
 	if err != nil {
@@ -5956,16 +5970,22 @@ func (s *Server) createMyTask(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
+	status := domain.TaskBacklog
+	var createMeta json.RawMessage
+	if req.Ready {
+		status = domain.TaskTodo
+		createMeta, _ = json.Marshal(map[string]any{"ready": true, "prioritized_by_leader": true})
+	}
 	task := &domain.Task{
 		BoardID:       board.ID,
 		SquadID:       squad.ID,
 		Title:         req.Title,
 		Description:   req.Description,
-		Status:        domain.TaskBacklog,
+		Status:        status,
 		CreatedByType: "agent",
 		CreatedByID:   principal.Agent.ID,
 	}
-	created, err := s.store.CreateTask(s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.create", "task", "", squad.ID, nil), task)
+	created, err := s.store.CreateTask(s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.create", "task", "", squad.ID, createMeta), task)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -5976,9 +5996,12 @@ func (s *Server) createMyTask(w http.ResponseWriter, r *http.Request) {
 // assignMyTask S-292 (ADR-0016 D1): the board.assign builtin — the
 // agent sets a task's assignee. The task must live in the agent's own
 // squad and the assignee must be a squad member. Assigning to ANOTHER
-// agent requires the can_assign_others leader capability (D5) which
-// S-294 wires; until then agents may only assign tasks to themselves
-// (clean 403 otherwise). The wake path is the existing
+// agent requires the can_assign_others leader capability (S-294, D5);
+// without it agents may only assign tasks to themselves (clean 403
+// otherwise). The leader path reuses this same assignment + wake
+// machinery — the delegate materialization flow funnels into the same
+// syncAffectedAgentsFromTaskChange wake (D5/D7), no parallel mechanism.
+// The wake path is the existing
 // syncAffectedAgentsFromTaskChange (D7).
 func (s *Server) assignMyTask(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -6004,8 +6027,29 @@ func (s *Server) assignMyTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if assignee != principal.Agent.ID {
-		writeError(w, http.StatusForbidden, "leader_capability_required", "assigning a task to another agent requires the squad leader capability (ADR-0016 D5), which this agent does not hold")
-		return
+		// S-294 (ADR-0016 D5): assigning to ANOTHER agent requires the
+		// can_assign_others leader capability. The leader path reuses
+		// this exact assignment machinery — the same UpdateTask + thread
+		// event + syncAffectedAgentsFromTaskChange wake the delegate
+		// materialization funnels into (D5/D7) — no parallel mechanism.
+		squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		if !squad.BoardPolicy.CanAssignOthers(principal.Agent.ID) {
+			writeError(w, http.StatusForbidden, "leader_capability_required", "assigning a task to another agent requires the can_assign_others leader capability (ADR-0016 D5), which this agent has not been granted on this squad")
+			return
+		}
+		target, err := s.store.GetAgent(r.Context(), assignee)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		if target.SquadID != principal.Agent.SquadID {
+			writeError(w, http.StatusForbidden, "assignee_not_squad_member", "the target agent is not a member of this agent's squad")
+			return
+		}
 	}
 	previousAssignee := task.AssigneeAgentID
 	task.AssigneeAgentID = assignee
@@ -6078,6 +6122,78 @@ func (s *Server) requestChangesOnMyTask(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.appendTaskThreadEvent(r.Context(), updated, "agent", principal.Agent.ID, domain.MessageReply, trimRunes("Returned this task for reassignment: "+comment, maxTaskThreadTurnChars))
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// approveTaskAsLeader S-294 (ADR-0016 D5/D8): the board.approve builtin —
+// a leader-capable agent moves ANOTHER agent's in-review task to done.
+// Two server-side knobs must both be open: the agent holds a leader grant
+// on the squad (D5) AND the squad's board_policy.leader_approval_allowed
+// is enabled (D8, default false — approval is strictly human). Self-
+// approval is NOT reachable here: the assignee self-approves via
+// board.complete(review_needed=false) under its own policy (D2), so this
+// verb never bypasses the self-approval knobs. Every approval is audited
+// as task.leader_approved with the comment (D2/D3 audit pattern).
+func (s *Server) approveTaskAsLeader(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Comment string `json:"comment"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+	}
+	comment := trimRunes(strings.TrimSpace(req.Comment), maxAgentMemoryContentChars)
+	principal := currentAgent(r.Context())
+	taskID := chi.URLParam(r, "taskID")
+	task, err := s.store.GetTask(r.Context(), taskID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if task.SquadID != principal.Agent.SquadID {
+		writeError(w, http.StatusForbidden, "forbidden", "task is not in this agent's squad")
+		return
+	}
+	if task.AssigneeAgentID == principal.Agent.ID {
+		writeError(w, http.StatusForbidden, "leader_approval_self_not_allowed", "board.approve is for OTHER agents' tasks; your own in-review card stays subject to human approval (self-approval happens at board.complete time, ADR-0016 D2)")
+		return
+	}
+	squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if !squad.BoardPolicy.IsLeader(principal.Agent.ID) {
+		writeError(w, http.StatusForbidden, "leader_capability_required", "approving another agent's task requires a leader capability grant on this squad (ADR-0016 D5)")
+		return
+	}
+	if !domain.EffectiveLeaderApproval(squad) {
+		writeError(w, http.StatusForbidden, "leader_approval_disabled", "the squad's board_policy.leader_approval_allowed is off (default); in-review → done remains strictly human (ADR-0016 D8)")
+		return
+	}
+	if task.Status != domain.TaskInReview {
+		writeError(w, http.StatusConflict, "approve_wrong_status", "only in-review tasks can be leader-approved")
+		return
+	}
+	auditMeta, _ := json.Marshal(map[string]any{"leader_approved": true, "assignee_agent_id": task.AssigneeAgentID, "comment": comment})
+	task.Status = domain.TaskDone
+	updated, err := s.store.UpdateTask(s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.leader_approved", "task", taskID, task.SquadID, auditMeta), task)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	threadText := "Leader-approved this task as done."
+	if comment != "" {
+		threadText = "Leader-approved this task as done: " + comment
+	}
+	s.appendTaskThreadEvent(r.Context(), updated, "agent", principal.Agent.ID, domain.MessageReply, trimRunes(threadText, maxTaskThreadTurnChars))
+	if updated.AssigneeAgentID != "" {
+		if err := s.syncAgentStatusFromPendingWork(r.Context(), updated.AssigneeAgentID); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 

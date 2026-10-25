@@ -98,6 +98,10 @@ function BoardPolicyForm({
         reopen_cap_per_day: Number(reopenCap),
         self_approve_default: selfApprove,
         leader_approval_allowed: leaderApproval,
+        // S-294: PUT replaces the whole document — pass the raw
+        // leader_grants through so saving knobs here never revokes
+        // leader capabilities the owner granted via the API.
+        leader_grants: policy.raw.leader_grants ?? {},
       });
       setSavedNote("Board policy saved.");
       onSaved();

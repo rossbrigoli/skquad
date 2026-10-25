@@ -94,8 +94,29 @@ describe("SquadSettingsPage board policy", () => {
       reopen_cap_per_day: 2,
       self_approve_default: false,
       leader_approval_allowed: true,
+      leader_grants: {},
     });
     expect(env.refreshes.some((p) => p.includes("/board-policy"))).toBe(true);
+  });
+
+  it("S-294: save passes raw leader_grants through untouched", async () => {
+    env.policy = {
+      raw: {
+        reopen_cap_per_day: 5,
+        leader_grants: { "a-lead": { can_prioritize: true, can_assign_others: true } },
+      },
+      effective: { reopen_cap_per_day: 5, self_approve_default: true, leader_approval_allowed: false },
+    };
+    render(<SquadSettingsPage />);
+    const cap = screen.getByLabelText("Reopen cap per day");
+    await userEvent.clear(cap);
+    await userEvent.type(cap, "4");
+    await userEvent.click(screen.getByRole("button", { name: "Save board policy" }));
+    await vi.waitFor(() => expect(env.puts).toHaveLength(1));
+    expect(env.puts[0].body).toMatchObject({
+      reopen_cap_per_day: 4,
+      leader_grants: { "a-lead": { can_prioritize: true, can_assign_others: true } },
+    });
   });
 
   it("zero reopen cap is valid and savable", async () => {
