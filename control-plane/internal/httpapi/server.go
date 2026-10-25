@@ -196,6 +196,12 @@ type Server struct {
 	// dev — PUT embedder_runtime then answers 503 instead of silently
 	// storing a setting nothing acts on.
 	embedderConfig EmbedderConfigWriter
+	// agentResourcesConfig (S-287) writes the admin's agent pod
+	// resource choices into the ConfigMap the operator reconciles.
+	// Built at startup when K8s connection config is present; nil in
+	// dev — PUT agent_resources then answers 503 instead of silently
+	// storing a setting nothing acts on.
+	agentResourcesConfig AgentResourcesConfigWriter
 	// mcpEnumerate (TG-5 slice B2a) is the CP→gateway trusted-internal
 	// client used to enumerate MCP tool sets at registration/rotation
 	// (POST /internal/mcp/enumerate). Built from SKQUAD_TOOL_GATEWAY_URL
@@ -218,6 +224,12 @@ type Server struct {
 // the operator-consumed override ConfigMap (ADR-0013 §5).
 type EmbedderConfigWriter interface {
 	SetEmbedderRuntime(ctx context.Context, runtime string) error
+}
+
+// AgentResourcesConfigWriter persists the admin's agent pod resource
+// choices to the operator-consumed override ConfigMap (S-287).
+type AgentResourcesConfigWriter interface {
+	SetAgentResources(ctx context.Context, res domain.AgentResourceSettings) error
 }
 
 // EmbeddingsClient generates text embeddings via the gateway (S-212).
@@ -346,6 +358,13 @@ func NewWithEmbedderRuntimeWriter(cfg *config.Config, store Store, oidcAuth OIDC
 	return newServer(cfg, store, serverDeps{oidcAuth: oidcAuth, crWriter: crWriter, embedderConfig: writer})
 }
 
+// NewWithAgentResourcesWriter wires an explicit AgentResourcesConfigWriter
+// (S-287 tests). Production builds the writer from in-cluster K8s
+// config inside newServer.
+func NewWithAgentResourcesWriter(cfg *config.Config, store Store, oidcAuth OIDCAuthenticator, crWriter CRWriter, writer AgentResourcesConfigWriter) http.Handler {
+	return newServer(cfg, store, serverDeps{oidcAuth: oidcAuth, crWriter: crWriter, agentResources: writer})
+}
+
 // serverDeps bundles the optional integrations for newServer (S-189:
 // params struct replaces the 10-arg signature). Zero values mean
 // "not wired", exactly like the previous nil arguments.
@@ -359,6 +378,7 @@ type serverDeps struct {
 	gwReloader         GatewayReloader
 	injectedEmbeddings EmbeddingsClient
 	embedderConfig     EmbedderConfigWriter
+	agentResources     AgentResourcesConfigWriter
 	mcpEnumerate       MCPEnumerateClient
 	grantLinter        GrantLinter
 }
@@ -468,6 +488,27 @@ func resolveEmbedderConfig(cfg *config.Config, explicit EmbedderConfigWriter) Em
 	return built
 }
 
+// resolveAgentResourcesConfig returns the explicit agent resources
+// override writer when given, otherwise builds from in-cluster K8s
+// config (S-287, same posture as resolveEmbedderConfig).
+func resolveAgentResourcesConfig(cfg *config.Config, explicit AgentResourcesConfigWriter) AgentResourcesConfigWriter {
+	if explicit != nil {
+		return explicit
+	}
+	if cfg == nil || !cfg.K8sEnabled || cfg.K8sAPIBase == "" || cfg.K8sTokenFile == "" {
+		return nil
+	}
+	built, err := kube.NewAgentResourcesConfigStore(cfg)
+	if err != nil {
+		log.Printf("agent resources override writer unavailable (PUT agent_resources disabled): %v", err)
+		return nil
+	}
+	if built == nil {
+		return nil
+	}
+	return built
+}
+
 // buildMemoryEmbeddings builds the memory-RAG embeddings client when the
 // feature is enabled with a model and a reachable gateway config.
 // Gateway base prefers the admin URL (same LiteLLM instance) and falls
@@ -539,6 +580,7 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 	// absent config (dev) leaves nil and the admin PUT answers 503
 	// rather than storing a setting nothing acts on.
 	s.embedderConfig = resolveEmbedderConfig(cfg, deps.embedderConfig)
+	s.agentResourcesConfig = resolveAgentResourcesConfig(cfg, deps.agentResources)
 	// TG-5 slice B2a: MCP enumerate client (CP→gateway). Explicit
 	// argument wins (tests); otherwise build from the gateway URL +
 	// internal token config. Absent config leaves nil and MCP

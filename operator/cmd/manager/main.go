@@ -20,6 +20,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -100,6 +101,21 @@ func managerOptions(cfg config) ctrl.Options {
 				},
 			},
 		},
+		// S-287: the Agent controller watches the agent-resources override
+		// ConfigMap so a Settings → Platform edit converges every agent
+		// Deployment without a redeploy. list/watch cannot be name-scoped,
+		// so the informer is confined to the operator's own namespace —
+		// matching the namespaced Role in charts/skquad/templates/
+		// operator-rbac.yaml. Client reads stay direct (DisableFor above).
+		Cache: cache.Options{
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.ConfigMap{}: {
+					Namespaces: map[string]cache.Config{
+						envOrDefault("SKQUAD_NAMESPACE", "skquad"): {},
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -130,6 +146,12 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("skquad-agent-controller"),
+		// S-287: platform-configurable agent pod resources. The
+		// control-plane writes the admin's Settings → Platform choices
+		// into this ConfigMap; the operator reads it on every reconcile
+		// and watches it so edits converge running agents immediately.
+		ResourcesConfigMapName:      envOrDefault("SKQUAD_AGENT_RESOURCES_CONFIGMAP", "skquad-agent-resources"),
+		ResourcesConfigMapNamespace: envOrDefault("SKQUAD_NAMESPACE", "skquad"),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create Agent controller")
 		os.Exit(1)

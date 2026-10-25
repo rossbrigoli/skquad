@@ -45,6 +45,8 @@ rules:
       - configmaps
     resourceNames:
       - skquad-embedder-config
+      # S-287: agent pod resources override (Settings → Platform).
+      - skquad-agent-resources
     verbs:
       - get
       - update

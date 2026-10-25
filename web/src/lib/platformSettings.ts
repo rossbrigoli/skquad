@@ -8,6 +8,11 @@
 
 import { apiGet, apiPut } from "./api";
 import {
+  type AgentResourcesSettings,
+  normalizeAgentResources,
+  validateAgentResources,
+} from "./agentResources";
+import {
   DEFAULT_EMBEDDER_RUNTIME,
   type EmbedderRuntime,
   validateEmbedderRuntime,
@@ -21,6 +26,7 @@ import {
 export type PlatformSettingsCurrent = {
   idleMinutes: number;
   embedderRuntime: EmbedderRuntime;
+  agentResources: AgentResourcesSettings;
 };
 
 // PlatformSettingsFormValues mirrors the tab form (raw text for the
@@ -28,12 +34,14 @@ export type PlatformSettingsCurrent = {
 export type PlatformSettingsFormValues = {
   idleMinutes: string;
   embedderRuntime: EmbedderRuntime;
+  agentResources: AgentResourcesSettings;
 };
 
 // PlatformSettingsChanges is the wire payload: only changed keys.
 export type PlatformSettingsChanges = {
   idle_scale_to_zero_minutes?: number;
   embedder_runtime?: EmbedderRuntime;
+  agent_resources?: AgentResourcesSettings;
 };
 
 export type PlatformSettingsDiff = {
@@ -52,6 +60,7 @@ export function formFromPlatformSettings(current: PlatformSettingsCurrent): Plat
   return {
     idleMinutes: String(current.idleMinutes),
     embedderRuntime: current.embedderRuntime,
+    agentResources: { ...current.agentResources },
   };
 }
 
@@ -82,11 +91,29 @@ export function diffPlatformSettings(
     changes.embedder_runtime = form.embedderRuntime;
   }
 
+  // S-287: the four agent resource fields are validated as one unit
+  // and sent as one block only when any field differs from current.
+  const resourceErrors = validateAgentResources(form.agentResources);
+  if (resourceErrors.length > 0) {
+    errors.push(...resourceErrors);
+  } else if (
+    form.agentResources.cpu_request !== current.agentResources.cpu_request ||
+    form.agentResources.cpu_limit !== current.agentResources.cpu_limit ||
+    form.agentResources.memory_request !== current.agentResources.memory_request ||
+    form.agentResources.memory_limit !== current.agentResources.memory_limit
+  ) {
+    changes.agent_resources = { ...form.agentResources };
+  }
+
   return { changes, errors };
 }
 
 export function hasPlatformSettingsChanges(changes: PlatformSettingsChanges): boolean {
-  return changes.idle_scale_to_zero_minutes !== undefined || changes.embedder_runtime !== undefined;
+  return (
+    changes.idle_scale_to_zero_minutes !== undefined ||
+    changes.embedder_runtime !== undefined ||
+    changes.agent_resources !== undefined
+  );
 }
 
 // loadPlatformSettings fetches the whole platform settings block in one
@@ -95,10 +122,12 @@ export async function loadPlatformSettings(token: string): Promise<PlatformSetti
   const res = await apiGet<{
     idle_scale_to_zero_minutes?: number;
     embedder_runtime?: string;
+    agent_resources?: Partial<AgentResourcesSettings>;
   }>("/admin/settings", token);
   return {
     idleMinutes: res.idle_scale_to_zero_minutes ?? DEFAULT_IDLE_SCALE_TO_ZERO_MINUTES,
     embedderRuntime: normalizeEmbedderRuntime(res.embedder_runtime),
+    agentResources: normalizeAgentResources(res.agent_resources),
   };
 }
 
@@ -116,6 +145,7 @@ export async function savePlatformSettingsChanges(
   const res = await apiPut<{
     idle_scale_to_zero_minutes?: number;
     embedder_runtime?: string;
+    agent_resources?: Partial<AgentResourcesSettings>;
   }>("/admin/settings", token, changes);
   return {
     idleMinutes: res.idle_scale_to_zero_minutes ?? current.idleMinutes,
@@ -123,5 +153,9 @@ export async function savePlatformSettingsChanges(
       res.embedder_runtime !== undefined
         ? normalizeEmbedderRuntime(res.embedder_runtime)
         : current.embedderRuntime,
+    agentResources:
+      res.agent_resources !== undefined
+        ? normalizeAgentResources({ ...current.agentResources, ...res.agent_resources })
+        : current.agentResources,
   };
 }

@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -73,7 +74,7 @@ const (
 	netpolGuardContainerName = "netpol-guard"
 	// Guard env knobs (set by the chart on the operator Deployment; see
 	// charts/skquad/templates/operator-deployment.yaml).
-	envNetpolGuardEnabled          = "SKQUAD_NETPOL_GUARD_ENABLED"
+	envNetpolGuardEnabled         = "SKQUAD_NETPOL_GUARD_ENABLED"
 	envNetpolGuardCanaryURL       = "SKQUAD_NETPOL_GUARD_CANARY_URL"
 	envNetpolGuardProbeIntervalMS = "SKQUAD_NETPOL_GUARD_PROBE_INTERVAL_MS"
 	envNetpolGuardMaxWaitSeconds  = "SKQUAD_NETPOL_GUARD_MAX_WAIT_SECONDS"
@@ -98,6 +99,7 @@ const (
 //     confirmed => exit 0 and the agent container starts.
 //   - maxWaitSeconds exceeded without confirmation => exit 1: FAIL-CLOSED,
 //     the agent workload never starts (visible as Init:Error in pod status).
+//
 // Logs counts/status only — no secrets, no response bodies.
 const netpolGuardScript = `set -u
 canary="$NETPOL_GUARD_CANARY_URL"
@@ -133,6 +135,14 @@ type AgentReconciler struct {
 	// Recorder emits Kubernetes events for storage admission decisions
 	// (S-139). Optional: unit tests may leave it nil.
 	Recorder record.EventRecorder
+	// ResourcesConfigMapName / ResourcesConfigMapNamespace (S-287)
+	// point at the control-plane-written ConfigMap holding the platform
+	// admin's agent pod resource choices (cpu_request, cpu_limit,
+	// memory_request, memory_limit). Empty means "no platform override":
+	// the operator falls back to its env-var defaults, preserving the
+	// pre-S-287 behaviour.
+	ResourcesConfigMapName      string
+	ResourcesConfigMapNamespace string
 }
 
 // eventf emits a warning event if a Recorder is wired; never fails a
@@ -180,7 +190,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// Recompute inside the closure: CreateOrUpdate fetches the current
 		// Deployment first, and desiredReplicas depends on its current
 		// spec.replicas (idle scale-down logic).
-		replicas = r.applyAgentDeploymentSpec(&agent, deployment)
+		replicas = r.applyAgentDeploymentSpec(ctx, &agent, deployment)
 		return nil
 	})
 	if err != nil {
@@ -218,7 +228,7 @@ func (r *AgentReconciler) reconcileDelete(ctx context.Context, agent *skquadv1.A
 // applyAgentDeploymentSpec sets the desired Deployment state for the agent
 // and returns the desired replica count computed against the Deployment's
 // current state.
-func (r *AgentReconciler) applyAgentDeploymentSpec(agent *skquadv1.Agent, deployment *appsv1.Deployment) int32 {
+func (r *AgentReconciler) applyAgentDeploymentSpec(ctx context.Context, agent *skquadv1.Agent, deployment *appsv1.Deployment) int32 {
 	replicas := desiredReplicas(agent, deployment, time.Now)
 	labels := agentLabels(agent)
 	ensureAgentLabels(&deployment.Labels, agent)
@@ -246,7 +256,7 @@ func (r *AgentReconciler) applyAgentDeploymentSpec(agent *skquadv1.Agent, deploy
 		Env:            agentEnv(agent),
 		LivenessProbe:  httpProbe("/healthz"),
 		ReadinessProbe: httpProbe("/readyz"),
-		Resources:      agentResourceRequirements(),
+		Resources:      r.agentResourceRequirements(ctx),
 		SecurityContext: &corev1.SecurityContext{
 			RunAsNonRoot:             boolPtr(true),
 			AllowPrivilegeEscalation: boolPtr(false),
@@ -341,7 +351,7 @@ func netpolGuardContainer() *corev1.Container {
 			},
 		},
 		SecurityContext: &corev1.SecurityContext{
-			RunAsNonRoot:             boolPtr(true),
+			RunAsNonRoot: boolPtr(true),
 			// curlimages/curl's USER is the non-numeric "curl_user"; kubelet
 			// cannot verify non-root from a name, so pin the numeric uid/gid
 			// (1000 = curl_user) or the container fails CreateContainerConfigError.
@@ -827,25 +837,50 @@ func maxAgentStorage() resource.Quantity {
 // agentResourceRequirements gives the agent container explicit cpu/memory
 // requests+limits. Tenant namespaces carry a ResourceQuota that requires
 // every container to declare them (S-85); without this the ReplicaSet is
-// rejected at admission and the agent can never wake. Overridable per
-// operator via env; invalid values fall back to the defaults.
-func agentResourceRequirements() corev1.ResourceRequirements {
-	parse := func(value, fallback string) resource.Quantity {
-		if q, err := resource.ParseQuantity(value); err == nil {
+// rejected at admission and the agent can never wake.
+//
+// Resolution order per value (S-287): the platform override ConfigMap
+// written by the control-plane (Settings → Platform page) wins; then the
+// operator's env-var override; then the built-in default. A missing,
+// unreadable, or invalid ConfigMap value is never fatal — it falls back
+// down the chain so agent scheduling cannot be wedged by a bad override.
+func (r *AgentReconciler) agentResourceRequirements(ctx context.Context) corev1.ResourceRequirements {
+	override := r.agentResourcesOverride(ctx)
+	pick := func(cmKey, envKey, fallback string) resource.Quantity {
+		if v, ok := override[cmKey]; ok {
+			if q, err := resource.ParseQuantity(v); err == nil && !q.IsZero() {
+				return q
+			}
+		}
+		if q, err := resource.ParseQuantity(envOrDefault(envKey, fallback)); err == nil {
 			return q
 		}
 		return resource.MustParse(fallback)
 	}
 	return corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
-			corev1.ResourceCPU:    parse(envOrDefault("SKQUAD_AGENT_CPU_REQUEST", "100m"), "100m"),
-			corev1.ResourceMemory: parse(envOrDefault("SKQUAD_AGENT_MEMORY_REQUEST", "128Mi"), "128Mi"),
+			corev1.ResourceCPU:    pick("cpu_request", "SKQUAD_AGENT_CPU_REQUEST", "100m"),
+			corev1.ResourceMemory: pick("memory_request", "SKQUAD_AGENT_MEMORY_REQUEST", "128Mi"),
 		},
 		Limits: corev1.ResourceList{
-			corev1.ResourceCPU:    parse(envOrDefault("SKQUAD_AGENT_CPU_LIMIT", "500m"), "500m"),
-			corev1.ResourceMemory: parse(envOrDefault("SKQUAD_AGENT_MEMORY_LIMIT", "512Mi"), "512Mi"),
+			corev1.ResourceCPU:    pick("cpu_limit", "SKQUAD_AGENT_CPU_LIMIT", "500m"),
+			corev1.ResourceMemory: pick("memory_limit", "SKQUAD_AGENT_MEMORY_LIMIT", "512Mi"),
 		},
 	}
+}
+
+// agentResourcesOverride reads the platform override ConfigMap.
+// Missing/unreadable ConfigMaps yield an empty map (non-fatal by
+// design — same posture as the embedder runtime override, ADR-0013).
+func (r *AgentReconciler) agentResourcesOverride(ctx context.Context) map[string]string {
+	if r.ResourcesConfigMapName == "" || r.ResourcesConfigMapNamespace == "" {
+		return nil
+	}
+	cm := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: r.ResourcesConfigMapNamespace, Name: r.ResourcesConfigMapName}, cm); err != nil {
+		return nil
+	}
+	return cm.Data
 }
 
 // SetupWithManager registers the Agent controller with a controller-runtime
@@ -860,7 +895,28 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&skquadv1.Agent{}).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapAgentLabeledResource)).
 		Watches(&corev1.PersistentVolumeClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapAgentLabeledResource)).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.mapAgentResourcesConfigMap)).
 		Complete(r)
+}
+
+// mapAgentResourcesConfigMap (S-287) enqueues every Agent when the
+// platform agent-resources override ConfigMap changes, so a Settings →
+// Platform edit converges all running agent Deployments without a
+// redeploy. Only the well-known ConfigMap name triggers; anything else
+// is ignored.
+func (r *AgentReconciler) mapAgentResourcesConfigMap(ctx context.Context, obj client.Object) []reconcile.Request {
+	if r.ResourcesConfigMapName == "" || obj.GetName() != r.ResourcesConfigMapName {
+		return nil
+	}
+	var agents skquadv1.AgentList
+	if err := r.List(ctx, &agents); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(agents.Items))
+	for i := range agents.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&agents.Items[i])})
+	}
+	return requests
 }
 
 // mapAgentLabeledResource maps a Deployment or workspace PVC change back

@@ -37,6 +37,13 @@ spec:
               containerPort: 8081
               protocol: TCP
           env:
+            # S-287: pin the operator's namespace default (agent-resources
+            # override ConfigMap read + namespace-scoped ConfigMap informer,
+            # and the embedder override default) to the release namespace so
+            # non-standard release namespaces stay consistent with where the
+            # control-plane writes.
+            - name: SKQUAD_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
             - name: SKQUAD_AGENT_TASK_POLL_INTERVAL_SECONDS
               value: {{ .Values.agent.taskPollIntervalSeconds | quote }}
             - name: SKQUAD_AGENT_INBOX_POLL_INTERVAL_SECONDS

@@ -201,3 +201,85 @@ describe("PlatformSettingsTab save", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
+
+// S-287: agent pod resources fields on the Platform tab.
+describe("PlatformSettingsTab agent pod resources", () => {
+  it("shows the four resource inputs with loaded values and defaults", async () => {
+    env.loadResponse = {
+      agent_resources: { cpu_request: "250m", cpu_limit: "1", memory_request: "256Mi", memory_limit: "1Gi" },
+    };
+    render(<PlatformSettingsTab />);
+    await screen.findByText(/Current platform setting: 250m \/ 1 CPU/);
+    expect(screen.getByLabelText("Agent pod CPU request")).toHaveValue("250m");
+    expect(screen.getByLabelText("Agent pod CPU limit")).toHaveValue("1");
+    expect(screen.getByLabelText("Agent pod memory request")).toHaveValue("256Mi");
+    expect(screen.getByLabelText("Agent pod memory limit")).toHaveValue("1Gi");
+  });
+
+  it("missing agent_resources fall back to the built-in defaults", async () => {
+    env.loadResponse = {};
+    render(<PlatformSettingsTab />);
+    await screen.findByText("Current platform setting: 15 minute(s).");
+    expect(screen.getByLabelText("Agent pod CPU request")).toHaveValue("100m");
+    expect(screen.getByLabelText("Agent pod CPU limit")).toHaveValue("500m");
+    expect(screen.getByLabelText("Agent pod memory request")).toHaveValue("128Mi");
+    expect(screen.getByLabelText("Agent pod memory limit")).toHaveValue("512Mi");
+  });
+
+  it("a resource edit sends one PUT with only the agent_resources block and confirms", async () => {
+    await mount();
+    const input = screen.getByLabelText("Agent pod CPU limit");
+    await userEvent.clear(input);
+    await userEvent.type(input, "750m");
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(env.putCalls).toHaveLength(1));
+    expect(env.putCalls[0].body).toEqual({
+      agent_resources: {
+        cpu_request: "100m",
+        cpu_limit: "750m",
+        memory_request: "128Mi",
+        memory_limit: "512Mi",
+      },
+    });
+    expect(screen.getByText(/agent pods get 100m CPU request \/ 750m limit/)).toBeInTheDocument();
+  });
+
+  it("request over limit blocks submit with a validation error", async () => {
+    await mount();
+    // Dirty the form with a valid change so Save is enabled, then make
+    // the resources invalid (invalid-only changes keep Save disabled,
+    // same pattern as the out-of-range minutes test above).
+    await userEvent.selectOptions(screen.getByLabelText("Embedder compute runtime"), "cpu");
+    const req = screen.getByLabelText("Agent pod CPU request");
+    await userEvent.clear(req);
+    await userEvent.type(req, "2");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("CPU request must not exceed CPU limit.");
+    expect(env.putCalls).toHaveLength(0);
+  });
+
+  it("a malformed quantity blocks submit", async () => {
+    await mount();
+    await userEvent.selectOptions(screen.getByLabelText("Embedder compute runtime"), "cpu");
+    const mem = screen.getByLabelText("Agent pod memory limit");
+    await userEvent.clear(mem);
+    await userEvent.type(mem, "512MB");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Memory limit must be a Kubernetes memory quantity");
+    expect(env.putCalls).toHaveLength(0);
+  });
+
+  it("clearing a required field blocks submit", async () => {
+    await mount();
+    await userEvent.selectOptions(screen.getByLabelText("Embedder compute runtime"), "cpu");
+    const memReq = screen.getByLabelText("Agent pod memory request");
+    await userEvent.clear(memReq);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Memory request is required.");
+    expect(env.putCalls).toHaveLength(0);
+  });
+});

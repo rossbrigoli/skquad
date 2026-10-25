@@ -12,6 +12,11 @@ import { useEffect, useMemo, useState } from "react";
 import { ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import {
+  type AgentResourceField,
+  type AgentResourcesSettings,
+  defaultAgentResources,
+} from "../lib/agentResources";
+import {
   DEFAULT_EMBEDDER_RUNTIME,
   EMBEDDER_RUNTIMES,
   RUNTIME_LABELS,
@@ -42,8 +47,33 @@ function describeSaved(changes: PlatformSettingsChanges): string {
         : `the embedder rolls onto the ${changes.embedder_runtime.toUpperCase()} runtime`,
     );
   }
+  if (changes.agent_resources !== undefined) {
+    const r = changes.agent_resources;
+    parts.push(
+      `agent pods get ${r.cpu_request} CPU request / ${r.cpu_limit} limit, ${r.memory_request} memory request / ${r.memory_limit} limit`,
+    );
+  }
   return `Saved: ${parts.join("; ")}.`;
 }
+
+// RESOURCE_FIELDS drives the S-287 agent pod resources inputs: the
+// form key, its visible label, a unit hint, and the stable aria-label.
+const RESOURCE_FIELDS: { key: AgentResourceField; label: string; placeholder: string; aria: string }[] = [
+  { key: "cpu_request", label: "CPU request", placeholder: "e.g. 100m", aria: "Agent pod CPU request" },
+  { key: "cpu_limit", label: "CPU limit", placeholder: "e.g. 500m", aria: "Agent pod CPU limit" },
+  {
+    key: "memory_request",
+    label: "Memory request",
+    placeholder: "e.g. 128Mi",
+    aria: "Agent pod memory request",
+  },
+  {
+    key: "memory_limit",
+    label: "Memory limit",
+    placeholder: "e.g. 512Mi",
+    aria: "Agent pod memory limit",
+  },
+];
 
 export function PlatformSettingsTab() {
   const { token, mode } = useAuth();
@@ -53,6 +83,7 @@ export function PlatformSettingsTab() {
     formFromPlatformSettings({
       idleMinutes: DEFAULT_IDLE_SCALE_TO_ZERO_MINUTES,
       embedderRuntime: DEFAULT_EMBEDDER_RUNTIME,
+      agentResources: defaultAgentResources(),
     }),
   );
   const [loading, setLoading] = useState(true);
@@ -88,7 +119,15 @@ export function PlatformSettingsTab() {
   // are only surfaced after a save attempt (see submit) so typing a
   // partial number doesn't shout mid-edit.
   const diff = useMemo(
-    () => diffPlatformSettings(current ?? { idleMinutes: -1, embedderRuntime: DEFAULT_EMBEDDER_RUNTIME }, form),
+    () =>
+      diffPlatformSettings(
+        current ?? {
+          idleMinutes: -1,
+          embedderRuntime: DEFAULT_EMBEDDER_RUNTIME,
+          agentResources: defaultAgentResources(),
+        },
+        form,
+      ),
     [current, form],
   );
   const dirty = current !== null && hasPlatformSettingsChanges(diff.changes);
@@ -186,6 +225,46 @@ export function PlatformSettingsTab() {
         </label>
         {current !== null ? (
           <p className="metric-chip-sub">Current platform setting: {RUNTIME_LABELS[current.embedderRuntime]}.</p>
+        ) : null}
+      </div>
+
+      <div className="card" style={{ marginBottom: "var(--space-4, 16px)" }}>
+        <h3>Agent pod resources</h3>
+        <p className="field-hint">
+          CPU and memory requests and limits applied to every agent pod (Kubernetes quantity format:
+          CPU like 250m or 0.5, memory like 256Mi or 1Gi). Requests must not exceed limits. Changing
+          this re-reconciles every agent pod — running agents are recreated with the new resources.
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          {RESOURCE_FIELDS.map((f) => (
+            <label className="field" key={f.key} style={{ marginBottom: 0 }}>
+              <span>{f.label}</span>
+              <input
+                aria-label={f.aria}
+                value={form.agentResources[f.key]}
+                placeholder={f.placeholder}
+                onChange={(e) => {
+                  setForm((prev) => ({
+                    ...prev,
+                    agentResources: {
+                      ...prev.agentResources,
+                      [f.key]: e.target.value,
+                    } as AgentResourcesSettings,
+                  }));
+                  setNote("");
+                  setError("");
+                }}
+                disabled={loading || saving}
+              />
+            </label>
+          ))}
+        </div>
+        {current !== null ? (
+          <p className="metric-chip-sub">
+            Current platform setting: {current.agentResources.cpu_request} /{" "}
+            {current.agentResources.cpu_limit} CPU, {current.agentResources.memory_request} /{" "}
+            {current.agentResources.memory_limit} memory.
+          </p>
         ) : null}
       </div>
 
