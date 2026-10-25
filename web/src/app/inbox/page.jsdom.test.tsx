@@ -229,6 +229,46 @@ describe("reading a message", () => {
   });
 });
 
+describe("markdown rendering in message body (S-285)", () => {
+  it("renders markdown emphasis, lists and code as real elements", async () => {
+    env.messages = [msg("m1", { body: "**bold** and `code`\n\n- one\n- two" })];
+    const { container } = render(<InboxPage />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Open message: Subject m1" }),
+    );
+    await screen.findByText("bold");
+    expect(container.querySelector(".inbox-detail-body strong")).toHaveTextContent("bold");
+    expect(container.querySelector(".inbox-detail-body code")).toHaveTextContent("code");
+    expect(container.querySelectorAll(".inbox-detail-body li")).toHaveLength(2);
+  });
+
+  it("plain text still renders as a plain paragraph", async () => {
+    env.messages = [msg("m1", { body: "just plain words" })];
+    const { container } = render(<InboxPage />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Open message: Subject m1" }),
+    );
+    await screen.findByText("just plain words");
+    expect(container.querySelector(".inbox-detail-body p")).toHaveTextContent("just plain words");
+    expect(container.querySelector(".inbox-detail-body strong")).toBeNull();
+  });
+
+  it("links open safely and raw HTML is sanitized away", async () => {
+    env.messages = [
+      msg("m1", { body: 'see [docs](https://example.com) <img src=x onerror="alert(1)">' }),
+    ];
+    const { container } = render(<InboxPage />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Open message: Subject m1" }),
+    );
+    const link = await screen.findByRole("link", { name: "docs" });
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(container.querySelector(".inbox-detail-body img")).toBeNull();
+    expect(container.innerHTML).not.toContain("onerror");
+  });
+});
+
 describe("single delete", () => {
   it("deletes from the reading view after confirmation", async () => {
     env.messages = [msg("m1"), msg("m2")];

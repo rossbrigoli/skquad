@@ -44,6 +44,9 @@ export function NotificationBell() {
   }, [authed, token]);
 
   useEffect(() => {
+    // Poll-on-mount effect by design; refresh()'s setState lands after
+    // an await, never synchronously during the effect body.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh().catch(() => undefined);
     const timer = setInterval(() => refresh().catch(() => undefined), POLL_MS);
     return () => clearInterval(timer);

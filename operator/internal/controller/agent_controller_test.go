@@ -178,6 +178,11 @@ func verifyAgentRuntimeEnv(t *testing.T, container corev1.Container, agent *skqu
 	if got := envValue(container.Env, "SKQUAD_BUILTIN_TOOLS_ENABLED"); got != "true" {
 		t.Fatalf("builtin tools enabled env = %q, want true", got)
 	}
+	// S-293: task-subagent execution is injected enabled by default
+	// (Ross, 2026-10-25: all squads).
+	if got := envValue(container.Env, "SKQUAD_TASK_SUBAGENT_ENABLED"); got != "true" {
+		t.Fatalf("task subagent enabled env = %q, want true", got)
+	}
 	if got := envValue(container.Env, "SKQUAD_TASK_POLL_INTERVAL_SECONDS"); got != "30" {
 		t.Fatalf("task poll interval env = %q, want 30", got)
 	}
@@ -394,6 +399,17 @@ func TestAgentEnvBuiltinToolsKillSwitch(t *testing.T) {
 	env := agentEnv(&skquadv1.Agent{})
 	if got := envValue(env, "SKQUAD_BUILTIN_TOOLS_ENABLED"); got != "false" {
 		t.Fatalf("SKQUAD_BUILTIN_TOOLS_ENABLED = %q, want false", got)
+	}
+}
+
+// S-293: the operator-level env SKQUAD_AGENT_TASK_SUBAGENT_ENABLED flips
+// the agent-pod task-subagent switch without touching the CRD — the fleet
+// kill switch for subagent task execution.
+func TestAgentEnvTaskSubagentKillSwitch(t *testing.T) {
+	t.Setenv("SKQUAD_AGENT_TASK_SUBAGENT_ENABLED", "false")
+	env := agentEnv(&skquadv1.Agent{})
+	if got := envValue(env, "SKQUAD_TASK_SUBAGENT_ENABLED"); got != "false" {
+		t.Fatalf("SKQUAD_TASK_SUBAGENT_ENABLED = %q, want false", got)
 	}
 }
 

@@ -33,10 +33,33 @@ const (
 )
 
 type adminSettingsView struct {
-	IdleScaleToZeroMinutes int    `json:"idle_scale_to_zero_minutes"`
-	EmbedderRuntime        string `json:"embedder_runtime"`
-	UpdatedAt              string `json:"updated_at,omitempty"`
-	UpdatedBy              string `json:"updated_by,omitempty"`
+	IdleScaleToZeroMinutes int                `json:"idle_scale_to_zero_minutes"`
+	EmbedderRuntime        string             `json:"embedder_runtime"`
+	AgentResources         agentResourcesView `json:"agent_resources"`
+	UpdatedAt              string             `json:"updated_at,omitempty"`
+	UpdatedBy              string             `json:"updated_by,omitempty"`
+}
+
+// agentResourcesView is the S-287 agent pod resources block: the four
+// Kubernetes quantities applied to every agent pod. GET always returns
+// the effective values (stored or built-in defaults).
+type agentResourcesView struct {
+	CPURequest    string `json:"cpu_request"`
+	CPULimit      string `json:"cpu_limit"`
+	MemoryRequest string `json:"memory_request"`
+	MemoryLimit   string `json:"memory_limit"`
+}
+
+// agentResources reads the effective agent pod resources (platform
+// settings with built-in defaults, S-287).
+func (s *Server) agentResources(r *http.Request) agentResourcesView {
+	res := domain.ResolveAgentResources(r.Context(), s.store.GetPlatformSetting)
+	return agentResourcesView{
+		CPURequest:    res.CPURequest,
+		CPULimit:      res.CPULimit,
+		MemoryRequest: res.MemoryRequest,
+		MemoryLimit:   res.MemoryLimit,
+	}
 }
 
 // embedderRuntime reads the admin's embedder runtime choice
@@ -76,6 +99,7 @@ func (s *Server) getAdminSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, adminSettingsView{
 		IdleScaleToZeroMinutes: s.idleScaleToZeroMinutes(r),
 		EmbedderRuntime:        s.embedderRuntime(r),
+		AgentResources:         s.agentResources(r),
 	})
 }
 
@@ -91,15 +115,16 @@ func (s *Server) putAdminSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		IdleScaleToZeroMinutes *int    `json:"idle_scale_to_zero_minutes"`
-		EmbedderRuntime        *string `json:"embedder_runtime"`
+		IdleScaleToZeroMinutes *int                `json:"idle_scale_to_zero_minutes"`
+		EmbedderRuntime        *string             `json:"embedder_runtime"`
+		AgentResources         *agentResourcesView `json:"agent_resources"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.IdleScaleToZeroMinutes == nil && req.EmbedderRuntime == nil {
+	if req.IdleScaleToZeroMinutes == nil && req.EmbedderRuntime == nil && req.AgentResources == nil {
 		writeError(w, http.StatusBadRequest, "bad_request",
-			"at least one of idle_scale_to_zero_minutes / embedder_runtime is required")
+			"at least one of idle_scale_to_zero_minutes / embedder_runtime / agent_resources is required")
 		return
 	}
 	userID := currentUser(r.Context()).ID
@@ -110,6 +135,10 @@ func (s *Server) putAdminSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	minutes, ok := validateIdleScaleMinutes(w, req.IdleScaleToZeroMinutes)
+	if !ok {
+		return
+	}
+	agentRes, ok := s.validateAgentResources(w, req.AgentResources)
 	if !ok {
 		return
 	}
@@ -132,7 +161,70 @@ func (s *Server) putAdminSettings(w http.ResponseWriter, r *http.Request) {
 		resp["idle_scale_to_zero_minutes"] = minutes
 		resp["mirrored_agents"] = mirrored
 	}
+	if agentRes != nil {
+		if !s.applyAgentResourcesSetting(ctx, w, *agentRes, userID) {
+			return
+		}
+		resp["agent_resources"] = agentResourcesView{
+			CPURequest:    agentRes.CPURequest,
+			CPULimit:      agentRes.CPULimit,
+			MemoryRequest: agentRes.MemoryRequest,
+			MemoryLimit:   agentRes.MemoryLimit,
+		}
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// validateAgentResources normalises and validates the requested agent
+// pod resources (S-287), including the availability of the override
+// writer. Returns nil when the block is absent.
+func (s *Server) validateAgentResources(w http.ResponseWriter, raw *agentResourcesView) (*domain.AgentResourceSettings, bool) {
+	if raw == nil {
+		return nil, true
+	}
+	res, err := domain.ValidateAgentResources(
+		strings.TrimSpace(raw.CPURequest),
+		strings.TrimSpace(raw.CPULimit),
+		strings.TrimSpace(raw.MemoryRequest),
+		strings.TrimSpace(raw.MemoryLimit),
+	)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return nil, false
+	}
+	if s.agentResourcesConfig == nil {
+		writeError(w, http.StatusServiceUnavailable, "agent_resources_config_unavailable",
+			"agent resources override needs control-plane Kubernetes API access")
+		return nil, false
+	}
+	return &res, true
+}
+
+// applyAgentResourcesSetting writes the operator ConfigMap override
+// first, then records the four platform settings (S-287, same
+// ConfigMap-first posture as applyEmbedderRuntimeSetting).
+func (s *Server) applyAgentResourcesSetting(ctx context.Context, w http.ResponseWriter, res domain.AgentResourceSettings, userID string) bool {
+	if err := s.agentResourcesConfig.SetAgentResources(ctx, res); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "agent_resources_config_unavailable",
+			"could not write agent resources override: "+err.Error())
+		return false
+	}
+	keys := []struct {
+		key   string
+		value string
+	}{
+		{domain.PlatformSettingAgentCPURequest, res.CPURequest},
+		{domain.PlatformSettingAgentCPULimit, res.CPULimit},
+		{domain.PlatformSettingAgentMemoryRequest, res.MemoryRequest},
+		{domain.PlatformSettingAgentMemoryLimit, res.MemoryLimit},
+	}
+	for _, kv := range keys {
+		if err := s.store.SetPlatformSetting(ctx, kv.key, kv.value, userID); err != nil {
+			writeStorageError(w, err)
+			return false
+		}
+	}
+	return true
 }
 
 // validateEmbedderRuntime normalises and validates the requested

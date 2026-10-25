@@ -52,11 +52,15 @@ type Squad struct {
 	// the organization and agent blocks.
 	Prompt         string          `json:"prompt,omitempty"`
 	OperatingModel json.RawMessage `json:"operating_model"`
-	OwnerID        string          `json:"owner_id"`
-	Namespace      string          `json:"namespace"`
-	Status         SquadStatus     `json:"status"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	// BoardPolicy is the typed squad board-policy document (ADR-0016 D8).
+	// The zero value (empty struct / stored '{}') means "platform
+	// defaults"; use Effective()/Effective* helpers to resolve.
+	BoardPolicy BoardPolicy `json:"board_policy"`
+	OwnerID     string      `json:"owner_id"`
+	Namespace   string      `json:"namespace"`
+	Status      SquadStatus `json:"status"`
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
 }
 
 // AgentStatus is the lifecycle state of an agent.
@@ -91,6 +95,10 @@ type Agent struct {
 	// (SKQUAD_THINKING_LEVEL) and lands on LLM requests as litellm's
 	// reasoning_effort parameter. The UI defaults the selector to medium.
 	ThinkingLevel string `json:"thinking_level,omitempty"`
+	// SelfApproveAllowed is the per-agent override for the squad's
+	// self_approve_default (ADR-0016 D2/D8). NULL (nil) = no per-agent
+	// override; the squad default, then the platform default, applies.
+	SelfApproveAllowed *bool `json:"self_approve_allowed,omitempty"`
 	// StorageEnabled and StorageSize configure the agent's durable workspace
 	// PVC (S-138). They flow into the Agent CR's spec.storage via the
 	// outbox writer. StorageClass is deliberately NOT part of this surface:
@@ -313,6 +321,11 @@ type Task struct {
 	Result       string    `json:"result,omitempty"`
 	ResultStatus string    `json:"result_status,omitempty"`
 	ResultAt     time.Time `json:"result_at,omitempty"`
+	// ReviewerFeedback is surfaced from the active execution when the task
+	// was reopened by the assignee (ADR-0016 D3, S-290) so the runtime's
+	// task brief can carry the reviewer's message. Attached from the
+	// execution row on start/reopen responses — never stored on the task.
+	ReviewerFeedback string `json:"reviewer_feedback,omitempty"`
 	// BlockedByCount (S-278) is the number of unfinished depends-on
 	// tasks for this task — attached on read paths (board/task GETs)
 	// for the blocked badge. 0 when nothing blocks it.
@@ -369,6 +382,14 @@ type TaskExecution struct {
 	StartedAt   time.Time `json:"started_at"`
 	CompletedAt time.Time `json:"completed_at,omitempty"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	// ReviewerFeedback carries the reviewer's message into a reopen-created
+	// attempt (ADR-0016 D3, S-290) so the task brief for the new attempt
+	// can include it. '' on non-reopen attempts.
+	ReviewerFeedback string `json:"reviewer_feedback,omitempty"`
+	// ReopenSeq marks an attempt created by an agent reopen (ADR-0016 D3).
+	// The rolling-24h reopen cap counts only these rows, so the cap governs
+	// agent reopens only.
+	ReopenSeq bool `json:"reopen_seq,omitempty"`
 }
 
 // AgentMemory is a scoped long-term memory row for an agent. Squad-scoped

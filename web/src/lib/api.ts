@@ -19,6 +19,34 @@ export type Squad = {
   created_at?: string;
 };
 
+// S-294 (ADR-0016 D5): per-agent leader capability grants, keyed by
+// agent id. Managed via the board-policy API; default absent = none.
+export type LeaderGrant = {
+  can_prioritize: boolean;
+  can_assign_others: boolean;
+};
+
+// S-291 (ADR-0016 D8): squad board policy. The raw document carries
+// pointer-style overrides (null/absent = platform default); effective
+// values are resolved server-side at read time.
+export type BoardPolicy = {
+  reopen_cap_per_day?: number | null;
+  self_approve_default?: boolean | null;
+  leader_approval_allowed?: boolean | null;
+  leader_grants?: Record<string, LeaderGrant> | null;
+};
+
+export type EffectiveBoardPolicy = {
+  reopen_cap_per_day: number;
+  self_approve_default: boolean;
+  leader_approval_allowed: boolean;
+};
+
+export type BoardPolicyResponse = {
+  raw: BoardPolicy;
+  effective: EffectiveBoardPolicy;
+};
+
 // S-242: minimal task summary embedded on agent payloads (dashboard +
 // squad agent lists). Optional by contract — the UI must degrade
 // gracefully when the backend has not populated them yet.
@@ -44,6 +72,11 @@ export type Agent = {
   // S-178: per-agent reasoning effort ("low"|"medium"|"high"; unset =
   // provider default). Set from the composer's thinking-level selector.
   thinking_level?: string;
+  // S-291 (ADR-0016 D2): per-agent override of the squad's
+  // self_approve_default. null/absent = inherit the squad default;
+  // true/false = explicit override. Edited via the tri-state select on
+  // the agent Configuration tab.
+  self_approve_allowed?: boolean | null;
   // Durable workspace PVC (S-138). storageClass is platform-admin only
   // and intentionally absent from the tenant-facing surface.
   storage_enabled?: boolean;

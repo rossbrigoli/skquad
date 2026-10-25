@@ -5,6 +5,7 @@ package controller
 // mitigation for drill finding 1).
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -52,7 +53,7 @@ func applyGuardSpec(t *testing.T) *appsv1.Deployment {
 		ObjectMeta: metav1.ObjectMeta{Name: deploymentNameFor(agent), Namespace: agent.Namespace},
 	}
 	r := &AgentReconciler{}
-	r.applyAgentDeploymentSpec(agent, deployment)
+	r.applyAgentDeploymentSpec(context.TODO(), agent, deployment)
 	return deployment
 }
 
@@ -111,7 +112,7 @@ func TestNetpolGuardDisabled(t *testing.T) {
 	// removed on the next apply (CreateOrUpdate reuses the object).
 	deployment.Spec.Template.Spec.InitContainers = []corev1.Container{{Name: netpolGuardContainerName}}
 	r := &AgentReconciler{}
-	r.applyAgentDeploymentSpec(guardTestAgent(), deployment)
+	r.applyAgentDeploymentSpec(context.TODO(), guardTestAgent(), deployment)
 	if len(deployment.Spec.Template.Spec.InitContainers) != 0 {
 		t.Fatal("disabling the guard must clear a previously-installed init container")
 	}

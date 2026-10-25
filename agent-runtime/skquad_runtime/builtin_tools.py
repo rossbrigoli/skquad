@@ -3566,6 +3566,739 @@ class SessionStatusTool(_SessionToolBase):
         return ToolResult(content="\n".join(lines), ok=True)
 
 
+# ---------------------------------------------------------------------------
+# S-292 (ADR-0016 D1): board.* builtins — agent-driven board work.
+#
+# Thin clients over the agent-authenticated control-plane transition
+# endpoints. Each verb maps 1:1 to a server-guarded transition; there is
+# no free-form status write — the control plane stays the single
+# enforcement point (column allowlists, leases, fencing, dependency
+# guard S-278, budget guard S-203, self-approval policy + reopen cap
+# S-290). CP error bodies ({"error":{"code","message"}}) are surfaced
+# with their machine code so the model can branch (409/400/429).
+#
+# The claim fence: board.claim (and board.reopen, which mints a NEW
+# attempt) return execution_id + fencing_token on the task payload. The
+# fencing token is NEVER rendered into tool output — it is kept in this
+# process-local registry keyed by task id and attached to the terminal
+# verbs (complete/block) server-ward only.
+# ---------------------------------------------------------------------------
+
+_BOARD_FENCE_LOCK = threading.Lock()
+_BOARD_FENCES: dict[str, dict[str, str]] = {}
+
+
+def _remember_board_fence(task_id: str, execution_id: str, fencing_token: str) -> None:
+    if not task_id or not execution_id or not fencing_token:
+        return
+    with _BOARD_FENCE_LOCK:
+        _BOARD_FENCES[task_id] = {"execution_id": execution_id, "fencing_token": fencing_token}
+
+
+def _board_fence(task_id: str) -> tuple[str, str] | None:
+    with _BOARD_FENCE_LOCK:
+        fence = _BOARD_FENCES.get(task_id)
+    if not fence:
+        return None
+    return fence["execution_id"], fence["fencing_token"]
+
+
+def _forget_board_fence(task_id: str) -> None:
+    with _BOARD_FENCE_LOCK:
+        _BOARD_FENCES.pop(task_id, None)
+
+
+def _coerce_review_flag(value: object) -> bool | None:
+    """Lenient bool coercion for review_needed; None when un-coercible."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes"):
+            return True
+        if lowered in ("false", "0", "no"):
+            return False
+    return None
+
+
+class _BoardToolBase:
+    """Shared control-plane round-trip plumbing for the board.* builtins."""
+
+    def __init__(self, policy: dict, context: BuiltinToolContext) -> None:
+        self.policy = policy or {}
+        self.context = context
+
+    def _call(self, method: str, path: str, body: dict | None) -> tuple[dict, str]:
+        """One control-plane round trip with the agent's own credential.
+
+        Returns ``(payload, error_message)`` — exactly one meaningful.
+        CP error bodies are surfaced with their machine-readable code
+        (e.g. ``409 reopen_cap_exceeded``) so failures are never
+        swallowed into a generic transport error.
+        """
+        url = self.context.control_plane_url.rstrip("/") + path
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+        req = request.Request(
+            url,
+            data=payload,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {self.context.agent_credential}",
+                "X-Skquad-Agent-ID": self.context.agent_id,
+                "Content-Type": JSON_CONTENT_TYPE,
+                "Accept": JSON_CONTENT_TYPE,
+            },
+        )
+        timeout = int(self.policy.get("timeoutSeconds", 15))
+        try:
+            with request.urlopen(req, timeout=timeout) as response:
+                raw = response.read()
+        except error.HTTPError as exc:
+            code, message = "", ""
+            try:
+                err_body = json.loads(exc.read().decode("utf-8"))
+                err_obj = err_body.get("error")
+                if isinstance(err_obj, dict):
+                    code = str(err_obj.get("code", "") or "")
+                    message = str(err_obj.get("message", "") or "")
+            except Exception:  # noqa: BLE001 — error body is best-effort
+                pass
+            detail = f" {code}" if code else ""
+            if message:
+                detail += f": {message}"
+            return {}, f"HTTP {exc.code}{detail}"
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return {}, f"control-plane request failed: {exc}"
+        if not raw:
+            return {}, ""
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            return {}, "control-plane returned a non-JSON response"
+        if not isinstance(data, dict):
+            return {}, "control-plane returned an unexpected shape"
+        return data, ""
+
+
+class BoardCreateTaskTool(_BoardToolBase):
+    """S-292: board.create_task — create a task on the agent's own squad."""
+
+    name = "board.create_task"
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "board.create_task",
+                    "description": (
+                        "Create a task on your own squad's board. It "
+                        "lands in BACKLOG: not claimable and invisible "
+                        "in agent chat until a human prioritises it. "
+                        "ready=true creates it directly in TO DO "
+                        "(claimable) and requires the can_prioritize "
+                        "leader capability granted by your squad "
+                        "owner — without it the call fails 403 "
+                        "leader_capability_required. squad_id is "
+                        "optional and must be your own squad."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "squad_id": {
+                                "type": "string",
+                                "description": (
+                                    "Optional; must be your own squad. "
+                                    "Defaults to your squad."
+                                ),
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "Task title (required).",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Task description.",
+                            },
+                            "ready": {
+                                "type": "boolean",
+                                "description": (
+                                    "Create directly in TO DO "
+                                    "(claimable). Leader capability "
+                                    "required; omit unless you know you "
+                                    "hold it."
+                                ),
+                            },
+                        },
+                        "required": ["title"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        title = str(call.arguments.get("title", "")).strip()
+        if not title:
+            return ToolResult(content="board.create_task: title is required", ok=False)
+        body: dict[str, object] = {
+            "title": title,
+            "description": str(call.arguments.get("description", "") or ""),
+        }
+        squad_id = str(call.arguments.get("squad_id", "") or "").strip()
+        if squad_id:
+            body["squad_id"] = squad_id
+        if bool(call.arguments.get("ready", False)):
+            body["ready"] = True
+        data, err = self._call("POST", "/api/v1/agents/me/tasks", body)
+        if err:
+            return ToolResult(content=f"board.create_task: {err}", ok=False)
+        task_id = str(data.get("id", ""))
+        status = str(data.get("status", "backlog"))
+        return ToolResult(
+            content=f"created task {task_id} in {status.upper()}", ok=True
+        )
+
+
+class BoardAssignTool(_BoardToolBase):
+    """S-292: board.assign — set a task's assignee (own squad only)."""
+
+    name = "board.assign"
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "board.assign",
+                    "description": (
+                        "Set a task's assignee. The task must live in "
+                        "your squad and the assignee must be a squad "
+                        "member. Assigning to ANOTHER agent requires "
+                        "the can_assign_others leader capability "
+                        "granted by your squad owner — without it the "
+                        "call fails 403 leader_capability_required. "
+                        "Self-assign always works. A newly assigned "
+                        "agent in a claimable column is woken "
+                        "automatically."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task UUID to assign.",
+                            },
+                            "assignee_agent_id": {
+                                "type": "string",
+                                "description": "Agent UUID of the new assignee.",
+                            },
+                        },
+                        "required": ["task_id", "assignee_agent_id"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        task_id = str(call.arguments.get("task_id", "")).strip()
+        assignee = str(call.arguments.get("assignee_agent_id", "")).strip()
+        if not task_id:
+            return ToolResult(content="board.assign: task_id is required", ok=False)
+        if not assignee:
+            return ToolResult(
+                content="board.assign: assignee_agent_id is required", ok=False
+            )
+        data, err = self._call(
+            "PATCH",
+            f"/api/v1/agents/me/tasks/{task_id}/assignee",
+            {"assignee_agent_id": assignee},
+        )
+        if err:
+            return ToolResult(content=f"board.assign: {err}", ok=False)
+        return ToolResult(
+            content=f"task {task_id} assigned to agent {assignee}", ok=True
+        )
+
+
+class BoardClaimTool(_BoardToolBase):
+    """S-292: board.claim — TO DO -> IN PROGRESS with a fenced execution.
+
+    The fencing token returned by the start endpoint is stored in the
+    process-local fence registry for the terminal verbs and never
+    rendered into the tool result.
+    """
+
+    name = "board.claim"
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "board.claim",
+                    "description": (
+                        "Claim a task and start working it: TO DO -> "
+                        "IN PROGRESS (or resume your own stalled IN "
+                        "PROGRESS task). Creates a lease-backed "
+                        "execution; the platform holds the lease and "
+                        "fencing token for you. Backlog tasks are "
+                        "rejected (409 task_in_backlog — a human must "
+                        "prioritise them); tasks blocked by unfinished "
+                        "dependencies return 409 with the blocking "
+                        "list. You must be the assignee."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task UUID to claim.",
+                            },
+                        },
+                        "required": ["task_id"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        task_id = str(call.arguments.get("task_id", "")).strip()
+        if not task_id:
+            return ToolResult(content="board.claim: task_id is required", ok=False)
+        data, err = self._call(
+            "POST", f"/api/v1/agents/me/tasks/{task_id}/start", {}
+        )
+        if err:
+            return ToolResult(content=f"board.claim: {err}", ok=False)
+        execution_id = str(data.get("execution_id", ""))
+        fencing_token = str(data.get("fencing_token", ""))
+        if not execution_id or not fencing_token:
+            return ToolResult(
+                content=(
+                    f"board.claim: claim not established for task {task_id} "
+                    "(another worker holds the live execution)"
+                ),
+                ok=False,
+            )
+        _remember_board_fence(task_id, execution_id, fencing_token)
+        lease = str(data.get("lease_expires_at", ""))
+        return ToolResult(
+            content=(
+                f"claimed task {task_id} (execution {execution_id}); "
+                f"lease active{f' until {lease}' if lease else ''}. "
+                "confidential_note: fencing token retained by the "
+                "platform; never request or print it."
+            ),
+            ok=True,
+        )
+
+
+class BoardCompleteTool(_BoardToolBase):
+    """S-292: board.complete — IN PROGRESS -> DONE | IN REVIEW (D2)."""
+
+    name = "board.complete"
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "board.complete",
+                    "description": (
+                        "Complete your in-progress task. Legal source "
+                        "column: IN PROGRESS only. review_needed=true "
+                        "(the DEFAULT) moves it to IN REVIEW for a "
+                        "human. review_needed=false moves it straight "
+                        "to DONE and REQUIRES a justification stating "
+                        "why no human review is warranted — use false "
+                        "ONLY for straightforward, self-evident, "
+                        "fully-verified tasks. Anything involving "
+                        "judgment, irreversible side effects, or "
+                        "partial confidence must go to in-review. If "
+                        "self-approval is disabled for you, false "
+                        "returns 409 self_approval_disabled — retry "
+                        "with review_needed=true."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task UUID to complete.",
+                            },
+                            "review_needed": {
+                                "type": "boolean",
+                                "description": (
+                                    "Default true (human review). "
+                                    "false = self-approve straight to "
+                                    "DONE; requires justification and "
+                                    "is for straightforward, self-"
+                                    "evident, fully-verified work only."
+                                ),
+                            },
+                            "summary": {
+                                "type": "string",
+                                "description": (
+                                    "What you did and the outcome. "
+                                    "Required; shown on the card."
+                                ),
+                            },
+                            "justification": {
+                                "type": "string",
+                                "description": (
+                                    "Required with review_needed=false: "
+                                    "one line on why no human review is "
+                                    "warranted. Recorded in the audit "
+                                    "trail."
+                                ),
+                            },
+                        },
+                        "required": ["task_id", "summary"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        task_id = str(call.arguments.get("task_id", "")).strip()
+        summary = str(call.arguments.get("summary", "")).strip()
+        if not task_id:
+            return ToolResult(content="board.complete: task_id is required", ok=False)
+        if not summary:
+            return ToolResult(content="board.complete: summary is required", ok=False)
+        raw_review = call.arguments.get("review_needed")
+        review_needed = True if raw_review is None else _coerce_review_flag(raw_review)
+        if review_needed is None:
+            return ToolResult(
+                content="board.complete: review_needed must be a boolean", ok=False
+            )
+        justification = str(call.arguments.get("justification", "") or "").strip()
+        if not review_needed and not justification:
+            return ToolResult(
+                content=(
+                    "board.complete: review_needed=false requires a "
+                    "justification (why no human review is warranted); "
+                    "otherwise use review_needed=true"
+                ),
+                ok=False,
+            )
+        fence = _board_fence(task_id)
+        if fence is None:
+            return ToolResult(
+                content=(
+                    f"board.complete: no active claim held by this "
+                    f"session for task {task_id} — claim it first with "
+                    "board.claim"
+                ),
+                ok=False,
+            )
+        body: dict[str, object] = {
+            "summary": summary,
+            "review_needed": review_needed,
+            "execution_id": fence[0],
+            "fencing_token": fence[1],
+        }
+        if justification:
+            body["justification"] = justification
+        data, err = self._call(
+            "POST", f"/api/v1/agents/me/tasks/{task_id}/complete", body
+        )
+        if err:
+            return ToolResult(content=f"board.complete: {err}", ok=False)
+        _forget_board_fence(task_id)
+        status = str(data.get("status", "in-review"))
+        return ToolResult(content=f"completed task {task_id} -> {status.upper()}", ok=True)
+
+
+class BoardBlockTool(_BoardToolBase):
+    """S-292: board.block — IN PROGRESS -> BLOCKED with a reason."""
+
+    name = "board.block"
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "board.block",
+                    "description": (
+                        "Block your in-progress task (legal source "
+                        "column: IN PROGRESS only) with a reason. The "
+                        "card moves to BLOCKED, the squad owner is "
+                        "notified, and the task waits on a human."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task UUID to block.",
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": (
+                                    "Why the task is blocked and what "
+                                    "it is waiting on. Required."
+                                ),
+                            },
+                        },
+                        "required": ["task_id", "reason"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        task_id = str(call.arguments.get("task_id", "")).strip()
+        reason = str(call.arguments.get("reason", "")).strip()
+        if not task_id:
+            return ToolResult(content="board.block: task_id is required", ok=False)
+        if not reason:
+            return ToolResult(content="board.block: reason is required", ok=False)
+        fence = _board_fence(task_id)
+        if fence is None:
+            return ToolResult(
+                content=(
+                    f"board.block: no active claim held by this "
+                    f"session for task {task_id} — claim it first with "
+                    "board.claim"
+                ),
+                ok=False,
+            )
+        _, err = self._call(
+            "POST",
+            f"/api/v1/agents/me/tasks/{task_id}/block",
+            {
+                "summary": reason,
+                "execution_id": fence[0],
+                "fencing_token": fence[1],
+            },
+        )
+        if err:
+            return ToolResult(content=f"board.block: {err}", ok=False)
+        _forget_board_fence(task_id)
+        return ToolResult(content=f"blocked task {task_id}: {reason}", ok=True)
+
+
+class BoardReopenTool(_BoardToolBase):
+    """S-292: board.reopen — IN REVIEW -> IN PROGRESS, new attempt (D3)."""
+
+    name = "board.reopen"
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "board.reopen",
+                    "description": (
+                        "Reopen YOUR task that sits in IN REVIEW back "
+                        "to IN PROGRESS (legal source column: IN "
+                        "REVIEW only; you must be the assignee). "
+                        "Requires a non-empty reason; pass the "
+                        "reviewer's feedback verbatim in "
+                        "reviewer_feedback when relaying it. Creates a "
+                        "NEW execution attempt (the platform keeps the "
+                        "fence for the new attempt automatically). "
+                        "DONE is final for agents (409). Subject to "
+                        "the squad reopen cap: beyond it you get 429 "
+                        "reopen_cap_exceeded and the card needs human "
+                        "intervention — do not retry."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task UUID to reopen.",
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "Why the task is reopened. Required.",
+                            },
+                            "reviewer_feedback": {
+                                "type": "string",
+                                "description": (
+                                    "The reviewer's message, verbatim, "
+                                    "carried into the new attempt's "
+                                    "task brief."
+                                ),
+                            },
+                        },
+                        "required": ["task_id", "reason"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        task_id = str(call.arguments.get("task_id", "")).strip()
+        reason = str(call.arguments.get("reason", "")).strip()
+        if not task_id:
+            return ToolResult(content="board.reopen: task_id is required", ok=False)
+        if not reason:
+            return ToolResult(content="board.reopen: reason is required", ok=False)
+        body: dict[str, object] = {"reason": reason}
+        feedback = str(call.arguments.get("reviewer_feedback", "") or "").strip()
+        if feedback:
+            body["reviewer_feedback"] = feedback
+        data, err = self._call(
+            "POST", f"/api/v1/agents/me/tasks/{task_id}/reopen", body
+        )
+        if err:
+            return ToolResult(content=f"board.reopen: {err}", ok=False)
+        execution_id = str(data.get("execution_id", ""))
+        fencing_token = str(data.get("fencing_token", ""))
+        if execution_id and fencing_token:
+            _remember_board_fence(task_id, execution_id, fencing_token)
+        return ToolResult(
+            content=(
+                f"reopened task {task_id} -> IN PROGRESS (new attempt "
+                f"{execution_id})" if execution_id
+                else f"reopened task {task_id} -> IN PROGRESS"
+            ),
+            ok=True,
+        )
+
+
+class BoardRequestChangesTool(_BoardToolBase):
+    """S-292: board.request_changes — IN REVIEW -> TO DO, unassigned."""
+
+    name = "board.request_changes"
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "board.request_changes",
+                    "description": (
+                        "Return YOUR reviewed card to the pool: legal "
+                        "source column IN REVIEW only, you must be the "
+                        "assignee. The task moves to TO DO with the "
+                        "assignee cleared so it can be reassigned. "
+                        "Requires a comment explaining what needs to "
+                        "change (recorded in the audit trail and the "
+                        "task thread). Wrong column -> 409."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task UUID to return.",
+                            },
+                            "comment": {
+                                "type": "string",
+                                "description": (
+                                    "What needs to change before this "
+                                    "task can be redone. Required."
+                                ),
+                            },
+                        },
+                        "required": ["task_id", "comment"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        task_id = str(call.arguments.get("task_id", "")).strip()
+        comment = str(call.arguments.get("comment", "")).strip()
+        if not task_id:
+            return ToolResult(
+                content="board.request_changes: task_id is required", ok=False
+            )
+        if not comment:
+            return ToolResult(
+                content="board.request_changes: comment is required", ok=False
+            )
+        data, err = self._call(
+            "POST",
+            f"/api/v1/agents/me/tasks/{task_id}/request-changes",
+            {"comment": comment},
+        )
+        if err:
+            return ToolResult(content=f"board.request_changes: {err}", ok=False)
+        _forget_board_fence(task_id)
+        return ToolResult(
+            content=f"returned task {task_id} to TO DO for reassignment", ok=True
+        )
+
+
+class BoardApproveTool(_BoardToolBase):
+    """S-294: board.approve — leader-approve ANOTHER agent's in-review
+    task straight to DONE. Requires a leader capability grant on the
+    squad (ADR-0016 D5) AND the squad's leader_approval_allowed knob
+    (D8, default off — approval strictly human). Self-approval is NOT
+    reachable here; your own card self-approves at board.complete time."""
+
+    name = "board.approve"
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "board.approve",
+                    "description": (
+                        "Leader approval: move ANOTHER agent's "
+                        "in-review task to DONE. Only for agents the "
+                        "squad owner granted a leader capability "
+                        "(can_prioritize / can_assign_others) AND only "
+                        "while the squad's leader_approval_allowed "
+                        "policy is on — otherwise 403 "
+                        "leader_capability_required or "
+                        "leader_approval_disabled. You cannot approve "
+                        "your own task (403) — self-approval happens "
+                        "at board.complete time. Optional comment is "
+                        "recorded in the audit trail and the task "
+                        "thread. Wrong column -> 409."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task UUID to approve.",
+                            },
+                            "comment": {
+                                "type": "string",
+                                "description": (
+                                    "Optional approval note (audit "
+                                    "trail + task thread)."
+                                ),
+                            },
+                        },
+                        "required": ["task_id"],
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+        task_id = str(call.arguments.get("task_id", "")).strip()
+        if not task_id:
+            return ToolResult(
+                content="board.approve: task_id is required", ok=False
+            )
+        comment = str(call.arguments.get("comment", "") or "").strip()
+        body: dict[str, object] = {}
+        if comment:
+            body["comment"] = comment
+        data, err = self._call(
+            "POST",
+            f"/api/v1/agents/me/tasks/{task_id}/approve",
+            body,
+        )
+        if err:
+            return ToolResult(content=f"board.approve: {err}", ok=False)
+        status = str(data.get("status", "done"))
+        return ToolResult(
+            content=f"leader-approved task {task_id} -> {status.upper()}", ok=True
+        )
+
+
 _BUILTIN_REGISTRY: dict[str, type] = {
     "exec": ExecTool,
     "web_fetch": WebFetchTool,
@@ -3595,6 +4328,18 @@ _BUILTIN_REGISTRY: dict[str, type] = {
     # quarantined browser-service (ADR-0014). Fail-closed without a
     # granted browser resource or a configured tool gateway.
     "browser": BrowserTool,
+    # S-292 (ADR-0016 D1): board.* — agent-driven board work. Each
+    # verb is a thin client over a server-guarded transition endpoint.
+    "board.create_task": BoardCreateTaskTool,
+    "board.assign": BoardAssignTool,
+    "board.claim": BoardClaimTool,
+    "board.complete": BoardCompleteTool,
+    "board.block": BoardBlockTool,
+    "board.reopen": BoardReopenTool,
+    "board.request_changes": BoardRequestChangesTool,
+    # S-294 (ADR-0016 D5/D8): leader approval of others' in-review
+    # tasks — server-side default-deny (grant + leader_approval_allowed).
+    "board.approve": BoardApproveTool,
 }
 
 # Built-ins that are listed in the platform catalog (S-232) for admin

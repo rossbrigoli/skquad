@@ -54,24 +54,24 @@ type MemoryStore struct {
 	auditLog        map[string]*domain.AuditEntry
 	tasks           map[string]*domain.Task
 	// taskDeps (S-278): taskID -> set of depends-on task IDs.
-	taskDeps        map[string]map[string]bool
-	taskExecs       map[string]*domain.TaskExecution
-	agentMemory     map[string]*domain.AgentMemory
-	messages        map[string]*domain.Message
-	inbox           map[string]*domain.InboxMessage
+	taskDeps    map[string]map[string]bool
+	taskExecs   map[string]*domain.TaskExecution
+	agentMemory map[string]*domain.AgentMemory
+	messages    map[string]*domain.Message
+	inbox       map[string]*domain.InboxMessage
 	// S-216: inbox attachments, keyed by attachment id. Cascade with
 	// the message delete mirrors the Postgres ON DELETE CASCADE.
 	inboxAttachments map[string]*domain.InboxAttachment
 	// TG-11 slice D: drift-check report history (mirrors the Postgres
 	// drift_reports table). Append-only.
-	driftReports  []*domain.DriftReport
+	driftReports []*domain.DriftReport
 	// S-281: cron scheduled jobs (mirrors the Postgres scheduled_jobs
 	// table, migration 0057).
 	scheduledJobs map[string]*domain.ScheduledJob
 	// scheduledJobOrder keeps creation order for ListScheduledJobs
 	// (map iteration would otherwise randomize it).
 	scheduledJobOrder []string
-	notifications map[string]*domain.Notification
+	notifications     map[string]*domain.Notification
 	// S-199: per-user notification mute lists, mirroring the Postgres
 	// user_notification_preferences table. Absent key ⇒ all enabled.
 	notifPrefs map[string][]domain.NotificationType
@@ -394,6 +394,35 @@ func (m *MemoryStore) UpdateSquad(ctx context.Context, s *domain.Squad) (*domain
 	m.squads[s.ID] = updated
 	m.enqueueSquadOutboxLocked(domain.KubernetesOpUpsertSquad, updated)
 	m.drainPendingAuditsLocked(ctx, updated.ID)
+	return cloneSquad(updated), nil
+}
+
+// GetBoardPolicy returns the raw squad board-policy document (ADR-0016 D8).
+func (m *MemoryStore) GetBoardPolicy(_ context.Context, squadID string) (domain.BoardPolicy, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s, ok := m.squads[squadID]
+	if !ok {
+		return domain.BoardPolicy{}, ErrNotFound
+	}
+	return cloneBoardPolicy(s.BoardPolicy), nil
+}
+
+// UpdateBoardPolicy replaces the whole board-policy document (S-289).
+// Board policy is control-plane-only state (transition guards read it at
+// transition time), so no Kubernetes outbox event is enqueued.
+func (m *MemoryStore) UpdateBoardPolicy(ctx context.Context, squadID string, policy domain.BoardPolicy) (*domain.Squad, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	existing, ok := m.squads[squadID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	updated := cloneSquad(existing)
+	updated.BoardPolicy = cloneBoardPolicy(policy)
+	updated.UpdatedAt = time.Now().UTC()
+	m.squads[squadID] = updated
+	m.drainPendingAuditsLocked(ctx, squadID)
 	return cloneSquad(updated), nil
 }
 
@@ -1845,6 +1874,43 @@ func (m *MemoryStore) taskBlockedLocked(taskID string) bool {
 	return false
 }
 
+// StartTaskExecution mints a new active, fenced execution attempt for
+// (agent, task) without touching the task row — the board.claim path
+// (S-292, ADR-0016 D1) where the caller (start handler) has already
+// validated transition legality. Refuses with ErrConflict when the
+// agent already holds a live execution on another task, preserving the
+// one-live-attempt-per-agent posture of the claim path.
+func (m *MemoryStore) StartTaskExecution(_ context.Context, agentID string, taskID string, workerID string, leaseFor time.Duration) (*domain.TaskExecution, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tasks[taskID]; !ok {
+		return nil, ErrNotFound
+	}
+	now := time.Now().UTC()
+	if leaseFor <= 0 {
+		leaseFor = 5 * time.Minute
+	}
+	if workerID == "" {
+		workerID = agentID
+	}
+	if m.hasActiveExecutionForAgentLocked(agentID, now) {
+		return nil, ErrConflict
+	}
+	exec := &domain.TaskExecution{
+		ID:             uuid.NewString(),
+		TaskID:         taskID,
+		AgentID:        agentID,
+		WorkerID:       workerID,
+		FencingToken:   uuid.NewString(),
+		Status:         domain.TaskExecutionActive,
+		LeaseExpiresAt: now.Add(leaseFor),
+		StartedAt:      now,
+		UpdatedAt:      now,
+	}
+	m.taskExecs[exec.ID] = exec
+	return exec, nil
+}
+
 func (m *MemoryStore) HeartbeatTaskExecution(_ context.Context, agentID string, executionID string, fencingToken string, leaseFor time.Duration) (*domain.TaskExecution, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1899,6 +1965,29 @@ func (m *MemoryStore) GetLatestTaskExecution(_ context.Context, taskID string) (
 	return cloneTaskExecution(latest), nil
 }
 
+// ListTaskExecutions returns every execution attempt for a task, oldest
+// first (S-290: reopen retains prior attempts).
+func (m *MemoryStore) ListTaskExecutions(_ context.Context, taskID string) ([]*domain.TaskExecution, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []*domain.TaskExecution{}
+	for _, exec := range m.taskExecs {
+		if exec.TaskID == taskID {
+			out = append(out, cloneTaskExecution(exec))
+		}
+	}
+	slices.SortFunc(out, func(a, b *domain.TaskExecution) int {
+		if a.StartedAt.Equal(b.StartedAt) {
+			return strings.Compare(a.ID, b.ID)
+		}
+		if a.StartedAt.Before(b.StartedAt) {
+			return -1
+		}
+		return 1
+	})
+	return out, nil
+}
+
 func (m *MemoryStore) CompleteTaskExecution(ctx context.Context, agentID string, taskID string, executionID string, fencingToken string, status domain.TaskStatus, summary string) (*domain.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1936,6 +2025,64 @@ func (m *MemoryStore) CompleteTaskExecution(ctx context.Context, agentID string,
 	exec.ResultSummary = summary
 	exec.CompletedAt = now
 	exec.UpdatedAt = now
+	m.drainPendingAuditsLocked(ctx, taskID)
+	return taskWithExecution(task, exec), nil
+}
+
+// ReopenTaskExecution implements the agent reopen (ADR-0016 D3, S-290).
+// Only the assignee may reopen, only from in-review; the prior completed
+// attempt is retained and a NEW active attempt (new fencing token, fresh
+// lease, reopen_seq) is created. The rolling-24h cap counts reopen_seq
+// attempts for this task, so it governs agent reopens only.
+func (m *MemoryStore) ReopenTaskExecution(ctx context.Context, agentID string, taskID string, workerID string, reviewerFeedback string, leaseFor time.Duration, maxReopens int) (*domain.Task, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	task, ok := m.tasks[taskID]
+	if !ok || task.AssigneeAgentID != agentID {
+		return nil, ErrNotFound
+	}
+	if task.Status != domain.TaskInReview {
+		return nil, ErrConflict
+	}
+	if m.hasActiveExecutionForAgentLocked(agentID, now) {
+		return nil, ErrConflict
+	}
+	if maxReopens >= 0 {
+		windowStart := now.Add(-24 * time.Hour)
+		reopens := 0
+		for _, exec := range m.taskExecs {
+			if exec.TaskID == taskID && exec.ReopenSeq && !exec.StartedAt.Before(windowStart) {
+				reopens++
+			}
+		}
+		if reopens >= maxReopens {
+			return nil, ErrReopenCapExceeded
+		}
+	}
+	if leaseFor <= 0 {
+		leaseFor = 5 * time.Minute
+	}
+	if workerID == "" {
+		workerID = agentID
+	}
+	task.Status = domain.TaskInProgress
+	task.Position = m.nextTaskPosition(task.BoardID, domain.TaskInProgress)
+	task.UpdatedAt = now
+	exec := &domain.TaskExecution{
+		ID:               uuid.NewString(),
+		TaskID:           taskID,
+		AgentID:          agentID,
+		WorkerID:         workerID,
+		FencingToken:     uuid.NewString(),
+		Status:           domain.TaskExecutionActive,
+		LeaseExpiresAt:   now.Add(leaseFor),
+		ReviewerFeedback: reviewerFeedback,
+		ReopenSeq:        true,
+		StartedAt:        now,
+		UpdatedAt:        now,
+	}
+	m.taskExecs[exec.ID] = exec
 	m.drainPendingAuditsLocked(ctx, taskID)
 	return taskWithExecution(task, exec), nil
 }
@@ -2895,7 +3042,33 @@ func cloneSquad(s *domain.Squad) *domain.Squad {
 	}
 	v := *s
 	v.OperatingModel = slices.Clone(s.OperatingModel)
+	v.BoardPolicy = cloneBoardPolicy(s.BoardPolicy)
 	return &v
+}
+
+// cloneBoardPolicy deep-copies the pointer fields so stored policies are
+// immune to caller mutation.
+func cloneBoardPolicy(p domain.BoardPolicy) domain.BoardPolicy {
+	var out domain.BoardPolicy
+	if p.ReopenCapPerDay != nil {
+		v := *p.ReopenCapPerDay
+		out.ReopenCapPerDay = &v
+	}
+	if p.SelfApproveDefault != nil {
+		v := *p.SelfApproveDefault
+		out.SelfApproveDefault = &v
+	}
+	if p.LeaderApprovalAllowed != nil {
+		v := *p.LeaderApprovalAllowed
+		out.LeaderApprovalAllowed = &v
+	}
+	if p.LeaderGrants != nil {
+		out.LeaderGrants = make(map[string]domain.LeaderGrant, len(p.LeaderGrants))
+		for k, g := range p.LeaderGrants {
+			out.LeaderGrants[k] = g
+		}
+	}
+	return out
 }
 
 func cloneAgent(a *domain.Agent) *domain.Agent {
@@ -3008,6 +3181,7 @@ func taskWithExecution(t *domain.Task, exec *domain.TaskExecution) *domain.Task 
 	out.WorkerID = exec.WorkerID
 	out.FencingToken = exec.FencingToken
 	out.LeaseExpiresAt = exec.LeaseExpiresAt
+	out.ReviewerFeedback = exec.ReviewerFeedback
 	return out
 }
 

@@ -77,10 +77,32 @@ const (
 	// rendered text size, accepted screenshot size); the security-
 	// relevant ceilings are the resource grant's (egresspolicy/browser.go).
 	BuiltinToolBrowser = "browser"
+	// S-292 (ADR-0016 D1): board.* builtins — agent-driven board work.
+	// Each verb maps 1:1 to a validated control-plane transition; there
+	// is no free-form status write. The server stays the single
+	// enforcement point (column allowlists, leases, fencing, dependency
+	// guard S-278, budget guard S-203). The tools are thin clients over
+	// agent-authenticated endpoints under /agents/me — the caller's own
+	// credential and the transition guards are the authorization
+	// boundary. They ship enabled: every verb is guard-railed server-
+	// side (backlog default, assignee-only reopen/request-changes,
+	// self-approval policy on complete), and invisible-if-disabled would
+	// defeat the point of the card.
+	BuiltinToolBoardCreateTask     = "board.create_task"
+	BuiltinToolBoardAssign         = "board.assign"
+	BuiltinToolBoardClaim          = "board.claim"
+	BuiltinToolBoardComplete       = "board.complete"
+	BuiltinToolBoardBlock          = "board.block"
+	BuiltinToolBoardReopen         = "board.reopen"
+	BuiltinToolBoardRequestChanges = "board.request_changes"
+	// S-294 (ADR-0016 D5/D8): leader approval of others' in-review
+	// tasks. Ships enabled; the real gate is server-side (leader grant +
+	// leader_approval_allowed, default deny).
+	BuiltinToolBoardApprove = "board.approve"
 )
 
 // BuiltinToolNames lists the built-in tools in canonical order.
-var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent, BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch, BuiltinToolProcess, BuiltinToolCron, BuiltinToolSessionsList, BuiltinToolSessionsHistory, BuiltinToolSessionStatus, BuiltinToolBrowser}
+var BuiltinToolNames = []string{BuiltinToolExec, BuiltinToolWebFetch, BuiltinToolWebSearch, BuiltinToolSendMessage, BuiltinToolSendInbox, BuiltinToolNotifyOwner, BuiltinToolMemorySearch, BuiltinToolSpawnSubagent, BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch, BuiltinToolProcess, BuiltinToolCron, BuiltinToolSessionsList, BuiltinToolSessionsHistory, BuiltinToolSessionStatus, BuiltinToolBrowser, BuiltinToolBoardCreateTask, BuiltinToolBoardAssign, BuiltinToolBoardClaim, BuiltinToolBoardComplete, BuiltinToolBoardBlock, BuiltinToolBoardReopen, BuiltinToolBoardRequestChanges, BuiltinToolBoardApprove}
 
 // BuiltinToolDefaultEnabled reports whether a built-in ships enabled when
 // seeded. The original three are security-sensitive and ship disabled
@@ -131,7 +153,22 @@ func BuiltinToolDefaultEnabled(name string) bool {
 		// configured tool gateway (both fail-closed runtime-side, and the
 		// gateway denies without a grant), so default-enablement cannot
 		// widen reach — invisible-if-disabled would defeat the purpose.
-		name == BuiltinToolBrowser
+		name == BuiltinToolBrowser ||
+		// S-292 (ADR-0016 D1): the board.* verbs ship enabled to match
+		// their migration 0063 seed. Each is a thin client over a
+		// server-guarded transition (see the constants block) — the
+		// guards, not the tool surface, bound what an agent may do.
+		name == BuiltinToolBoardCreateTask ||
+		name == BuiltinToolBoardAssign ||
+		name == BuiltinToolBoardClaim ||
+		name == BuiltinToolBoardComplete ||
+		name == BuiltinToolBoardBlock ||
+		name == BuiltinToolBoardReopen ||
+		name == BuiltinToolBoardRequestChanges ||
+		// S-294 (ADR-0016 D5/D8): board.approve ships enabled to match
+		// its migration 0064 seed — the server-side leader-grant +
+		// leader_approval_allowed guards (default deny) are the boundary.
+		name == BuiltinToolBoardApprove
 }
 
 // SearchProviderNames lists the accepted web_search policy providers.

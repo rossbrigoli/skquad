@@ -2,6 +2,7 @@
 // aggregated unread count + agent-name map, markRead side effects,
 // per-squad fetch resilience and the missing-provider guard.
 import { render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const env = vi.hoisted(() => ({
@@ -173,7 +174,11 @@ describe("AttentionProvider branch coverage", () => {
     let seen: string[] = [];
     function Spy() {
       const { items } = useAttention();
-      seen = items.map((i) => i.meta);
+      // Capture in an effect, not during render — render must stay pure
+      // (react-hooks/globals).
+      useEffect(() => {
+        seen = items.map((i) => i.meta);
+      }, [items]);
       return null;
     }
     render(
@@ -191,7 +196,10 @@ describe("AttentionProvider branch coverage", () => {
     let fn: ((id?: string) => string | undefined) | null = null;
     function Spy() {
       const { agentName } = useAttention();
-      fn = agentName;
+      // No dep array: capture the freshest agentName after every commit.
+      useEffect(() => {
+        fn = agentName;
+      });
       return null;
     }
     render(
@@ -199,10 +207,11 @@ describe("AttentionProvider branch coverage", () => {
         <Spy />
       </AttentionProvider>,
     );
-    await waitFor(() => expect(fn).not.toBeNull());
-    expect((fn as unknown as (id?: string) => string | undefined)("ag1")).toBe("coder");
-    expect((fn as unknown as (id?: string) => string | undefined)("nope")).toBeUndefined();
-    expect((fn as unknown as (id?: string) => string | undefined)()).toBeUndefined();
+    // Wait on behaviour (data loaded), not on fn being non-null — the
+    // capture lands before the mocked agent directory has resolved.
+    await waitFor(() => expect(fn?.("ag1")).toBe("coder"));
+    expect(fn!("nope")).toBeUndefined();
+    expect(fn!()).toBeUndefined();
   });
 
   it("polls again after the interval while the tab is visible", async () => {

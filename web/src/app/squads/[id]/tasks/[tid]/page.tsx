@@ -474,13 +474,15 @@ function DependenciesSection({
   // Debounced picker search: title substring or T-<n> reference.
   useEffect(() => {
     const q = query.trim();
-    if (q.length < 2) {
-      setResults([]);
-      return;
-    }
     let cancelled = false;
-    setSearching(true);
+    // All state transitions happen inside the debounced callback so the
+    // effect body itself performs no synchronous setState.
     const timer = setTimeout(async () => {
+      if (q.length < 2) {
+        setResults([]);
+        return;
+      }
+      setSearching(true);
       try {
         const found = await apiGet<Task[]>(
           `/squads/${squadId}/tasks/search?q=${encodeURIComponent(q)}`,

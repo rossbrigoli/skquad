@@ -60,6 +60,16 @@ rules:
       - get
     resourceNames:
       - skquad-embedder-config
+  # S-287: direct (cache-bypassed) read of the agent-resources
+  # override ConfigMap written by the control-plane Settings UI.
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+    resourceNames:
+      - skquad-agent-resources
   - apiGroups:
       - ""
     resources:
@@ -219,6 +229,47 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: {{ include "skquad.operatorName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "skquad.operatorName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# S-287: the Agent controller watches the agent-resources override
+# ConfigMap (skquad-agent-resources) so a Settings → Platform edit
+# converges every agent Deployment without a redeploy. list/watch cannot
+# be name-scoped via resourceNames, so this Role confines the watch to
+# the release namespace — matching the manager's namespace-scoped
+# ConfigMap informer (operator/cmd/manager/main.go).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "skquad.operatorName" . }}-configmap-watch
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "skquad.operatorName" . }}-configmap-watch
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "skquad.operatorName" . }}-configmap-watch
 subjects:
   - kind: ServiceAccount
     name: {{ include "skquad.operatorName" . }}

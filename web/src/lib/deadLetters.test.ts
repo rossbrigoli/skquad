@@ -104,7 +104,7 @@ describe("runBulkAction", () => {
   });
 
   it("calls the function exactly once per id", async () => {
-    const fn = vi.fn(async (_id: string) => undefined);
+    const fn = vi.fn<(id: string) => Promise<undefined>>(async () => undefined);
     await runBulkAction(["x", "y", "z"], fn);
     expect(fn).toHaveBeenCalledTimes(3);
     expect(fn.mock.calls.map((c) => c[0])).toEqual(["x", "y", "z"]);

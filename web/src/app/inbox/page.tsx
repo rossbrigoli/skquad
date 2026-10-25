@@ -37,6 +37,7 @@ import { ConfirmationDecisionCard } from "../../components/ConfirmationDecisionC
 import { EmptyState } from "../../components/EmptyState";
 import { IconEnvelopeRead, IconEnvelopeUnread } from "../../components/icons";
 import { InboxAttachments } from "../../components/InboxAttachments";
+import { MarkdownMessage } from "../../components/MarkdownMessage";
 import {
   apiDelete,
   apiGet,
@@ -265,6 +266,9 @@ export default function InboxPage() {
   }, [authed, token, unreadOnly, effectiveUserId, page, pageSize]);
 
   useEffect(() => {
+    // Reload-on-filter effect by design; every setState in load() lands
+    // after an await, never synchronously during the effect body.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load().catch(() => undefined);
   }, [load]);
 
@@ -659,8 +663,12 @@ function InboxDetail({
           {formatRelativeTime(message.created_at)}
         </span>
       </div>
+      {/* S-285: the body renders through the shared chat markdown renderer
+            (S-159/S-246 lineage): react-markdown + rehype-sanitize, so raw
+            HTML in untrusted agent content is scrubbed and never injected.
+            Plain text passes through as a plain paragraph. */}
       <div className="inbox-detail-body">
-        <p className="inbox-body-text">{body}</p>
+        <MarkdownMessage text={body} />
       </div>
       {/* S-258: attachment previews (images) + download list (all
             other types). Renders nothing when the message has none. */}

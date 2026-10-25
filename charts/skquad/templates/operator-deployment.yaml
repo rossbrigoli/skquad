@@ -37,6 +37,13 @@ spec:
               containerPort: 8081
               protocol: TCP
           env:
+            # S-287: pin the operator's namespace default (agent-resources
+            # override ConfigMap read + namespace-scoped ConfigMap informer,
+            # and the embedder override default) to the release namespace so
+            # non-standard release namespaces stay consistent with where the
+            # control-plane writes.
+            - name: SKQUAD_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
             - name: SKQUAD_AGENT_TASK_POLL_INTERVAL_SECONDS
               value: {{ .Values.agent.taskPollIntervalSeconds | quote }}
             - name: SKQUAD_AGENT_INBOX_POLL_INTERVAL_SECONDS
@@ -60,6 +67,15 @@ spec:
               value: {{ ternary "true" "false" .Values.agent.builtinToolsEnabled | quote }}
               {{- else }}
               value: {{ default "true" .Values.agent.builtinToolsEnabled | quote }}
+              {{- end }}
+            # S-293: operator-level default for the agent-pod task-subagent
+            # switch (SKQUAD_TASK_SUBAGENT_ENABLED). Bool-aware, same as
+            # builtinToolsEnabled.
+            - name: SKQUAD_AGENT_TASK_SUBAGENT_ENABLED
+              {{- if kindIs "bool" .Values.agent.taskSubagentEnabled }}
+              value: {{ ternary "true" "false" .Values.agent.taskSubagentEnabled | quote }}
+              {{- else }}
+              value: {{ default "true" .Values.agent.taskSubagentEnabled | quote }}
               {{- end }}
             - name: SKQUAD_API_SERVER_SERVICE_ACCOUNT_NAME
               value: {{ include "skquad.apiServerName" . | quote }}

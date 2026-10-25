@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as api from "./api";
+import { defaultAgentResources } from "./agentResources";
 import {
   type PlatformSettingsCurrent,
   diffPlatformSettings,
@@ -23,7 +24,11 @@ vi.mock("./api", async (importOriginal) => {
   };
 });
 
-const CURRENT: PlatformSettingsCurrent = { idleMinutes: 15, embedderRuntime: "auto" };
+const CURRENT: PlatformSettingsCurrent = {
+  idleMinutes: 15,
+  embedderRuntime: "auto",
+  agentResources: defaultAgentResources(),
+};
 
 describe("diffPlatformSettings", () => {
   it("produces no changes when the form matches current", () => {
@@ -34,8 +39,8 @@ describe("diffPlatformSettings", () => {
 
   it("includes only the idle minutes when only that changed", () => {
     const { changes, errors } = diffPlatformSettings(CURRENT, {
+      ...formFromPlatformSettings(CURRENT),
       idleMinutes: "30",
-      embedderRuntime: "auto",
     });
     expect(errors).toEqual([]);
     expect(changes).toEqual({ idle_scale_to_zero_minutes: 30 });
@@ -43,7 +48,7 @@ describe("diffPlatformSettings", () => {
 
   it("includes only the embedder runtime when only that changed", () => {
     const { changes, errors } = diffPlatformSettings(CURRENT, {
-      idleMinutes: "15",
+      ...formFromPlatformSettings(CURRENT),
       embedderRuntime: "cuda",
     });
     expect(errors).toEqual([]);
@@ -52,6 +57,7 @@ describe("diffPlatformSettings", () => {
 
   it("includes both keys when both changed", () => {
     const { changes, errors } = diffPlatformSettings(CURRENT, {
+      ...formFromPlatformSettings(CURRENT),
       idleMinutes: "60",
       embedderRuntime: "cpu",
     });
@@ -59,10 +65,39 @@ describe("diffPlatformSettings", () => {
     expect(changes).toEqual({ idle_scale_to_zero_minutes: 60, embedder_runtime: "cpu" });
   });
 
+  it("includes the agent resources block when a resource field changed (S-287)", () => {
+    const { changes, errors } = diffPlatformSettings(CURRENT, {
+      ...formFromPlatformSettings(CURRENT),
+      agentResources: { ...CURRENT.agentResources, cpu_limit: "1" },
+    });
+    expect(errors).toEqual([]);
+    expect(changes).toEqual({
+      agent_resources: { ...CURRENT.agentResources, cpu_limit: "1" },
+    });
+  });
+
+  it("reports invalid agent resources without emitting a change (S-287)", () => {
+    const { changes, errors } = diffPlatformSettings(CURRENT, {
+      ...formFromPlatformSettings(CURRENT),
+      agentResources: { ...CURRENT.agentResources, cpu_request: "2", cpu_limit: "500m" },
+    });
+    expect(errors).toEqual(["CPU request must not exceed CPU limit."]);
+    expect(hasPlatformSettingsChanges(changes)).toBe(false);
+  });
+
+  it("reports empty agent resource fields as errors (S-287)", () => {
+    const { changes, errors } = diffPlatformSettings(CURRENT, {
+      ...formFromPlatformSettings(CURRENT),
+      agentResources: { ...CURRENT.agentResources, memory_limit: "  " },
+    });
+    expect(errors).toEqual(["Memory limit is required."]);
+    expect(hasPlatformSettingsChanges(changes)).toBe(false);
+  });
+
   it("reports invalid minutes without emitting a change", () => {
     const { changes, errors } = diffPlatformSettings(CURRENT, {
+      ...formFromPlatformSettings(CURRENT),
       idleMinutes: "999",
-      embedderRuntime: "auto",
     });
     expect(errors).toEqual(["Must be between 1 and 240 minutes."]);
     expect(hasPlatformSettingsChanges(changes)).toBe(false);
@@ -70,8 +105,8 @@ describe("diffPlatformSettings", () => {
 
   it("reports empty minutes as an error (no implicit fallback on save)", () => {
     const { changes, errors } = diffPlatformSettings(CURRENT, {
+      ...formFromPlatformSettings(CURRENT),
       idleMinutes: "",
-      embedderRuntime: "auto",
     });
     expect(errors).toEqual(["Enter a number of minutes."]);
     expect(hasPlatformSettingsChanges(changes)).toBe(false);
@@ -79,7 +114,7 @@ describe("diffPlatformSettings", () => {
 
   it("reports an unknown runtime without emitting a change", () => {
     const { changes, errors } = diffPlatformSettings(CURRENT, {
-      idleMinutes: "15",
+      ...formFromPlatformSettings(CURRENT),
       embedderRuntime: "quantum" as PlatformSettingsCurrent["embedderRuntime"],
     });
     expect(errors).toHaveLength(1);
@@ -89,6 +124,7 @@ describe("diffPlatformSettings", () => {
 
   it("accumulates errors from both fields", () => {
     const { errors } = diffPlatformSettings(CURRENT, {
+      ...formFromPlatformSettings(CURRENT),
       idleMinutes: "0",
       embedderRuntime: "turbo" as PlatformSettingsCurrent["embedderRuntime"],
     });
@@ -101,14 +137,35 @@ describe("loadPlatformSettings", () => {
 
   it("reads both settings from one GET with defaults when unset", async () => {
     vi.mocked(api.apiGet).mockResolvedValueOnce({ idle_scale_to_zero_minutes: 20, embedder_runtime: "vulkan" });
-    await expect(loadPlatformSettings("tok")).resolves.toEqual({ idleMinutes: 20, embedderRuntime: "vulkan" });
+    await expect(loadPlatformSettings("tok")).resolves.toEqual({
+      idleMinutes: 20,
+      embedderRuntime: "vulkan",
+      agentResources: defaultAgentResources(),
+    });
     expect(api.apiGet).toHaveBeenCalledTimes(1);
     expect(api.apiGet).toHaveBeenCalledWith("/admin/settings", "tok");
   });
 
   it("falls back to defaults for missing values", async () => {
     vi.mocked(api.apiGet).mockResolvedValueOnce({});
-    await expect(loadPlatformSettings("tok")).resolves.toEqual({ idleMinutes: 15, embedderRuntime: "auto" });
+    await expect(loadPlatformSettings("tok")).resolves.toEqual({
+      idleMinutes: 15,
+      embedderRuntime: "auto",
+      agentResources: defaultAgentResources(),
+    });
+  });
+
+  it("reads the agent resources block when present (S-287)", async () => {
+    vi.mocked(api.apiGet).mockResolvedValueOnce({
+      agent_resources: { cpu_request: "250m", cpu_limit: "1", memory_request: "256Mi", memory_limit: "1Gi" },
+    });
+    const loaded = await loadPlatformSettings("tok");
+    expect(loaded.agentResources).toEqual({
+      cpu_request: "250m",
+      cpu_limit: "1",
+      memory_request: "256Mi",
+      memory_limit: "1Gi",
+    });
   });
 });
 
@@ -121,14 +178,26 @@ describe("savePlatformSettingsChanges", () => {
     expect(api.apiPut).toHaveBeenCalledTimes(1);
     expect(api.apiPut).toHaveBeenCalledWith("/admin/settings", "tok", { idle_scale_to_zero_minutes: 45 });
     // Untouched settings survive the merge; changed ones update.
-    expect(updated).toEqual({ idleMinutes: 45, embedderRuntime: "auto" });
+    expect(updated).toEqual({ idleMinutes: 45, embedderRuntime: "auto", agentResources: defaultAgentResources() });
   });
 
   it("merges a runtime-only change without clobbering minutes", async () => {
     vi.mocked(api.apiPut).mockResolvedValueOnce({ embedder_runtime: "cuda" });
     const updated = await savePlatformSettingsChanges("tok", CURRENT, { embedder_runtime: "cuda" });
     expect(api.apiPut).toHaveBeenCalledWith("/admin/settings", "tok", { embedder_runtime: "cuda" });
-    expect(updated).toEqual({ idleMinutes: 15, embedderRuntime: "cuda" });
+    expect(updated).toEqual({ idleMinutes: 15, embedderRuntime: "cuda", agentResources: defaultAgentResources() });
+  });
+
+  it("merges an agent-resources-only change without clobbering the rest (S-287)", async () => {
+    const newResources = { ...CURRENT.agentResources, memory_limit: "1Gi" };
+    vi.mocked(api.apiPut).mockResolvedValueOnce({ agent_resources: newResources });
+    const updated = await savePlatformSettingsChanges("tok", CURRENT, { agent_resources: newResources });
+    expect(api.apiPut).toHaveBeenCalledWith("/admin/settings", "tok", { agent_resources: newResources });
+    expect(updated).toEqual({
+      idleMinutes: 15,
+      embedderRuntime: "auto",
+      agentResources: newResources,
+    });
   });
 
   it("refuses to PUT an empty change set", async () => {
