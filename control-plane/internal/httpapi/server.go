@@ -2837,6 +2837,10 @@ type createAgentRequest struct {
 	// created unbound; identity can be provisioned later from the
 	// agent screen once a model is bound.
 	AIModelID string `json:"ai_model_id"`
+	// S-298: optional per-agent task-subagent turn budget at creation.
+	// Tri-state via raw JSON: absent/null = no override (platform
+	// default 128 applies), integer 1..512 = per-agent override.
+	TaskSubagentMaxTurns json.RawMessage `json:"task_subagent_max_turns,omitempty"`
 	// WP8 (0014): legacy "default_provider_id"/"default_model" are
 	// accepted-and-discarded (decodeJSON rejects unknown fields, so
 	// they are declared as blank fields). Model selection is via the
@@ -2908,6 +2912,14 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// S-298: parse the per-agent turn budget BEFORE creating the row —
+	// a bad budget must not produce a half-born agent.
+	turnBudget, err := parseTaskSubagentMaxTurns(req.TaskSubagentMaxTurns)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+
 	agent := &domain.Agent{
 		SquadID:        squad.ID,
 		Name:           req.Name,
@@ -2921,6 +2933,8 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		AIModelID:      requestedModel,
 		// S-156: deterministic K8s Deployment name, fixed at creation.
 		DeploymentName: agentDeploymentNameFor(ownerSlug(owner), req.Name),
+		// S-298: nil = inherit the platform default (128).
+		TaskSubagentMaxTurns: turnBudget,
 	}
 	createCtx := s.pendingUserAuditCtx(r, "agent.create", "agent", "", squad.ID, nil)
 	if agent.SystemPrompt != "" {
@@ -3062,6 +3076,10 @@ type updateAgentRequest struct {
 	// override. json.RawMessage is required because *bool cannot tell
 	// "null" apart from "missing".
 	SelfApproveAllowed json.RawMessage `json:"self_approve_allowed"`
+	// TaskSubagentMaxTurns (S-298). Tri-state via raw JSON: field absent
+	// = leave unchanged, null = clear the per-agent override (inherit
+	// the platform default of 128), integer 1..512 = set the override.
+	TaskSubagentMaxTurns json.RawMessage `json:"task_subagent_max_turns"`
 }
 
 // applyAgentScalarUpdates copies the non-binding scalar fields from the
@@ -3094,6 +3112,9 @@ func (s *Server) applyAgentScalarUpdates(agent *domain.Agent, req updateAgentReq
 		return err
 	}
 	if err := applySelfApproveUpdate(agent, req.SelfApproveAllowed); err != nil {
+		return err
+	}
+	if err := applyTaskSubagentMaxTurnsUpdate(agent, req.TaskSubagentMaxTurns); err != nil {
 		return err
 	}
 	if agent.StorageEnabled && agent.StorageSize == "" {
@@ -3164,6 +3185,40 @@ func applySelfApproveUpdate(agent *domain.Agent, raw json.RawMessage) error {
 		return errors.New("self_approve_allowed must be true, false, or null (null clears the override)")
 	}
 	agent.SelfApproveAllowed = &allowed
+	return nil
+}
+
+// parseTaskSubagentMaxTurns decodes the S-298 tri-state turn-budget
+// JSON: absent/empty or null = no per-agent override (nil — the
+// platform default of 128 applies); an integer in [1, 512] = the
+// override. Anything else is a validation error. The 512 ceiling keeps
+// a single nested run inside one wake's practical cost envelope.
+func parseTaskSubagentMaxTurns(raw json.RawMessage) (*int, error) {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
+		return nil, nil
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return nil, errors.New("task_subagent_max_turns must be an integer between 1 and 512, or null (null clears the override)")
+	}
+	if n < 1 || n > 512 {
+		return nil, errors.New("task_subagent_max_turns must be between 1 and 512")
+	}
+	return &n, nil
+}
+
+// applyTaskSubagentMaxTurnsUpdate stages the S-298 per-agent
+// task-subagent turn budget. Field absent = leave unchanged; null =
+// clear the override (inherit the platform default); integer = set it.
+func applyTaskSubagentMaxTurnsUpdate(agent *domain.Agent, raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	v, err := parseTaskSubagentMaxTurns(raw)
+	if err != nil {
+		return err
+	}
+	agent.TaskSubagentMaxTurns = v
 	return nil
 }
 

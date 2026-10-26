@@ -11,7 +11,7 @@ This module owns the three pieces the spec names:
    malformed LLM-produced result never reaches the parent as success: it
    becomes a synthetic ``succeeded=false, failure_class=contract_violation``.
 2. **Runner** (:func:`run_task_subagent`) — the S-160-style nested loop
-   with the TASK turn profile (default 48, vs the ad-hoc 12). The
+   with the TASK turn profile (default 128 since S-298, vs the ad-hoc 12). The
    subagent starts from an empty context, inherits the composed system
    prompt / model / gateway / metering identity, and never sees
    ``board.*`` verbs or ``spawn_subagent`` (no recursion, no board
@@ -61,7 +61,11 @@ ENV_TASK_SUBAGENT_ENABLED = "SKQUAD_TASK_SUBAGENT_ENABLED"
 ENV_TASK_SUBAGENT_MAX_TURNS = "SKQUAD_TASK_SUBAGENT_MAX_TURNS"
 ENV_TASK_REWORK_MAX = "SKQUAD_TASK_REWORK_MAX"
 
-DEFAULT_TASK_SUBAGENT_MAX_TURNS = 48
+# S-298: platform-wide default raised 48 -> 128 (Ross, 2026-10-27). The
+# per-agent override (agent Settings tab -> spec.taskSubagentMaxTurns ->
+# SKQUAD_TASK_SUBAGENT_MAX_TURNS) wins when set; this constant is the
+# last-resort default for pods that receive no env at all.
+DEFAULT_TASK_SUBAGENT_MAX_TURNS = 128
 DEFAULT_TASK_REWORK_MAX = 2
 
 # Spec §4: the closed set of failure classes. Anything outside it is a
