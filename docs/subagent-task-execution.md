@@ -171,9 +171,15 @@ carried **verbatim** into the brief so nothing is lost in paraphrase.
 | Env / setting | Default | Purpose |
 |---|---|---|
 | `SKQUAD_TASK_SUBAGENT_ENABLED` | `true` | Master switch; `false` = legacy in-loop execution (fallback path preserved). |
-| `SKQUAD_TASK_SUBAGENT_MAX_TURNS` | `48` | Task profile (distinct from ad-hoc 12). |
+| `SKQUAD_TASK_SUBAGENT_MAX_TURNS` | `128` (S-298) | Task profile (distinct from ad-hoc 12). Injected by the operator: per-agent `spec.taskSubagentMaxTurns` wins; else the operator's `SKQUAD_AGENT_TASK_SUBAGENT_MAX_TURNS` (platform default 128). |
 | `SKQUAD_TASK_REWORK_MAX` | `2` | Rework spawns per cycle. |
 | `SKQUAD_SUBAGENT_*` (existing) | unchanged | Ad-hoc digging profile. |
+
+S-298: the turn budget is user-configurable per agent from the agent
+Configuration tab ("Task turn budget", 1–512; empty = inherit the
+platform default). Chain: UI → `PATCH /agents/{id}` →
+`agents.task_subagent_max_turns` (nullable) → Agent CR
+`spec.taskSubagentMaxTurns` → operator → pod env.
 
 Kill-switch behaviour: with the feature disabled, the runtime falls back
 to today's direct task loop — this spec must not remove that path until

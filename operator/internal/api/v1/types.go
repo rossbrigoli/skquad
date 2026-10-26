@@ -134,6 +134,13 @@ type AgentSpec struct {
 	// ("low"|"medium"|"high"; empty = provider default). Injected into the
 	// runtime as SKQUAD_THINKING_LEVEL.
 	ThinkingLevel string `json:"thinkingLevel,omitempty"`
+	// TaskSubagentMaxTurns (S-298) is the per-agent turn budget for the
+	// nested task-subagent that executes claimed tasks. 0/unset = inherit
+	// the platform default (the operator's own env
+	// SKQUAD_AGENT_TASK_SUBAGENT_MAX_TURNS, default 128). When >0 it is
+	// injected as SKQUAD_TASK_SUBAGENT_MAX_TURNS, overriding the platform
+	// default for this agent only.
+	TaskSubagentMaxTurns int `json:"taskSubagentMaxTurns,omitempty"`
 	DesiredActive    bool                 `json:"desiredActive"`
 	// Storage declares a durable per-agent workspace PVC (S-135). When
 	// nil or disabled the agent runs without persistent workspace, exactly

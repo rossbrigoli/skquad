@@ -413,6 +413,43 @@ func TestAgentEnvTaskSubagentKillSwitch(t *testing.T) {
 	}
 }
 
+// S-298: task-subagent turn-budget resolution. The per-agent CR value
+// (spec.taskSubagentMaxTurns) wins when >0; otherwise the operator's
+// SKQUAD_AGENT_TASK_SUBAGENT_MAX_TURNS applies, defaulting to the
+// platform-wide 128.
+func TestAgentEnvTaskSubagentMaxTurns(t *testing.T) {
+	// No CR value, no operator env → platform default 128.
+	env := agentEnv(&skquadv1.Agent{})
+	if got := envValue(env, "SKQUAD_TASK_SUBAGENT_MAX_TURNS"); got != "128" {
+		t.Fatalf("SKQUAD_TASK_SUBAGENT_MAX_TURNS = %q, want 128", got)
+	}
+
+	// Per-agent CR override wins.
+	env = agentEnv(&skquadv1.Agent{Spec: skquadv1.AgentSpec{TaskSubagentMaxTurns: 64}})
+	if got := envValue(env, "SKQUAD_TASK_SUBAGENT_MAX_TURNS"); got != "64" {
+		t.Fatalf("SKQUAD_TASK_SUBAGENT_MAX_TURNS = %q, want 64", got)
+	}
+
+	// Operator env shifts the platform default for agents without an override.
+	t.Setenv("SKQUAD_AGENT_TASK_SUBAGENT_MAX_TURNS", "96")
+	env = agentEnv(&skquadv1.Agent{})
+	if got := envValue(env, "SKQUAD_TASK_SUBAGENT_MAX_TURNS"); got != "96" {
+		t.Fatalf("SKQUAD_TASK_SUBAGENT_MAX_TURNS = %q, want 96", got)
+	}
+
+	// The CR override still wins over the operator env.
+	env = agentEnv(&skquadv1.Agent{Spec: skquadv1.AgentSpec{TaskSubagentMaxTurns: 24}})
+	if got := envValue(env, "SKQUAD_TASK_SUBAGENT_MAX_TURNS"); got != "24" {
+		t.Fatalf("SKQUAD_TASK_SUBAGENT_MAX_TURNS = %q, want 24", got)
+	}
+
+	// A zero CR value is treated as unset — never starve the runtime.
+	env = agentEnv(&skquadv1.Agent{Spec: skquadv1.AgentSpec{TaskSubagentMaxTurns: 0}})
+	if got := envValue(env, "SKQUAD_TASK_SUBAGENT_MAX_TURNS"); got != "96" {
+		t.Fatalf("SKQUAD_TASK_SUBAGENT_MAX_TURNS = %q, want 96 (0 = unset)", got)
+	}
+}
+
 // TG-4d (S-264): the operator forwards its own SKQUAD_TOOL_GATEWAY_URL
 // (chart-injected) into agent pods so the runtime can register the
 // synthetic rest_call tool. When the operator env is empty the var must

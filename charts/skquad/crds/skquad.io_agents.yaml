@@ -93,6 +93,15 @@ spec:
                     - low
                     - medium
                     - high
+                taskSubagentMaxTurns:
+                  type: integer
+                  minimum: 1
+                  maximum: 512
+                  description: >-
+                    Per-agent task-subagent turn budget (S-298). When set it is
+                    injected as SKQUAD_TASK_SUBAGENT_MAX_TURNS; when absent the
+                    platform default (operator env
+                    SKQUAD_AGENT_TASK_SUBAGENT_MAX_TURNS, default 128) applies.
                 desiredActive:
                   type: boolean
                 storage:

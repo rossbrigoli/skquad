@@ -118,6 +118,13 @@ func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identit
 		"thinkingLevel": agent.ThinkingLevel,
 		"desiredActive": agent.Status == domain.AgentBusy,
 	}
+	// S-298: per-agent task-subagent turn budget. Emitted only when set;
+	// absent means "inherit the platform default" — the operator then
+	// injects SKQUAD_TASK_SUBAGENT_MAX_TURNS from its own
+	// SKQUAD_AGENT_TASK_SUBAGENT_MAX_TURNS (default 128).
+	if agent.TaskSubagentMaxTurns != nil && *agent.TaskSubagentMaxTurns > 0 {
+		spec["taskSubagentMaxTurns"] = *agent.TaskSubagentMaxTurns
+	}
 	// S-156: deterministic Deployment name (skquad-<owner>-agent-<agent>).
 	// Older agents without one keep the operator's CR-name fallback.
 	if strings.TrimSpace(agent.DeploymentName) != "" {

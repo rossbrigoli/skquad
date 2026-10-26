@@ -46,12 +46,13 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(ts.task_subagent_enabled({"SKQUAD_TASK_SUBAGENT_ENABLED": "true"}))
 
     def test_turn_and_rework_defaults_and_overrides(self):
-        self.assertEqual(ts.task_subagent_max_turns({}), 48)
+        # S-298: platform-wide default raised 48 -> 128 (Ross, 2026-10-27).
+        self.assertEqual(ts.task_subagent_max_turns({}), 128)
         self.assertEqual(ts.task_rework_max({}), 2)
         self.assertEqual(ts.task_subagent_max_turns({"SKQUAD_TASK_SUBAGENT_MAX_TURNS": "9"}), 9)
         self.assertEqual(ts.task_rework_max({"SKQUAD_TASK_REWORK_MAX": "1"}), 1)
         # garbage falls back rather than crashing the wake
-        self.assertEqual(ts.task_subagent_max_turns({"SKQUAD_TASK_SUBAGENT_MAX_TURNS": "many"}), 48)
+        self.assertEqual(ts.task_subagent_max_turns({"SKQUAD_TASK_SUBAGENT_MAX_TURNS": "many"}), 128)
 
 
 class TaskBriefTest(unittest.TestCase):

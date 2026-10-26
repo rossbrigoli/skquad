@@ -99,6 +99,13 @@ type Agent struct {
 	// self_approve_default (ADR-0016 D2/D8). NULL (nil) = no per-agent
 	// override; the squad default, then the platform default, applies.
 	SelfApproveAllowed *bool `json:"self_approve_allowed,omitempty"`
+	// TaskSubagentMaxTurns (S-298) is the per-agent turn budget for the
+	// nested task-subagent that executes claimed tasks. NULL (nil) = no
+	// per-agent override; the platform default (128) applies. It flows
+	// through the Agent CR (spec.taskSubagentMaxTurns) into the pod env
+	// (SKQUAD_TASK_SUBAGENT_MAX_TURNS); the operator injects the
+	// platform default when the CR field is unset.
+	TaskSubagentMaxTurns *int `json:"task_subagent_max_turns,omitempty"`
 	// StorageEnabled and StorageSize configure the agent's durable workspace
 	// PVC (S-138). They flow into the Agent CR's spec.storage via the
 	// outbox writer. StorageClass is deliberately NOT part of this surface:

@@ -77,6 +77,9 @@ export type Agent = {
   // true/false = explicit override. Edited via the tri-state select on
   // the agent Configuration tab.
   self_approve_allowed?: boolean | null;
+  // S-298: per-agent task-subagent turn budget. null/absent = inherit
+  // the platform default (128).
+  task_subagent_max_turns?: number | null;
   // Durable workspace PVC (S-138). storageClass is platform-admin only
   // and intentionally absent from the tenant-facing surface.
   storage_enabled?: boolean;

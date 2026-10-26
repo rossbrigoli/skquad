@@ -426,6 +426,12 @@ func agentEnv(agent *skquadv1.Agent) []corev1.EnvVar {
 		// the runtime's OWN default is false — an agent pod that does not
 		// get this env keeps the legacy in-loop execution path.
 		{Name: "SKQUAD_TASK_SUBAGENT_ENABLED", Value: envOrDefault("SKQUAD_AGENT_TASK_SUBAGENT_ENABLED", "true")},
+		// S-298: task-subagent turn budget. Per-agent CR value wins; when
+		// unset the operator falls back to its own env
+		// SKQUAD_AGENT_TASK_SUBAGENT_MAX_TURNS (platform default 128,
+		// Ross's setting for the fleet). The runtime's own default stays a
+		// last-resort for pods that receive no env at all.
+		{Name: "SKQUAD_TASK_SUBAGENT_MAX_TURNS", Value: taskSubagentMaxTurns(agent, envOrDefault("SKQUAD_AGENT_TASK_SUBAGENT_MAX_TURNS", "128"))},
 	}
 	// S-139 (S-136 follow-up): tell the runtime where the workspace PVC
 	// is actually mounted so its auto-resolution matches the real mount
@@ -822,6 +828,19 @@ func envOrDefault(name string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// taskSubagentMaxTurns resolves the S-298 turn budget for one agent pod:
+// the per-agent CR value (spec.taskSubagentMaxTurns) wins when >0;
+// otherwise the supplied platform default (the operator's own
+// SKQUAD_AGENT_TASK_SUBAGENT_MAX_TURNS, default "128") is used. A
+// non-positive CR value is treated as "unset" so a stray 0 can never
+// starve the runtime of its budget.
+func taskSubagentMaxTurns(agent *skquadv1.Agent, platformDefault string) string {
+	if agent != nil && agent.Spec.TaskSubagentMaxTurns > 0 {
+		return strconv.Itoa(agent.Spec.TaskSubagentMaxTurns)
+	}
+	return platformDefault
 }
 
 // maxAgentStorage parses the platform per-agent storage cap from

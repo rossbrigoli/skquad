@@ -658,12 +658,17 @@ function AgentConfigPane({
   // per-agent override. Sent in the PATCH only when changed.
   const selfApproveInitial = agent.self_approve_allowed ?? null;
   const [selfApprove, setSelfApprove] = useState<boolean | null>(selfApproveInitial);
+  // S-298: per-agent task-subagent turn budget. "" = inherit the
+  // platform default (128); 1..512 = explicit per-agent override.
+  const turnBudgetInitial = agent.task_subagent_max_turns ? String(agent.task_subagent_max_turns) : "";
+  const [turnBudget, setTurnBudget] = useState(turnBudgetInitial);
   const [promptBlocked, setPromptBlocked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [savedNote, setSavedNote] = useState("");
 
   const storageInvalid = storageEnabled && !isValidStorageSize(storageSize);
+  const turnBudgetInvalid = turnBudget.trim() !== "" && (Number(turnBudget) < 1 || Number(turnBudget) > 512);
   const storageBaseline = agent.storage_size ? agent.storage_size : DEFAULT_AGENT_STORAGE_SIZE;
   const storageSizeDirty = storageEnabled && storageSize.trim() !== storageBaseline;
   const dirty =
@@ -674,7 +679,8 @@ function AgentConfigPane({
     storageSizeDirty ||
     primary !== (agent.ai_model_id ?? "") ||
     fallback !== (agent.fallback_ai_model_id ?? "") ||
-    selfApprove !== selfApproveInitial;
+    selfApprove !== selfApproveInitial ||
+    turnBudget !== turnBudgetInitial;
 
   async function saveAll() {
     setBusy(true);
@@ -698,6 +704,12 @@ function AgentConfigPane({
       // server-side value the form has not touched.
       if (selfApprove !== selfApproveInitial) {
         body.self_approve_allowed = selfApprove;
+      }
+      // S-298: only send the turn budget when it changed; empty sends
+      // null so the per-agent override is cleared (platform default 128
+      // is then inherited end-to-end).
+      if (turnBudget !== turnBudgetInitial) {
+        body.task_subagent_max_turns = turnBudget.trim() === "" ? null : Number(turnBudget.trim());
       }
       await apiPatch(`/agents/${agent.id}`, token, body);
       setSavedNote("Configuration saved.");
@@ -745,6 +757,22 @@ function AgentConfigPane({
               inputMode="numeric"
               placeholder="Platform default (15 min)"
             />
+          </label>
+          {/* S-298: per-agent task-subagent turn budget. */}
+          <label className="field">
+            <span>Task turn budget</span>
+            <input
+              value={turnBudget}
+              onChange={(e) => {
+                setTurnBudget(e.target.value.replace(/\D/g, ""));
+                setSavedNote("");
+              }}
+              inputMode="numeric"
+              placeholder="Platform default (128)"
+            />
+            <span className="field-hint">
+              Max turns for the nested task-subagent that runs claimed tasks. Empty inherits the platform default (128).
+            </span>
           </label>
           {/* S-291 (ADR-0016 D2): per-agent self-approval override. */}
           <label className="field">
@@ -841,7 +869,7 @@ function AgentConfigPane({
         <button
           type="button"
           className="btn btn-primary"
-          disabled={!dirty || busy || promptBlocked || storageInvalid || primary === ""}
+          disabled={!dirty || busy || promptBlocked || storageInvalid || turnBudgetInvalid || primary === ""}
           onClick={() => {
             void saveAll();
           }}
@@ -851,6 +879,7 @@ function AgentConfigPane({
         {savedNote && !dirty ? <span className="field-hint">{savedNote}</span> : null}
         {promptBlocked ? <span className="entity-meta">Fix the prompt errors above before saving.</span> : null}
         {storageInvalid ? <span className="entity-meta">Storage size is invalid.</span> : null}
+        {turnBudgetInvalid ? <span className="entity-meta">Turn budget must be between 1 and 512.</span> : null}
         {primary === "" ? <span className="entity-meta">A primary model is required.</span> : null}
       </div>
       {error ? (
