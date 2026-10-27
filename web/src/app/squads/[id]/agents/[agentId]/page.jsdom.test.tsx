@@ -15,6 +15,9 @@ const env = vi.hoisted(() => ({
   agents: [] as unknown[],
   agentsLoading: false,
   tasks: [] as unknown[],
+  taskMessages: {} as Record<string, unknown[]>,
+  taskMessagesLoading: false,
+  taskMessagesError: "",
   metering: null as unknown,
   meteringMtd: null as unknown,
   meteringMtdLoading: false,
@@ -137,6 +140,12 @@ vi.mock("../../../../../lib/useApi", () => ({
       loading = env.agentsLoading;
     }
     if (path === "/squads/sq1/board") data = env.boardNull ? null : { tasks: env.tasks };
+    if (path.startsWith("/tasks/") && path.endsWith("/messages")) {
+      const taskId = path.split("/")[2];
+      data = env.taskMessages[taskId] || [];
+      loading = env.taskMessagesLoading;
+      error = env.taskMessagesError;
+    }
     if (path === "/agents/ag1/metering") data = env.metering;
     if (path.startsWith("/agents/ag1/metering?since=")) {
       data = env.meteringMtd;
@@ -259,6 +268,9 @@ beforeEach(() => {
   env.agents = [agent()];
   env.agentsLoading = false;
   env.tasks = [];
+  env.taskMessages = {};
+  env.taskMessagesLoading = false;
+  env.taskMessagesError = "";
   env.metering = { cost: 5, currency: "USD" };
   env.meteringMtd = { cost: 1.25, currency: "USD" };
   env.meteringMtdLoading = false;
@@ -379,6 +391,51 @@ describe("chat thread", () => {
     render(<AgentProfilePage />);
     expect(screen.getByText("coder is listening")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reset chat" })).toBeDisabled();
+  });
+
+  it("task cards open inline activity and keep navigation behind Show task", async () => {
+    env.tasks = [
+      { id: "t1", title: "live task", assignee_agent_id: "ag1", execution_id: "e1", lease_expires_at: future },
+    ];
+    env.taskMessages = {
+      t1: [
+        chatMsg("tm1", "agent", "[subagent] turn 1: checking files", {
+          type: "task_thread",
+          from_display: "coder",
+        }),
+      ],
+    };
+    render(<AgentProfilePage />);
+    expect(screen.getByRole("link", { name: "Show task" })).toHaveAttribute(
+      "href",
+      "/squads/sq1/tasks/t1",
+    );
+    expect(screen.getByText("Subagent activity")).toBeInTheDocument();
+    expect(screen.getByText("[subagent] turn 1: checking files")).toBeInTheDocument();
+  });
+
+  it("task card inline activity handles empty, error and selection changes", async () => {
+    env.tasks = [
+      { id: "t1", title: "live task", assignee_agent_id: "ag1", execution_id: "e1", lease_expires_at: future },
+      { id: "t2", title: "second task", assignee_agent_id: "ag1", execution_id: "e2", lease_expires_at: future },
+    ];
+    env.taskMessages = {
+      t2: [chatMsg("tm2", "agent", "[subagent] turn 2: final result - done")],
+    };
+    const { rerender } = render(<AgentProfilePage />);
+    expect(screen.getByText("No subagent activity yet.")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /second task/i }));
+    expect(screen.getByText("[subagent] turn 2: final result - done")).toBeInTheDocument();
+
+    env.taskMessagesError = "thread failed";
+    rerender(<AgentProfilePage />);
+    expect(screen.getByText("thread failed")).toBeInTheDocument();
+
+    env.taskMessagesError = "";
+    env.taskMessagesLoading = true;
+    rerender(<AgentProfilePage />);
+    expect(screen.getByText("Loading activity…")).toBeInTheDocument();
   });
 
   it("renders user and agent rows with markdown bodies", async () => {

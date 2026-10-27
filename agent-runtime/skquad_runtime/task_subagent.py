@@ -57,6 +57,14 @@ from .subagents import (
 TASK_BRIEF_SCHEMA = "skquad.task_brief.v1"
 TASK_RESULT_SCHEMA = "skquad.task_result.v1"
 
+# S-299: live progress mirroring. Each nested turn is published (best
+# effort) through a caller-supplied callback so the chat UI can show
+# what the subagent is doing while it runs. Bounds keep a 128-turn run
+# from flooding the task thread: short lines, and a hard stop with one
+# "capped" notice once the ceiling is hit.
+PROGRESS_LINE_MAX_CHARS = 300
+PROGRESS_MAX_LINES = 80
+
 ENV_TASK_SUBAGENT_ENABLED = "SKQUAD_TASK_SUBAGENT_ENABLED"
 ENV_TASK_SUBAGENT_MAX_TURNS = "SKQUAD_TASK_SUBAGENT_MAX_TURNS"
 ENV_TASK_REWORK_MAX = "SKQUAD_TASK_REWORK_MAX"
@@ -499,6 +507,7 @@ def run_task_subagent(
     origin: str,
     max_turns: int | None = None,
     environ: Mapping[str, str] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> SubagentRun:
     """Run one task-subagent to a TaskResult.
 
@@ -532,6 +541,31 @@ def run_task_subagent(
     steps: list[str] = []
     turns = 0
     last_content = ""
+    # S-299: progress lines are observational — a failed publish is
+    # swallowed, and the stream is capped so long runs stay readable.
+    emitted = 0
+    capped_noted = False
+
+    def emit(line: str) -> None:
+        nonlocal emitted, capped_noted
+        if progress is None:
+            return
+        if emitted >= PROGRESS_MAX_LINES:
+            if not capped_noted:
+                capped_noted = True
+                try:
+                    progress(
+                        f"...progress stream capped at {PROGRESS_MAX_LINES} lines "
+                        f"(turn budget {budget})"
+                    )
+                except Exception:  # noqa: BLE001 — never break the run
+                    pass
+            return
+        emitted += 1
+        try:
+            progress(line[:PROGRESS_LINE_MAX_CHARS])
+        except Exception:  # noqa: BLE001 — never break the run
+            pass
 
     while turns < budget:
         turns += 1
@@ -559,12 +593,16 @@ def run_task_subagent(
         if content.strip():
             last_content = content
         calls = parse_tool_calls(message)
+        if calls and content.strip():
+            # S-299: the subagent's narration for this tool-use turn.
+            emit(f"turn {turns}: {content.strip()}")
         if not calls:
             result = parse_task_result(content, turns_used=turns)
             # The runner's count is authoritative for the §8 metric — a
             # subagent under-reporting its own turns must not flatter the
             # cost/turn rollups.
             result = replace(result, turns_used=turns)
+            emit(f"turn {turns}: final result - {result.summary}")
             thread.append({"role": "assistant", "content": _trim(content, SUBAGENT_THREAD_ITEM_MAX_CHARS)})
             return SubagentRun(
                 result=result, thread=tuple(_cap_thread(thread)), steps=tuple(steps)
@@ -591,6 +629,9 @@ def run_task_subagent(
                 tool_content = tool_result.content
                 ok = tool_result.ok
             steps.append(call.name)
+            # S-299: one compact line per tool outcome — the name and
+            # status, not the (potentially huge) result body.
+            emit(f"turn {turns} - {call.name} -> {'ok' if ok else 'failed'}")
             thread.append(
                 {
                     "role": "tool",

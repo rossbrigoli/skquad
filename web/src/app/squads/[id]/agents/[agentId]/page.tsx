@@ -35,7 +35,7 @@ import {
   type ResourceType,
   type Task,
 } from "../../../../../lib/api";
-import { formatCost, formatRelativeTime, leaseState } from "../../../../../lib/format";
+import { formatCost, formatRelativeTime, leaseState, messageText } from "../../../../../lib/format";
 import {
   agentTurnPending,
   chatContextTokens,
@@ -106,6 +106,18 @@ function TaskListSection({
   status: "running" | "stalled";
   leaseLabel: string;
 }>) {
+  const [selectedTaskId, setSelectedTaskId] = useState(tasks[0]?.id ?? "");
+
+  useEffect(() => {
+    if (tasks.length === 0) {
+      setSelectedTaskId("");
+      return;
+    }
+    if (!tasks.some((task) => task.id === selectedTaskId)) {
+      setSelectedTaskId(tasks[0].id);
+    }
+  }, [selectedTaskId, tasks]);
+
   if (tasks.length === 0) {
     return null;
   }
@@ -113,21 +125,65 @@ function TaskListSection({
     <section style={{ marginTop: "var(--space-5)" }}>
       <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>{title}</h2>
       <div className="entity-list">
-        {tasks.map((task) => (
-          <Link key={task.id} href={`/squads/${squadId}/tasks/${task.id}`} className="entity-row">
-            <div className="entity-main">
-              <span className="entity-title">{task.title}</span>
-              <span className="entity-meta">
-                {leaseLabel} {formatRelativeTime(task.lease_expires_at)}
-              </span>
+        {tasks.map((task) => {
+          const selected = selectedTaskId === task.id;
+          return (
+            <div key={task.id} className={`task-card-shell${selected ? " selected" : ""}`}>
+              <div className="entity-row task-card-row">
+                <button
+                  type="button"
+                  className="task-card-select"
+                  aria-expanded={selected}
+                  onClick={() => setSelectedTaskId(task.id)}
+                >
+                  <span className="entity-title">{task.title}</span>
+                  <span className="entity-meta">
+                    {leaseLabel} {formatRelativeTime(task.lease_expires_at)}
+                  </span>
+                </button>
+                <div className="entity-side">
+                  <StatusChip status={status} />
+                  <Link href={`/squads/${squadId}/tasks/${task.id}`} className="btn btn-sm">
+                    Show task
+                  </Link>
+                </div>
+              </div>
+              {selected ? <TaskInlineActivity task={task} /> : null}
             </div>
-            <div className="entity-side">
-              <StatusChip status={status} />
-            </div>
-          </Link>
-        ))}
+          );
+        })}
       </div>
     </section>
+  );
+}
+
+function TaskInlineActivity({ task }: Readonly<{ task: Task }>) {
+  const thread = useApi<Message[]>(`/tasks/${task.id}/messages`, 5000);
+  const messages = thread.data || [];
+  return (
+    <div className="task-inline-activity">
+      <div className="task-inline-head">
+        <span>Subagent activity</span>
+        <span className="chip chip-idle">{messages.length}</span>
+      </div>
+      {thread.loading ? <span className="entity-meta">Loading activity…</span> : null}
+      {thread.error ? <span className="entity-meta">{thread.error}</span> : null}
+      {!thread.loading && !thread.error && messages.length === 0 ? (
+        <span className="entity-meta">No subagent activity yet.</span>
+      ) : null}
+      {messages.length > 0 ? (
+        <div className="task-inline-thread">
+          {messages.slice(-8).map((message) => (
+            <div key={message.id} className="task-inline-message">
+              <span className="entity-title">{messageText(message)}</span>
+              <span className="entity-meta">
+                {message.from_display || message.from_type} · {formatRelativeTime(message.created_at)}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
