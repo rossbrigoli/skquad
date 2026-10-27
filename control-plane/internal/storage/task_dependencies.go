@@ -18,7 +18,7 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
 
-const taskDepRefColumns = `t.id::text, t.task_number, t.title, t.status`
+const taskDepRefColumns = `t.id::text, t.task_number, t.title, t.status, coalesce(t.assignee_agent_id::text, '')`
 
 // AddTaskDependency records taskID depends-on dependsOnID.
 //
@@ -234,7 +234,7 @@ func (p *PostgresStore) queryDepRefs(ctx context.Context, sql string, args ...an
 	refs := []domain.TaskDependencyRef{}
 	for rows.Next() {
 		var ref domain.TaskDependencyRef
-		if err := rows.Scan(&ref.TaskID, &ref.TaskNumber, &ref.Title, &ref.Status); err != nil {
+		if err := rows.Scan(&ref.TaskID, &ref.TaskNumber, &ref.Title, &ref.Status, &ref.AssigneeAgentID); err != nil {
 			return nil, mapPgErr(err)
 		}
 		ref.Satisfied = ref.Status == domain.TaskDone

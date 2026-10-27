@@ -347,6 +347,9 @@ type TaskDependencyRef struct {
 	TaskNumber int        `json:"task_number"`
 	Title      string     `json:"title"`
 	Status     TaskStatus `json:"status"`
+	// S-300: assignee of the referenced task, so the dependent-wake
+	// path can re-sync the right agents when an edge becomes satisfied.
+	AssigneeAgentID string `json:"assignee_agent_id,omitempty"`
 	// Satisfied is true when the referenced task is done (for a
 	// depends-on edge) — i.e. it no longer blocks pickup.
 	Satisfied bool `json:"satisfied"`
