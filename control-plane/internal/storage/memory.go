@@ -1965,6 +1965,53 @@ func (m *MemoryStore) GetLatestTaskExecution(_ context.Context, taskID string) (
 	return cloneTaskExecution(latest), nil
 }
 
+// SaveSubagentThreadSnapshot replaces the captured task-subagent thread
+// on the task's active execution row (S-301). ErrNotFound when no
+// active execution exists (the run already ended).
+func (m *MemoryStore) SaveSubagentThreadSnapshot(_ context.Context, taskID string, snapshot []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var latest *domain.TaskExecution
+	for _, exec := range m.taskExecs {
+		if exec.TaskID != taskID || exec.Status != domain.TaskExecutionActive {
+			continue
+		}
+		if latest == nil || exec.StartedAt.After(latest.StartedAt) {
+			latest = exec
+		}
+	}
+	if latest == nil {
+		return ErrNotFound
+	}
+	latest.SubagentThread = append([]byte(nil), snapshot...)
+	latest.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+// GetSubagentThread returns the snapshot on the task's latest execution
+// row plus its running flag and last-write time (S-301).
+func (m *MemoryStore) GetSubagentThread(_ context.Context, taskID string) ([]byte, time.Time, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var latest *domain.TaskExecution
+	for _, exec := range m.taskExecs {
+		if exec.TaskID != taskID {
+			continue
+		}
+		if latest == nil || exec.StartedAt.After(latest.StartedAt) {
+			latest = exec
+		}
+	}
+	if latest == nil {
+		return nil, time.Time{}, false, ErrNotFound
+	}
+	snapshot := append([]byte(nil), latest.SubagentThread...)
+	if len(snapshot) == 0 {
+		snapshot = []byte("{}")
+	}
+	return snapshot, latest.UpdatedAt, latest.Status == domain.TaskExecutionActive, nil
+}
+
 // ListTaskExecutions returns every execution attempt for a task, oldest
 // first (S-290: reopen retains prior attempts).
 func (m *MemoryStore) ListTaskExecutions(_ context.Context, taskID string) ([]*domain.TaskExecution, error) {
@@ -3190,6 +3237,9 @@ func cloneTaskExecution(exec *domain.TaskExecution) *domain.TaskExecution {
 		return nil
 	}
 	v := *exec
+	if exec.SubagentThread != nil {
+		v.SubagentThread = append(json.RawMessage(nil), exec.SubagentThread...)
+	}
 	return &v
 }
 

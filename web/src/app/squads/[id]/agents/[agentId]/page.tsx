@@ -35,7 +35,7 @@ import {
   type ResourceType,
   type Task,
 } from "../../../../../lib/api";
-import { formatCost, formatRelativeTime, leaseState, messageText } from "../../../../../lib/format";
+import { formatCost, formatRelativeTime, leaseState } from "../../../../../lib/format";
 import {
   agentTurnPending,
   chatContextTokens,
@@ -99,25 +99,18 @@ function TaskListSection({
   squadId,
   status,
   leaseLabel,
+  onShowThread,
 }: Readonly<{
   title: string;
   tasks: Task[];
   squadId: string;
   status: "running" | "stalled";
   leaseLabel: string;
+  // S-301: open the right-hand subagent-thread panel for this task —
+  // the same affordance as the regular spawn_subagent chip. The inline
+  // thread dump (S-299) is gone: nested turns no longer flood the chat.
+  onShowThread: (task: Task) => void;
 }>) {
-  const [selectedTaskId, setSelectedTaskId] = useState(tasks[0]?.id ?? "");
-
-  useEffect(() => {
-    if (tasks.length === 0) {
-      setSelectedTaskId("");
-      return;
-    }
-    if (!tasks.some((task) => task.id === selectedTaskId)) {
-      setSelectedTaskId(tasks[0].id);
-    }
-  }, [selectedTaskId, tasks]);
-
   if (tasks.length === 0) {
     return null;
   }
@@ -125,65 +118,65 @@ function TaskListSection({
     <section style={{ marginTop: "var(--space-5)" }}>
       <h2 style={{ fontSize: "var(--text-lg)", margin: "0 0 var(--space-3)" }}>{title}</h2>
       <div className="entity-list">
-        {tasks.map((task) => {
-          const selected = selectedTaskId === task.id;
-          return (
-            <div key={task.id} className={`task-card-shell${selected ? " selected" : ""}`}>
-              <div className="entity-row task-card-row">
-                <button
-                  type="button"
-                  className="task-card-select"
-                  aria-expanded={selected}
-                  onClick={() => setSelectedTaskId(task.id)}
-                >
-                  <span className="entity-title">{task.title}</span>
-                  <span className="entity-meta">
-                    {leaseLabel} {formatRelativeTime(task.lease_expires_at)}
-                  </span>
-                </button>
-                <div className="entity-side">
-                  <StatusChip status={status} />
-                  <Link href={`/squads/${squadId}/tasks/${task.id}`} className="btn btn-sm">
-                    Show task
-                  </Link>
-                </div>
-              </div>
-              {selected ? <TaskInlineActivity task={task} /> : null}
+        {tasks.map((task) => (
+          <div key={task.id} className="entity-row task-card-row">
+            <Link href={`/squads/${squadId}/tasks/${task.id}`} className="entity-main">
+              <span className="entity-title">{task.title}</span>
+              <span className="entity-meta">
+                {leaseLabel} {formatRelativeTime(task.lease_expires_at)}
+              </span>
+            </Link>
+            <div className="entity-side">
+              <StatusChip status={status} />
+              <button type="button" className="btn btn-sm" onClick={() => onShowThread(task)}>
+                Details
+              </button>
+              <Link href={`/squads/${squadId}/tasks/${task.id}`} className="btn btn-sm">
+                Show task
+              </Link>
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
     </section>
   );
 }
 
-function TaskInlineActivity({ task }: Readonly<{ task: Task }>) {
-  const thread = useApi<Message[]>(`/tasks/${task.id}/messages`, 5000);
-  const messages = thread.data || [];
+// S-301: the chat task-card Details panel. Polls the task's live
+// subagent-thread snapshot (a replaceable view published by the runner
+// each turn) and renders it with the same SubagentThreadPanel the
+// regular spawn_subagent chip uses.
+type SubagentThreadResponse = {
+  snapshot?: {
+    thread?: import("../../../../../lib/chat").SubagentThreadEntry[];
+    turns?: number;
+    steps?: string[];
+  };
+  running?: boolean;
+  updated_at?: string;
+};
+
+function TaskSubagentThreadPanel({
+  task,
+  onClose,
+}: Readonly<{
+  task: Task;
+  onClose: () => void;
+}>) {
+  const snap = useApi<SubagentThreadResponse>(`/tasks/${task.id}/subagent-thread`, 4000);
+  const info: SubagentInfo = {
+    thread: snap.data?.snapshot?.thread ?? [],
+    turns: snap.data?.snapshot?.turns ?? 0,
+    steps: snap.data?.snapshot?.steps ?? [],
+  };
   return (
-    <div className="task-inline-activity">
-      <div className="task-inline-head">
-        <span>Subagent activity</span>
-        <span className="chip chip-idle">{messages.length}</span>
-      </div>
-      {thread.loading ? <span className="entity-meta">Loading activity…</span> : null}
-      {thread.error ? <span className="entity-meta">{thread.error}</span> : null}
-      {!thread.loading && !thread.error && messages.length === 0 ? (
-        <span className="entity-meta">No subagent activity yet.</span>
-      ) : null}
-      {messages.length > 0 ? (
-        <div className="task-inline-thread">
-          {messages.slice(-8).map((message) => (
-            <div key={message.id} className="task-inline-message">
-              <span className="entity-title">{messageText(message)}</span>
-              <span className="entity-meta">
-                {message.from_display || message.from_type} · {formatRelativeTime(message.created_at)}
-              </span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </div>
+    <SubagentThreadPanel
+      info={info}
+      onClose={onClose}
+      title={`Task subagent — ${task.title}`}
+      live={snap.data?.running ?? false}
+      emptyText="No subagent activity captured for this task yet."
+    />
   );
 }
 
@@ -405,6 +398,9 @@ export default function AgentProfilePage() {
   const perms = useApi<AgentPermission[]>(`/agents/${agentId}/permissions`, 60000);
   const audit = useApi<AuditEntry[]>(`/squads/${squadId}/audit?limit=50`, 30000);
   const chat = useApi<Message[]>(`/agents/${agentId}/chat`, 10000);
+  // S-301: the task whose subagent thread is open in the chat's side
+  // panel (Details button on the task card).
+  const [taskThread, setTaskThread] = useState<Task | null>(null);
   // S-169: Talk-first layout — Chat is the default tab, Configuration holds
   // everything the old Edit modal + stacked sections carried.
   // S-174: Inbox adds the delivery-queue observability panel (owner/admin).
@@ -549,13 +545,22 @@ export default function AgentProfilePage() {
               thinkingLevel={resolveThinkingLevel(agent?.thinking_level)}
               thinkingBusy={thinkingBusy}
               onThinkingLevelChange={saveThinkingLevel}
+              sidePanel={
+                taskThread ? (
+                  <TaskSubagentThreadPanel
+                    task={taskThread}
+                    onClose={() => setTaskThread(null)}
+                  />
+                ) : null
+              }
+              onCloseSidePanel={() => setTaskThread(null)}
               // S-185: task lists ride inside the chat scroll area (they
               // used to sit below the chat and push the page past the
               // fold). S-169's "reachable without crowding" intent holds.
               footer={
                 <>
-                  <TaskListSection title="Working on" tasks={live} squadId={squadId} status="running" leaseLabel="lease expires" />
-                  <TaskListSection title="Stalled work" tasks={stalled} squadId={squadId} status="stalled" leaseLabel="lease expired" />
+                  <TaskListSection title="Working on" tasks={live} squadId={squadId} status="running" leaseLabel="lease expires" onShowThread={setTaskThread} />
+                  <TaskListSection title="Stalled work" tasks={stalled} squadId={squadId} status="stalled" leaseLabel="lease expired" onShowThread={setTaskThread} />
                 </>
               }
             />
@@ -1087,6 +1092,8 @@ function ChatThread({
   thinkingBusy,
   onThinkingLevelChange,
   footer,
+  sidePanel,
+  onCloseSidePanel,
 }: {
   readonly messages: Message[];
   readonly agentName: string;
@@ -1102,6 +1109,11 @@ function ChatThread({
   // S-185: extra content (task lists) rendered inside the chat scroll
   // area so the page itself never scrolls past the chat viewport.
   readonly footer?: ReactNode;
+  // S-301: right-hand panel for the task-subagent thread (rendered in
+  // the same side slot as the spawn_subagent chip panel; mutually
+  // exclusive — opening a chip panel replaces it).
+  readonly sidePanel?: ReactNode;
+  readonly onCloseSidePanel?: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1164,8 +1176,9 @@ function ChatThread({
     node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
   }
 
+  const sideOpen = openSubagent !== null || sidePanel != null;
   return (
-    <div className={openSubagent ? "chat-layout with-side" : "chat-layout"}>
+    <div className={sideOpen ? "chat-layout with-side" : "chat-layout"}>
     <div className="chat">
       <div className="chat-scroll" ref={scrollRef} onScroll={trackStickToBottom}>
         {sorted.length === 0 ? (
@@ -1184,7 +1197,12 @@ function ChatThread({
               msg={msg}
               user={user}
               agentName={agentName}
-              onShowSubagent={(c) => setOpenSubagent(c)}
+              onShowSubagent={(c) => {
+                setOpenSubagent(c);
+                // S-301: the chip panel and the task-thread panel share
+                // the side slot — opening one dismisses the other.
+                if (c) onCloseSidePanel?.();
+              }}
             />
           ))
         )}
@@ -1361,7 +1379,9 @@ function ChatThread({
     </div>
     {openSubagent ? (
       <SubagentThreadPanel info={openSubagent} onClose={() => setOpenSubagent(null)} />
-    ) : null}
+    ) : (
+      sidePanel
+    )}
     </div>
   );
 

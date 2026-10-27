@@ -319,7 +319,10 @@ class RunnerTest(unittest.TestCase):
         # S-263 semantics: the error goes back to the model, the run continues.
         self.assertTrue(run.result.succeeded)
 
-    def test_progress_callback_gets_turn_and_tool_lines(self):
+    def test_progress_callback_gets_thread_snapshots(self):
+        # S-301: the callback receives replaceable thread snapshots —
+        # the same shape the regular spawn_subagent chip renders — not
+        # per-turn message lines.
         progress = []
         run = _run(
             [
@@ -329,19 +332,44 @@ class RunnerTest(unittest.TestCase):
             progress=progress.append,
         )
         self.assertTrue(run.result.succeeded)
-        self.assertIn("turn 1: checking files", progress)
-        self.assertIn("turn 1 - echo -> ok", progress)
-        self.assertIn("turn 2: final result - Added rate-limit middleware; 14 tests pass.", progress)
+        for snap in progress:
+            self.assertIsInstance(snap, dict)
+            self.assertIn("thread", snap)
+            self.assertIn("turns", snap)
+            self.assertIn("steps", snap)
+        # Snapshot after turn 1's tool round: narration + tool outcome.
+        first = progress[0]
+        self.assertEqual(first["turns"], 1)
+        self.assertEqual(first["steps"], ["echo"])
+        self.assertEqual(
+            [e["role"] for e in first["thread"]], ["user", "assistant", "tool"]
+        )
+        self.assertEqual(first["thread"][1]["content"], "checking files")
+        # Final snapshot carries the complete thread through the result.
+        last = progress[-1]
+        self.assertEqual(last["turns"], 2)
+        self.assertEqual(
+            [e["role"] for e in last["thread"]],
+            ["user", "assistant", "tool", "assistant"],
+        )
 
-    def test_progress_callback_is_capped(self):
+    def test_progress_snapshots_are_bounded(self):
+        # S-301: one snapshot per completed turn; each is bounded by the
+        # runner's thread caps (oldest entries dropped, not unbounded
+        # growth). No per-turn message rows exist anywhere.
         progress = []
+        big = "x" * 1500
         _run(
-            [{"content": "still working", "tool_calls": [_tool_call("echo")]}],
+            [{"content": big, "tool_calls": [_tool_call("echo", {"text": big})]}],
             max_turns=90,
             progress=progress.append,
         )
-        self.assertEqual(len(progress), ts.PROGRESS_MAX_LINES + 1)
-        self.assertIn("progress stream capped", progress[-1])
+        self.assertEqual(len(progress), 90)
+        last = progress[-1]["thread"]
+        self.assertTrue(any(e.get("role") == "notice" and "dropped" in str(e.get("content")) for e in last))
+        # The snapshot view is capped, so a long run cannot bloat the
+        # stored row.
+        self.assertLessEqual(sum(len(str(e)) for e in last), ts.SUBAGENT_THREAD_TOTAL_MAX_CHARS + 3000)
 
     def test_turn_budget_exhaustion_is_classified(self):
         script = [{"content": "still working", "tool_calls": [_tool_call("echo")]}]

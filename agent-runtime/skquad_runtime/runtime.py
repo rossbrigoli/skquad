@@ -1314,6 +1314,23 @@ class ControlPlaneClient:
                 extra={"task_id": task_id, "error": str(exc)},
             )
 
+    def publish_subagent_thread(self, task_id: str, snapshot: Mapping[str, object]) -> None:
+        # S-301: replace the task-subagent's live thread snapshot (the
+        # chat task-card Details panel's data source). Best-effort for
+        # the same reason as append_task_thread; a 404 (no active
+        # execution) is expected once the run ends and is not an error.
+        try:
+            self._json(
+                "POST",
+                f"/api/v1/agents/me/tasks/{task_id}/subagent-thread",
+                {"snapshot": dict(snapshot)},
+            )
+        except Exception as exc:  # noqa: BLE001 - snapshot visibility is best-effort
+            LOGGER.debug(
+                "subagent thread snapshot push failed",
+                extra={"task_id": task_id, "error": str(exc)},
+            )
+
     def complete_task(
         self,
         task: RuntimeTask | str,
@@ -2554,6 +2571,10 @@ class LiteLLMTaskHandler:
         # to the control-plane task thread. None = no streaming (tests,
         # embedded use).
         self.thread_sink: Callable[[str], None] | None = None
+        # S-301: per-task sink for the task-subagent's live thread
+        # snapshot (a replaceable view, NOT message rows). Injected by
+        # run_task_once alongside the thread sink; None = no publishing.
+        self.subagent_thread_sink: Callable[[Mapping[str, object]], None] | None = None
         # S-208: bound-model context-window cache (60s TTL) feeding the
         # compaction limit (see compactor_for_model).
         self._context_window_cache: dict[str, tuple[int, float]] = {}
@@ -2576,6 +2597,17 @@ class LiteLLMTaskHandler:
         the completion/block event, so streaming stays duplicate-free.
         """
         self.thread_sink = sink
+
+    def attach_subagent_thread_sink(self, sink: Callable[[Mapping[str, object]], None] | None) -> None:
+        """S-301: set the per-task task-subagent snapshot sink.
+
+        Receives the runner's captured thread snapshot ({"thread": [...],
+        "turns": N, "steps": [...]}) after each nested turn; the client
+        REPLACES the previous snapshot server-side. This is the data
+        source for the chat task card's Details panel — the nested turns
+        deliberately do NOT travel as task-thread messages anymore.
+        """
+        self.subagent_thread_sink = sink
 
     def _task_prerequisites(self, config: BootstrapConfig) -> tuple[str, str]:
         virtual_key = read_secret_value(config.virtual_key_path)
@@ -2676,15 +2708,17 @@ class LiteLLMTaskHandler:
             attempt=attempt,
         )
 
-    def _publish_subagent_progress(self, line: str) -> None:
-        """S-299: mirror one task-subagent turn into the task thread so
-        the chat window's task card can show live nested activity.
-        Best-effort: a thread-append failure must never interrupt the
-        run — the subagent's result path is unaffected."""
-        if self.thread_sink is None:
+    def _publish_subagent_thread_snapshot(self, snapshot: Mapping[str, object]) -> None:
+        """S-301: publish the task-subagent's live thread snapshot.
+
+        Replaces the S-299 per-turn thread-message mirroring: nested
+        turns no longer surface in the chat feed or the task thread.
+        Best-effort — a failed publish must never interrupt the run.
+        """
+        if self.subagent_thread_sink is None:
             return
         try:
-            self.thread_sink(trim_text(f"[subagent] {line}", TASK_THREAD_TURN_MAX_CHARS))
+            self.subagent_thread_sink(snapshot)
         except Exception:  # noqa: BLE001 — observability must not break work
             pass
 
@@ -2730,7 +2764,7 @@ class LiteLLMTaskHandler:
                     model, msgs, config, virtual_key, task.id, child_tools
                 ),
                 origin=f"task:{task.id}",
-                progress=self._publish_subagent_progress,
+                progress=self._publish_subagent_thread_snapshot,
             )
             # Re-read the workspace AFTER the subagent worked — that is
             # the state its claimed SHA has to match (I4).
@@ -3839,6 +3873,13 @@ def run_task_once(
     attacher = getattr(handler, "attach_thread_sink", None)
     if callable(attacher):
         attacher(lambda text: control_plane.append_task_thread(task.id, text))
+    # S-301: the task-subagent's live thread snapshot (replaceable view
+    # for the chat task-card Details panel; best-effort like the sink).
+    snap_attacher = getattr(handler, "attach_subagent_thread_sink", None)
+    if callable(snap_attacher):
+        snap_attacher(
+            lambda snap: control_plane.publish_subagent_thread(task.id, snap)
+        )
     resumed = False
     if config.workspace_enabled:
         # S-139: disk-full guards BEFORE any workspace work (extracted

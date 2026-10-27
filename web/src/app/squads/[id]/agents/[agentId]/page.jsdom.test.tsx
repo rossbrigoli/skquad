@@ -18,6 +18,8 @@ const env = vi.hoisted(() => ({
   taskMessages: {} as Record<string, unknown[]>,
   taskMessagesLoading: false,
   taskMessagesError: "",
+  subagentThread: {} as Record<string, unknown>,
+  subagentThreadError: "",
   metering: null as unknown,
   meteringMtd: null as unknown,
   meteringMtdLoading: false,
@@ -97,9 +99,24 @@ vi.mock("../../../../../components/PromptTierEditor", () => ({
   ),
 }));
 vi.mock("../../../../../components/SubagentThreadPanel", () => ({
-  SubagentThreadPanel: ({ onClose }: { onClose: () => void }) => (
+  SubagentThreadPanel: ({
+    onClose,
+    title,
+    live,
+    info,
+  }: {
+    onClose: () => void;
+    title?: string;
+    live?: boolean;
+    info?: { thread?: { content: string }[] };
+  }) => (
     <div data-testid="subagent-panel">
       subagent-panel
+      {title ? <span>{`title:${title}`}</span> : null}
+      {live ? <span>live</span> : null}
+      {(info?.thread ?? []).map((entry, idx) => (
+        <span key={idx}>{`entry:${entry.content}`}</span>
+      ))}
       <button type="button" onClick={onClose}>
         close-subagent
       </button>
@@ -145,6 +162,11 @@ vi.mock("../../../../../lib/useApi", () => ({
       data = env.taskMessages[taskId] || [];
       loading = env.taskMessagesLoading;
       error = env.taskMessagesError;
+    }
+    if (path.startsWith("/tasks/") && path.endsWith("/subagent-thread")) {
+      const taskId = path.split("/")[2];
+      data = env.subagentThread[taskId] || undefined;
+      error = env.subagentThreadError;
     }
     if (path === "/agents/ag1/metering") data = env.metering;
     if (path.startsWith("/agents/ag1/metering?since=")) {
@@ -271,6 +293,8 @@ beforeEach(() => {
   env.taskMessages = {};
   env.taskMessagesLoading = false;
   env.taskMessagesError = "";
+  env.subagentThread = {};
+  env.subagentThreadError = "";
   env.metering = { cost: 5, currency: "USD" };
   env.meteringMtd = { cost: 1.25, currency: "USD" };
   env.meteringMtdLoading = false;
@@ -393,49 +417,54 @@ describe("chat thread", () => {
     expect(screen.getByRole("button", { name: "Reset chat" })).toBeDisabled();
   });
 
-  it("task cards open inline activity and keep navigation behind Show task", async () => {
+  it("task cards expose Details + Show task, no inline thread (S-301)", async () => {
     env.tasks = [
       { id: "t1", title: "live task", assignee_agent_id: "ag1", execution_id: "e1", lease_expires_at: future },
     ];
-    env.taskMessages = {
-      t1: [
-        chatMsg("tm1", "agent", "[subagent] turn 1: checking files", {
-          type: "task_thread",
-          from_display: "coder",
-        }),
-      ],
-    };
     render(<AgentProfilePage />);
     expect(screen.getByRole("link", { name: "Show task" })).toHaveAttribute(
       "href",
       "/squads/sq1/tasks/t1",
     );
-    expect(screen.getByText("Subagent activity")).toBeInTheDocument();
-    expect(screen.getByText("[subagent] turn 1: checking files")).toBeInTheDocument();
+    // The S-299 inline activity dump is gone.
+    expect(screen.queryByText("Subagent activity")).not.toBeInTheDocument();
+    expect(screen.queryByText(/\[subagent\]/)).not.toBeInTheDocument();
   });
 
-  it("task card inline activity handles empty, error and selection changes", async () => {
+  it("task card Details opens the live subagent thread side panel (S-301)", async () => {
     env.tasks = [
       { id: "t1", title: "live task", assignee_agent_id: "ag1", execution_id: "e1", lease_expires_at: future },
-      { id: "t2", title: "second task", assignee_agent_id: "ag1", execution_id: "e2", lease_expires_at: future },
     ];
-    env.taskMessages = {
-      t2: [chatMsg("tm2", "agent", "[subagent] turn 2: final result - done")],
+    env.subagentThread = {
+      t1: {
+        snapshot: {
+          thread: [{ role: "assistant", content: "checking files" }],
+          turns: 3,
+          steps: ["exec"],
+        },
+        running: true,
+      },
     };
-    const { rerender } = render(<AgentProfilePage />);
-    expect(screen.getByText("No subagent activity yet.")).toBeInTheDocument();
+    render(<AgentProfilePage />);
+    expect(screen.queryByTestId("subagent-panel")).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "Details" }));
+    const panel = await screen.findByTestId("subagent-panel");
+    expect(within(panel).getByText("entry:checking files")).toBeInTheDocument();
+    expect(within(panel).getByText("title:Task subagent — live task")).toBeInTheDocument();
+    expect(within(panel).getByText("live")).toBeInTheDocument();
+    await userEvent.click(within(panel).getByRole("button", { name: "close-subagent" }));
+    expect(screen.queryByTestId("subagent-panel")).not.toBeInTheDocument();
+  });
 
-    await userEvent.click(screen.getByRole("button", { name: /second task/i }));
-    expect(screen.getByText("[subagent] turn 2: final result - done")).toBeInTheDocument();
-
-    env.taskMessagesError = "thread failed";
-    rerender(<AgentProfilePage />);
-    expect(screen.getByText("thread failed")).toBeInTheDocument();
-
-    env.taskMessagesError = "";
-    env.taskMessagesLoading = true;
-    rerender(<AgentProfilePage />);
-    expect(screen.getByText("Loading activity…")).toBeInTheDocument();
+  it("task card Details renders an empty snapshot without erroring (S-301)", async () => {
+    env.tasks = [
+      { id: "t2", title: "quiet task", assignee_agent_id: "ag1", execution_id: "e2", lease_expires_at: future },
+    ];
+    render(<AgentProfilePage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Details" }));
+    const panel = await screen.findByTestId("subagent-panel");
+    expect(within(panel).queryByText("entry:")).not.toBeInTheDocument();
+    expect(within(panel).queryByText("live")).not.toBeInTheDocument();
   });
 
   it("renders user and agent rows with markdown bodies", async () => {

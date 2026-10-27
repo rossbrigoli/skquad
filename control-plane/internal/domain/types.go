@@ -414,6 +414,11 @@ type TaskExecution struct {
 	// The rolling-24h reopen cap counts only these rows, so the cap governs
 	// agent reopens only.
 	ReopenSeq bool `json:"reopen_seq,omitempty"`
+	// SubagentThread is the latest replaceable snapshot of a task-subagent's
+	// captured thread (S-301): {"thread": [...], "turns": N, "steps": [...]}
+	// Published by the runtime while the nested run is in flight and read by
+	// the chat task-card Details panel. Empty when no snapshot exists.
+	SubagentThread json.RawMessage `json:"subagent_thread,omitempty"`
 }
 
 // AgentMemory is a scoped long-term memory row for an agent. Squad-scoped
