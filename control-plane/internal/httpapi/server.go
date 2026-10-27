@@ -715,6 +715,8 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			// S-183: the runtime streams the agent's working turns into the
 			// task thread while the task runs.
 			r.Post("/tasks/{taskID}/thread", s.appendCurrentAgentTaskThread)
+			// S-301: task-subagent live thread snapshot (replaceable view).
+			r.Post("/tasks/{taskID}/subagent-thread", s.publishCurrentAgentSubagentThread)
 			r.Post("/heartbeat", s.currentAgentHeartbeat)
 			// S-PROMPT WP2: composed effective prompt for the runtime
 			// (ETag = composition sha256, ADR-0011 D4).
@@ -818,6 +820,8 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Post("/squads/{squadID}/board/tasks", s.createTask)
 			r.Get(routeTask, s.getTask)
 			r.Get("/tasks/{taskID}/messages", s.listTaskMessages)
+			// S-301: chat task-card Details panel data source.
+			r.Get("/tasks/{taskID}/subagent-thread", s.getTaskSubagentThread)
 			r.Post("/tasks/{taskID}/messages", s.createTaskMessage)
 			r.Patch(routeTask, s.updateTask)
 			r.Post("/tasks/{taskID}/move", s.moveTask)
@@ -5656,6 +5660,82 @@ func (s *Server) appendCurrentAgentTaskThread(w http.ResponseWriter, r *http.Req
 	}
 	s.appendTaskThreadEvent(r.Context(), task, "agent", principal.Agent.ID, domain.MessageReply, trimRunes(text, maxTaskThreadTurnChars))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// maxSubagentThreadSnapshotBytes caps one published task-subagent thread
+// snapshot (S-301). The runner's own caps keep real snapshots well under
+// this; the ceiling stops a buggy client from bloating the row.
+const maxSubagentThreadSnapshotBytes = 128 * 1024
+
+// publishCurrentAgentSubagentThread stores the task-subagent's live
+// thread snapshot from the runtime (S-301). The snapshot REPLACES the
+// previous one on the active execution row — it is a view, not a log.
+// Nested turns no longer travel as message rows, so they surface neither
+// in the agent chat feed nor in the task thread; the chat task card's
+// Details panel reads them here instead.
+func (s *Server) publishCurrentAgentSubagentThread(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxSubagentThreadSnapshotBytes)
+	var req struct {
+		Snapshot json.RawMessage `json:"snapshot"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	snapshot := strings.TrimSpace(string(req.Snapshot))
+	if snapshot == "" || snapshot[0] != '{' {
+		writeError(w, http.StatusBadRequest, "bad_snapshot", "snapshot must be a JSON object")
+		return
+	}
+	principal := currentAgent(r.Context())
+	task, err := s.store.GetTask(r.Context(), chi.URLParam(r, "taskID"))
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if task.AssigneeAgentID != principal.Agent.ID {
+		writeError(w, http.StatusForbidden, "not_assignee", "only the assigned agent can publish subagent thread snapshots")
+		return
+	}
+	if err := s.store.SaveSubagentThreadSnapshot(r.Context(), task.ID, []byte(snapshot)); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			// The run ended between turns — there is nothing left to
+			// attach the snapshot to. Best-effort for the runtime.
+			writeError(w, http.StatusNotFound, "no_active_execution", "task has no active execution to attach the snapshot to")
+			return
+		}
+		writeStorageError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// getTaskSubagentThread serves the latest task-subagent thread snapshot
+// to the UI (S-301): the chat task card's Details panel polls this
+// while the nested run is in flight, exactly like the regular
+// spawn_subagent chip opens SubagentThreadPanel.
+func (s *Server) getTaskSubagentThread(w http.ResponseWriter, r *http.Request) {
+	task, ok := s.loadAccessibleTask(w, r)
+	if !ok {
+		return
+	}
+	snapshot, updatedAt, running, err := s.store.GetSubagentThread(r.Context(), task.ID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"snapshot":   map[string]any{},
+				"running":    false,
+				"updated_at": time.Time{},
+			})
+			return
+		}
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"snapshot":   json.RawMessage(snapshot),
+		"running":    running,
+		"updated_at": updatedAt,
+	})
 }
 
 // parseClaimStartedAt leniently extracts a started_at timestamp from the

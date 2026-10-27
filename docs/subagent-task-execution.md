@@ -77,6 +77,23 @@ sequenceDiagram
   workspace before completing the task. A TaskResult whose claimed SHA
   doesn't match the workspace is a forced `review_needed=true`.
 
+### Visibility (S-301)
+
+Nested-run transparency is a **replaceable snapshot**, not a message
+stream. After each completed turn the runner publishes
+`{"thread": [...], "turns": N, "steps": [...]}` (the S-163-captured
+thread, caps included) to `POST /agents/me/tasks/{id}/subagent-thread`,
+which overwrites the view on the active `task_execution` row. The chat
+task card's **Details** button opens the same right-hand
+`SubagentThreadPanel` used by the regular `spawn_subagent` chip, polling
+`GET /tasks/{id}/subagent-thread`.
+
+The S-299 design (one `[subagent] turn N` message row per nested turn,
+inline in the chat and the task card) was retired: those rows surfaced
+in the main chat feed — which lists every message addressed to the
+agent — and buried useful lifecycle events under up to 80 noise lines
+per run. Migration 0067 purges the historical rows.
+
 ## 4. TaskResult contract (v1)
 
 Returned by the subagent as its final structured message; validated

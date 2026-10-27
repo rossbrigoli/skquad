@@ -48,6 +48,7 @@ from typing import Callable, Mapping, Sequence
 
 from .subagents import (
     SUBAGENT_THREAD_ITEM_MAX_CHARS,
+    SUBAGENT_THREAD_TOTAL_MAX_CHARS,
     SUBAGENT_TOOL_NAME,
     _cap_thread,
     _trim,
@@ -57,13 +58,11 @@ from .subagents import (
 TASK_BRIEF_SCHEMA = "skquad.task_brief.v1"
 TASK_RESULT_SCHEMA = "skquad.task_result.v1"
 
-# S-299: live progress mirroring. Each nested turn is published (best
-# effort) through a caller-supplied callback so the chat UI can show
-# what the subagent is doing while it runs. Bounds keep a 128-turn run
-# from flooding the task thread: short lines, and a hard stop with one
-# "capped" notice once the ceiling is hit.
-PROGRESS_LINE_MAX_CHARS = 300
-PROGRESS_MAX_LINES = 80
+# S-301: live transparency is a replaceable SNAPSHOT of the captured
+# thread ({"thread": [...], "turns": N, "steps": [...]}) published after
+# each nested turn — not per-turn message rows. The chat task card's
+# Details panel reads the snapshot; the thread caps below already bound
+# the payload, so no separate line/char flood caps are needed.
 
 ENV_TASK_SUBAGENT_ENABLED = "SKQUAD_TASK_SUBAGENT_ENABLED"
 ENV_TASK_SUBAGENT_MAX_TURNS = "SKQUAD_TASK_SUBAGENT_MAX_TURNS"
@@ -507,7 +506,7 @@ def run_task_subagent(
     origin: str,
     max_turns: int | None = None,
     environ: Mapping[str, str] | None = None,
-    progress: Callable[[str], None] | None = None,
+    progress: Callable[[Mapping[str, object]], None] | None = None,
 ) -> SubagentRun:
     """Run one task-subagent to a TaskResult.
 
@@ -541,29 +540,22 @@ def run_task_subagent(
     steps: list[str] = []
     turns = 0
     last_content = ""
-    # S-299: progress lines are observational — a failed publish is
-    # swallowed, and the stream is capped so long runs stay readable.
-    emitted = 0
-    capped_noted = False
-
-    def emit(line: str) -> None:
-        nonlocal emitted, capped_noted
+    # S-301: the snapshot is observational — a failed publish is
+    # swallowed, and the runner's own thread caps bound its size.
+    def emit_snapshot() -> None:
         if progress is None:
             return
-        if emitted >= PROGRESS_MAX_LINES:
-            if not capped_noted:
-                capped_noted = True
-                try:
-                    progress(
-                        f"...progress stream capped at {PROGRESS_MAX_LINES} lines "
-                        f"(turn budget {budget})"
-                    )
-                except Exception:  # noqa: BLE001 — never break the run
-                    pass
-            return
-        emitted += 1
         try:
-            progress(line[:PROGRESS_LINE_MAX_CHARS])
+            # list() copy: _cap_thread returns the LIVE list when it
+            # fits — without the copy every "snapshot" would alias the
+            # growing thread and show its final state.
+            progress(
+                {
+                    "thread": list(_cap_thread(thread)),
+                    "turns": turns,
+                    "steps": list(steps),
+                }
+            )
         except Exception:  # noqa: BLE001 — never break the run
             pass
 
@@ -574,6 +566,7 @@ def run_task_subagent(
         try:
             response = completion(**kwargs)
         except Exception as exc:  # noqa: BLE001 — a subagent failure is data
+            emit_snapshot()
             return SubagentRun(
                 result=SubTaskResult(
                     succeeded=False,
@@ -593,17 +586,15 @@ def run_task_subagent(
         if content.strip():
             last_content = content
         calls = parse_tool_calls(message)
-        if calls and content.strip():
-            # S-299: the subagent's narration for this tool-use turn.
-            emit(f"turn {turns}: {content.strip()}")
         if not calls:
             result = parse_task_result(content, turns_used=turns)
             # The runner's count is authoritative for the §8 metric — a
             # subagent under-reporting its own turns must not flatter the
             # cost/turn rollups.
             result = replace(result, turns_used=turns)
-            emit(f"turn {turns}: final result - {result.summary}")
             thread.append({"role": "assistant", "content": _trim(content, SUBAGENT_THREAD_ITEM_MAX_CHARS)})
+            # S-301: final snapshot carries the complete thread.
+            emit_snapshot()
             return SubagentRun(
                 result=result, thread=tuple(_cap_thread(thread)), steps=tuple(steps)
             )
@@ -629,9 +620,6 @@ def run_task_subagent(
                 tool_content = tool_result.content
                 ok = tool_result.ok
             steps.append(call.name)
-            # S-299: one compact line per tool outcome — the name and
-            # status, not the (potentially huge) result body.
-            emit(f"turn {turns} - {call.name} -> {'ok' if ok else 'failed'}")
             thread.append(
                 {
                     "role": "tool",
@@ -650,8 +638,13 @@ def run_task_subagent(
                     ),
                 }
             )
+        # S-301: one snapshot per completed turn — the Details panel
+        # polls the replaceable view instead of a message flood.
+        emit_snapshot()
 
-    # Turn budget exhausted (spec §4 failure example, §9).
+    # Turn budget exhausted (spec §4 failure example, §9). The last
+    # completed turn already emitted the current snapshot; the failed
+    # result itself reaches the parent through the return value.
     return SubagentRun(
         result=SubTaskResult(
             succeeded=False,

@@ -275,6 +275,14 @@ type TaskStore interface {
 	// task regardless of status (task-detail run-audit). ErrNotFound
 	// when the task has never executed.
 	GetLatestTaskExecution(ctx context.Context, taskID string) (*domain.TaskExecution, error)
+	// SaveSubagentThreadSnapshot replaces the captured task-subagent thread
+	// on the task's active execution row (S-301). Returns ErrNotFound when
+	// no active execution exists (the run already ended).
+	SaveSubagentThreadSnapshot(ctx context.Context, taskID string, snapshot []byte) error
+	// GetSubagentThread returns the snapshot carried by the task's latest
+	// execution row, whether that execution is still active, and when it was
+	// last written (S-301 chat task-card Details panel).
+	GetSubagentThread(ctx context.Context, taskID string) (snapshot []byte, updatedAt time.Time, running bool, err error)
 	// ListTaskExecutions returns every execution attempt for a task,
 	// oldest first (S-290: reopen retains prior attempts; the read path
 	// backs the visible attempt count).

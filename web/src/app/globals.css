@@ -567,71 +567,18 @@ button.nav-group-parent {
   flex-shrink: 0;
 }
 
-.task-card-shell {
-  border-bottom: 1px solid var(--line);
-}
-
-.task-card-shell:last-child {
-  border-bottom: none;
-}
-
-.task-card-shell.selected {
-  background: var(--surface-sunken);
-}
-
 .task-card-row {
   border-bottom: none;
 }
 
-.task-card-select {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.task-inline-activity {
-  margin: 0 var(--space-4) var(--space-4);
-  padding: var(--space-3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--surface);
-}
-
-.task-inline-head {
-  display: flex;
+/* S-301: live indicator on the task-subagent Details panel header. */
+.subagent-live {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
+  gap: 4px;
+  color: var(--ok, #2e7d32);
   font-size: var(--text-sm);
   font-weight: 700;
-}
-
-.task-inline-thread {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.task-inline-message {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--line);
-}
-
-.task-inline-message .entity-title {
-  white-space: normal;
 }
 
 .empty-state {

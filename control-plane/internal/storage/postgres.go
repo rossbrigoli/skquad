@@ -4300,6 +4300,52 @@ func (p *PostgresStore) GetLatestTaskExecution(ctx context.Context, taskID strin
 	return scanTaskExecution(row)
 }
 
+// SaveSubagentThreadSnapshot replaces the captured task-subagent thread
+// on the task's active execution row (S-301). The snapshot is a
+// replaceable JSON document, not an append log — one row per run, no
+// message-table growth. ErrNotFound when no active execution exists.
+func (p *PostgresStore) SaveSubagentThreadSnapshot(ctx context.Context, taskID string, snapshot []byte) error {
+	res, err := p.pool.Exec(ctx, `
+		UPDATE task_executions
+		SET subagent_thread = $2::jsonb, updated_at = now()
+		WHERE id = (
+			SELECT id FROM task_executions
+			WHERE task_id = $1::uuid AND status = 'active'
+			ORDER BY started_at DESC, id
+			LIMIT 1
+		)
+	`, taskID, snapshot)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetSubagentThread returns the snapshot on the task's latest execution
+// row plus its running flag and last-write time (S-301).
+func (p *PostgresStore) GetSubagentThread(ctx context.Context, taskID string) ([]byte, time.Time, bool, error) {
+	var snapshot []byte
+	var updatedAt time.Time
+	var running bool
+	err := p.pool.QueryRow(ctx, `
+		SELECT subagent_thread, updated_at, status = 'active'
+		FROM task_executions
+		WHERE task_id = $1::uuid
+		ORDER BY started_at DESC, id
+		LIMIT 1
+	`, taskID).Scan(&snapshot, &updatedAt, &running)
+	if err != nil {
+		return nil, time.Time{}, false, mapPgErr(err)
+	}
+	if len(snapshot) == 0 {
+		snapshot = []byte("{}")
+	}
+	return snapshot, updatedAt, running, nil
+}
+
 // ListTaskExecutions returns every execution attempt for a task, oldest
 // first (S-290: reopen retains prior attempts).
 func (p *PostgresStore) ListTaskExecutions(ctx context.Context, taskID string) ([]*domain.TaskExecution, error) {

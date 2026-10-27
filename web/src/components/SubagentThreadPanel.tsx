@@ -9,16 +9,30 @@ import { truncateText, uniqueContentKeys } from "../lib/chat";
 export function SubagentThreadPanel({
   info,
   onClose,
+  title,
+  live,
+  emptyText,
 }: {
   readonly info: SubagentInfo;
   readonly onClose: () => void;
+  // S-301: the task-subagent Details panel reuses this component with
+  // the task's name in the header and a live indicator while the
+  // nested run is still in flight.
+  readonly title?: string;
+  readonly live?: boolean;
+  readonly emptyText?: string;
 }) {
   // S-189: content-derived stable keys (thread is static history, never reordered).
   const threadKeys = uniqueContentKeys(info.thread, (e) => `${e.role}|${e.name ?? ""}|${e.content}`);
   return (
     <aside className="subagent-panel" aria-label="Subagent thread">
       <header className="subagent-panel-head">
-        <span className="subagent-panel-title">🤖 Subagent thread</span>
+        <span className="subagent-panel-title">🤖 {title ?? "Subagent thread"}</span>
+        {live ? (
+          <span className="subagent-live" title="The subagent run is still in progress">
+            ● live
+          </span>
+        ) : null}
         <span className="subagent-panel-meta">
           {info.turns} turn{info.turns === 1 ? "" : "s"} · {info.steps.length} tool call
           {info.steps.length === 1 ? "" : "s"}
@@ -34,7 +48,7 @@ export function SubagentThreadPanel({
       </header>
       <div className="subagent-panel-body">
         {info.thread.length === 0 ? (
-          <p className="subagent-empty">No thread captured for this subagent run.</p>
+          <p className="subagent-empty">{emptyText ?? "No thread captured for this subagent run."}</p>
         ) : (
           info.thread.map((entry, idx) => <ThreadEntry key={threadKeys[idx]} entry={entry} />)
         )}
