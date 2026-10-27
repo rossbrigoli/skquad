@@ -1944,6 +1944,48 @@ button.squad-tab.active {
   margin-top: var(--space-2);
 }
 
+/* S-301 follow-up: task-group marker in the main chat. A subtle full-
+   width divider above each run of task-associated messages: accent ref
+   chip + task title + Details button that opens the retained thread
+   snapshot (works after the run finishes, unlike the task cards). */
+.chat-task-marker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px dashed var(--line-strong);
+  border-bottom: 1px dashed var(--line);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  min-width: 0;
+}
+
+.chat-task-marker-icon {
+  color: var(--accent);
+  flex: none;
+}
+
+.chat-task-marker-ref {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.chat-task-marker-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
 .chat-typing-bubble {
   display: inline-flex;
   align-items: center;

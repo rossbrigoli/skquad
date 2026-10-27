@@ -467,6 +467,73 @@ describe("chat thread", () => {
     expect(within(panel).queryByText("live")).not.toBeInTheDocument();
   });
 
+  // S-301 follow-up: task-group markers in the main chat.
+  const taskChat = (id: string, taskId: string, text = "progress") =>
+    chatMsg(id, "agent", text, { payload: { message: text, task_id: taskId } });
+
+  it("task messages get a group marker with ref + title (S-301 follow-up)", async () => {
+    env.tasks = [
+      { id: "t1", title: "shipped task", task_number: 7, assignee_agent_id: "ag1" },
+    ];
+    env.chat = [taskChat("c1", "t1")];
+    render(<AgentProfilePage />);
+    const marker = await screen.findByRole("note");
+    expect(within(marker).getByText("T-7")).toBeInTheDocument();
+    expect(within(marker).getByText("shipped task")).toBeInTheDocument();
+  });
+
+  it("marker Details opens the retained snapshot after the run finished (S-301 follow-up)", async () => {
+    env.tasks = [
+      { id: "t1", title: "finished task", task_number: 9, assignee_agent_id: "ag1" },
+    ];
+    env.chat = [taskChat("c1", "t1", "all done")];
+    env.subagentThread = {
+      t1: {
+        snapshot: {
+          thread: [{ role: "assistant", content: "final review" }],
+          turns: 5,
+          steps: ["exec"],
+        },
+        running: false,
+      },
+    };
+    render(<AgentProfilePage />);
+    const marker = await screen.findByRole("note");
+    await userEvent.click(within(marker).getByRole("button", { name: "Details" }));
+    const panel = await screen.findByTestId("subagent-panel");
+    expect(within(panel).getByText("entry:final review")).toBeInTheDocument();
+    expect(within(panel).getByText("title:Task subagent — finished task")).toBeInTheDocument();
+    // Finished run: no live indicator.
+    expect(within(panel).queryByText("live")).not.toBeInTheDocument();
+  });
+
+  it("a plain reply between task messages splits the run into two groups (S-301 follow-up)", async () => {
+    env.tasks = [
+      { id: "t1", title: "split task", task_number: 3, assignee_agent_id: "ag1" },
+    ];
+    env.chat = [
+      taskChat("c1", "t1"),
+      chatMsg("c2", "user", "quick question"),
+      taskChat("c3", "t1"),
+    ];
+    render(<AgentProfilePage />);
+    await screen.findByText("quick question");
+    expect(screen.getAllByRole("note")).toHaveLength(2);
+  });
+
+  it("unknown task falls back to a short-id label and still opens Details (S-301 follow-up)", async () => {
+    env.tasks = [];
+    env.chat = [taskChat("c1", "deadbeef-0000-1111")];
+    env.subagentThread = {
+      "deadbeef-0000-1111": { snapshot: { thread: [], turns: 0, steps: [] }, running: false },
+    };
+    render(<AgentProfilePage />);
+    const marker = await screen.findByRole("note");
+    expect(within(marker).getByText("task deadbeef")).toBeInTheDocument();
+    await userEvent.click(within(marker).getByRole("button", { name: "Details" }));
+    expect(await screen.findByTestId("subagent-panel")).toBeInTheDocument();
+  });
+
   it("renders user and agent rows with markdown bodies", async () => {
     env.chat = [chatMsg("c1", "user", "do the thing"), chatMsg("c2", "agent", "done!")];
     render(<AgentProfilePage />);

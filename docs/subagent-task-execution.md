@@ -94,6 +94,18 @@ in the main chat feed — which lists every message addressed to the
 agent — and buried useful lifecycle events under up to 80 noise lines
 per run. Migration 0067 purges the historical rows.
 
+**Group markers (S-301 follow-up).** Task-associated messages in the
+main chat (they carry `payload.task_id`) are grouped visually: a
+marker row — `▸ T-<n> · <task title> [Details]` — is rendered before
+each consecutive run of same-task messages (`withTaskGroupMarkers`). A
+plain chat message or another task's message breaks the run. The
+marker's **Details** opens the retained snapshot panel for that task:
+`GET /tasks/{id}/subagent-thread` reads the task's **latest**
+execution row regardless of status, so reviewing a finished run works
+for as long as the snapshot row exists — mirroring the persistent 🤖
+chip of the regular spawn. The working/stalled task-card sections keep
+their own Details buttons while the run is in flight.
+
 ## 4. TaskResult contract (v1)
 
 Returned by the subagent as its final structured message; validated

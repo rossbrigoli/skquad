@@ -48,9 +48,11 @@ import {
   summarizeToolArgs,
   truncateText,
   uniqueContentKeys,
+  withTaskGroupMarkers,
   type ChatToolCall,
   type SubagentInfo,
 } from "../../../../../lib/chat";
+import { formatTaskRef } from "../../../../../lib/taskRef";
 import { SubagentThreadPanel } from "../../../../../components/SubagentThreadPanel";
 import { AgentInboxPanel } from "../../../../../components/AgentInboxPanel";
 import { AttachmentThumbs } from "../../../../../components/AttachmentThumbs";
@@ -177,6 +179,38 @@ function TaskSubagentThreadPanel({
       live={snap.data?.running ?? false}
       emptyText="No subagent activity captured for this task yet."
     />
+  );
+}
+
+// S-301 follow-up: marker rendered in the main chat before each run of
+// task-associated messages (payload.task_id). Tells at a glance which
+// task a group of messages belongs to, and — unlike the working/stalled
+// task cards — persists after the run finishes: Details opens the
+// retained thread snapshot for review, same panel as the live view.
+function TaskGroupMarker({
+  taskId,
+  task,
+  onShowDetails,
+}: Readonly<{
+  taskId: string;
+  task: Task | undefined;
+  onShowDetails: (taskId: string) => void;
+}>) {
+  const ref = formatTaskRef(task);
+  const label = task?.title || `task ${taskId.slice(0, 8)}`;
+  return (
+    <div className="chat-task-marker" role="note">
+      <span className="chat-task-marker-icon" aria-hidden="true">▸</span>
+      {ref ? <span className="chat-task-marker-ref mono">{ref}</span> : null}
+      <span className="chat-task-marker-title">{label}</span>
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={() => onShowDetails(taskId)}
+      >
+        Details
+      </button>
+    </div>
   );
 }
 
@@ -445,6 +479,13 @@ export default function AgentProfilePage() {
   const live = tasks.filter((t) => leaseState(t) === "running");
   const stalled = tasks.filter((t) => leaseState(t) === "stalled");
   const agentActivity = (audit.data || []).filter((e) => e.resource_id === agentId);
+  // S-301 follow-up: id → task lookup so the chat's task-group markers
+  // can show the human ref (T-xxx) and title. Board tasks include done
+  // ones, so markers for finished runs resolve too.
+  const taskIndex = useMemo(
+    () => Object.fromEntries(tasks.map((t) => [t.id, t])),
+    [tasks],
+  );
   // WP2 (ADR-0010) made ai_provider grants legacy: they are no longer
   // grantable and the LLM tab supersedes them, so hide any surviving
   // ai_provider rows from the permissions surface (WP8 drops the type).
@@ -554,6 +595,12 @@ export default function AgentProfilePage() {
                 ) : null
               }
               onCloseSidePanel={() => setTaskThread(null)}
+              taskIndex={taskIndex}
+              onShowTaskThread={(taskId) =>
+                setTaskThread(
+                  taskIndex[taskId] ?? { id: taskId, title: `task ${taskId.slice(0, 8)}` } as Task,
+                )
+              }
               // S-185: task lists ride inside the chat scroll area (they
               // used to sit below the chat and push the page past the
               // fold). S-169's "reachable without crowding" intent holds.
@@ -1094,6 +1141,8 @@ function ChatThread({
   footer,
   sidePanel,
   onCloseSidePanel,
+  taskIndex,
+  onShowTaskThread,
 }: {
   readonly messages: Message[];
   readonly agentName: string;
@@ -1114,6 +1163,11 @@ function ChatThread({
   // exclusive — opening a chip panel replaces it).
   readonly sidePanel?: ReactNode;
   readonly onCloseSidePanel?: () => void;
+  // S-301 follow-up: id → task map (from the squad board) so task-group
+  // markers can show the human ref + title; onShowTaskThread opens the
+  // retained snapshot panel for a task group, live or finished.
+  readonly taskIndex: Record<string, Task>;
+  readonly onShowTaskThread: (taskId: string) => void;
 }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1139,6 +1193,9 @@ function ChatThread({
   const lastWakeAt = useRef(0);
 
   const sorted = useMemo(() => sortChatMessages(messages), [messages]);
+  // S-301 follow-up: task-group markers interleaved with the messages —
+  // one marker per consecutive run of same-task messages.
+  const items = useMemo(() => withTaskGroupMarkers(sorted), [sorted]);
   // S-154: while the newest message is the user's (no agent reply yet),
   // the agent's turn is still in flight — lock the composer and show the
   // "Combobulating…" indicator. S-262: the turn stays pending through
@@ -1191,20 +1248,29 @@ function ChatThread({
             </p>
           </div>
         ) : (
-          sorted.map((msg) => (
-            <ChatMessageRow
-              key={msg.id}
-              msg={msg}
-              user={user}
-              agentName={agentName}
-              onShowSubagent={(c) => {
-                setOpenSubagent(c);
-                // S-301: the chip panel and the task-thread panel share
-                // the side slot — opening one dismisses the other.
-                if (c) onCloseSidePanel?.();
-              }}
-            />
-          ))
+          items.map((item, idx) =>
+            item.kind === "task-start" ? (
+              <TaskGroupMarker
+                key={`task-marker-${idx}`}
+                taskId={item.taskId}
+                task={taskIndex[item.taskId]}
+                onShowDetails={onShowTaskThread}
+              />
+            ) : (
+              <ChatMessageRow
+                key={item.msg.id}
+                msg={item.msg}
+                user={user}
+                agentName={agentName}
+                onShowSubagent={(c) => {
+                  setOpenSubagent(c);
+                  // S-301: the chip panel and the task-thread panel share
+                  // the side slot — opening one dismisses the other.
+                  if (c) onCloseSidePanel?.();
+                }}
+              />
+            ),
+          )
         )}
         {generating ? (
           <div className="chat-row theirs chat-typing-row" aria-live="polite">
