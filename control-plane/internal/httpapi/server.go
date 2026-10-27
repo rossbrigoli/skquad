@@ -5754,6 +5754,15 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 		return
 	}
+	// S-300: completing this task satisfies its downstream edges —
+	// re-sync agents holding tasks that depend on it so they wake for
+	// newly-claimable work instead of idling on a stale graph.
+	if updated.Status == domain.TaskDone {
+		if err := s.syncDependentsFromTaskChange(r.Context(), updated.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
+			return
+		}
+	}
 	subject, body := taskNotifySubjectBody(updated, principal.Agent.Name, string(req.Status), summary)
 	s.notifySquadOwnerRich(r.Context(), ownerNotification{
 		SquadID:     updated.SquadID,
@@ -6249,6 +6258,12 @@ func (s *Server) approveTaskAsLeader(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// S-300: leader-approval satisfied this task's downstream edges —
+	// re-sync agents holding tasks that depend on it.
+	if err := s.syncDependentsFromTaskChange(r.Context(), updated.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
+		return
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -6406,6 +6421,7 @@ func (s *Server) updateCurrentAgentTaskStatus(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusForbidden, "forbidden", msgTaskNotAssigned)
 		return nil, false
 	}
+	previousStatus := task.Status
 	task.Status = taskStatus
 	updated, err := s.store.UpdateTask(s.pendingAgentAuditCtx(r, principal.Agent.ID, action, "task", task.ID, task.SquadID, nil), task)
 	if err != nil {
@@ -6420,6 +6436,14 @@ func (s *Server) updateCurrentAgentTaskStatus(w http.ResponseWriter, r *http.Req
 	} else if err := s.setAgentStatusAndMirror(r.Context(), principal.Agent.ID, agentStatus); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAgentState)
 		return nil, false
+	}
+	// S-300: completing (or blocking) this task changes the claimability
+	// of tasks that depend on it — re-sync their assignees.
+	if previousStatus != updated.Status {
+		if err := s.syncDependentsFromTaskChange(r.Context(), updated.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
+			return nil, false
+		}
 	}
 	return updated, true
 }
@@ -6654,6 +6678,14 @@ func (s *Server) moveTask(w http.ResponseWriter, r *http.Request) {
 	if err := s.syncAffectedAgentsFromTaskChange(r.Context(), previousAssignee, updated.AssigneeAgentID); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
 		return
+	}
+	// S-300: a human status move can unblock (or re-block) dependent
+	// tasks owned by other agents — re-sync their busy/idle state too.
+	if previousStatus != updated.Status {
+		if err := s.syncDependentsFromTaskChange(r.Context(), updated.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -6962,8 +6994,21 @@ func (s *Server) agentHasPendingWork(ctx context.Context, agentID string) (bool,
 		return false, err
 	}
 	for _, task := range tasks {
-		if task.Status == domain.TaskTodo || task.Status == domain.TaskInProgress {
+		switch task.Status {
+		case domain.TaskInProgress:
 			return true, nil
+		case domain.TaskTodo:
+			// S-300: a todo whose upstream dependencies are not done is
+			// WAITING, not pending — ClaimNextTask (S-278) will not pick it
+			// up, so counting it here would hold the agent ghost-busy: the
+			// idle heartbeat keeps upgrading to busy with no reachable work.
+			blockers, err := s.store.UnsatisfiedDependencies(ctx, task.ID)
+			if err != nil {
+				return false, err
+			}
+			if len(blockers) == 0 {
+				return true, nil
+			}
 		}
 	}
 	hasMessages, err := s.store.HasPendingMessages(ctx, agentID)
@@ -6971,6 +7016,30 @@ func (s *Server) agentHasPendingWork(ctx context.Context, agentID string) (bool,
 		return false, err
 	}
 	return hasMessages, nil
+}
+
+// syncDependentsFromTaskChange S-300: re-evaluate agents assigned to
+// tasks that DEPEND on a task whose status just changed. Without this, a
+// completed upstream task leaves downstream agents idle (pods possibly
+// scaled to zero) until some unrelated event wakes them — the mirror in
+// syncAgentStatusFromPendingWork only follows the changed task's own
+// assignee. Idempotent; safe to call on any status transition.
+func (s *Server) syncDependentsFromTaskChange(ctx context.Context, taskID string) error {
+	deps, err := s.store.ListTaskDependencies(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, dep := range deps.Dependents {
+		if dep.AssigneeAgentID == "" || seen[dep.AssigneeAgentID] {
+			continue
+		}
+		seen[dep.AssigneeAgentID] = true
+		if err := s.syncAgentStatusFromPendingWork(ctx, dep.AssigneeAgentID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) setAgentStatusAndMirror(ctx context.Context, agentID string, status domain.AgentStatus) error {

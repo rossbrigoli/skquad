@@ -190,11 +190,12 @@ func (m *MemoryStore) taskDependencyRefLocked(taskID string) (*domain.TaskDepend
 		return nil, ErrNotFound
 	}
 	return &domain.TaskDependencyRef{
-		TaskID:     t.ID,
-		TaskNumber: t.TaskNumber,
-		Title:      t.Title,
-		Status:     t.Status,
-		Satisfied:  t.Status == domain.TaskDone,
+		TaskID:          t.ID,
+		TaskNumber:      t.TaskNumber,
+		Title:           t.Title,
+		Status:          t.Status,
+		AssigneeAgentID: t.AssigneeAgentID,
+		Satisfied:       t.Status == domain.TaskDone,
 	}, nil
 }
 
