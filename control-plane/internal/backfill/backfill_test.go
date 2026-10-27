@@ -3,6 +3,7 @@ package backfill
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
@@ -141,5 +142,82 @@ func TestRunRespectsContextCancellation(t *testing.T) {
 	_, err := Run(ctx, store, &fakeEmbedder{}, "new-model", 2)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context canceled", err)
+	}
+}
+
+// contentEmbedder fails permanently (context-window) on rows whose
+// content contains "oversize", embeds the rest.
+type contentEmbedder struct{ calls int }
+
+func (f *contentEmbedder) Embed(_ context.Context, text string) ([]float64, error) {
+	f.calls++
+	if strings.Contains(text, "oversize") {
+		return nil, errors.New("gateway returned 400: litellm.ContextWindowExceededError: request (41419 tokens) exceeds the available context size (32768 tokens)")
+	}
+	return []float64{float64(f.calls), 0.5}, nil
+}
+
+func TestRunSkipsOversizedRowsWithoutFailing(t *testing.T) {
+	store := newStore("ok1", "big", "ok2")
+	store.pending[1].Content = "oversize transcript that will never fit"
+	emb := &contentEmbedder{}
+	stats, err := Run(context.Background(), store, emb, "new-model", 32)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if stats.Scanned != 3 || stats.Embedded != 2 || stats.Failed != 0 || stats.Skipped != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	// The oversized row is NOT written; the good rows are.
+	if _, stored := store.stored["big"]; stored {
+		t.Fatalf("oversized row should not be stored")
+	}
+	if store.models["ok1"] != "new-model" || store.models["ok2"] != "new-model" {
+		t.Fatalf("good rows not embedded: %+v", store.models)
+	}
+}
+
+func TestRunAllOversizedStopsAndIsNotFatal(t *testing.T) {
+	store := newStore("b1", "b2", "b3", "b4") // batch=2
+	for i := range store.pending {
+		store.pending[i].Content = "oversize " + store.pending[i].ID
+	}
+	emb := &contentEmbedder{}
+	stats, err := Run(context.Background(), store, emb, "new-model", 2)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// First batch of 2 both skipped → no embed progress → guard stops.
+	if stats.Embedded != 0 || stats.Failed != 0 || stats.Skipped != 2 {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestIsPermanentEmbedError(t *testing.T) {
+	permanent := []string{
+		"ContextWindowExceededError",
+		"exceed_context_size_error: too big",
+		"request exceeds the available context size",
+		"maximum context length is 32768",
+		"input is too long",
+		"context_length_exceeded",
+	}
+	for _, s := range permanent {
+		if !isPermanentEmbedError(errors.New(s)) {
+			t.Fatalf("expected permanent: %q", s)
+		}
+	}
+	transient := []string{
+		"connection refused",
+		"502 bad gateway",
+		"embedder unreachable",
+	}
+	for _, s := range transient {
+		if isPermanentEmbedError(errors.New(s)) {
+			t.Fatalf("expected transient: %q", s)
+		}
+	}
+	if isPermanentEmbedError(nil) {
+		t.Fatalf("nil must not be permanent")
 	}
 }
