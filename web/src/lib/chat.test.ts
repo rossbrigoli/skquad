@@ -14,6 +14,8 @@ import {
   subagentSummary,
   summarizeToolArgs,
   truncateText,
+  chatTaskId,
+  withTaskGroupMarkers,
 } from "./chat";
 
 function message(overrides: Partial<Message> = {}): Message {
@@ -468,5 +470,59 @@ describe("subagentSummary (S-163)", () => {
     const summary = subagentSummary({ thread: [], turns: 9, steps });
     expect(summary).toContain("8 steps");
     expect(summary).toContain("…");
+  });
+});
+
+describe("chatTaskId + withTaskGroupMarkers (S-301 follow-up)", () => {
+  const taskMsg = (id: string, taskId: string, created: string) =>
+    message({ id, payload: { message: `progress ${id}`, task_id: taskId }, created_at: created });
+  const plainMsg = (id: string, created: string) =>
+    message({ id, payload: { message: `chat ${id}` }, created_at: created });
+
+  it("chatTaskId reads payload.task_id and ignores junk", () => {
+    expect(chatTaskId(taskMsg("a", "t1", "2026-01-01T00:00:00Z"))).toBe("t1");
+    expect(chatTaskId(plainMsg("b", "2026-01-01T00:00:01Z"))).toBeNull();
+    expect(chatTaskId(message({ id: "c", payload: { task_id: 42 } }))).toBeNull();
+    expect(chatTaskId(message({ id: "d", payload: { task_id: "" } }))).toBeNull();
+    expect(chatTaskId(message({ id: "e" }))).toBeNull();
+  });
+
+  it("emits one marker before the first message of a task run", () => {
+    const items = withTaskGroupMarkers([
+      taskMsg("a", "t1", "2026-01-01T00:00:00Z"),
+      taskMsg("b", "t1", "2026-01-01T00:00:01Z"),
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(["task-start", "message", "message"]);
+    if (items[0].kind === "task-start") expect(items[0].taskId).toBe("t1");
+  });
+
+  it("plain chat messages never get a marker", () => {
+    const items = withTaskGroupMarkers([
+      plainMsg("a", "2026-01-01T00:00:00Z"),
+      plainMsg("b", "2026-01-01T00:00:01Z"),
+    ]);
+    expect(items.every((i) => i.kind === "message")).toBe(true);
+  });
+
+  it("a different task or a plain message breaks the run into new groups", () => {
+    const items = withTaskGroupMarkers([
+      taskMsg("a", "t1", "2026-01-01T00:00:00Z"),
+      plainMsg("b", "2026-01-01T00:00:01Z"),
+      taskMsg("c", "t1", "2026-01-01T00:00:02Z"),
+      taskMsg("d", "t2", "2026-01-01T00:00:03Z"),
+      taskMsg("e", "t1", "2026-01-01T00:00:04Z"),
+    ]);
+    expect(items.map((i) => i.kind)).toEqual([
+      "task-start", "message", "message", "task-start", "message",
+      "task-start", "message", "task-start", "message",
+    ]);
+    const starts = items.filter((i) => i.kind === "task-start");
+    expect(starts.map((i) => (i.kind === "task-start" ? i.taskId : ""))).toEqual([
+      "t1", "t1", "t2", "t1",
+    ]);
+  });
+
+  it("empty stream yields no items", () => {
+    expect(withTaskGroupMarkers([])).toEqual([]);
   });
 });
