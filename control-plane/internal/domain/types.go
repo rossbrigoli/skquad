@@ -70,7 +70,21 @@ const (
 	AgentIdle  AgentStatus = "idle"
 	AgentBusy  AgentStatus = "busy"
 	AgentError AgentStatus = "error"
+	// AgentBlocked (S-300) means the agent owns work it cannot start yet:
+	// every remaining todo has an unsatisfied upstream dependency. It is
+	// DERIVED by the control plane, never agent-reported — the runtime only
+	// ever sends idle/busy/error. Blocked behaves like idle for scaling
+	// (the Agent CR's desiredActive stays false) but is wakeable: a chat
+	// message or an unblocked upstream task moves it back to busy.
+	AgentBlocked AgentStatus = "blocked"
 )
+
+// Wakeable reports whether a pre-warm (or new work) may move an agent in
+// this state to busy. Idle and blocked agents can be woken; busy, error
+// and paused agents must not be clobbered.
+func (s AgentStatus) Wakeable() bool {
+	return s == AgentIdle || s == AgentBlocked
+}
 
 // Agent is a member of a squad. It runs in its own pod and has its own
 // identity, credentials, and permission set.

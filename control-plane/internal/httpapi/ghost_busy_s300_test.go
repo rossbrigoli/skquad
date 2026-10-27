@@ -1,6 +1,7 @@
 // S-300: ghost-busy fix — a todo blocked by unfinished dependencies is
-// WAITING, not pending work, and completing an upstream task must
-// re-sync the agents assigned to dependent tasks.
+// WAITING, not pending work, so the agent surfaces as `blocked` instead of
+// being held busy; completing an upstream task must re-sync the agents
+// assigned to dependent tasks; and a blocked agent must stay wakeable.
 package httpapi
 
 import (
@@ -14,14 +15,14 @@ import (
 )
 
 type s300Fixture struct {
-	handler        http.Handler
-	crWriter       *fakeCRWriter
-	squadID        string
-	agentID        string // the downstream (dependent-task) agent
+	handler         http.Handler
+	crWriter        *fakeCRWriter
+	squadID         string
+	agentID         string // the downstream (dependent-task) agent
 	upstreamAgentID string
-	credential   string
-	upstreamID   string
-	downstreamID string
+	credential      string
+	upstreamID      string
+	downstreamID    string
 }
 
 func newS300Fixture(t *testing.T) *s300Fixture {
@@ -61,12 +62,12 @@ func newS300Fixture(t *testing.T) *s300Fixture {
 	return &s300Fixture{
 		handler:         handler,
 		crWriter:        crWriter,
-		squadID:       squad.ID,
-		agentID:       downstream.ID,
+		squadID:         squad.ID,
+		agentID:         downstream.ID,
 		upstreamAgentID: upstream.ID,
-		credential:    crWriter.credentialTokens[identity.CredentialRef],
-		upstreamID:    upTask.ID,
-		downstreamID:  downTask.ID,
+		credential:      crWriter.credentialTokens[identity.CredentialRef],
+		upstreamID:      upTask.ID,
+		downstreamID:    downTask.ID,
 	}
 }
 
@@ -82,20 +83,78 @@ func (f *s300Fixture) heartbeat(t *testing.T, status string) {
 	doAgentJSON(t, f.handler, f.agentID, f.credential, http.MethodPost, pathMyHeartbeat, map[string]any{"status": status}, http.StatusOK, &domain.Agent{})
 }
 
-// TestHeartbeatIdleWithOnlyBlockedTodo: the ghost-busy regression. An
-// agent whose only open work is a dependency-blocked todo must stay
-// idle on an idle heartbeat — the claim path would never pick it up.
-func TestS300HeartbeatStaysIdleWhenOnlyTodoIsDependencyBlocked(t *testing.T) {
+// TestS300HeartbeatMarksAgentBlockedWhenOnlyTodoIsDependencyBlocked: the
+// ghost-busy regression, with Ross's blocked state. An agent whose only
+// open work is a dependency-blocked todo is neither running nor idle —
+// it is BLOCKED: work exists but ClaimNextTask cannot reach it.
+func TestS300HeartbeatMarksAgentBlockedWhenOnlyTodoIsDependencyBlocked(t *testing.T) {
 	f := newS300Fixture(t)
 
 	f.heartbeat(t, "idle")
-	require.Equal(t, domain.AgentIdle, f.agentStatus(t),
-		"blocked todo must not upgrade idle heartbeat to busy")
+	require.Equal(t, domain.AgentBlocked, f.agentStatus(t),
+		"blocked todo must resolve the idle heartbeat to blocked, never busy")
 
 	// Sanity: the downstream task really is a todo with an unsatisfied dep.
 	deps := getDeps(t, f.handler, f.downstreamID)
 	require.Len(t, deps.DependsOn, 1)
 	require.False(t, deps.DependsOn[0].Satisfied)
+}
+
+// TestS300BlockedIsStableAcrossHeartbeats: repeated idle heartbeats keep
+// the derived blocked state (they must not decay to idle or creep to busy).
+func TestS300BlockedIsStableAcrossHeartbeats(t *testing.T) {
+	f := newS300Fixture(t)
+
+	for i := 0; i < 3; i++ {
+		f.heartbeat(t, "idle")
+		require.Equal(t, domain.AgentBlocked, f.agentStatus(t))
+	}
+}
+
+// TestS300NoWorkIsIdleNotBlocked: an agent with no tasks at all is idle.
+// Blocked requires work that cannot be started.
+func TestS300NoWorkIsIdleNotBlocked(t *testing.T) {
+	f := newS300Fixture(t)
+
+	doJSON(t, f.handler, http.MethodPost, pathTasksPrefix+f.downstreamID+"/move", map[string]any{
+		"status": "done",
+	}, http.StatusOK, &domain.Task{})
+
+	f.heartbeat(t, "idle")
+	require.Equal(t, domain.AgentIdle, f.agentStatus(t),
+		"no open work must be idle, not blocked")
+}
+
+// TestS300MixedWorkIsBusy: one blocked todo plus one claimable todo is
+// BUSY — blocked only applies when ALL remaining todos are blocked.
+func TestS300MixedWorkIsBusy(t *testing.T) {
+	f := newS300Fixture(t)
+
+	var freeTask domain.Task
+	doJSON(t, f.handler, http.MethodPost, pathSquadsPrefix+f.squadID+pathBoardTasks, map[string]any{
+		"title":             "Unrelated free task",
+		"assignee_agent_id": f.agentID,
+	}, http.StatusCreated, &freeTask)
+
+	f.heartbeat(t, "idle")
+	require.Equal(t, domain.AgentBusy, f.agentStatus(t),
+		"a claimable todo outranks a blocked one")
+}
+
+// TestS300BlockedAgentIsWakeableByChat: the critical gotcha. wakeAgent
+// only flipped *idle* agents to busy; a blocked agent would have been
+// unwakeable, so a direct chat message could never start its pod.
+func TestS300BlockedAgentIsWakeableByChat(t *testing.T) {
+	f := newS300Fixture(t)
+
+	f.heartbeat(t, "idle")
+	require.Equal(t, domain.AgentBlocked, f.agentStatus(t))
+
+	var res map[string]any
+	doJSON(t, f.handler, http.MethodPost, pathAgentsPrefix+f.agentID+"/wake", map[string]any{}, http.StatusOK, &res)
+	require.Equal(t, true, res["waking"],
+		"a blocked agent must still be pre-warmable by chat")
+	require.Equal(t, string(domain.AgentBusy), res["status"])
 }
 
 // TestHeartbeatBusyWithUnblockedTodo: control case — an unblocked todo
@@ -119,9 +178,9 @@ func TestS300HeartbeatUpgradesToUnblockedTodo(t *testing.T) {
 func TestS300DependentAgentWokenOnUpstreamDone(t *testing.T) {
 	f := newS300Fixture(t)
 
-	// Downstream agent idles while blocked.
+	// Downstream agent is blocked while its only todo waits upstream.
 	f.heartbeat(t, "idle")
-	require.Equal(t, domain.AgentIdle, f.agentStatus(t))
+	require.Equal(t, domain.AgentBlocked, f.agentStatus(t))
 
 	// Upstream agent claims its task (execution fence) then completes it.
 	var upIdentity domain.AgentIdentity
@@ -149,7 +208,7 @@ func TestS300DependentAgentWokenOnHumanMove(t *testing.T) {
 	f := newS300Fixture(t)
 
 	f.heartbeat(t, "idle")
-	require.Equal(t, domain.AgentIdle, f.agentStatus(t))
+	require.Equal(t, domain.AgentBlocked, f.agentStatus(t))
 
 	doJSON(t, f.handler, http.MethodPost, pathTasksPrefix+f.upstreamID+"/move", map[string]any{
 		"status": "done",

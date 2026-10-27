@@ -65,6 +65,12 @@ describe("agentStatus", () => {
   it("maps paused", () => {
     expect(agentStatus(agent("paused"))).toBe("paused");
   });
+
+  // S-300: an agent whose only open work is dependency-blocked must not
+  // render as Idle — it uses the same Blocked chip tasks use.
+  it("maps blocked", () => {
+    expect(agentStatus(agent("blocked"))).toBe("blocked");
+  });
 });
 
 describe("attention ordering", () => {

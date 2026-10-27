@@ -5150,16 +5150,17 @@ func (s *Server) createAgentChatMessage(w http.ResponseWriter, r *http.Request) 
 
 // wakeAgent pre-warms a scaled-to-zero agent (S-154). The chat UI calls it
 // when the user starts typing so the runtime pod is already coming up by
-// the time the message is actually sent. Idempotent and cheap: it only
-// flips an *idle* agent to busy (which drives the Agent CR's
-// desiredActive via the outbox); any other status is reported back
-// untouched so we never clobber error/paused/busy state.
+// the time the message is actually sent. Idempotent and cheap: it flips a
+// wakeable agent (idle or S-300 blocked) to busy, which drives the Agent
+// CR's desiredActive via the outbox; any other status is reported back
+// untouched so we never clobber error/paused/busy state. A blocked agent
+// MUST stay wakeable — otherwise a direct chat message could never reach it.
 func (s *Server) wakeAgent(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.loadAgentForAction(w, r, "talk")
 	if !ok {
 		return
 	}
-	if target.Status != domain.AgentIdle {
+	if !target.Status.Wakeable() {
 		writeJSON(w, http.StatusOK, map[string]any{"waking": false, "status": string(target.Status)})
 		return
 	}
@@ -6392,20 +6393,21 @@ func (s *Server) heartbeatExecutionFence(w http.ResponseWriter, r *http.Request,
 	return true
 }
 
-// resolveHeartbeatStatus upgrades an idle heartbeat to busy when the agent
-// still has pending work. On storage failure it writes the HTTP error and
-// returns ok=false.
+// resolveHeartbeatStatus re-derives an idle heartbeat: an agent that
+// still has reachable work is busy, and one whose only remaining work is
+// dependency-blocked is blocked rather than idle. On storage failure it
+// writes the HTTP error and returns ok=false.
 func (s *Server) resolveHeartbeatStatus(ctx context.Context, w http.ResponseWriter, agentID string, status domain.AgentStatus) (domain.AgentStatus, bool) {
 	if status != domain.AgentIdle {
 		return status, true
 	}
-	pending, err := s.agentHasPendingWork(ctx, agentID)
+	derived, err := s.deriveAgentStatusFromWork(ctx, agentID)
 	if err != nil {
 		writeStorageError(w, err)
 		return status, false
 	}
-	if pending {
-		return domain.AgentBusy, true
+	if derived != domain.AgentIdle {
+		return derived, true
 	}
 	return status, true
 }
@@ -6978,25 +6980,35 @@ func (s *Server) syncAffectedAgentsFromTaskChange(ctx context.Context, beforeAge
 }
 
 func (s *Server) syncAgentStatusFromPendingWork(ctx context.Context, agentID string) error {
-	pending, err := s.agentHasPendingWork(ctx, agentID)
+	derived, err := s.deriveAgentStatusFromWork(ctx, agentID)
 	if err != nil {
 		return err
 	}
-	if pending {
-		return s.setAgentStatusAndMirror(ctx, agentID, domain.AgentBusy)
-	}
-	return s.setAgentStatusAndMirror(ctx, agentID, domain.AgentIdle)
+	return s.setAgentStatusAndMirror(ctx, agentID, derived)
 }
 
-func (s *Server) agentHasPendingWork(ctx context.Context, agentID string) (bool, error) {
+// deriveAgentStatusFromWork S-300: single source of truth for what an
+// agent's status should be given the work it owns.
+//
+//	in-progress task, a todo with no unsatisfied dependency, or an
+//	unread inbox message  -> busy   (there is something to do NOW)
+//	every remaining todo blocked upstream -> blocked (work exists but is
+//	unclaimable — ClaimNextTask (S-278) will not pick it up)
+//	nothing             -> idle
+//
+// Before this, any todo counted as "pending", so an agent whose only
+// work was dependency-blocked was held ghost-busy forever: the idle
+// heartbeat kept upgrading to busy with no reachable work.
+func (s *Server) deriveAgentStatusFromWork(ctx context.Context, agentID string) (domain.AgentStatus, error) {
 	tasks, err := s.store.ListAgentTasks(ctx, agentID)
 	if err != nil {
-		return false, err
+		return domain.AgentIdle, err
 	}
+	blockedWork := false
 	for _, task := range tasks {
 		switch task.Status {
 		case domain.TaskInProgress:
-			return true, nil
+			return domain.AgentBusy, nil
 		case domain.TaskTodo:
 			// S-300: a todo whose upstream dependencies are not done is
 			// WAITING, not pending — ClaimNextTask (S-278) will not pick it
@@ -7004,18 +7016,25 @@ func (s *Server) agentHasPendingWork(ctx context.Context, agentID string) (bool,
 			// idle heartbeat keeps upgrading to busy with no reachable work.
 			blockers, err := s.store.UnsatisfiedDependencies(ctx, task.ID)
 			if err != nil {
-				return false, err
+				return domain.AgentIdle, err
 			}
 			if len(blockers) == 0 {
-				return true, nil
+				return domain.AgentBusy, nil
 			}
+			blockedWork = true
 		}
 	}
 	hasMessages, err := s.store.HasPendingMessages(ctx, agentID)
 	if err != nil {
-		return false, err
+		return domain.AgentIdle, err
 	}
-	return hasMessages, nil
+	if hasMessages {
+		return domain.AgentBusy, nil
+	}
+	if blockedWork {
+		return domain.AgentBlocked, nil
+	}
+	return domain.AgentIdle, nil
 }
 
 // syncDependentsFromTaskChange S-300: re-evaluate agents assigned to

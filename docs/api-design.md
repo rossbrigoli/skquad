@@ -119,6 +119,17 @@ statuses with a `bad_request` error. Agent completion is narrower: agents may
 complete to `in-review` or `done`; they must use the block endpoint for
 `blocked`.
 
+> **Agent status (S-300).** Agent-owned status is `idle`, `busy`, `error`, or
+> `blocked`. The heartbeat endpoint still accepts only `idle`/`busy`/`error` —
+> `blocked` is **derived by the control plane, never agent-reported**. An idle
+> heartbeat is re-derived against the work the agent owns: reachable work (an
+> in-progress task, a todo with no unsatisfied dependency, or an unread inbox
+> message) resolves to `busy`; a todo whose upstream dependencies are all
+> unfinished resolves to `blocked`; nothing resolves to `idle`. `blocked`
+> behaves like `idle` for scaling (the `Agent` CR's `desiredActive` stays
+> false) but stays wakeable — `POST /api/v1/agents/:id/wake` and inbound chat
+> both move it back to `busy`, so a blocked agent is never unreachable.
+
 Agent runtimes should send `X-Skquad-Worker-ID` on claim and follow-up calls.
 The control plane rejects stale/missing execution fences on terminal updates
 with `409 conflict` or `400 bad_request`, preventing duplicate pods from
