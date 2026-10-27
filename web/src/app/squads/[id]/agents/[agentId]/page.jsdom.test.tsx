@@ -467,26 +467,35 @@ describe("chat thread", () => {
     expect(within(panel).queryByText("live")).not.toBeInTheDocument();
   });
 
-  // S-301 follow-up: task-group markers in the main chat.
-  const taskChat = (id: string, taskId: string, text = "progress") =>
-    chatMsg(id, "agent", text, { payload: { message: text, task_id: taskId } });
+  // S-301 follow-up: task-lifecycle markers in the main chat.
+  const lifecycleMsg = (id: string, taskId: string, kind: string, ref?: number) =>
+    chatMsg(id, "agent", kind, {
+      payload: {
+        message: kind,
+        task_id: taskId,
+        task_lifecycle: kind,
+        task_ref: ref ? `T-${ref}` : "",
+        task_title: "",
+      },
+    });
 
-  it("task messages get a group marker with ref + title (S-301 follow-up)", async () => {
+  it("started + done render as thin dividers with the task ref (S-301 follow-up)", async () => {
     env.tasks = [
-      { id: "t1", title: "shipped task", task_number: 7, assignee_agent_id: "ag1" },
+      { id: "t1", title: "lifecycle task", task_number: 7, assignee_agent_id: "ag1" },
     ];
-    env.chat = [taskChat("c1", "t1")];
+    env.chat = [lifecycleMsg("s1", "t1", "started", 7), lifecycleMsg("d1", "t1", "done", 7)];
     render(<AgentProfilePage />);
-    const marker = await screen.findByRole("note");
-    expect(within(marker).getByText("T-7")).toBeInTheDocument();
-    expect(within(marker).getByText("shipped task")).toBeInTheDocument();
+    const notes = await screen.findAllByRole("note");
+    expect(notes).toHaveLength(2);
+    expect(within(notes[0]).getByText("T-7 started")).toBeInTheDocument();
+    expect(within(notes[1]).getByText("T-7 done")).toBeInTheDocument();
   });
 
-  it("marker Details opens the retained snapshot after the run finished (S-301 follow-up)", async () => {
+  it("delegated marker renders a 🤖 chip whose Details opens the snapshot (S-301 follow-up)", async () => {
     env.tasks = [
-      { id: "t1", title: "finished task", task_number: 9, assignee_agent_id: "ag1" },
+      { id: "t1", title: "delegated task", task_number: 9, assignee_agent_id: "ag1" },
     ];
-    env.chat = [taskChat("c1", "t1", "all done")];
+    env.chat = [lifecycleMsg("del", "t1", "delegated", 9)];
     env.subagentThread = {
       t1: {
         snapshot: {
@@ -498,40 +507,38 @@ describe("chat thread", () => {
       },
     };
     render(<AgentProfilePage />);
-    const marker = await screen.findByRole("note");
-    await userEvent.click(within(marker).getByRole("button", { name: "Details" }));
+    const chip = await screen.findByText("🤖 task subagent");
+    expect(within(chip.parentElement as HTMLElement).getByText("T-9 · delegated task")).toBeInTheDocument();
+    await userEvent.click(within(chip.parentElement as HTMLElement).getByRole("button", { name: "Details" }));
     const panel = await screen.findByTestId("subagent-panel");
     expect(within(panel).getByText("entry:final review")).toBeInTheDocument();
-    expect(within(panel).getByText("title:Task subagent — finished task")).toBeInTheDocument();
     // Finished run: no live indicator.
     expect(within(panel).queryByText("live")).not.toBeInTheDocument();
   });
 
-  it("a plain reply between task messages splits the run into two groups (S-301 follow-up)", async () => {
-    env.tasks = [
-      { id: "t1", title: "split task", task_number: 3, assignee_agent_id: "ag1" },
-    ];
-    env.chat = [
-      taskChat("c1", "t1"),
-      chatMsg("c2", "user", "quick question"),
-      taskChat("c3", "t1"),
-    ];
-    render(<AgentProfilePage />);
-    await screen.findByText("quick question");
-    expect(screen.getAllByRole("note")).toHaveLength(2);
-  });
-
-  it("unknown task falls back to a short-id label and still opens Details (S-301 follow-up)", async () => {
+  it("delegated chip for an unknown task falls back to short-id and still opens Details (S-301 follow-up)", async () => {
     env.tasks = [];
-    env.chat = [taskChat("c1", "deadbeef-0000-1111")];
+    env.chat = [lifecycleMsg("del", "deadbeef-0000-1111", "delegated")];
     env.subagentThread = {
       "deadbeef-0000-1111": { snapshot: { thread: [], turns: 0, steps: [] }, running: false },
     };
     render(<AgentProfilePage />);
-    const marker = await screen.findByRole("note");
-    expect(within(marker).getByText("task deadbeef")).toBeInTheDocument();
-    await userEvent.click(within(marker).getByRole("button", { name: "Details" }));
+    const chip = await screen.findByText("🤖 task subagent");
+    expect(within(chip.parentElement as HTMLElement).getByText("task deadbeef")).toBeInTheDocument();
+    await userEvent.click(within(chip.parentElement as HTMLElement).getByRole("button", { name: "Details" }));
     expect(await screen.findByTestId("subagent-panel")).toBeInTheDocument();
+  });
+
+  it("ordinary task-thread turns (task_id only) still render as normal bubbles (S-301 follow-up)", async () => {
+    env.tasks = [
+      { id: "t1", title: "t", task_number: 1, assignee_agent_id: "ag1" },
+    ];
+    env.chat = [chatMsg("c1", "agent", "a working turn", { payload: { message: "a working turn", task_id: "t1" } })];
+    render(<AgentProfilePage />);
+    expect(await screen.findByText("a working turn")).toBeInTheDocument();
+    // No lifecycle divider/chip for a plain working turn.
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+    expect(screen.queryByText("🤖 task subagent")).not.toBeInTheDocument();
   });
 
   it("renders user and agent rows with markdown bodies", async () => {

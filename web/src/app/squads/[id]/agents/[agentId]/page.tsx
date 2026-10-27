@@ -48,7 +48,8 @@ import {
   summarizeToolArgs,
   truncateText,
   uniqueContentKeys,
-  withTaskGroupMarkers,
+  chatTaskId,
+  chatTaskLifecycle,
   type ChatToolCall,
   type SubagentInfo,
 } from "../../../../../lib/chat";
@@ -182,12 +183,35 @@ function TaskSubagentThreadPanel({
   );
 }
 
-// S-301 follow-up: marker rendered in the main chat before each run of
-// task-associated messages (payload.task_id). Tells at a glance which
-// task a group of messages belongs to, and — unlike the working/stalled
-// task cards — persists after the run finishes: Details opens the
-// retained thread snapshot for review, same panel as the live view.
-function TaskGroupMarker({
+// S-301 follow-up: a thin full-width divider that brackets a task run
+// in the main chat — "Task T-n started" at claim, "Task T-n done" at
+// completion. Not a bubble; just a quiet line so the run has clear
+// bookends. Persists with the message history.
+function TaskLifecycleDivider({
+  kind,
+  task,
+  taskId,
+}: Readonly<{
+  kind: "started" | "done";
+  task: Task | undefined;
+  taskId: string;
+}>) {
+  const ref = formatTaskRef(task) || `task ${taskId.slice(0, 8)}`;
+  const label = kind === "started" ? `${ref} started` : `${ref} done`;
+  return (
+    <div className={`chat-task-divider ${kind}`} role="note">
+      <span className="chat-task-divider-line" aria-hidden="true" />
+      <span className="chat-task-divider-label">{label}</span>
+      <span className="chat-task-divider-line" aria-hidden="true" />
+    </div>
+  );
+}
+
+// S-301 follow-up: the delegation marker rendered as a 🤖 chip — the
+// same affordance as a regular spawn_subagent chip — on the turn where
+// the claimed task is handed to the nested task subagent. Details opens
+// the retained thread snapshot panel (works live or after the run).
+function TaskDelegatedChip({
   taskId,
   task,
   onShowDetails,
@@ -199,17 +223,18 @@ function TaskGroupMarker({
   const ref = formatTaskRef(task);
   const label = task?.title || `task ${taskId.slice(0, 8)}`;
   return (
-    <div className="chat-task-marker" role="note">
-      <span className="chat-task-marker-icon" aria-hidden="true">▸</span>
-      {ref ? <span className="chat-task-marker-ref mono">{ref}</span> : null}
-      <span className="chat-task-marker-title">{label}</span>
-      <button
-        type="button"
-        className="btn btn-sm"
-        onClick={() => onShowDetails(taskId)}
-      >
-        Details
-      </button>
+    <div className="chat-tool subagent-chip delegated-chip">
+      <div className="chat-tool-summary">
+        <span className="chat-tool-name">🤖 task subagent</span>
+        <span className="chat-tool-args mono">{ref ? `${ref} · ${label}` : label}</span>
+        <button
+          type="button"
+          className="btn ghost small"
+          onClick={() => onShowDetails(taskId)}
+        >
+          Details
+        </button>
+      </div>
     </div>
   );
 }
@@ -1193,9 +1218,6 @@ function ChatThread({
   const lastWakeAt = useRef(0);
 
   const sorted = useMemo(() => sortChatMessages(messages), [messages]);
-  // S-301 follow-up: task-group markers interleaved with the messages —
-  // one marker per consecutive run of same-task messages.
-  const items = useMemo(() => withTaskGroupMarkers(sorted), [sorted]);
   // S-154: while the newest message is the user's (no agent reply yet),
   // the agent's turn is still in flight — lock the composer and show the
   // "Combobulating…" indicator. S-262: the turn stays pending through
@@ -1248,18 +1270,34 @@ function ChatThread({
             </p>
           </div>
         ) : (
-          items.map((item, idx) =>
-            item.kind === "task-start" ? (
-              <TaskGroupMarker
-                key={`task-marker-${idx}`}
-                taskId={item.taskId}
-                task={taskIndex[item.taskId]}
-                onShowDetails={onShowTaskThread}
-              />
-            ) : (
+          sorted.map((msg) => {
+            const lifecycle = chatTaskLifecycle(msg);
+            if (lifecycle === "started" || lifecycle === "done") {
+              const tid = chatTaskId(msg) ?? "";
+              return (
+                <TaskLifecycleDivider
+                  key={msg.id}
+                  kind={lifecycle}
+                  task={taskIndex[tid]}
+                  taskId={tid}
+                />
+              );
+            }
+            if (lifecycle === "delegated") {
+              const tid = chatTaskId(msg) ?? "";
+              return (
+                <TaskDelegatedChip
+                  key={msg.id}
+                  taskId={tid}
+                  task={taskIndex[tid]}
+                  onShowDetails={onShowTaskThread}
+                />
+              );
+            }
+            return (
               <ChatMessageRow
-                key={item.msg.id}
-                msg={item.msg}
+                key={msg.id}
+                msg={msg}
                 user={user}
                 agentName={agentName}
                 onShowSubagent={(c) => {
@@ -1269,8 +1307,8 @@ function ChatThread({
                   if (c) onCloseSidePanel?.();
                 }}
               />
-            ),
-          )
+            );
+          })
         )}
         {generating ? (
           <div className="chat-row theirs chat-typing-row" aria-live="polite">

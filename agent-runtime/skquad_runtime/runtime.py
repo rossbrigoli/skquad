@@ -1331,6 +1331,22 @@ class ControlPlaneClient:
                 extra={"task_id": task_id, "error": str(exc)},
             )
 
+    def mark_task_delegated(self, task_id: str, text: str) -> None:
+        # S-301 follow-up: post the delegation turn tagged as a
+        # "delegated" lifecycle marker so the chat renders a 🤖 Details
+        # chip. Same best-effort contract as append_task_thread.
+        try:
+            self._json(
+                "POST",
+                f"/api/v1/agents/me/tasks/{task_id}/thread",
+                {"message": text, "marker": "delegated"},
+            )
+        except Exception as exc:  # noqa: BLE001 - marker visibility is best-effort
+            LOGGER.warning(
+                "task delegation marker push failed",
+                extra={"task_id": task_id, "error": str(exc)},
+            )
+
     def complete_task(
         self,
         task: RuntimeTask | str,
@@ -2575,6 +2591,11 @@ class LiteLLMTaskHandler:
         # snapshot (a replaceable view, NOT message rows). Injected by
         # run_task_once alongside the thread sink; None = no publishing.
         self.subagent_thread_sink: Callable[[Mapping[str, object]], None] | None = None
+        # S-301 follow-up: sink for the "delegated" lifecycle marker —
+        # the turn where the claimed task is handed to the nested task
+        # subagent. The chat renders it as a 🤖 Details chip. Falls back
+        # to thread_sink when unset (plain bubble).
+        self.delegation_sink: Callable[[str], None] | None = None
         # S-208: bound-model context-window cache (60s TTL) feeding the
         # compaction limit (see compactor_for_model).
         self._context_window_cache: dict[str, tuple[int, float]] = {}
@@ -2608,6 +2629,16 @@ class LiteLLMTaskHandler:
         deliberately do NOT travel as task-thread messages anymore.
         """
         self.subagent_thread_sink = sink
+
+    def attach_delegation_sink(self, sink: Callable[[str], None] | None) -> None:
+        """S-301 follow-up: set the delegation-marker sink.
+
+        The "Delegating this task to a task subagent" turn is posted
+        through this sink so the control plane tags it as a "delegated"
+        lifecycle event (a 🤖 Details chip in the chat) rather than an
+        ordinary working-turn bubble.
+        """
+        self.delegation_sink = sink
 
     def _task_prerequisites(self, config: BootstrapConfig) -> tuple[str, str]:
         virtual_key = read_secret_value(config.virtual_key_path)
@@ -2747,13 +2778,16 @@ class LiteLLMTaskHandler:
         brief = self._task_brief(task)
 
         while True:
-            if self.thread_sink is not None:
+            if self.thread_sink is not None or self.delegation_sink is not None:
                 label = (
                     "Delegating this task to a task subagent"
                     if brief.attempt == 1
                     else f"Re-spawning the task subagent (rework {reworks_used}/{rework_max})"
                 )
-                self.thread_sink(trim_text(label, TASK_THREAD_TURN_MAX_CHARS))
+                # Prefer the delegation sink (renders as a 🤖 Details
+                # chip); fall back to the plain thread sink.
+                sink = self.delegation_sink or self.thread_sink
+                sink(trim_text(label, TASK_THREAD_TURN_MAX_CHARS))
 
             run = ts.run_task_subagent(
                 brief,
@@ -3879,6 +3913,12 @@ def run_task_once(
     if callable(snap_attacher):
         snap_attacher(
             lambda snap: control_plane.publish_subagent_thread(task.id, snap)
+        )
+    # S-301 follow-up: the delegation turn becomes a 🤖 Details chip.
+    deleg_attacher = getattr(handler, "attach_delegation_sink", None)
+    if callable(deleg_attacher):
+        deleg_attacher(
+            lambda text: control_plane.mark_task_delegated(task.id, text)
         )
     resumed = False
     if config.workspace_enabled:
