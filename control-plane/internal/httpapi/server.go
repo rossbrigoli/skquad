@@ -3475,6 +3475,44 @@ func (s *Server) appendTaskThreadEvent(ctx context.Context, task *domain.Task, f
 	}
 }
 
+// appendTaskLifecycleEvent writes a thread-only lifecycle marker for a
+// task (S-301 follow-up): "started" (on claim), "delegated" (the nested
+// task-subagent hand-off), or "done" (on completion). The payload
+// carries task_lifecycle + task_ref + task_title so the chat renders a
+// thin divider (started/done) or a 🤖 Details chip (delegated) instead
+// of a plain bubble. Thread-only and DELIVERED, exactly like
+// appendTaskThreadEvent — it never enters the agent's pending inbox.
+func (s *Server) appendTaskLifecycleEvent(ctx context.Context, task *domain.Task, fromType, fromID, lifecycle, text string) {
+	if task == nil || task.AssigneeAgentID == "" {
+		return
+	}
+	ref := ""
+	if task.TaskNumber > 0 {
+		ref = fmt.Sprintf("T-%d", task.TaskNumber)
+	}
+	payload, err := json.Marshal(map[string]string{
+		"message":        text,
+		"task_id":        task.ID,
+		"task_lifecycle": lifecycle,
+		"task_ref":       ref,
+		"task_title":     task.Title,
+	})
+	if err != nil {
+		return
+	}
+	if _, err := s.store.CreateMessage(ctx, &domain.Message{
+		FromType:  fromType,
+		FromID:    fromID,
+		ToAgentID: task.AssigneeAgentID,
+		SquadID:   task.SquadID,
+		Type:      domain.MessageReply,
+		Payload:   payload,
+		Status:    domain.MessageDelivered,
+	}); err != nil {
+		slog.Warn("task lifecycle event failed", "task_id", task.ID, "lifecycle", lifecycle, "error", err)
+	}
+}
+
 // notifyDelegationResult closes the loop for a task that was materialized from
 // a delegate/handoff message: the requesting agent receives a reply carrying
 // the completion summary, and the requesting squad's owner receives an inbox
@@ -5605,6 +5643,9 @@ func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// S-301 follow-up: mark the claim in the chat thread with a thin
+	// "Task started" divider so the run has a clear beginning.
+	s.appendTaskLifecycleEvent(r.Context(), updated, "agent", principal.Agent.ID, "started", "Task started")
 	if promptSHA != "" {
 		if _, err := s.store.SetTaskExecutionPromptSHA(r.Context(), principal.Agent.ID, updated.ID, promptSHA); err != nil {
 			writeStorageError(w, err)
@@ -5635,6 +5676,11 @@ func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 func (s *Server) appendCurrentAgentTaskThread(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Message string `json:"message"`
+		// S-301 follow-up: an optional lifecycle marker. The runtime sets
+		// "delegated" on the "Delegating this task to a task subagent"
+		// turn so the chat renders it as a 🤖 Details chip rather than a
+		// plain bubble. Empty = an ordinary working turn.
+		Marker string `json:"marker"`
 	}
 	if r.Body == nil || r.ContentLength == 0 {
 		writeError(w, http.StatusBadRequest, "missing_body", msgMessageRequired)
@@ -5656,6 +5702,11 @@ func (s *Server) appendCurrentAgentTaskThread(w http.ResponseWriter, r *http.Req
 	}
 	if task.AssigneeAgentID != principal.Agent.ID {
 		writeError(w, http.StatusForbidden, "not_assignee", "only the assigned agent can append turns to this task thread")
+		return
+	}
+	if req.Marker == "delegated" {
+		s.appendTaskLifecycleEvent(r.Context(), task, "agent", principal.Agent.ID, "delegated", text)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	s.appendTaskThreadEvent(r.Context(), task, "agent", principal.Agent.ID, domain.MessageReply, trimRunes(text, maxTaskThreadTurnChars))
@@ -5863,6 +5914,11 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 		threadText = fmt.Sprintf("Moved this task to %s without a summary.", req.Status)
 	}
 	s.appendTaskThreadEvent(r.Context(), updated, "agent", principal.Agent.ID, domain.MessageReply, threadText)
+	// S-301 follow-up: a thin "Task done" divider closes the run in the
+	// chat thread. Only for a genuine done (not an in-review hand-off).
+	if updated.Status == domain.TaskDone {
+		s.appendTaskLifecycleEvent(r.Context(), updated, "agent", principal.Agent.ID, "done", "Task done")
+	}
 	if req.PersistMemory && strings.TrimSpace(req.Summary) != "" {
 		s.persistCompletionMemory(w, r, principal, updated, summary, strings.TrimSpace(req.Summary), req)
 	}

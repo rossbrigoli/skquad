@@ -41,30 +41,17 @@ export function chatTaskId(msg: Message): string | null {
   return typeof id === "string" && id !== "" ? id : null;
 }
 
-// A render item in the chat stream: either a message or a task-group
-// marker that opens a run of task-associated messages.
-export type ChatRenderItem =
-  | { kind: "message"; msg: Message }
-  | { kind: "task-start"; taskId: string };
+// The three task-lifecycle markers the control plane emits into the chat
+// thread (S-301 follow-up). Rendered as thin dividers (started/done) or
+// a 🤖 Details chip (delegated) instead of a plain bubble.
+export type TaskLifecycle = "started" | "done" | "delegated";
 
-/** S-301 follow-up: annotate the sorted chat stream with task-group
- * markers. A marker is emitted before the FIRST message of each
- * consecutive run sharing the same task_id — a user reply or another
- * task's message breaks the run and starts a fresh group. The marker
- * persists as long as the messages do, so reviewing a finished task
- * run stays possible from the main thread. */
-export function withTaskGroupMarkers(sorted: Message[]): ChatRenderItem[] {
-  const items: ChatRenderItem[] = [];
-  let currentTask: string | null = null;
-  for (const msg of sorted) {
-    const taskId = chatTaskId(msg);
-    if (taskId && taskId !== currentTask) {
-      items.push({ kind: "task-start", taskId });
-    }
-    currentTask = taskId;
-    items.push({ kind: "message", msg });
-  }
-  return items;
+/** S-301 follow-up: read the task_lifecycle marker off a message, if
+ * present. Returns null for ordinary messages (including ordinary
+ * task-thread turns that only carry task_id). */
+export function chatTaskLifecycle(msg: Message): TaskLifecycle | null {
+  const v = msg.payload?.task_lifecycle;
+  return v === "started" || v === "done" || v === "delegated" ? v : null;
 }
 
 /** Parse `payload.tool_calls` (emitted by the agent runtime since S-122)

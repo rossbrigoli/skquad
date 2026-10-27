@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -129,4 +130,79 @@ func TestTaskThreadTurnStreaming(t *testing.T) {
 	require.Equal(t, "delivered", string(thread[1].Status))
 	require.Contains(t, string(thread[1].Payload), "checking the runtime API surface")
 	require.Contains(t, string(thread[1].Payload), task.ID)
+}
+
+// TestTaskLifecycleChatMarkers pins the S-301 follow-up contract: the
+// chat thread carries explicit lifecycle markers — a "started" event on
+// claim, a "delegated" event when the runtime tags the delegation turn,
+// and a "done" event on completion — each with task_lifecycle + task_ref
+// in the payload so the UI renders dividers / a 🤖 chip.
+func TestTaskLifecycleChatMarkers(t *testing.T) {
+	handler, _, squad, agent, credential := agentRuntimeSetup(t, "lifecycle-markers-squad")
+
+	var task domain.Task
+	doJSON(t, handler, http.MethodPost, "/api/v1/squads/"+squad.ID+"/board/tasks", map[string]any{
+		"title":             "Marker task",
+		"assignee_agent_id": agent.ID,
+	}, http.StatusCreated, &task)
+
+	// Claim + start → a "started" lifecycle event lands in the thread.
+	var claimed domain.Task
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/claim", nil, http.StatusOK, &claimed)
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/start", map[string]any{"prompt_sha": "env_legacy"}, http.StatusOK, &domain.Task{})
+
+	var thread []domain.Message
+	doJSON(t, handler, http.MethodGet, pathTasksPrefix+task.ID+pathMessages, nil, http.StatusOK, &thread)
+	require.Contains(t, lifecycleIn(thread, "started"), `"task_ref":"T-`)
+
+	// The runtime posts the delegation turn tagged as "delegated".
+	doAgentJSONNoBody(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/thread", map[string]any{
+		"message": "Delegating this task to a task subagent",
+		"marker":  "delegated",
+	}, http.StatusNoContent)
+	doJSON(t, handler, http.MethodGet, pathTasksPrefix+task.ID+pathMessages, nil, http.StatusOK, &thread)
+	require.Contains(t, lifecycleIn(thread, "delegated"), "Delegating this task to a task subagent")
+
+	// A plain working turn (no marker) is NOT a lifecycle event.
+	doAgentJSONNoBody(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/thread", map[string]any{
+		"message": "just a working turn",
+	}, http.StatusNoContent)
+	doJSON(t, handler, http.MethodGet, pathTasksPrefix+task.ID+pathMessages, nil, http.StatusOK, &thread)
+	require.Equal(t, 0, countLifecycle(thread, "working"), "plain turn must not be a lifecycle marker")
+	require.Equal(t, 1, countLifecycle(thread, "delegated"), "delegated marker unchanged by the plain turn")
+
+	// Complete as done → a "done" lifecycle event closes the run.
+	doAgentJSON(t, handler, agent.ID, credential, http.MethodPost, "/api/v1/agents/me/tasks/"+task.ID+"/complete", map[string]any{
+		"status":        string(domain.TaskDone),
+		"summary":       "shipped",
+		"execution_id":  claimed.ExecutionID,
+		"fencing_token": claimed.FencingToken,
+	}, http.StatusOK, &domain.Task{})
+	doJSON(t, handler, http.MethodGet, pathTasksPrefix+task.ID+pathMessages, nil, http.StatusOK, &thread)
+	require.Equal(t, 1, countLifecycle(thread, "done"))
+	require.Equal(t, 1, countLifecycle(thread, "started"))
+	require.Equal(t, 1, countLifecycle(thread, "delegated"))
+}
+
+// lifecycleIn returns the payloads of thread messages carrying the given
+// task_lifecycle value.
+func lifecycleIn(thread []domain.Message, kind string) string {
+	var out string
+	for _, m := range thread {
+		if strings.Contains(string(m.Payload), `"task_lifecycle":"`+kind+`"`) {
+			out += string(m.Payload)
+		}
+	}
+	return out
+}
+
+// countLifecycle counts thread messages carrying the given task_lifecycle.
+func countLifecycle(thread []domain.Message, kind string) int {
+	n := 0
+	for _, m := range thread {
+		if strings.Contains(string(m.Payload), `"task_lifecycle":"`+kind+`"`) {
+			n++
+		}
+	}
+	return n
 }
