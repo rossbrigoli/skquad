@@ -60,11 +60,14 @@ func main() {
 	defer store.Close()
 
 	stats, err := backfill.Run(ctx, store, client, cfg.MemoryEmbeddingModel, *batchSize)
-	fmt.Printf("embed-backfill: model=%s scanned=%d embedded=%d failed=%d\n",
-		cfg.MemoryEmbeddingModel, stats.Scanned, stats.Embedded, stats.Failed)
+	fmt.Printf("embed-backfill: model=%s scanned=%d embedded=%d failed=%d skipped=%d\n",
+		cfg.MemoryEmbeddingModel, stats.Scanned, stats.Embedded, stats.Failed, stats.Skipped)
 	if err != nil {
 		log.Fatalf("embed-backfill: %v", err)
 	}
+	// Only transient failures (embedder down, store errors) fail the job.
+	// Permanently-unembeddable rows (oversized) are skipped so a single
+	// large memory cannot wedge the PostSync hook and block every deploy.
 	if stats.Failed > 0 {
 		os.Exit(1)
 	}

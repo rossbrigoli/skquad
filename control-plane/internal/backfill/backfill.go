@@ -13,6 +13,7 @@ package backfill
 import (
 	"context"
 	"log"
+	"strings"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 )
@@ -34,6 +35,38 @@ type Stats struct {
 	Scanned  int
 	Embedded int
 	Failed   int
+	// Skipped counts rows that can NEVER be embedded with the current
+	// model (e.g. content exceeds the model's context window). These are
+	// permanent, not transient: counting them as Failed made the PostSync
+	// backfill hook fail forever on a single oversized memory, blocking
+	// every deploy (S-301 follow-up). Skipped rows are logged and do not
+	// fail the run.
+	Skipped int
+}
+
+// isPermanentEmbedError reports whether an embed failure is a property
+// of the row (too large for the model) rather than the embedder being
+// down. Such rows will fail identically on every retry, so they must not
+// block the run. Matched on the gateway's error text because the client
+// surfaces the upstream LiteLLM/OpenAI error verbatim.
+func isPermanentEmbedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"contextwindowexceeded",
+		"exceed_context_size_error",
+		"exceeds the available context size",
+		"maximum context length",
+		"input is too long",
+		"context_length_exceeded",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // Run drains the pending-embed queue for currentModel. It returns when
@@ -75,6 +108,11 @@ func embedRow(ctx context.Context, store RowStore, embedder Embedder, currentMod
 	stats.Scanned++
 	vec, err := embedder.Embed(ctx, row.Content)
 	if err != nil {
+		if isPermanentEmbedError(err) {
+			stats.Skipped++
+			log.Printf("embed-backfill: skipping oversized memory=%s (exceeds model context window): %v", row.ID, err)
+			return
+		}
 		stats.Failed++
 		log.Printf("embed-backfill: embed failed memory=%s: %v", row.ID, err)
 		return
