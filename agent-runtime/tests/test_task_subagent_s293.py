@@ -230,7 +230,7 @@ def _tool_call(name, args=None, call_id="c1"):
     }
 
 
-def _run(script, *, plugins=None, max_turns=5, brief=None, captured=None):
+def _run(script, *, plugins=None, max_turns=5, brief=None, captured=None, progress=None):
     ts.configure_runner_plugins(plugins or [_EchoPlugin()])
     tools = [{"function": {"name": p}} for p in ["echo", "boom", "board.complete", "spawn_subagent"]]
 
@@ -255,6 +255,7 @@ def _run(script, *, plugins=None, max_turns=5, brief=None, captured=None):
         kwargs_factory=kwargs_factory,
         origin="task:task-1",
         max_turns=max_turns,
+        progress=progress,
     )
 
 
@@ -317,6 +318,30 @@ class RunnerTest(unittest.TestCase):
         )
         # S-263 semantics: the error goes back to the model, the run continues.
         self.assertTrue(run.result.succeeded)
+
+    def test_progress_callback_gets_turn_and_tool_lines(self):
+        progress = []
+        run = _run(
+            [
+                {"content": "checking files", "tool_calls": [_tool_call("echo")]},
+                {"content": fenced(GOOD_RESULT)},
+            ],
+            progress=progress.append,
+        )
+        self.assertTrue(run.result.succeeded)
+        self.assertIn("turn 1: checking files", progress)
+        self.assertIn("turn 1 - echo -> ok", progress)
+        self.assertIn("turn 2: final result - Added rate-limit middleware; 14 tests pass.", progress)
+
+    def test_progress_callback_is_capped(self):
+        progress = []
+        _run(
+            [{"content": "still working", "tool_calls": [_tool_call("echo")]}],
+            max_turns=90,
+            progress=progress.append,
+        )
+        self.assertEqual(len(progress), ts.PROGRESS_MAX_LINES + 1)
+        self.assertIn("progress stream capped", progress[-1])
 
     def test_turn_budget_exhaustion_is_classified(self):
         script = [{"content": "still working", "tool_calls": [_tool_call("echo")]}]

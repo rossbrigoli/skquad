@@ -2676,6 +2676,18 @@ class LiteLLMTaskHandler:
             attempt=attempt,
         )
 
+    def _publish_subagent_progress(self, line: str) -> None:
+        """S-299: mirror one task-subagent turn into the task thread so
+        the chat window's task card can show live nested activity.
+        Best-effort: a thread-append failure must never interrupt the
+        run — the subagent's result path is unaffected."""
+        if self.thread_sink is None:
+            return
+        try:
+            self.thread_sink(trim_text(f"[subagent] {line}", TASK_THREAD_TURN_MAX_CHARS))
+        except Exception:  # noqa: BLE001 — observability must not break work
+            pass
+
     def _handle_task_via_subagent(
         self,
         *,
@@ -2718,6 +2730,7 @@ class LiteLLMTaskHandler:
                     model, msgs, config, virtual_key, task.id, child_tools
                 ),
                 origin=f"task:{task.id}",
+                progress=self._publish_subagent_progress,
             )
             # Re-read the workspace AFTER the subagent worked — that is
             # the state its claimed SHA has to match (I4).
