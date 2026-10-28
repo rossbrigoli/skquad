@@ -118,6 +118,49 @@ DEFAULT_AGENT_CREDENTIAL_PATH = DEFAULT_CREDENTIALS_DIR / "agent"
 DEFAULT_VIRTUAL_KEY_PATH = DEFAULT_CREDENTIALS_DIR / "llm-gateway"
 LOGGER = logging.getLogger(__name__)
 
+# --- provider-safe tool wire names (S-303 follow-up) ----------------------
+# OpenAI (both the Responses API and chat/completions) requires function
+# names matching ^[A-Za-z0-9_-]+$. The board.* builtins (S-292 / ADR-0016)
+# use dotted names internally - they read as a verb group and mirror the
+# control-plane board endpoints - but a '.' is rejected on the wire, so a
+# wake on an OpenAI-routed model (e.g. gpt-6.1-sol via /v1/responses)
+# 400s the WHOLE request: "Invalid 'tools[N].name': string does not match
+# pattern". The Test button and provider-direct calls never build this
+# schema, so only the live agent turn surfaces it.
+#
+# Fix at the boundary, not in the data: keep the canonical dotted name in
+# the registry, the fetched config, grants and each tool's own .name, and
+# translate only what crosses to the provider. Dispatch maps the same way,
+# so a model calling 'board_claim' still reaches the 'board.claim' plugin.
+# Names that are already provider-safe pass through unchanged.
+_WIRE_TOOL_NAME_INVALID = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def wire_tool_name(name: str) -> str:
+    """Translate an internal tool name to a provider-safe wire name."""
+    return _WIRE_TOOL_NAME_INVALID.sub("_", str(name))
+
+
+def _wire_schema(schema: Mapping[str, object]) -> Mapping[str, object]:
+    """Return a schema whose function name is provider-safe.
+
+    Only the standard ``{"type": "function", "function": {"name": ...}}``
+    shape is rewritten; anything else passes through untouched so a
+    non-standard plugin schema is never silently mangled. Schemas whose
+    name is already safe are returned as-is (no copy).
+    """
+    fn = schema.get("function")
+    if not isinstance(fn, dict):
+        return schema
+    raw = fn.get("name")
+    if not isinstance(raw, str) or wire_tool_name(raw) == raw:
+        return schema
+    safe_fn = dict(fn)
+    safe_fn["name"] = wire_tool_name(raw)
+    safe = dict(schema)
+    safe["function"] = safe_fn
+    return safe
+
 # Captured at module import, which happens immediately after the container's
 # entrypoint execs the interpreter. Used as the container-start timestamp for
 # wake-path latency attribution (S-87): the control plane dedupes per
@@ -2456,7 +2499,7 @@ class LLMMessageHandler:
     def tool_schemas(self, plugins: list[RuntimePlugin] | None = None) -> list[Mapping[str, object]]:
         schemas: list[Mapping[str, object]] = []
         for plugin in (self.plugins if plugins is None else plugins):
-            schemas.extend(plugin.tools())
+            schemas.extend(_wire_schema(s) for s in plugin.tools())
         return schemas
 
     def _roster_suffix(self, config: BootstrapConfig) -> str:
@@ -3176,7 +3219,7 @@ class LiteLLMTaskHandler:
     def tool_schemas(self, plugins: list[RuntimePlugin] | None = None) -> list[Mapping[str, object]]:
         schemas: list[Mapping[str, object]] = []
         for plugin in (self.plugins if plugins is None else plugins):
-            schemas.extend(plugin.tools())
+            schemas.extend(_wire_schema(s) for s in plugin.tools())
         return schemas
 
     def available_resources(self, config: BootstrapConfig) -> list[RuntimeResource]:
@@ -3228,11 +3271,19 @@ def invoke_plugin_tool(
 ) -> ToolResult:
     """Invoke a tool call against the plugin list (shared by the task handler
     and, since S-122, the chat handler)."""
-    plugin = next((item for item in plugins if item.name == call.name), None)
+    plugin = next(
+        (item for item in plugins if wire_tool_name(item.name) == wire_tool_name(call.name)),
+        None,
+    )
     if plugin is None:
         return ToolResult(content=f"tool {call.name!r} is not available", ok=False)
     try:
-        result = plugin.invoke(call, config)
+        plugin_call = (
+            call
+            if call.name == plugin.name
+            else ToolCall(id=call.id, name=plugin.name, arguments=call.arguments)
+        )
+        result = plugin.invoke(plugin_call, config)
         if inspect.isawaitable(result):
             import asyncio
 
