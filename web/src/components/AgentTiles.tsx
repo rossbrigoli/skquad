@@ -14,6 +14,13 @@
 //   * the task the agent is working on — current_task preferred over
 //     last_task — as `REF · title…` on one nowrap/ellipsis line.
 // The cost line (S-230) stays but callers no longer prefix "last 30 days".
+//
+// S-301: the dashboard/squad Overview cards are 20% smaller (see
+// .agent-tile-grid in globals.css — 280px → 224px min column, height
+// follows the 4:3 ratio). The robot icon grows ~15% instead (28 → 32px
+// glyph, 52 → 60px box), and the model/task/cost lines now carry
+// visible field labels ("Model:", "Task:", "Cost:") before their
+// values. Provider tiles are deliberately unaffected (own grid class).
 
 import Link from "next/link";
 import { IconRobot } from "./icons";
@@ -69,7 +76,7 @@ export function AgentTile({
     <Link href={href} className={agentTileClass(status, variant)} aria-label={`${agent.name} — ${status}`}>
       <span className="agent-tile-head">
         <span className="agent-tile-icon" aria-hidden="true">
-          <IconRobot size={28} />
+          <IconRobot size={32} />
         </span>
         <span className="agent-tile-status">
           <StatusChip status={status} />
@@ -80,15 +87,22 @@ export function AgentTile({
         <span className="agent-tile-role">{agent.role ? agent.role : "no role set"}</span>
         {agent.model ? (
           <span className="agent-tile-model" title={agent.model}>
-            {agent.model}
+            <span className="agent-tile-label">Model:</span>
+            <span className="agent-tile-value">{agent.model}</span>
           </span>
         ) : null}
         {taskLine ? (
           <span className="agent-tile-task mono" title={taskLine}>
-            {taskLine}
+            <span className="agent-tile-label">Task:</span>
+            <span className="agent-tile-value">{taskLine}</span>
           </span>
         ) : null}
-        {costLabel ? <span className="agent-tile-cost mono">{costLabel}</span> : null}
+        {costLabel ? (
+          <span className="agent-tile-cost mono">
+            <span className="agent-tile-label">Cost:</span>
+            <span className="agent-tile-value">{costLabel}</span>
+          </span>
+        ) : null}
       </span>
     </Link>
   );

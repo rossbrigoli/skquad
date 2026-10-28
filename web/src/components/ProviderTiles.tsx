@@ -85,7 +85,7 @@ export function ProviderTilesGrid({
   readonly currency: string;
 }) {
   return (
-    <div className="agent-tile-grid">
+    <div className="provider-tile-grid">
       {providers.map((provider) => (
         <ProviderTile
           key={provider.id}

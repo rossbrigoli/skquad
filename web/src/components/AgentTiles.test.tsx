@@ -135,6 +135,42 @@ function tileClassFor(markup: string, agentId: string): string {
     expect(noTasks).not.toContain("agent-tile-task");
   });
 
+  it("S-301 req 2: robot icon glyph is grown ~15% (28 → 32)", () => {
+    const tile = renderToStaticMarkup(
+      createElement(AgentTile, { agent: agents[0], href: "/squads/s1/agents/a1" }),
+    );
+    expect(tile).toMatch(/<svg[^>]*width="32"/);
+    expect(tile).toMatch(/<svg[^>]*height="32"/);
+  });
+
+  it("S-301 req 3: model/task/cost lines carry visible field labels", () => {
+    const tile = renderToStaticMarkup(
+      createElement(AgentTile, {
+        agent: {
+          ...agents[0],
+          model: "claude-sonnet-4.5",
+          current_task: { id: "t2", ref: "S-102", title: "Fix it" },
+        },
+        href: "/squads/s1/agents/a1",
+        costLabel: "USD 1.2500",
+      }),
+    );
+    expect(tile).toContain('<span class="agent-tile-label">Model:</span>');
+    expect(tile).toContain('<span class="agent-tile-label">Task:</span>');
+    expect(tile).toContain('<span class="agent-tile-label">Cost:</span>');
+    // Values still render next to their labels.
+    expect(tile).toContain("claude-sonnet-4.5");
+    expect(tile).toContain("S-102 \u00b7 Fix it");
+    expect(tile).toContain("USD 1.2500");
+  });
+
+  it("S-301: no label elements when the field itself is absent", () => {
+    const tile = renderToStaticMarkup(
+      createElement(AgentTile, { agent: agents[2], href: "/squads/s1/agents/a3" }),
+    );
+    expect(tile).not.toContain("agent-tile-label");
+  });
+
   it("each tile shows the robot icon, name, role and status chip", () => {
     const tile = html.split('href="/squads/s1/agents/a1"')[1].split("</a>")[0];
     expect(tile).toContain("<svg"); // robot icon
