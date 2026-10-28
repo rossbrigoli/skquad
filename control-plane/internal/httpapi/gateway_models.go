@@ -155,15 +155,20 @@ func (s *Server) findGatewayDeployment(ctx context.Context, modelName string) (s
 }
 
 // provisionGatewayModel creates the gateway deployment for (provider,
-// modelName) and returns its id. The caller triggers the reload only
-// after the registry write succeeds, so a request causes at most one
-// rollout restart on the happy path.
-func (s *Server) provisionGatewayModel(ctx context.Context, provider *domain.AIProvider, modelName string, supportsVision bool) (string, error) {
+// modelName) and returns its id plus the key fingerprint baked into it
+// (so the caller can persist it for drift detection). The caller
+// triggers the reload only after the registry write succeeds, so a
+// request causes at most one rollout restart on the happy path.
+func (s *Server) provisionGatewayModel(ctx context.Context, provider *domain.AIProvider, modelName string, supportsVision bool) (deploymentID, keyFP string, err error) {
 	spec, err := s.buildGatewayModelSpec(ctx, provider, modelName, supportsVision)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return s.gwModels.DeployModel(ctx, spec)
+	id, err := s.gwModels.DeployModel(ctx, spec)
+	if err != nil {
+		return "", "", err
+	}
+	return id, spec.KeyFingerprint, nil
 }
 
 // updateGatewayModelDeployment converges the gateway deployment when a
@@ -176,25 +181,25 @@ func (s *Server) provisionGatewayModel(ctx context.Context, provider *domain.AIP
 //     the old deployment cannot be deleted, the new one is removed
 //     again so no shadow deployment survives.
 //   - old deployment missing (drift): plain create.
-func (s *Server) updateGatewayModelDeployment(ctx context.Context, oldModelName string, provider *domain.AIProvider, newModelName string, supportsVision bool) error {
+func (s *Server) updateGatewayModelDeployment(ctx context.Context, oldModelName string, provider *domain.AIProvider, newModelName string, supportsVision bool) (keyFP string, err error) {
 	spec, err := s.buildGatewayModelSpec(ctx, provider, newModelName, supportsVision)
 	if err != nil {
-		return err
+		return "", err
 	}
 	depID, found, err := s.findGatewayDeployment(ctx, oldModelName)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !found {
 		_, err = s.gwModels.DeployModel(ctx, spec)
-		return err
+		return spec.KeyFingerprint, err
 	}
 	if oldModelName == newModelName {
-		return s.gwModels.UpdateModelDeployment(ctx, depID, spec)
+		return spec.KeyFingerprint, s.gwModels.UpdateModelDeployment(ctx, depID, spec)
 	}
 	newID, err := s.gwModels.DeployModel(ctx, spec)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := s.gwModels.DeleteModelDeployment(ctx, depID); err != nil {
 		if newID != "" {
@@ -202,9 +207,9 @@ func (s *Server) updateGatewayModelDeployment(ctx context.Context, oldModelName 
 				log.Printf("gateway rename rollback: model %q: delete new deployment %s after failed old-deployment removal: %v", newModelName, newID, cleanupErr)
 			}
 		}
-		return fmt.Errorf("delete old deployment %s for renamed model: %w", depID, err)
+		return "", fmt.Errorf("delete old deployment %s for renamed model: %w", depID, err)
 	}
-	return nil
+	return spec.KeyFingerprint, nil
 }
 
 // compensateGatewayDelete best-effort removes a gateway deployment
@@ -302,19 +307,18 @@ func (s *Server) reconcileGatewayModels(w http.ResponseWriter, r *http.Request) 
 	for _, model := range models {
 		if dep, ok := byModel[model.ModelName]; ok {
 			delete(byModel, model.ModelName)
-			// Key-drift check (S-303 durable fix): rebuild the spec from
-			// the provider's CURRENT key and compare the key fingerprint
-			// against what the deployment was last stamped with. A
-			// mismatch — or a legacy deployment carrying no stamp — means
-			// the deployment is serving a stale credential the Test button
-			// (which hits the provider directly) cannot see. Re-key it in
-			// place so agents stop dying on a rotated-out key.
+			// Key-drift check (S-303): rebuild the spec from the
+			// provider's CURRENT key and compare its fingerprint against
+			// the one last persisted on the registry row. A mismatch — or
+			// a never-stamped row — means the gateway deployment is
+			// serving a stale credential the Test button (provider-
+			// direct) cannot see. Re-key it in place and re-stamp.
 			spec, err := s.buildGatewayModelSpec(r.Context(), s.providerForAIModel(r, model), model.ModelName, model.SupportsVision)
 			if err != nil {
 				report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: err.Error()})
 				continue
 			}
-			if dep.KeyFingerprint == spec.KeyFingerprint {
+			if model.GatewayKeyFingerprint == spec.KeyFingerprint {
 				report.AlreadyPresent = append(report.AlreadyPresent, model.ModelName)
 				continue
 			}
@@ -322,11 +326,20 @@ func (s *Server) reconcileGatewayModels(w http.ResponseWriter, r *http.Request) 
 				report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: err.Error()})
 				continue
 			}
+			if err := s.store.SetAIModelGatewayKeyFingerprint(r.Context(), model.ID, spec.KeyFingerprint); err != nil {
+				report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: "rekeyed but fingerprint persist failed: " + err.Error()})
+				continue
+			}
 			report.Rekeyed = append(report.Rekeyed, model.ModelName)
 			continue
 		}
-		if _, err := s.provisionGatewayModel(r.Context(), s.providerForAIModel(r, model), model.ModelName, model.SupportsVision); err != nil {
+		_, fp, err := s.provisionGatewayModel(r.Context(), s.providerForAIModel(r, model), model.ModelName, model.SupportsVision)
+		if err != nil {
 			report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: err.Error()})
+			continue
+		}
+		if err := s.store.SetAIModelGatewayKeyFingerprint(r.Context(), model.ID, fp); err != nil {
+			report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: "registered but fingerprint persist failed: " + err.Error()})
 			continue
 		}
 		report.Registered = append(report.Registered, model.ModelName)

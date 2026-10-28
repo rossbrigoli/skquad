@@ -829,6 +829,14 @@ type AIModel struct {
 	RegisteredBy               string         `json:"registered_by"`
 	CreatedAt                  time.Time      `json:"created_at"`
 	UpdatedAt                  time.Time      `json:"updated_at,omitempty"`
+	// GatewayKeyFingerprint is the sha256 fingerprint of the provider
+	// API key last pushed to this model's LiteLLM gateway deployment
+	// (S-303). Reconcile compares it against the provider's current key
+	// to detect that a rotation has left the deployment serving a stale
+	// credential the pre-save Test button cannot see. Internal
+	// bookkeeping — never user-supplied; empty = never provisioned with a
+	// fingerprinted key.
+	GatewayKeyFingerprint string `json:"gateway_key_fingerprint,omitempty"`
 }
 
 // UserModelGrant records that a user may bind an AI Model to their agents

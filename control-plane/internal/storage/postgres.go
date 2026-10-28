@@ -1300,7 +1300,8 @@ func (p *PostgresStore) ListAIProviders(ctx context.Context) ([]*domain.AIProvid
 // aiModelColumns is the shared SELECT list for ai_models rows.
 const aiModelColumns = `
 	id::text, provider_id::text, display_name, model_name, context_window, supports_tools,
-	supports_vision, pricing, long_context_threshold_tokens, status, registered_by, created_at, updated_at`
+	supports_vision, pricing, long_context_threshold_tokens, status, registered_by, created_at, updated_at,
+	gateway_key_fingerprint`
 
 // CreateAIModel registers a model under an existing provider credential.
 // The (provider_id, model_name) pair is unique (UNIQUE violation →
@@ -1318,11 +1319,13 @@ func (p *PostgresStore) CreateAIModel(ctx context.Context, model *domain.AIModel
 	}
 	txRow := tx.QueryRow(ctx, `
 		INSERT INTO ai_models (provider_id, display_name, model_name, context_window, supports_tools,
-		                     supports_vision, pricing, long_context_threshold_tokens, status, registered_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		                     supports_vision, pricing, long_context_threshold_tokens, status, registered_by,
+		                     gateway_key_fingerprint)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING `+aiModelColumns,
 		model.ProviderID, model.DisplayName, model.ModelName, model.ContextWindow, model.SupportsTools,
-		model.SupportsVision, defaultJSON(model.Pricing, "{}"), model.LongContextThresholdTokens, defaultResourceStatus(model.Status), model.RegisteredBy)
+		model.SupportsVision, defaultJSON(model.Pricing, "{}"), model.LongContextThresholdTokens, defaultResourceStatus(model.Status), model.RegisteredBy,
+		model.GatewayKeyFingerprint)
 	created, err := scanAIModel(txRow)
 	if err != nil {
 		return nil, err
@@ -1391,11 +1394,13 @@ func (p *PostgresStore) UpdateAIModel(ctx context.Context, model *domain.AIModel
 		    pricing = $8,
 		    long_context_threshold_tokens = $9,
 		    status = $10,
+		    gateway_key_fingerprint = $11,
 		    updated_at = now()
 		WHERE id = $1
 		RETURNING `+aiModelColumns,
 		model.ID, model.ProviderID, model.DisplayName, model.ModelName, model.ContextWindow, model.SupportsTools,
-		model.SupportsVision, defaultJSON(model.Pricing, "{}"), model.LongContextThresholdTokens, defaultResourceStatus(model.Status))
+		model.SupportsVision, defaultJSON(model.Pricing, "{}"), model.LongContextThresholdTokens, defaultResourceStatus(model.Status),
+		model.GatewayKeyFingerprint)
 	updated, err := scanAIModel(txRow)
 	if err != nil {
 		return nil, err
@@ -1407,6 +1412,25 @@ func (p *PostgresStore) UpdateAIModel(ctx context.Context, model *domain.AIModel
 		return nil, mapPgErr(err)
 	}
 	return updated, nil
+}
+
+// SetAIModelGatewayKeyFingerprint persists the fingerprint of the
+// provider key last pushed to the model's gateway deployment (S-303).
+// Targeted single-column update so reconcile can re-stamp without the
+// full UpdateAIModel semantics (provider re-check, audit writes).
+func (p *PostgresStore) SetAIModelGatewayKeyFingerprint(ctx context.Context, id, fingerprint string) error {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE ai_models
+		SET gateway_key_fingerprint = $2, updated_at = now()
+		WHERE id = $1
+	`, id, fingerprint)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (p *PostgresStore) DeprecateAIModel(ctx context.Context, id string) error {
@@ -4124,6 +4148,7 @@ func scanAIModel(row scanner) (*domain.AIModel, error) {
 		&m.RegisteredBy,
 		&m.CreatedAt,
 		&updatedAt,
+		&m.GatewayKeyFingerprint,
 	); err != nil {
 		return nil, mapPgErr(err)
 	}

@@ -1005,6 +1005,20 @@ func (m *MemoryStore) DeprecateAIModel(ctx context.Context, id string) error {
 	return nil
 }
 
+// SetAIModelGatewayKeyFingerprint persists the gateway key fingerprint
+// on the model row (S-303). Mirrors the Postgres targeted update.
+func (m *MemoryStore) SetAIModelGatewayKeyFingerprint(_ context.Context, id, fingerprint string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	model, ok := m.aiModels[id]
+	if !ok {
+		return ErrNotFound
+	}
+	model.GatewayKeyFingerprint = fingerprint
+	model.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
 // DeleteAIModel hard-deletes the model and cascades its user grants. It is
 // RESTRICTed while any agent is bound to it (primary or fallback),
 // mirroring the Postgres FK default (NO ACTION).
