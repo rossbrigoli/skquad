@@ -156,6 +156,15 @@ export function RestResourceModal({
   const isEdit = resource !== null;
   const anySecret = Object.values(form.secrets).some((v) => v.trim() !== "");
   const authKindChanged = isEdit && form.authKind !== (asObject(resource?.endpoint_config).auth_kind ?? "none");
+  // S-302: a resource with a non-empty auth_ref already has a stored
+  // credential (managed K8s Secret or operator ref). When editing such a
+  // resource without changing the auth kind, the secret fields are
+  // optional — blank means "keep the stored secret" (the control plane
+  // preserves it when no `auth` payload is sent). The field is only
+  // mandatory on create, when no credential exists yet, or when the auth
+  // kind changed (which requires fresh credentials for the new kind).
+  const hasStoredCredential = isEdit && (resource?.auth_ref ?? "").trim() !== "";
+  const requireSecrets = !isEdit || authKindChanged || !hasStoredCredential;
 
   function set<K extends keyof RestResourceForm>(key: K, value: RestResourceForm[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -189,7 +198,7 @@ export function RestResourceModal({
             setError("Changing the auth kind requires re-entering the credentials for the new kind.");
             return;
           }
-          const validation = validateRestForm(form);
+          const validation = validateRestForm(form, requireSecrets);
           if (validation) {
             setError(validation);
             return;
@@ -247,7 +256,13 @@ export function RestResourceModal({
               value={form.secrets[f.field] ?? ""}
               onChange={(e) => setSecret(f.field, e.target.value)}
               autoComplete="new-password"
-              placeholder={isEdit ? "write-only — leave blank to keep current" : "stored as a managed K8s Secret, never re-displayed"}
+              placeholder={
+                hasStoredCredential
+                  ? "•••••••• (unchanged — paste a new value to replace)"
+                  : isEdit
+                    ? "write-only — leave blank to keep current"
+                    : "stored as a managed K8s Secret, never re-displayed"
+              }
             />
           </label>
         ))}

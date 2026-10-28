@@ -104,7 +104,14 @@ function optionalInt(value: string): number | undefined {
 }
 
 // validateRestForm returns a human-readable error or null.
-export function validateRestForm(form: RestResourceForm): string | null {
+//
+// `requireSecrets` (default true) controls whether the auth kind's secret
+// fields must be non-empty. On create it is always true. On edit of a
+// resource that already has a stored credential it is false: a blank token
+// means "keep the existing stored secret" (the control plane preserves it
+// when no `auth` payload is sent), so the field must not be mandatory.
+// See S-302.
+export function validateRestForm(form: RestResourceForm, requireSecrets = true): string | null {
   if (form.name.trim() === "") return "Name is required";
   if (form.baseUrl.trim() === "") return "Base URL is required";
   let parsed: URL;
@@ -116,8 +123,10 @@ export function validateRestForm(form: RestResourceForm): string | null {
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "Base URL must be http(s)";
   if (form.authKind === "api_key_header" && form.headerName.trim() === "") return "Header name is required for api_key_header auth";
   if (form.authKind !== "api_key_header" && form.headerName.trim() !== "") return "Header name only applies to api_key_header auth";
-  for (const f of REST_AUTH_FIELDS[form.authKind]) {
-    if ((form.secrets[f.field] ?? "").trim() === "") return `${f.label} is required`;
+  if (requireSecrets) {
+    for (const f of REST_AUTH_FIELDS[form.authKind]) {
+      if ((form.secrets[f.field] ?? "").trim() === "") return `${f.label} is required`;
+    }
   }
   try {
     optionalInt(form.maxRequestBytes);
