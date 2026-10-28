@@ -479,6 +479,10 @@ type AIModelStore interface {
 	// ListAIModels returns models filtered by status; status "" = all.
 	ListAIModels(ctx context.Context, status domain.ResourceStatus) ([]*domain.AIModel, error)
 	UpdateAIModel(ctx context.Context, m *domain.AIModel) (*domain.AIModel, error)
+	// SetAIModelGatewayKeyFingerprint persists the fingerprint of the
+	// provider key last pushed to the model's gateway deployment, so
+	// reconcile can detect provider-key drift (S-303).
+	SetAIModelGatewayKeyFingerprint(ctx context.Context, id, fingerprint string) error
 	DeprecateAIModel(ctx context.Context, id string) error
 	// DeleteAIModel hard-deletes a model and its user grants. It is
 	// RESTRICTed while any agent is bound to the model (primary or fallback).

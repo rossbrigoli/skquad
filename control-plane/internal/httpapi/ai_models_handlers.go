@@ -222,11 +222,13 @@ func (s *Server) createAIModel(w http.ResponseWriter, r *http.Request) {
 	}
 	// S-GWREG fail-loud: provision the gateway deployment BEFORE the
 	// registry row. A gateway failure means no registry row, 502, and a
-	// loud error — never a silently-unusable model.
-	gatewayDeploymentID, ok := s.provisionGatewayForNewModel(w, r, provider, modelName, model.SupportsVision)
+	// loud error — never a silently-unusable model. The returned key
+	// fingerprint is stamped on the row for S-303 drift detection.
+	gatewayDeploymentID, gatewayKeyFP, ok := s.provisionGatewayForNewModel(w, r, provider, modelName, model.SupportsVision)
 	if !ok {
 		return
 	}
+	model.GatewayKeyFingerprint = gatewayKeyFP
 	created, ok := s.persistNewAIModel(w, r, model, gatewayDeploymentID)
 	if !ok {
 		return
@@ -241,17 +243,17 @@ func (s *Server) createAIModel(w http.ResponseWriter, r *http.Request) {
 // model being registered. It returns the deployment id ("" when the
 // LLM gateway is not configured — dev mode). On provisioning failure
 // it writes the 502 and returns ok=false.
-func (s *Server) provisionGatewayForNewModel(w http.ResponseWriter, r *http.Request, provider *domain.AIProvider, modelName string, supportsVision bool) (deploymentID string, ok bool) {
+func (s *Server) provisionGatewayForNewModel(w http.ResponseWriter, r *http.Request, provider *domain.AIProvider, modelName string, supportsVision bool) (deploymentID, keyFP string, ok bool) {
 	if !s.gatewayModelsEnabled() {
 		log.Printf("aimodel: LLM gateway not configured — skipping gateway deployment for %q (dev mode; model will NOT be routable until registered in the gateway)", modelName)
-		return "", true
+		return "", "", true
 	}
-	deploymentID, err := s.provisionGatewayModel(r.Context(), provider, modelName, supportsVision)
+	deploymentID, keyFP, err := s.provisionGatewayModel(r.Context(), provider, modelName, supportsVision)
 	if err != nil {
 		writeGatewayProvisionFailure(w, "registered", err)
-		return "", false
+		return "", "", false
 	}
-	return deploymentID, true
+	return deploymentID, keyFP, true
 }
 
 // persistNewAIModel stores the AI model registry row, compensating a
@@ -402,10 +404,13 @@ func (s *Server) convergeGatewayForAIModelUpdate(w http.ResponseWriter, r *http.
 	if !ok {
 		return false, false
 	}
-	if err := s.updateGatewayModelDeployment(r.Context(), oldModelName, provider, model.ModelName, model.SupportsVision); err != nil {
+	fp, err := s.updateGatewayModelDeployment(r.Context(), oldModelName, provider, model.ModelName, model.SupportsVision)
+	if err != nil {
 		writeGatewayProvisionFailure(w, "updated", err)
 		return false, false
 	}
+	// Persist the newly-pushed key fingerprint on the model (S-303).
+	model.GatewayKeyFingerprint = fp
 	return true, true
 }
 
