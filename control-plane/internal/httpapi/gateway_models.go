@@ -28,6 +28,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -98,10 +100,26 @@ func newGatewayReloader(cfg *config.Config) (*kube.GatewayReloader, error) {
 	return kube.NewGatewayReloader(cfg)
 }
 
+// keyFingerprint returns a short, non-reversible fingerprint of a
+// provider API key (sha256, first 16 hex chars). It is stamped onto
+// the gateway deployment's model_info (skquad_key_fp) so reconcile can
+// tell whether the provider's live key has rotated since the
+// deployment was last written, without ever storing or comparing the
+// key itself. Empty key → empty fingerprint (keyless providers).
+func keyFingerprint(apiKey string) string {
+	trimmed := strings.TrimSpace(apiKey)
+	if trimmed == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(trimmed))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
 // buildGatewayModelSpec resolves the provider's kind, base_url and live
 // API key into the litellm registration shape. The key is resolved
 // through the S-155 Secret store and never logged. supportsVision (S-200)
-// is carried into the deployment model_info.
+// is carried into the deployment model_info, alongside the key
+// fingerprint used for drift detection.
 func (s *Server) buildGatewayModelSpec(ctx context.Context, provider *domain.AIProvider, modelName string, supportsVision bool) (GatewayModelSpec, error) {
 	prefix, ok := litellmModelPrefix(provider.Kind)
 	if !ok {
@@ -116,6 +134,7 @@ func (s *Server) buildGatewayModelSpec(ctx context.Context, provider *domain.AIP
 		LitellmModel:   prefix + "/" + modelName,
 		APIBase:        strings.TrimSpace(provider.BaseURL),
 		APIKey:         apiKey,
+		KeyFingerprint: keyFingerprint(apiKey),
 		SupportsVision: supportsVision,
 	}, nil
 }
@@ -228,6 +247,7 @@ func writeGatewayProvisionFailure(w http.ResponseWriter, op string, err error) {
 type gatewayModelReconcileReport struct {
 	Registered     []string              `json:"registered"`
 	AlreadyPresent []string              `json:"already_present"`
+	Rekeyed        []string              `json:"rekeyed"`
 	Failed         []gatewayModelFailure `json:"failed"`
 	Extras         []gatewayModelExtra   `json:"extras"`
 }
@@ -275,13 +295,34 @@ func (s *Server) reconcileGatewayModels(w http.ResponseWriter, r *http.Request) 
 	report := gatewayModelReconcileReport{
 		Registered:     make([]string, 0),
 		AlreadyPresent: make([]string, 0),
+		Rekeyed:        make([]string, 0),
 		Failed:         make([]gatewayModelFailure, 0),
 		Extras:         make([]gatewayModelExtra, 0),
 	}
 	for _, model := range models {
-		if _, ok := byModel[model.ModelName]; ok {
-			report.AlreadyPresent = append(report.AlreadyPresent, model.ModelName)
+		if dep, ok := byModel[model.ModelName]; ok {
 			delete(byModel, model.ModelName)
+			// Key-drift check (S-303 durable fix): rebuild the spec from
+			// the provider's CURRENT key and compare the key fingerprint
+			// against what the deployment was last stamped with. A
+			// mismatch — or a legacy deployment carrying no stamp — means
+			// the deployment is serving a stale credential the Test button
+			// (which hits the provider directly) cannot see. Re-key it in
+			// place so agents stop dying on a rotated-out key.
+			spec, err := s.buildGatewayModelSpec(r.Context(), s.providerForAIModel(r, model), model.ModelName, model.SupportsVision)
+			if err != nil {
+				report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: err.Error()})
+				continue
+			}
+			if dep.KeyFingerprint == spec.KeyFingerprint {
+				report.AlreadyPresent = append(report.AlreadyPresent, model.ModelName)
+				continue
+			}
+			if err := s.gwModels.UpdateModelDeployment(r.Context(), dep.DeploymentID, spec); err != nil {
+				report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: err.Error()})
+				continue
+			}
+			report.Rekeyed = append(report.Rekeyed, model.ModelName)
 			continue
 		}
 		if _, err := s.provisionGatewayModel(r.Context(), s.providerForAIModel(r, model), model.ModelName, model.SupportsVision); err != nil {
@@ -293,7 +334,7 @@ func (s *Server) reconcileGatewayModels(w http.ResponseWriter, r *http.Request) 
 	for _, d := range byModel {
 		report.Extras = append(report.Extras, gatewayModelExtra{ModelName: d.ModelName, DeploymentID: d.DeploymentID})
 	}
-	if len(report.Registered) > 0 {
+	if len(report.Registered) > 0 || len(report.Rekeyed) > 0 {
 		s.reloadGateway(r.Context())
 	}
 	metadata, _ := json.Marshal(report)

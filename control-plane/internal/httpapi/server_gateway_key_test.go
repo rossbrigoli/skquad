@@ -46,10 +46,14 @@ type recordingGateway struct {
 	// S-GWREG model-deployment surface: records /model/* calls and
 	// keeps a live model_name → deployment-id map so the control
 	// plane's find/update/delete flows behave against the stand-in.
-	modelDeployed   []map[string]any
-	modelUpdated    []map[string]any
-	modelDeleted    []string
-	modelLive       map[string]string // model_name → deployment id
+	modelDeployed []map[string]any
+	modelUpdated  []map[string]any
+	modelDeleted  []string
+	modelLive     map[string]string // model_name → deployment id
+	// modelFp mirrors the skquad_key_fp stamped on each live deployment's
+	// model_info, so /model/info can round-trip it back to the control
+	// plane for key-drift detection (S-303).
+	modelFp         map[string]string // model_name → key fingerprint
 	failModelDeploy bool
 	failModelUpdate bool
 	failModelDelete bool
@@ -118,6 +122,17 @@ func (g *recordingGateway) handler() http.Handler {
 	})
 }
 
+// modelFpOf extracts the skquad_key_fp stamped in a /model/* request's
+// model_info block (empty when absent).
+func modelFpOf(body map[string]any) string {
+	if mi, ok := body["model_info"].(map[string]any); ok {
+		if fp, ok := mi["skquad_key_fp"].(string); ok {
+			return fp
+		}
+	}
+	return ""
+}
+
 // handleModelNew records a /model/new registration (S-GWREG).
 func (g *recordingGateway) handleModelNew(w http.ResponseWriter, body map[string]any) {
 	if g.failModelDeploy {
@@ -127,10 +142,14 @@ func (g *recordingGateway) handleModelNew(w http.ResponseWriter, body map[string
 	if g.modelLive == nil {
 		g.modelLive = map[string]string{}
 	}
+	if g.modelFp == nil {
+		g.modelFp = map[string]string{}
+	}
 	g.seq++
 	id := fmt.Sprintf("dep-%d", g.seq)
 	name, _ := body["model_name"].(string)
 	g.modelLive[name] = id
+	g.modelFp[name] = modelFpOf(body)
 	g.modelDeployed = append(g.modelDeployed, body)
 	_ = json.NewEncoder(w).Encode(map[string]any{"model_info": map[string]any{"id": id}})
 }
@@ -140,6 +159,14 @@ func (g *recordingGateway) handleModelUpdate(w http.ResponseWriter, body map[str
 	if g.failModelUpdate {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
+	}
+	// Re-stamp the fingerprint for the deployment being updated so a
+	// subsequent /model/info reflects the new key (S-303 drift repair).
+	if name, ok := body["model_name"].(string); ok && name != "" {
+		if g.modelFp == nil {
+			g.modelFp = map[string]string{}
+		}
+		g.modelFp[name] = modelFpOf(body)
 	}
 	g.modelUpdated = append(g.modelUpdated, body)
 	_ = json.NewEncoder(w).Encode(map[string]any{"updated": true})
@@ -165,7 +192,11 @@ func (g *recordingGateway) handleModelDelete(w http.ResponseWriter, body map[str
 func (g *recordingGateway) handleModelInfo(w http.ResponseWriter) {
 	data := []map[string]any{}
 	for name, id := range g.modelLive {
-		data = append(data, map[string]any{"model_name": name, "model_info": map[string]any{"id": id}})
+		info := map[string]any{"id": id}
+		if fp := g.modelFp[name]; fp != "" {
+			info["skquad_key_fp"] = fp
+		}
+		data = append(data, map[string]any{"model_name": name, "model_info": info})
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 }

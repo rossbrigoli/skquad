@@ -349,8 +349,94 @@ func TestReconcileGatewayModelsNoopWithoutDrift(t *testing.T) {
 	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/admin/gateway/models/reconcile", nil, http.StatusOK, &report)
 	require.Empty(t, report.Registered)
 	require.Contains(t, report.AlreadyPresent, "clean-model")
+	require.Empty(t, report.Rekeyed)
 	require.Empty(t, report.Extras)
-	require.Equal(t, before, reloader.count(), "no reload when nothing was registered")
+	require.Equal(t, before, reloader.count(), "no reload when nothing was registered or rekeyed")
+}
+
+// S-303: when a provider key is rotated AFTER a deployment was created,
+// the deployment keeps serving the old key. The Test button can't see it
+// (it hits the provider directly), so reconcile must detect the
+// fingerprint mismatch and re-key the deployment in place.
+func TestReconcileRekeysDriftedDeployment(t *testing.T) {
+	t.Parallel()
+	gw := &recordingGateway{}
+	handler, _, reloader := newGWRegHarness(t, gw)
+	provider := createKeyedProvider(t, handler, "gwreg-drift")
+	createTestAIModel(t, handler, provider.ID, "drift-model")
+
+	// Simulate a provider-key rotation: the live deployment is stamped
+	// with a fingerprint that no longer matches the provider's current
+	// key (which still resolves to "sk-fake-provider-key" here).
+	gw.mu.Lock()
+	gw.modelFp["drift-model"] = "stale-fingerprint-0000"
+	before := reloader.count()
+	gw.mu.Unlock()
+
+	var report gatewayModelReconcileReport
+	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/admin/gateway/models/reconcile", nil, http.StatusOK, &report)
+
+	require.Empty(t, report.Registered, "model already had a deployment; nothing to register")
+	require.NotContains(t, report.AlreadyPresent, "drift-model", "drifted deployment is NOT 'already present'")
+	require.Equal(t, []string{"drift-model"}, report.Rekeyed)
+	require.Empty(t, report.Failed)
+	require.Equal(t, before+1, reloader.count(), "rekey triggers exactly one gateway reload")
+
+	// The update must carry the CURRENT key's fingerprint, not the stale one.
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	require.Len(t, gw.modelUpdated, 1)
+	wantFP := keyFingerprint("sk-fake-provider-key")
+	require.Equal(t, wantFP, modelFpOf(gw.modelUpdated[0]), "rekey stamps the current provider key fingerprint")
+	require.Equal(t, wantFP, gw.modelFp["drift-model"], "live deployment re-stamped")
+}
+
+// S-303: a legacy deployment created before key-fingerprinting existed
+// carries no stamp. Reconcile treats the empty fingerprint as drift and
+// re-keys + stamps it, so the first reconcile after upgrade converges
+// every pre-existing deployment.
+func TestReconcileRestampsLegacyDeploymentWithoutFingerprint(t *testing.T) {
+	t.Parallel()
+	gw := &recordingGateway{}
+	handler, _, reloader := newGWRegHarness(t, gw)
+	provider := createKeyedProvider(t, handler, "gwreg-legacy")
+	createTestAIModel(t, handler, provider.ID, "legacy-model")
+
+	// Strip the stamp to simulate a pre-S-303 deployment.
+	gw.mu.Lock()
+	delete(gw.modelFp, "legacy-model")
+	before := reloader.count()
+	gw.mu.Unlock()
+
+	var report gatewayModelReconcileReport
+	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/admin/gateway/models/reconcile", nil, http.StatusOK, &report)
+
+	require.Equal(t, []string{"legacy-model"}, report.Rekeyed, "un-stamped deployment is re-keyed")
+	require.Empty(t, report.AlreadyPresent)
+	require.Equal(t, before+1, reloader.count())
+}
+
+// S-303: a keyless provider (empty key) has an empty fingerprint on
+// both sides; reconcile must treat it as converged, not perpetual drift.
+func TestReconcileKeylessProviderNoDrift(t *testing.T) {
+	t.Parallel()
+	gw := &recordingGateway{}
+	handler, _, reloader := newGWRegHarness(t, gw)
+	var provider domain.AIProvider
+	doJSONAuth(t, handler, authAdmin, http.MethodPost, pathProviders, map[string]any{
+		"name":     "gwreg-keyless",
+		"kind":     "ollama",
+		"base_url": "http://gwreg-keyless.invalid/v1",
+	}, http.StatusCreated, &provider)
+	createTestAIModel(t, handler, provider.ID, "keyless-model")
+	before := reloader.count()
+
+	var report gatewayModelReconcileReport
+	doJSONAuth(t, handler, authAdmin, http.MethodPost, "/api/v1/admin/gateway/models/reconcile", nil, http.StatusOK, &report)
+
+	require.Contains(t, report.AlreadyPresent, "keyless-model")
+	require.Empty(t, report.Rekeyed, "empty==empty fingerprint is converged, not drift")
+	require.Equal(t, before, reloader.count())
 }
 
 func TestReconcileReportsPerModelFailures(t *testing.T) {

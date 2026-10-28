@@ -295,6 +295,14 @@ type GatewayModelSpec struct {
 	// APIKey is litellm_params.api_key (resolved provider key). Empty →
 	// omitted (keyless providers such as local ollama).
 	APIKey string
+	// KeyFingerprint is a short, non-reversible sha256 fingerprint of
+	// the provider API key baked into this deployment. It is stamped
+	// into the deployment's model_info (skquad_key_fp) so reconcile can
+	// detect that the provider's LIVE key has rotated out from under the
+	// deployment WITHOUT the gateway ever exposing the plaintext key
+	// (/model/info redacts api_key). Empty → field omitted. Computed by
+	// keyFingerprint; never the key itself.
+	KeyFingerprint string
 	// SupportsVision (S-200) is written into the deployment's model_info
 	// so the gateway can gate image content parts per model. It mirrors
 	// ai_models.supports_vision.
@@ -305,6 +313,11 @@ type GatewayModelSpec struct {
 type GatewayModelDeployment struct {
 	ModelName    string
 	DeploymentID string
+	// KeyFingerprint is the skquad_key_fp stamped on the deployment's
+	// model_info at its last provision/update. Empty for deployments
+	// created before key-drift detection existed — reconcile treats an
+	// empty fingerprint as drift and re-stamps it.
+	KeyFingerprint string
 }
 
 func (c *liteLLMGatewayClient) modelParamsBody(spec GatewayModelSpec) map[string]any {
@@ -322,7 +335,14 @@ func (c *liteLLMGatewayClient) modelParamsBody(spec GatewayModelSpec) map[string
 // deployment (S-200). The gateway's vision gate reads supports_vision
 // from here; keeping it always-present means the flag survives re-provision.
 func (c *liteLLMGatewayClient) modelInfoBody(spec GatewayModelSpec) map[string]any {
-	return map[string]any{"supports_vision": spec.SupportsVision}
+	info := map[string]any{"supports_vision": spec.SupportsVision}
+	// Stamp the key fingerprint so reconcile can detect provider-key
+	// drift without the gateway ever returning the plaintext key. Only
+	// written when we actually have a key (keyless providers skip it).
+	if fp := strings.TrimSpace(spec.KeyFingerprint); fp != "" {
+		info["skquad_key_fp"] = fp
+	}
+	return info
 }
 
 // DeployModel registers a new model deployment via POST /model/new and
@@ -457,7 +477,8 @@ func (c *liteLLMGatewayClient) ListModelDeployments(ctx context.Context) ([]Gate
 		Data []struct {
 			ModelName string `json:"model_name"`
 			ModelInfo struct {
-				ID string `json:"id"`
+				ID          string `json:"id"`
+				SkquadKeyFp string `json:"skquad_key_fp"`
 			} `json:"model_info"`
 		} `json:"data"`
 	}
@@ -466,7 +487,11 @@ func (c *liteLLMGatewayClient) ListModelDeployments(ctx context.Context) ([]Gate
 	}
 	deployments := make([]GatewayModelDeployment, 0, len(out.Data))
 	for _, d := range out.Data {
-		deployments = append(deployments, GatewayModelDeployment{ModelName: d.ModelName, DeploymentID: d.ModelInfo.ID})
+		deployments = append(deployments, GatewayModelDeployment{
+			ModelName:      d.ModelName,
+			DeploymentID:   d.ModelInfo.ID,
+			KeyFingerprint: d.ModelInfo.SkquadKeyFp,
+		})
 	}
 	return deployments, nil
 }
