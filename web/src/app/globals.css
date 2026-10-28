@@ -1148,18 +1148,37 @@ dialog.modal-backdrop::backdrop {
 }
 
 /* --- Kanban board --- */
+/* S-304: the Board tab fills the viewport exactly, mirroring the S-185
+   chat pattern. The page itself must not scroll — each column body
+   (.board-col-body) scrolls internally. The old max-height: 72vh left
+   a dead gap at the bottom of the screen. */
+.content-col:has(.board) {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.content-col:has(.board) .content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .board {
   display: grid;
   gap: var(--space-3);
-  align-items: start;
+  align-items: stretch;
   overflow-x: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .board-column {
   background: var(--surface-sunken);
   border-radius: var(--radius-md);
   min-width: 240px;
-  max-height: 72vh;
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -1198,6 +1217,9 @@ dialog.modal-backdrop::backdrop {
   flex-direction: column;
   gap: var(--space-2);
   min-height: 60px;
+  /* S-304: fill the column's remaining height so the board reaches
+     the bottom of the viewport; long columns scroll here. */
+  flex: 1;
 }
 
 .task-card {

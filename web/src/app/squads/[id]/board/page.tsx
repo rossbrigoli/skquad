@@ -22,6 +22,39 @@ import {
   type BoardColumnConfig,
 } from "../../../../lib/boardColumns";
 
+// S-304: the ids of a column's tasks in effective order — the
+// control-plane `position` field (lowest first = highest pickup
+// priority). Exported for tests.
+export function orderedIdsFor(status: TaskStatus, tasks: Task[]): string[] {
+  return tasks
+    .filter((t) => t.status === status)
+    .slice()
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+    .map((t) => t.id);
+}
+
+export function orderedTasksFor(status: TaskStatus, tasks: Task[], columnOrder: Record<string, string[]>): Task[] {
+  const byId = new Map(tasks.filter((t) => t.status === status).map((t) => [t.id, t]));
+  const order = columnOrder[status];
+  if (!order || order.length === 0) {
+    return tasks
+      .filter((t) => t.status === status)
+      .slice()
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+  }
+  const out: Task[] = [];
+  for (const id of order) {
+    const t = byId.get(id);
+    if (t) {
+      out.push(t);
+      byId.delete(id);
+    }
+  }
+  // Anything the optimistic order doesn't know about lands at the end.
+  for (const t of byId.values()) out.push(t);
+  return out;
+}
+
 export default function SquadBoardPage() {
   const params = useParams<{ id: string }>();
   const squadId = String(params?.id ?? "");
@@ -32,6 +65,13 @@ export default function SquadBoardPage() {
   const [addingTo, setAddingTo] = useState<TaskStatus | null>(null);
   const [configuring, setConfiguring] = useState(false);
   const [dragOver, setDragOver] = useState<TaskStatus | null>(null);
+  // S-304: intra-column drag reordering. The card currently being
+  // dragged, and the column whose optimistic order we've mutated (so a
+  // failed PUT can be rolled back by the next board refresh).
+  const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
+  // Optimistic per-column task order, keyed by status. Empty = use the
+  // server order. Cleared on every board refresh.
+  const [columnOrder, setColumnOrder] = useState<Record<string, string[]>>({});
 
   const squad = (squads.data || []).find((s) => s.id === squadId);
   const tasks = board.data?.tasks || [];
@@ -45,13 +85,47 @@ export default function SquadBoardPage() {
     board.refresh();
   }
 
+  // S-304: persist a column's new vertical order. The order IS the
+  // pickup priority: the control plane claims the lowest-positioned todo
+  // first (dependency-blocked tasks are still skipped). Optimistic — the
+  // UI already shows the new order; a failed PUT surfaces a notice and
+  // the next poll restores the server truth.
+  const [orderError, setOrderError] = useState("");
+  async function persistColumnOrder(status: TaskStatus, orderedIDs: string[]) {
+    try {
+      await apiPost(`/squads/${squadId}/board/columns/${status}/order`, token, { task_ids: orderedIDs });
+    } catch (err) {
+      setOrderError(err instanceof Error ? `${err.message} — column order reverted on next refresh` : "reorder failed");
+    }
+  }
+
+  // reorderWithinColumn moves the dragged task to the slot currently
+  // occupied by targetTaskId (before it), inside the same column.
+  function reorderWithinColumn(status: TaskStatus, draggedId: string, targetTaskId: string | null) {
+    const ids = orderedIdsFor(status, tasks);
+    const from = ids.indexOf(draggedId);
+    if (from === -1) return;
+    ids.splice(from, 1);
+    const to = targetTaskId === null ? ids.length : Math.min(ids.length, Math.max(0, ids.indexOf(targetTaskId)) + 1);
+    ids.splice(to, 0, draggedId);
+    setColumnOrder((prev) => ({ ...prev, [status]: ids }));
+    void persistColumnOrder(status, ids);
+  }
+
   function onDrop(event: DragEvent<HTMLDivElement>, status: TaskStatus) {
     event.preventDefault();
     setDragOver(null);
     const taskId = event.dataTransfer.getData("text/skquad-task");
     if (!taskId) return;
     const task = tasks.find((t) => t.id === taskId);
-    if (!task || task.status === status) return;
+    if (!task) return;
+    if (task.status === status) {
+      // Column-level drop = below/above all cards → append to the end.
+      // (Drops onto a specific card are handled by the card's own onDrop.)
+      reorderWithinColumn(status, taskId, null);
+      setDraggingTaskId(null);
+      return;
+    }
     void moveTask(taskId, status);
   }
 
@@ -72,6 +146,7 @@ export default function SquadBoardPage() {
           </div>
         </div>
         {board.error ? <div className="notice error">{board.error}</div> : null}
+        {orderError ? <div className="notice error">{orderError}</div> : null}
         {!board.loading && tasks.length === 0 ? (
           <EmptyState
             title="The board is empty"
@@ -85,7 +160,7 @@ export default function SquadBoardPage() {
         ) : (
           <div className="board" style={{ gridTemplateColumns: `repeat(${Math.max(columns.length, 1)}, minmax(240px, 1fr))` }}>
             {columns.map((col) => {
-              const colTasks = tasks.filter((t) => t.status === col.status);
+              const colTasks = orderedTasksFor(col.status, tasks, columnOrder);
               return (
                 <div
                   key={col.status}
@@ -133,6 +208,32 @@ export default function SquadBoardPage() {
                           onDragStart={(e) => {
                             e.dataTransfer.setData("text/skquad-task", task.id);
                             e.dataTransfer.effectAllowed = "move";
+                            setDraggingTaskId(task.id);
+                          }}
+                          onDragEnd={() => setDraggingTaskId(null)}
+                          // S-304: dropping onto a card means "insert at
+                          // this card's slot" — the card forwards the
+                          // target id alongside the dragged id.
+                          onDragOver={(e) => {
+                            if (!draggingTaskId || draggingTaskId === task.id) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDragOver(col.status);
+                          }}
+                          onDrop={(e) => {
+                            if (!draggingTaskId || draggingTaskId === task.id) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDragOver(null);
+                            const draggedId = e.dataTransfer.getData("text/skquad-task") || draggingTaskId;
+                            const dragged = tasks.find((t) => t.id === draggedId);
+                            if (!dragged) return;
+                            if (dragged.status === col.status) {
+                              reorderWithinColumn(col.status, draggedId, task.id);
+                            } else {
+                              void moveTask(draggedId, col.status);
+                            }
+                            setDraggingTaskId(null);
                           }}
                         >
                           <div className="task-title">

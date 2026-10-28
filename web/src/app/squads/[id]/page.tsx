@@ -1,20 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { useState } from "react";
 import { ActivityFeed } from "../../../components/ActivityFeed";
 import { AgentFormModal } from "../../../components/AgentForm";
 import { AgentTilesGrid } from "../../../components/AgentTiles";
 import { Collapsible } from "../../../components/Collapsible";
-import { ConfirmDialog } from "../../../components/ConfirmDialog";
 import { AuthGate } from "../../../components/AuthGate";
 import { AppShell } from "../../../components/AppShell";
 import { MetricTile } from "../../../components/MetricTile";
 import { StatusChip } from "../../../components/StatusChip";
 import { useApi } from "../../../lib/useApi";
 import { useAuth } from "../../../lib/auth";
-import { apiDelete, apiPost } from "../../../lib/api";
+import { apiPost } from "../../../lib/api";
 import { formatCost, formatRelativeTime, leaseState } from "../../../lib/format";
 import { workInFlight } from "../../../lib/squadStats";
 import type { AIModel } from "../../../lib/aimodels";
@@ -23,10 +22,8 @@ import type { Agent, BoardPayload, MeteringSummary, Squad, AuditEntry } from "..
 export default function SquadCockpitPage() {
   const params = useParams<{ id: string }>();
   const squadId = String(params?.id ?? "");
-  const router = useRouter();
   const { token } = useAuth();
   const squads = useApi<Squad[]>("/squads");
-  const [deleting, setDeleting] = useState(false);
   // S-211: the new-agent dialog now lives on Overview (the Agents tab is gone).
   const [creating, setCreating] = useState(false);
   const myModels = useApi<AIModel[]>("/models/me", 60000);
@@ -153,24 +150,8 @@ export default function SquadCockpitPage() {
           />
         </Collapsible>
 
-        {/* S-243: Danger zone — destructive delete lives here at the
-            bottom of the page, reusing the agent page's S-178 pattern
-            (.danger-zone / .danger-zone-row / .danger-zone-title). */}
-        <section className="danger-zone" aria-label="Danger zone">
-          <h2>Danger zone</h2>
-          <div className="danger-zone-row">
-            <div>
-              <div className="danger-zone-title">Delete this squad</div>
-              <p className="field-hint" style={{ margin: 0 }}>
-                Removes the squad, its agents, board, tasks, grants and Kubernetes namespace.
-                This cannot be undone.
-              </p>
-            </div>
-            <button type="button" className="btn btn-danger" onClick={() => setDeleting(true)} disabled={!squad}>
-              Delete squad
-            </button>
-          </div>
-        </section>
+        {/* S-304: the Danger zone moved from the Overview tab to the
+            Settings tab, where destructive squad actions live. */}
 
         {creating ? (
           <AgentFormModal
@@ -184,19 +165,6 @@ export default function SquadCockpitPage() {
               setCreating(false);
               agents.refresh();
             }}
-          />
-        ) : null}
-
-        {deleting && squad ? (
-          <ConfirmDialog
-            title={`Delete squad “${squad.name}”?`}
-            body="This removes the squad, its agents, board, tasks, grants and Kubernetes namespace. This cannot be undone."
-            confirmText={squad.name}
-            onConfirm={async () => {
-              await apiDelete(`/squads/${squadId}`, token);
-              router.push("/squads");
-            }}
-            onClose={() => setDeleting(false)}
           />
         ) : null}
       </AppShell>

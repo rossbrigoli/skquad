@@ -2300,6 +2300,46 @@ func (p *PostgresStore) DeleteTask(ctx context.Context, id string) error {
 	}
 	return mapPgErr(tx.Commit(ctx))
 }
+
+// ReorderTasks (S-304) renumbers one board column atomically: the i-th
+// id in orderedIDs gets position i+1. The whole column must be present —
+// the SQL rejects the batch unless the supplied ids are exactly the
+// board's tasks carrying the given status (count match), so a stale
+// client can never half-renumber the column.
+func (p *PostgresStore) ReorderTasks(ctx context.Context, boardID string, status domain.TaskStatus, orderedIDs []string) error {
+	if len(orderedIDs) == 0 {
+		return ErrInvalidInput
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	var columnCount int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM tasks WHERE board_id = $1 AND status = $2
+	`, boardID, status).Scan(&columnCount); err != nil {
+		return mapPgErr(err)
+	}
+	if columnCount != len(orderedIDs) {
+		return ErrConflict
+	}
+	for i, id := range orderedIDs {
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks SET position = $2, updated_at = now()
+			WHERE id = $1 AND board_id = $3 AND status = $4
+		`, id, i+1, boardID, status)
+		if err != nil {
+			return mapPgErr(err)
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrNotFound
+		}
+	}
+	return mapPgErr(tx.Commit(ctx))
+}
+
 func (p *PostgresStore) ListTasks(ctx context.Context, boardID string, status domain.TaskStatus) ([]*domain.Task, error) {
 	var rows pgx.Rows
 	var err error

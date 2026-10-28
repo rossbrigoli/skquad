@@ -6,20 +6,25 @@
 // GET/PUT /squads/{id}/board-policy.
 // The page is the designated home for future squad-level knobs.
 import { useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { AuthGate } from "../../../../components/AuthGate";
 import { AppShell } from "../../../../components/AppShell";
+import { ConfirmDialog } from "../../../../components/ConfirmDialog";
 import { EmptyState } from "../../../../components/EmptyState";
 import { useApi } from "../../../../lib/useApi";
 import { useAuth } from "../../../../lib/auth";
-import { apiGet, apiPut, type Agent, type BoardPolicyResponse, type LeaderGrant, type Squad } from "../../../../lib/api";
+import { apiDelete, apiGet, apiPut, type Agent, type BoardPolicyResponse, type LeaderGrant, type Squad } from "../../../../lib/api";
 
 export default function SquadSettingsPage() {
   const params = useParams<{ id: string }>();
   const squadId = String(params?.id ?? "");
-  const { user } = useAuth();
+  const router = useRouter();
+  const { user, token } = useAuth();
   const squads = useApi<Squad[]>("/squads");
   const squad = (squads.data || []).find((item) => item.id === squadId);
+  // S-304: the squad Danger zone moved here from the Overview tab —
+  // destructive squad actions belong under Settings.
+  const [deleting, setDeleting] = useState(false);
   // Mirror the backend gate (loadOwnedSquad): board policy is strictly
   // squad-owner only.
   const isOwner = !!squad && !!user && squad.owner_id === user.id;
@@ -64,6 +69,38 @@ export default function SquadSettingsPage() {
             agents={agents.data ?? []}
             agentsError={agents.error}
             onSaved={policy.refresh}
+          />
+        ) : null}
+
+        {/* S-304: Danger zone — destructive delete lives here at the
+            bottom of the Settings tab, reusing the agent page's S-178
+            pattern (.danger-zone / .danger-zone-row / .danger-zone-title). */}
+        <section className="danger-zone" aria-label="Danger zone">
+          <h2>Danger zone</h2>
+          <div className="danger-zone-row">
+            <div>
+              <div className="danger-zone-title">Delete this squad</div>
+              <p className="field-hint" style={{ margin: 0 }}>
+                Removes the squad, its agents, board, tasks, grants and Kubernetes namespace.
+                This cannot be undone.
+              </p>
+            </div>
+            <button type="button" className="btn btn-danger" onClick={() => setDeleting(true)} disabled={!squad}>
+              Delete squad
+            </button>
+          </div>
+        </section>
+
+        {deleting && squad ? (
+          <ConfirmDialog
+            title={`Delete squad “${squad.name}”?`}
+            body="This removes the squad, its agents, board, tasks, grants and Kubernetes namespace. This cannot be undone."
+            confirmText={squad.name}
+            onConfirm={async () => {
+              await apiDelete(`/squads/${squadId}`, token);
+              router.push("/squads");
+            }}
+            onClose={() => setDeleting(false)}
           />
         ) : null}
       </AppShell>
