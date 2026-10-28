@@ -56,6 +56,21 @@ describe("validateRestForm", () => {
       validateRestForm(formWith({ name: "x", baseUrl: "https://a.b", secrets: { token: "t" }, ratePerMin: "0" })),
     ).toMatch(/positive integer/);
   });
+
+  // S-302: on edit of a resource that already has a stored credential,
+  // requireSecrets is false so a blank token must NOT block the save.
+  it("skips secret-required check when requireSecrets is false (edit with stored credential)", () => {
+    const base = { name: "x", baseUrl: "https://a.b", authKind: "bearer" as const, secrets: {} };
+    // Default (create) still requires the token.
+    expect(validateRestForm(formWith(base))).toMatch(/Bearer token is required/);
+    // Edit-with-stored-credential: blank token passes.
+    expect(validateRestForm(formWith(base), false)).toBeNull();
+    // Other validations still run even when secrets are optional.
+    expect(validateRestForm(formWith({ ...base, name: "" }), false)).toMatch(/Name/);
+    expect(
+      validateRestForm(formWith({ ...base, authKind: "api_key_header" as const }), false),
+    ).toMatch(/Header name/);
+  });
 });
 
 describe("buildRestResourcePayload", () => {

@@ -492,6 +492,50 @@ func TestRotateToNoneClearsManagedSecret(t *testing.T) {
 	require.Contains(t, secrets.deletedNames(), "skquad-rest-"+res.ID)
 }
 
+// S-302: editing a REST resource that already has a stored bearer token
+// must NOT require re-pasting the token, and must NOT clear or blank the
+// stored secret. An omitted `auth` field, or an empty `auth` object, both
+// mean "keep the existing stored credential". Only a non-empty token
+// rotates it.
+func TestEditRestResourceWithoutTokenPreservesSecret(t *testing.T) {
+	secrets := newFakeResourceSecretStore()
+	handler := newServer(testConfig(), storage.NewMemoryStore(), serverDeps{resourceSecrets: secrets})
+	res := createBYORestResource(t, handler, "preserve-api")
+	secretName := "skquad-rest-" + res.ID
+	originalRef := res.AuthRef
+	require.NotEmpty(t, originalRef, "BYO create must set a managed auth_ref")
+
+	// 1. PATCH only the name (no `auth` key at all) — the common
+	// "edit other fields, leave token blank" case.
+	var renamed domain.RegistryResource
+	doJSON(t, handler, http.MethodPatch, registryBase+"rest/"+res.ID,
+		map[string]any{"name": "renamed-preserve-api"}, http.StatusOK, &renamed)
+	require.Equal(t, "renamed-preserve-api", renamed.Name)
+	require.Equal(t, originalRef, renamed.AuthRef, "auth_ref must be preserved when no auth payload is sent")
+	stored, ok := secrets.get(secretName)
+	require.True(t, ok, "managed secret must still exist")
+	require.Equal(t, byoFakeToken, stored["token"], "stored token must be untouched")
+
+	// 2. PATCH with an empty `auth` object (frontend sends this when the
+	// token field is left blank on edit) — must also preserve the secret.
+	doJSON(t, handler, http.MethodPatch, registryBase+"rest/"+res.ID,
+		map[string]any{"description": "touched", "auth": map[string]any{}}, http.StatusOK, &renamed)
+	require.Equal(t, "touched", renamed.Description)
+	require.Equal(t, originalRef, renamed.AuthRef, "auth_ref must be preserved for an empty auth object")
+	stored, ok = secrets.get(secretName)
+	require.True(t, ok, "managed secret must still exist after empty auth object")
+	require.Equal(t, byoFakeToken, stored["token"], "stored token must be untouched by empty auth object")
+
+	// 3. Sanity: a non-empty token DOES rotate (proves the preserve path
+	// is specific to empty/absent, not a blanket no-op).
+	rotated := "rotated-302-DO-NOT-USE"
+	doJSON(t, handler, http.MethodPatch, registryBase+"rest/"+res.ID,
+		map[string]any{"auth": map[string]string{"token": rotated}}, http.StatusOK, &renamed)
+	stored, ok = secrets.get(secretName)
+	require.True(t, ok)
+	require.Equal(t, rotated, stored["token"], "non-empty token must rotate the secret")
+}
+
 func TestBYOSecretStoreFailureRollsBackCreate(t *testing.T) {
 	store := storage.NewMemoryStore()
 	secrets := newFakeResourceSecretStore()
