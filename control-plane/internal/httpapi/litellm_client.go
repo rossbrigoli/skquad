@@ -394,11 +394,18 @@ func (c *liteLLMGatewayClient) UpdateModelDeployment(ctx context.Context, deploy
 	if strings.TrimSpace(deploymentID) == "" {
 		return fmt.Errorf("litellm: model update requires a deployment id")
 	}
+	// The deployment is identified by model_info.id, NOT a top-level
+	// "id". Verified live against the real gateway: a top-level "id"
+	// (with no model_info.id) is ignored and LiteLLM returns
+	// 400 "Authentication Error, model not found". The generic
+	// /model/update docs show a top-level "id", but this gateway keys
+	// the lookup on model_info.id — so we set it there. (S-303)
+	info := c.modelInfoBody(spec)
+	info["id"] = deploymentID
 	body := map[string]any{
-		"id":             deploymentID,
 		"model_name":     spec.ModelName,
 		"litellm_params": c.modelParamsBody(spec),
-		"model_info":     c.modelInfoBody(spec),
+		"model_info":     info,
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
