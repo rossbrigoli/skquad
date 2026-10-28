@@ -230,6 +230,12 @@ type TaskStore interface {
 	// pushed for this task (audit linkage).
 	SetTaskWorkspace(ctx context.Context, taskID string, resourceID string, branch string, commitSHA string) (*domain.Task, error)
 	DeleteTask(ctx context.Context, id string) error
+	// ReorderTasks (S-304) assigns sequential positions (1..n) to the
+	// given task ids within one board column. Every id must exist, belong
+	// to boardID, and currently carry the given status; the whole column
+	// is renumbered atomically so drag-and-drop order becomes the pickup
+	// priority (ClaimNextTask orders todos by position).
+	ReorderTasks(ctx context.Context, boardID string, status domain.TaskStatus, orderedIDs []string) error
 	ListTasks(ctx context.Context, boardID string, status domain.TaskStatus) ([]*domain.Task, error) // status "" = all
 	ListAgentTasks(ctx context.Context, agentID string) ([]*domain.Task, error)
 	ClaimNextTask(ctx context.Context, agentID string, workerID string, leaseFor time.Duration) (*domain.Task, error)

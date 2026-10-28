@@ -825,6 +825,7 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			r.Post("/tasks/{taskID}/messages", s.createTaskMessage)
 			r.Patch(routeTask, s.updateTask)
 			r.Post("/tasks/{taskID}/move", s.moveTask)
+			r.Post("/squads/{squadID}/board/columns/{status}/order", s.reorderBoardColumn)
 			// S-278: task dependencies — declare/list/remove + picker search.
 			r.Get("/tasks/{taskID}/dependencies", s.getTaskDependencies)
 			r.Post("/tasks/{taskID}/dependencies", s.addTaskDependency)
@@ -6826,6 +6827,60 @@ func (s *Server) moveTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// reorderBoardColumn (S-304) persists the vertical order of one board
+// column: body {"task_ids": ["<uuid>", ...]} becomes positions 1..n for
+// the squad's tasks in the given status column. The reorder is the
+// pickup priority — ClaimNextTask takes the lowest-positioned todo, so
+// the topmost card is worked first. Dependency blocking (S-278) is
+// untouched: blocked tasks are skipped regardless of position.
+func (s *Server) reorderBoardColumn(w http.ResponseWriter, r *http.Request) {
+	squad, ok := s.loadAccessibleSquad(w, r)
+	if !ok {
+		return
+	}
+	status := domain.TaskStatus(chi.URLParam(r, "status"))
+	if !status.Valid() {
+		writeError(w, http.StatusBadRequest, "bad_request", "unknown column status")
+		return
+	}
+	var req struct {
+		TaskIDs []string `json:"task_ids"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.TaskIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "task_ids must not be empty")
+		return
+	}
+	board, err := s.store.GetBoard(r.Context(), squad.ID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if err := s.store.ReorderTasks(s.pendingUserAuditCtx(r, "task.reorder", "board", board.ID, squad.ID, nil), board.ID, status, req.TaskIDs); err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	// The column order changed; agents' pickup queues follow it on the
+	// next claim. Re-sync affected agents' busy/idle mirror so wake-ups
+	// reflect the new priority immediately.
+	tasks, err := s.store.ListTasks(r.Context(), board.ID, status)
+	if err == nil {
+		seen := map[string]bool{}
+		for _, t := range tasks {
+			if t.AssigneeAgentID != "" && !seen[t.AssigneeAgentID] {
+				seen[t.AssigneeAgentID] = true
+				if err := s.syncAgentStatusFromPendingWork(r.Context(), t.AssigneeAgentID); err != nil {
+					writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
+					return
+				}
+			}
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {

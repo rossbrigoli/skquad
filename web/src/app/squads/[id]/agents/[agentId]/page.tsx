@@ -376,9 +376,7 @@ function errMsg(err: unknown, fallback: string): string {
 function AgentTitleRow({
   agent,
   agentId,
-  restartBusy,
   restartNote,
-  onConfirmRestart,
   live,
   stalled,
   tasks,
@@ -389,9 +387,7 @@ function AgentTitleRow({
 }: {
   readonly agent: Agent | undefined;
   readonly agentId: string;
-  readonly restartBusy: boolean;
   readonly restartNote: string;
-  readonly onConfirmRestart: () => void;
   readonly live: Task[];
   readonly stalled: Task[];
   readonly tasks: Task[];
@@ -408,15 +404,8 @@ function AgentTitleRow({
             {agent?.name ?? "Agent"}
           </h1>
           {agent ? <StatusChip status={agentStatus(agent)} /> : null}
-          {/* S-169 item 9b: restart lives beside the page title now. */}
-          <button
-            type="button"
-            className="btn btn-sm btn-danger"
-            disabled={!agent || restartBusy}
-            onClick={onConfirmRestart}
-          >
-            {restartBusy ? "Restarting…" : "Restart agent"}
-          </button>
+          {/* S-304: the "Restart agent" button was removed — restart is
+              now a "/restart" slash command in the chat composer. */}
           {restartNote ? <span className="field-hint">{restartNote}</span> : null}
         </div>
         {/* S-178: the metric chips moved up into the title row, where
@@ -477,11 +466,10 @@ export default function AgentProfilePage() {
   // Bumped after a successful config save so the form remounts with the
   // server's fresh values — no manual state reconciliation.
   const [savedTick, setSavedTick] = useState(0);
-  // S-162 actions relocated by S-169 items 9a/9b: reset lives in the chat
-  // header now, restart sits next to the page title.
-  const [chatActionBusy, setChatActionBusy] = useState(false);
+  // S-162 actions relocated by S-169 items 9a/9b; S-304 moved both to
+  // slash commands in the composer — the note states survive to report the
+  // outcome of /reset and /restart.
   const [chatNote, setChatNote] = useState("");
-  const [restartBusy, setRestartBusy] = useState(false);
   const [restartNote, setRestartNote] = useState("");
   // S-178: thinking-level selector in the composer (immediate PATCH, not
   // part of the Configuration form).
@@ -527,7 +515,6 @@ export default function AgentProfilePage() {
   );
 
   async function resetChat() {
-    setChatActionBusy(true);
     setChatNote("");
     try {
       const res = await apiPost<{ archived: number }>(`/agents/${agentId}/chat/reset`, token, {});
@@ -535,21 +522,16 @@ export default function AgentProfilePage() {
       chat.refresh();
     } catch (err) {
       setChatNote(errMsg(err, "reset failed"));
-    } finally {
-      setChatActionBusy(false);
     }
   }
 
   async function restartAgent() {
-    setRestartBusy(true);
     setRestartNote("");
     try {
       const res = await apiPost<{ pods: number }>(`/agents/${agentId}/restart`, token, {});
       setRestartNote(`Restarting agent (${res?.pods ?? 0} pod(s) evicted)`);
     } catch (err) {
       setRestartNote(errMsg(err, "restart failed"));
-    } finally {
-      setRestartBusy(false);
     }
   }
 
@@ -569,9 +551,7 @@ export default function AgentProfilePage() {
         <AgentTitleRow
           agent={agent}
           agentId={agentId}
-          restartBusy={restartBusy}
           restartNote={restartNote}
-          onConfirmRestart={() => setConfirmRestart(true)}
           live={live}
           stalled={stalled}
           tasks={tasks}
@@ -589,15 +569,8 @@ export default function AgentProfilePage() {
           <section className="agent-chat-section" style={{ marginTop: "var(--space-4)" }}>
             <div className="section-head">
               <h2>Talk to {agent?.name ?? "this agent"}</h2>
-              {/* S-169 item 9a: Reset chat sits in the chat header now. */}
-              <button
-                type="button"
-                className="btn btn-sm btn-danger"
-                disabled={chatActionBusy || (chat.data || []).length === 0}
-                onClick={() => setConfirmReset(true)}
-              >
-                Reset chat
-              </button>
+              {/* S-304: the "Reset chat" button was removed — reset is
+                  now a "/reset" slash command in the chat composer. */}
             </div>
             {chatNote ? <p className="field-hint">{chatNote}</p> : null}
             <ChatThread
@@ -626,6 +599,8 @@ export default function AgentProfilePage() {
                   taskIndex[taskId] ?? { id: taskId, title: `task ${taskId.slice(0, 8)}` } as Task,
                 )
               }
+              onSlashReset={() => setConfirmReset(true)}
+              onSlashRestart={() => setConfirmRestart(true)}
               // S-185: task lists ride inside the chat scroll area (they
               // used to sit below the chat and push the page past the
               // fold). S-169's "reachable without crowding" intent holds.
@@ -1168,6 +1143,8 @@ function ChatThread({
   onCloseSidePanel,
   taskIndex,
   onShowTaskThread,
+  onSlashReset,
+  onSlashRestart,
 }: {
   readonly messages: Message[];
   readonly agentName: string;
@@ -1193,6 +1170,11 @@ function ChatThread({
   // retained snapshot panel for a task group, live or finished.
   readonly taskIndex: Record<string, Task>;
   readonly onShowTaskThread: (taskId: string) => void;
+  // S-304: "/reset" and "/restart" typed in the composer replace the old
+  // Reset-chat / Restart-agent buttons. The callbacks own the confirm
+  // dialog + action; the composer only routes the command.
+  readonly onSlashReset: () => void;
+  readonly onSlashRestart: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1342,7 +1324,15 @@ function ChatThread({
           onChange={(e) => {
             // S-154: start warming a scaled-to-zero agent as soon as the
             // user begins typing, so the pod is up by send time.
-            if (draft === "" && e.target.value !== "" && !generating) {
+            // S-304: skip the wake for slash commands ("/reset",
+            // "/restart") — they are control-plane actions and never need
+            // the agent's pod running.
+            if (
+              draft === "" &&
+              e.target.value !== "" &&
+              !e.target.value.startsWith("/") &&
+              !generating
+            ) {
               const now = Date.now();
               if (now - lastWakeAt.current > 60_000) {
                 lastWakeAt.current = now;
@@ -1352,7 +1342,11 @@ function ChatThread({
             setDraft(e.target.value);
             autoGrow(e.target);
           }}
-          placeholder={generating ? `Waiting for ${agentName} to finish…` : `Message ${agentName}…`}
+          placeholder={
+            generating
+              ? `Waiting for ${agentName} to finish…`
+              : `Message ${agentName}… (/reset, /restart)`
+          }
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -1490,6 +1484,16 @@ function ChatThread({
   );
 
   async function send() {
+    // S-304: slash commands in the composer. A lone "/reset" or
+    // "/restart" (no attachments) runs the corresponding agent action
+    // via the parent's confirm flow instead of sending a chat message.
+    const command = draft.trim().toLowerCase();
+    if (pendingAttachments.length === 0 && (command === "/reset" || command === "/restart")) {
+      setDraft("");
+      if (command === "/reset") onSlashReset();
+      else onSlashRestart();
+      return;
+    }
     // S-194: an image with no text is still a message (the runtime
     // synthesizes the attachment reference for the agent).
     if (draft.trim() === "" && pendingAttachments.length === 0) return;
@@ -1896,7 +1900,7 @@ function AgentSectionTabs({
         aria-current={tab === "config" ? "page" : undefined}
         onClick={() => onSelect("config")}
       >
-        Configuration
+        Settings
       </button>
       <button
         type="button"
@@ -1904,7 +1908,7 @@ function AgentSectionTabs({
         aria-current={tab === "inbox" ? "page" : undefined}
         onClick={() => onSelect("inbox")}
       >
-        Message delivery
+        Message queue
       </button>
     </nav>
   );

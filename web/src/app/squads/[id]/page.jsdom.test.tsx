@@ -232,32 +232,13 @@ describe("SquadCockpitPage agents section (S-242 shared tile)", () => {
   });
 });
 
-describe("SquadCockpitPage delete flow", () => {
-  it("confirms by name, deletes via API and redirects to /squads", async () => {
-    const user = userEvent.setup();
+// S-304: the delete flow (Danger zone + confirm dialog) moved from the
+// Overview tab to the Settings tab; see settings/page.jsdom.test.tsx.
+describe("SquadCockpitPage (S-304: no delete affordance on Overview)", () => {
+  it("renders no Delete squad button or Danger zone on the Overview tab", () => {
     render(<SquadCockpitPage />);
-    await user.click(screen.getByRole("button", { name: "Delete squad" }));
-    const dialog = screen.getByRole("dialog");
-    await user.type(within(dialog).getByRole("textbox"), "Alpha Squad");
-    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
-    await vi.waitFor(() => expect(env.apiDelete).toHaveBeenCalledWith("/squads/sq1", "tok"));
-    expect(env.push).toHaveBeenCalledWith("/squads");
-  });
-
-  it("delete button is disabled when the squad is missing", () => {
-    env.squad = null;
-    render(<SquadCockpitPage />);
-    expect(screen.getByRole("button", { name: "Delete squad" })).toBeDisabled();
-  });
-
-  it("cancelling the confirm dialog skips the delete", async () => {
-    const user = userEvent.setup();
-    render(<SquadCockpitPage />);
-    await user.click(screen.getByRole("button", { name: "Delete squad" }));
-    const dialog = screen.getByRole("dialog");
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(env.apiDelete).not.toHaveBeenCalled();
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete squad" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Danger zone" })).not.toBeInTheDocument();
   });
 });
 
@@ -270,22 +251,6 @@ describe("SquadCockpitPage layout (S-243)", () => {
     // No danger button anywhere inside the header block.
     expect(head?.querySelector(".btn-danger")).toBeNull();
     expect(container.querySelector(".section-head .btn-danger")).toBeNull();
-  });
-
-  it("renders a Danger zone section at the bottom containing the delete button", () => {
-    const { container } = render(<SquadCockpitPage />);
-    const zone = screen.getByRole("region", { name: "Danger zone" });
-    expect(zone).toBeInTheDocument();
-    expect(zone.className).toContain("danger-zone");
-    expect(within(zone).getByRole("button", { name: "Delete squad" })).toHaveClass("btn-danger");
-    // Bottom of the page: comes after the Agents section and Recent activity.
-    const agentsHeading = screen.getByRole("heading", { name: "Agents" });
-    const activityToggle = screen.getByRole("button", { name: /Recent activity/ });
-    expect(zone.compareDocumentPosition(agentsHeading) & Node.DOCUMENT_POSITION_CONTAINS).toBe(0);
-    expect(agentsHeading.compareDocumentPosition(zone) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(activityToggle.compareDocumentPosition(zone) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // It is the last .danger-zone and no other danger-zone sections leaked in.
-    expect(container.querySelectorAll(".danger-zone")).toHaveLength(1);
   });
 
   it("+ New agent matches the larger list-page button size (no btn-sm)", () => {

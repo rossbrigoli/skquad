@@ -1,7 +1,7 @@
 // S-291: jsdom behaviour tests for the Squad Settings page (Board
 // Policy). Covers owner-gating, effective-value prefill, the whole-
 // document PUT on save, invalid-cap gating and 403/400 error surfacing.
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -15,8 +15,11 @@ const env = vi.hoisted(() => ({
   refreshes: [] as string[],
 }));
 
+const env2 = vi.hoisted(() => ({ push: vi.fn(), deletes: [] as string[] }));
+
 vi.mock("next/navigation", () => ({
   useParams: () => ({ id: "sq1" }),
+  useRouter: () => ({ push: env2.push }),
 }));
 
 vi.mock("../../../../components/AuthGate", () => ({
@@ -45,6 +48,9 @@ vi.mock("../../../../lib/api", () => ({
     env.puts.push({ path, body });
     if (env.putThrow) throw env.putThrow;
     return {};
+  },
+  apiDelete: async (path: string) => {
+    env2.deletes.push(path);
   },
 }));
 
@@ -283,5 +289,38 @@ describe("SquadSettingsPage leader grants (S-297)", () => {
     env.squads = [{ id: "sq1", name: "Alpha", owner_id: "someone-else" }];
     render(<SquadSettingsPage />);
     expect(screen.queryByLabelText("Lead can prioritize")).not.toBeInTheDocument();
+  });
+});
+
+// S-304: the squad Danger zone moved here from the Overview tab.
+describe("SquadSettingsPage danger zone (S-304)", () => {
+  beforeEach(() => {
+    env2.push = vi.fn();
+    env2.deletes = [];
+  });
+
+  it("renders the Danger zone with the delete button", () => {
+    render(<SquadSettingsPage />);
+    const zone = screen.getByRole("region", { name: "Danger zone" });
+    expect(zone.className).toContain("danger-zone");
+    expect(within(zone).getByRole("button", { name: "Delete squad" })).toHaveClass("btn-danger");
+  });
+
+  it("confirms by name, deletes via API and redirects to /squads", async () => {
+    render(<SquadSettingsPage />);
+    await userEvent.click(screen.getByRole("button", { name: "Delete squad" }));
+    const dialog = screen.getByRole("dialog");
+    await userEvent.type(within(dialog).getByRole("textbox"), "Alpha");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await vi.waitFor(() => expect(env2.deletes).toEqual(["/squads/sq1"]));
+    expect(env2.push).toHaveBeenCalledWith("/squads");
+  });
+
+  it("cancelling the confirm dialog skips the delete", async () => {
+    render(<SquadSettingsPage />);
+    await userEvent.click(screen.getByRole("button", { name: "Delete squad" }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+    expect(env2.deletes).toEqual([]);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

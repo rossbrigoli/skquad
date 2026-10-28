@@ -331,7 +331,7 @@ function chip(label: string): HTMLElement {
 }
 
 async function openConfigTab() {
-  await userEvent.click(screen.getByRole("button", { name: "Configuration" }));
+  await userEvent.click(screen.getByRole("button", { name: "Settings" }));
 }
 
 describe("title + tabs", () => {
@@ -376,7 +376,7 @@ describe("title + tabs", () => {
 
   it("switches to the message delivery tab and mounts the delivery panel", async () => {
     render(<AgentProfilePage />);
-    await userEvent.click(screen.getByRole("button", { name: "Message delivery" }));
+    await userEvent.click(screen.getByRole("button", { name: "Message queue" }));
     expect(screen.getByTestId("agent-inbox")).toHaveTextContent("agent-inbox:ag1");
     expect(screen.queryByText(/Talk to coder/)).not.toBeInTheDocument();
   });
@@ -385,7 +385,8 @@ describe("title + tabs", () => {
 describe("restart flow", () => {
   it("confirms and posts the restart, showing the eviction note", async () => {
     render(<AgentProfilePage />);
-    await userEvent.click(screen.getByRole("button", { name: "Restart agent" }));
+    await userEvent.type(screen.getByPlaceholderText(/\/reset, \/restart/), "/restart");
+    await userEvent.keyboard("{Enter}");
     const dialog = screen.getByRole("dialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "Restart agent" }));
     await vi.waitFor(() =>
@@ -397,24 +398,27 @@ describe("restart flow", () => {
   it("restart failure surfaces in the note", async () => {
     env.postThrow = new Error("restart exploded");
     render(<AgentProfilePage />);
-    await userEvent.click(screen.getByRole("button", { name: "Restart agent" }));
+    await userEvent.type(screen.getByPlaceholderText(/\/reset, \/restart/), "/restart");
+    await userEvent.keyboard("{Enter}");
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Restart agent" }));
     await vi.waitFor(() => expect(screen.getByText("restart exploded")).toBeInTheDocument());
   });
 
   it("cancel skips the restart", async () => {
     render(<AgentProfilePage />);
-    await userEvent.click(screen.getByRole("button", { name: "Restart agent" }));
+    await userEvent.type(screen.getByPlaceholderText(/\/reset, \/restart/), "/restart");
+    await userEvent.keyboard("{Enter}");
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
     expect(env.posts).toHaveLength(0);
   });
 });
 
 describe("chat thread", () => {
-  it("empty thread shows the listening state and disables reset", () => {
+  it("empty thread shows the listening state (S-304: reset is a /reset command)", () => {
     render(<AgentProfilePage />);
     expect(screen.getByText("coder is listening")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Reset chat" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Reset chat" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
   });
 
   it("task cards expose Details + Show task, no inline thread (S-301)", async () => {
@@ -593,7 +597,7 @@ describe("chat thread", () => {
 
   it("sends a message through the composer and refreshes", async () => {
     render(<AgentProfilePage />);
-    const box = screen.getByPlaceholderText("Message coder…");
+    const box = screen.getByPlaceholderText("Message coder… (/reset, /restart)");
     await userEvent.type(box, "hello agent");
     await userEvent.click(screen.getByRole("button", { name: "Send message" }));
     await vi.waitFor(() =>
@@ -609,7 +613,7 @@ describe("chat thread", () => {
 
   it("first keystroke wakes a scaled-to-zero agent", async () => {
     render(<AgentProfilePage />);
-    await userEvent.type(screen.getByPlaceholderText("Message coder…"), "t");
+    await userEvent.type(screen.getByPlaceholderText("Message coder… (/reset, /restart)"), "t");
     await vi.waitFor(() =>
       expect(env.posts.some((p) => p.path === "/agents/ag1/wake")).toBe(true),
     );
@@ -625,7 +629,7 @@ describe("chat thread", () => {
       expect(env.posts.some((p) => p.path === "/agents/ag1/chat/cancel")).toBe(true),
     );
     await vi.waitFor(() =>
-      expect(screen.getByPlaceholderText("Message coder…")).toBeEnabled(),
+      expect(screen.getByPlaceholderText("Message coder… (/reset, /restart)")).toBeEnabled(),
     );
   });
 
@@ -670,7 +674,7 @@ describe("chat thread", () => {
     await vi.waitFor(() => {
       expect(screen.queryByText("Combobulating…")).not.toBeInTheDocument();
     });
-    expect(screen.getByPlaceholderText("Message coder…")).toBeEnabled();
+    expect(screen.getByPlaceholderText("Message coder… (/reset, /restart)")).toBeEnabled();
     expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument();
   });
 
@@ -684,7 +688,7 @@ describe("chat thread", () => {
     render(<AgentProfilePage />);
     expect(await screen.findByText("couldn't finish this turn")).toBeInTheDocument();
     expect(screen.queryByText("Combobulating…")).not.toBeInTheDocument();
-    expect(screen.getByPlaceholderText("Message coder…")).toBeEnabled();
+    expect(screen.getByPlaceholderText("Message coder… (/reset, /restart)")).toBeEnabled();
     // S-265: the closure must be VISIBLY an error — distinct bubble styling
     // and an "LLM error" badge, not a normal-looking agent reply.
     const bubble = screen.getByText("couldn't finish this turn").closest(".chat-bubble");
@@ -696,7 +700,8 @@ describe("chat thread", () => {
   it("reset chat archives via POST and shows the note", async () => {
     env.chat = [chatMsg("c1", "agent", "hi")];
     render(<AgentProfilePage />);
-    await userEvent.click(screen.getByRole("button", { name: "Reset chat" }));
+    await userEvent.type(screen.getByPlaceholderText(/\/reset, \/restart/), "/reset");
+    await userEvent.keyboard("{Enter}");
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Reset chat" }));
     await vi.waitFor(() =>
       expect(env.posts.some((p) => p.path === "/agents/ag1/chat/reset")).toBe(true),
@@ -998,20 +1003,21 @@ describe("branch coverage extras", () => {
     expect(chip("Current lease")).toHaveTextContent("1 stalled task(s)");
   });
 
-  it("agent still loading renders placeholder title and disabled restart", () => {
+  it("agent still loading renders placeholder title (S-304: no restart button)", () => {
     env.agents = [];
     env.agentsLoading = true;
     render(<AgentProfilePage />);
     expect(screen.getByRole("heading", { name: "Agent" })).toBeInTheDocument();
     expect(screen.getByText(/^no role set\s·/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Restart agent" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Restart agent" })).not.toBeInTheDocument();
   });
 
   it("chat reset failure falls back to the generic note", async () => {
     env.chat = [chatMsg("c1", "agent", "hi")];
     env.postThrow = "weird non-error";
     render(<AgentProfilePage />);
-    await userEvent.click(screen.getByRole("button", { name: "Reset chat" }));
+    await userEvent.type(screen.getByPlaceholderText(/\/reset, \/restart/), "/reset");
+    await userEvent.keyboard("{Enter}");
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Reset chat" }));
     await vi.waitFor(() => expect(screen.getByText("reset failed")).toBeInTheDocument());
   });
@@ -1019,7 +1025,8 @@ describe("branch coverage extras", () => {
   it("restart with an empty response reads zero pods", async () => {
     env.restartPods = null;
     render(<AgentProfilePage />);
-    await userEvent.click(screen.getByRole("button", { name: "Restart agent" }));
+    await userEvent.type(screen.getByPlaceholderText(/\/reset, \/restart/), "/restart");
+    await userEvent.keyboard("{Enter}");
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Restart agent" }));
     await vi.waitFor(() =>
       expect(screen.getByText("Restarting agent (0 pod(s) evicted)")).toBeInTheDocument(),
@@ -1096,7 +1103,7 @@ describe("branch coverage extras", () => {
   it("send failure surfaces the composer error", async () => {
     env.postThrow = new Error("send boom");
     render(<AgentProfilePage />);
-    await userEvent.type(screen.getByPlaceholderText("Message coder…"), "hi");
+    await userEvent.type(screen.getByPlaceholderText("Message coder… (/reset, /restart)"), "hi");
     await userEvent.click(screen.getByRole("button", { name: "Send message" }));
     expect(await screen.findByText("send boom")).toBeInTheDocument();
   });
@@ -1108,7 +1115,7 @@ describe("branch coverage extras", () => {
       target: { files: [new File(["bytes"], "shot.png", { type: "image/png" })] },
     });
     expect(await screen.findByText("shot.png")).toBeInTheDocument();
-    await userEvent.type(screen.getByPlaceholderText("Message coder…"), "see image");
+    await userEvent.type(screen.getByPlaceholderText("Message coder… (/reset, /restart)"), "see image");
     await userEvent.click(screen.getByRole("button", { name: "Send message" }));
     await vi.waitFor(() =>
       expect(
@@ -1278,7 +1285,7 @@ describe("branch coverage extras 2", () => {
 
   it("Enter in the composer sends the message", async () => {
     render(<AgentProfilePage />);
-    const box = screen.getByPlaceholderText("Message coder…");
+    const box = screen.getByPlaceholderText("Message coder… (/reset, /restart)");
     await userEvent.type(box, "quick send{Enter}");
     await vi.waitFor(() =>
       expect(
@@ -1294,7 +1301,7 @@ describe("branch coverage extras 2", () => {
   it("non-Error send failure shows the generic composer message", async () => {
     env.postThrow = "weird string failure";
     render(<AgentProfilePage />);
-    await userEvent.type(screen.getByPlaceholderText("Message coder…"), "hi");
+    await userEvent.type(screen.getByPlaceholderText("Message coder… (/reset, /restart)"), "hi");
     await userEvent.click(screen.getByRole("button", { name: "Send message" }));
     expect(await screen.findByText("send failed")).toBeInTheDocument();
   });
@@ -1325,7 +1332,7 @@ describe("branch coverage extras 2", () => {
 
   it("pasting an image stages it like the file picker", async () => {
     render(<AgentProfilePage />);
-    const box = screen.getByPlaceholderText("Message coder…");
+    const box = screen.getByPlaceholderText("Message coder… (/reset, /restart)");
     const file = new File(["img"], "pasted.png", { type: "image/png" });
     fireEvent.paste(box, {
       clipboardData: {
@@ -1395,7 +1402,8 @@ describe("branch coverage extras 2", () => {
     env.chat = [chatMsg("c1", "agent", "hi")];
     env.resetEmpty = true;
     render(<AgentProfilePage />);
-    await userEvent.click(screen.getByRole("button", { name: "Reset chat" }));
+    await userEvent.type(screen.getByPlaceholderText(/\/reset, \/restart/), "/reset");
+    await userEvent.keyboard("{Enter}");
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Reset chat" }));
     await vi.waitFor(() =>
       expect(

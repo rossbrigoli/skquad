@@ -1715,6 +1715,36 @@ func (m *MemoryStore) UpdateTask(ctx context.Context, t *domain.Task) (*domain.T
 	return cloneTask(updated), nil
 }
 
+// ReorderTasks (S-304) renumbers one board column atomically: the i-th
+// id in orderedIDs gets position i+1. Every id must exist on boardID and
+// carry the given status; a mismatch rejects the whole reorder (nothing
+// applied). Mirrors the Postgres implementation.
+func (m *MemoryStore) ReorderTasks(ctx context.Context, boardID string, status domain.TaskStatus, orderedIDs []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(orderedIDs) == 0 {
+		return ErrInvalidInput
+	}
+	seen := make(map[string]bool, len(orderedIDs))
+	now := time.Now().UTC()
+	for _, id := range orderedIDs {
+		if seen[id] {
+			return ErrInvalidInput
+		}
+		seen[id] = true
+		task, ok := m.tasks[id]
+		if !ok || task.BoardID != boardID || task.Status != status {
+			return ErrNotFound
+		}
+	}
+	for i, id := range orderedIDs {
+		task := m.tasks[id]
+		task.Position = i + 1
+		task.UpdatedAt = now
+	}
+	return nil
+}
+
 func (m *MemoryStore) SetTaskWorkspace(ctx context.Context, taskID string, resourceID string, branch string, commitSHA string) (*domain.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
