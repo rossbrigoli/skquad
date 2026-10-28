@@ -68,7 +68,10 @@ describe("ProviderTilesGrid (S-230)", () => {
     const html = renderToStaticMarkup(
       createElement(ProviderTilesGrid, { providers: [online, offline], usageMap: map, currency: "USD" }),
     );
-    expect(html).toContain('class="agent-tile-grid"');
+    // S-301: providers use their own grid so the agent-card shrink
+    // never touches the provider ("AI Prover") tiles.
+    expect(html).toContain('class="provider-tile-grid"');
+    expect(html).not.toContain('class="agent-tile-grid"');
     expect((html.match(/class="provider-tile[ "]/g) ?? []).length).toBe(2);
     expect(html).toContain("provider-tile--online");
     expect(html).toContain("no usage in the last 30 days");

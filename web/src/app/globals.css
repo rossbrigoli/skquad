@@ -3840,7 +3840,18 @@ button.squad-tab.active {
 /* S-211: agent tiles on the squad Overview screen. Robot icon left,
    name + role, status chip. Running agents pulse a soft blue halo;
    failed/error agents get a static red outline. */
+/* S-301: agent cards shrunk 20% (280px → 224px min column). Height
+   follows the tile's 4:3 aspect-ratio, so the whole card scales. */
 .agent-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(224px, 1fr));
+  gap: var(--space-3);
+}
+
+/* S-301: provider ("AI Prover") tiles keep the pre-S-301 grid — the
+   shrink applies to agent cards only, so providers got their own grid
+   class instead of sharing .agent-tile-grid. */
+.provider-tile-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: var(--space-3);
@@ -3955,13 +3966,15 @@ button.squad-tab.active {
 }
 
 /* S-242: bigger, taller reusable agent tiles (~4:3, almost square).
-   Applies to .agent-tile only — provider tiles keep their own shape. */
+   Applies to .agent-tile only — provider tiles keep their own shape.
+   S-301: cards are 20% smaller (see .agent-tile-grid); padding and
+   gap are tightened one step so the content fits the smaller box. */
 .agent-tile {
   flex-direction: column;
   align-items: stretch;
   aspect-ratio: 4 / 3;
-  padding: var(--space-4);
-  gap: var(--space-2);
+  padding: var(--space-3);
+  gap: var(--space-1);
 }
 
 /* Icon top-left, status chip top-right; the text stack fills the rest. */
@@ -3972,16 +3985,20 @@ button.squad-tab.active {
   gap: var(--space-2);
 }
 
+/* S-301: robot icon ~15% bigger (52px → 60px box; glyph 28 → 32). */
 .agent-tile .agent-tile-icon {
-  width: 52px;
-  height: 52px;
+  width: 60px;
+  height: 60px;
 }
 
-/* S-242: model + task lines — single line, never wrap, ellipsize. */
+/* S-242: model + task lines — single line, never wrap, ellipsize.
+   S-301: dropped one type size (sm → xs) to fit the smaller card, and
+   each line now leads with a bold field label (see .agent-tile-label). */
 .agent-tile-model,
 .agent-tile-task {
   display: block;
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
+  line-height: 1.4;
   color: var(--ink-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -3993,7 +4010,32 @@ button.squad-tab.active {
   color: var(--ink-faint);
 }
 
-/* S-230: AI provider tiles. Same anatomy as the agent tiles above
+/* S-301: inline field labels ("Model:", "Task:", "Cost:") rendered
+   before the value on the model/task/cost lines. The label never
+   truncates — the value ellipsizes at the line end instead. */
+.agent-tile-label {
+  font-weight: 700;
+  color: var(--ink-muted);
+  letter-spacing: 0.02em;
+  margin-right: 4px;
+}
+
+/* S-301: role line only inside agent tiles — provider tiles keep the
+   base text-sm role styling. */
+.agent-tile .agent-tile-role {
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+/* S-230: cost line on agent tiles (rolling cost on the dashboard).
+   S-301: xs type inside agent tiles only — provider tiles keep the
+   base text-sm cost line. */
+.agent-tile .agent-tile-cost {
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+/* S-301: AI provider tiles. Same anatomy as the agent tiles above
    (shared base classes), plus a green ONLINE indicator and the
    per-model usage rows wrapping under the tile header. */
 .provider-tile {
