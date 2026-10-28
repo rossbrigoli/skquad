@@ -136,9 +136,34 @@ func (g *recordingGateway) handleModelNew(w http.ResponseWriter, body map[string
 }
 
 // handleModelUpdate records a /model/update (S-GWREG).
+//
+// It mimics the REAL LiteLLM contract discovered live in S-303: the
+// deployment is located by model_info.id, and an update whose
+// model_info.id is missing or does not match a live deployment id is
+// rejected with 400 "Authentication Error, model not found". A fake
+// that accepted any shape let a top-level-"id"-only bug ship; this
+// guard makes that regression fail loudly in tests.
 func (g *recordingGateway) handleModelUpdate(w http.ResponseWriter, body map[string]any) {
 	if g.failModelUpdate {
 		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	var wantID string
+	if mi, ok := body["model_info"].(map[string]any); ok {
+		wantID, _ = mi["id"].(string)
+	}
+	found := false
+	for _, id := range g.modelLive {
+		if wantID != "" && id == wantID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"message": "Authentication Error, model not found"},
+		})
 		return
 	}
 	g.modelUpdated = append(g.modelUpdated, body)
