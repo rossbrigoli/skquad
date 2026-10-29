@@ -382,17 +382,16 @@ def _coerce_array_field(payload: Mapping[str, object], key: str) -> "list | None
     return value
 
 
-def validate_task_result(
-    payload: Mapping[str, object], *, turns_used: int = 0, raw: str = ""
-) -> SubTaskResult:
-    """Validate the v1 contract. See spec §4 field rules."""
+def _result_contract_error(payload: Mapping[str, object]) -> str | None:
+    """Field-level v1 contract checks. Returns an error message, or None if valid.
+
+    Behavior-identical to the former inline checks in validate_task_result (S3776).
+    """
     schema = str(payload.get("schema") or "")
     if schema != TASK_RESULT_SCHEMA:
-        return contract_violation(
-            f"schema must be {TASK_RESULT_SCHEMA!r}, got {schema!r}", turns_used=turns_used, raw=raw
-        )
+        return f"schema must be {TASK_RESULT_SCHEMA!r}, got {schema!r}"
     if not isinstance(payload.get("succeeded"), bool):
-        return contract_violation("`succeeded` must be a boolean", turns_used=turns_used, raw=raw)
+        return "`succeeded` must be a boolean"
 
     succeeded = bool(payload.get("succeeded"))
     summary = str(payload.get("summary") or "").strip()
@@ -400,39 +399,44 @@ def validate_task_result(
     proposed_status = str(payload.get("proposed_status") or "").strip()
 
     if not summary:
-        return contract_violation("`summary` is required", turns_used=turns_used, raw=raw)
+        return "`summary` is required"
     if proposed_status not in PROPOSED_STATUSES:
-        return contract_violation(
-            f"`proposed_status` must be one of {sorted(PROPOSED_STATUSES)}, got {proposed_status!r}",
-            turns_used=turns_used,
-            raw=raw,
-        )
+        return f"`proposed_status` must be one of {sorted(PROPOSED_STATUSES)}, got {proposed_status!r}"
     if not succeeded and failure_class not in FAILURE_CLASSES:
-        return contract_violation(
+        return (
             f"a failed result requires `failure_class` in {sorted(FAILURE_CLASSES)}, "
-            f"got {failure_class!r}",
-            turns_used=turns_used,
-            raw=raw,
+            f"got {failure_class!r}"
         )
-    tests = _coerce_object_field(payload, "tests")
-    if tests is None:
-        return contract_violation("`tests` must be an object", turns_used=turns_used, raw=raw)
+    if _coerce_object_field(payload, "tests") is None:
+        return "`tests` must be an object"
+    if _coerce_array_field(payload, "artifacts") is None:
+        return "`artifacts` must be an array"
+    return None
 
+
+def validate_task_result(
+    payload: Mapping[str, object], *, turns_used: int = 0, raw: str = ""
+) -> SubTaskResult:
+    """Validate the v1 contract. See spec §4 field rules."""
+    err = _result_contract_error(payload)
+    if err:
+        return contract_violation(err, turns_used=turns_used, raw=raw)
+
+    succeeded = bool(payload.get("succeeded"))
     changed_files = _coerce_str_tuple(payload.get("changed_files"))
     concerns = _coerce_str_tuple(payload.get("concerns"))
-    artifacts = _coerce_array_field(payload, "artifacts")
-    if artifacts is None:
-        return contract_violation("`artifacts` must be an array", turns_used=turns_used, raw=raw)
+    tests = _coerce_object_field(payload, "tests") or {}
+    artifacts = _coerce_array_field(payload, "artifacts") or []
 
     return SubTaskResult(
         succeeded=succeeded,
-        summary=summary,
-        failure_class=failure_class if succeeded is False else "",
+        summary=str(payload.get("summary") or "").strip(),
+        failure_class=str(payload.get("failure_class") or "").strip() if succeeded is False else "",
         changed_files=changed_files,
         commit_sha=str(payload.get("commit_sha") or "").strip(),
         branch=str(payload.get("branch") or "").strip(),
         tests=dict(tests),
-        proposed_status=proposed_status,
+        proposed_status=str(payload.get("proposed_status") or "").strip(),
         review_recommended=bool(payload.get("review_recommended", True)),
         review_notes=str(payload.get("review_notes") or ""),
         concerns=concerns,

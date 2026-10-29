@@ -2116,17 +2116,9 @@ class ApplyPatchTool:
             )
 
         # Phase 2: commit — writes then deletes.
-        try:
-            for path, payload in new_files.items():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(payload)
-            for path in delete_paths:
-                if path.is_file():
-                    path.unlink()
-                elif not path.exists():
-                    return ToolResult(content=f"apply_patch: cannot delete, file not found: {_relpath_in_workspace(ws, path)}", ok=False)
-        except OSError as exc:
-            return ToolResult(content=f"apply_patch: write phase failed: {exc}", ok=False)
+        commit_err = self._commit_patch(ws, new_files, delete_paths)
+        if commit_err:
+            return ToolResult(content=commit_err, ok=False)
 
         parts = []
         if adds:
@@ -2136,6 +2128,25 @@ class ApplyPatchTool:
         if deletes:
             parts.append(f"deleted {len(deletes)}")
         return ToolResult(content="apply_patch ok: " + ", ".join(parts) + " file(s)", ok=True)
+
+    def _commit_patch(self, ws: str, new_files: dict[Path, bytes], delete_paths: list[Path]) -> str:
+        """Commit phase of invoke: write new contents, then delete removed paths.
+
+        Returns an error message, or '' on success. Behavior-identical to the
+        former inline block in invoke (S3776 extraction).
+        """
+        try:
+            for path, payload in new_files.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payload)
+            for path in delete_paths:
+                if path.is_file():
+                    path.unlink()
+                elif not path.exists():
+                    return f"apply_patch: cannot delete, file not found: {_relpath_in_workspace(ws, path)}"
+        except OSError as exc:
+            return f"apply_patch: write phase failed: {exc}"
+        return ""
 
     @staticmethod
     def _check_path(ws: str, rel: str) -> Path:
@@ -2979,6 +2990,18 @@ class SessionsListTool(_SessionToolBase):
             return "", f"sessions_list: tasks lookup failed: {exc}"
         if not isinstance(tasks, list):
             return "", "sessions_list: tasks lookup returned an unexpected shape"
+        rows, skipped = self._render_task_rows(tasks, status_filter, limit)
+        header = f"TASKS — {len(rows)} shown"
+        if skipped:
+            header += f" ({skipped} filtered out / over limit)"
+        return header + "\n" + ("\n".join(rows) if rows else EMPTY_DISPLAY), ""
+
+    @staticmethod
+    def _render_task_rows(tasks: list[object], status_filter: str, limit: int) -> tuple[list[str], int]:
+        """Build display rows for tasks; returns (rows, skipped_count).
+
+        Behavior-identical to the former inline loop in _tasks_section (S3776).
+        """
         rows: list[str] = []
         skipped = 0
         for task in tasks:
@@ -2999,10 +3022,7 @@ class SessionsListTool(_SessionToolBase):
                 f"{label} [{status}] {_redact_text(title)} "
                 f"(id={task.get('id', '?')}, updated={updated})"
             )
-        header = f"TASKS — {len(rows)} shown"
-        if skipped:
-            header += f" ({skipped} filtered out / over limit)"
-        return header + "\n" + ("\n".join(rows) if rows else EMPTY_DISPLAY), ""
+        return rows, skipped
 
     def _peers_section(self, limit: int) -> tuple[str, str]:
         try:
