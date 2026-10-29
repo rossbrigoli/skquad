@@ -430,6 +430,210 @@ function AgentTitleRow({
   );
 }
 
+// S3776: the reset/restart/identity actions moved to module scope so the
+// page component keeps its cognitive-complexity budget. Behavior is
+// identical to the former inline functions.
+async function runResetChat(
+  agentId: string,
+  token: string,
+  setNote: (note: string) => void,
+  refresh: () => void,
+) {
+  setNote("");
+  try {
+    const res = await apiPost<{ archived: number }>(`/agents/${agentId}/chat/reset`, token, {});
+    setNote(`Thread reset · ${res?.archived ?? 0} earlier message(s) archived to memory`);
+    refresh();
+  } catch (err) {
+    setNote(errMsg(err, "reset failed"));
+  }
+}
+
+async function runRestartAgent(agentId: string, token: string, setNote: (note: string) => void) {
+  setNote("");
+  try {
+    const res = await apiPost<{ pods: number }>(`/agents/${agentId}/restart`, token, {});
+    setNote(`Restarting agent (${res?.pods ?? 0} pod(s) evicted)`);
+  } catch (err) {
+    setNote(errMsg(err, "restart failed"));
+  }
+}
+
+async function runIdentityAction(
+  agentId: string,
+  identityId: string | undefined,
+  token: string,
+  refresh: () => void,
+  setBusy: (busy: boolean) => void,
+  setError: (message: string) => void,
+) {
+  setBusy(true);
+  setError("");
+  try {
+    await apiPost(identityId ? `/agents/${agentId}/identity/rotate` : `/agents/${agentId}/identity`, token, {});
+    refresh();
+  } catch (err) {
+    const fallbackMsg = identityId ? "rotate failed" : "provision failed";
+    setError(errMsg(err, fallbackMsg));
+  } finally {
+    setBusy(false);
+  }
+}
+
+// S3776: the chat tab's JSX was extracted from AgentProfilePage so the
+// page component stays under the cognitive-complexity limit. Rendering is
+// identical to the former inline block.
+function AgentChatSection(props: {
+  readonly agent?: Agent;
+  readonly agentId: string;
+  readonly squadId: string;
+  readonly token: string;
+  readonly messages: Message[];
+  readonly chatNote: string;
+  readonly llmLabel: string;
+  readonly thinkingLevel: ThinkingLevel;
+  readonly thinkingBusy: boolean;
+  readonly onThinkingLevelChange: (level: ThinkingLevel) => Promise<void>;
+  readonly onSent: () => void;
+  readonly taskThread: Task | null;
+  readonly taskIndex: Record<string, Task>;
+  readonly live: Task[];
+  readonly stalled: Task[];
+  readonly onOpenTaskThread: (task: Task) => void;
+  readonly onCloseSidePanel: () => void;
+  readonly onSlashReset: () => void;
+  readonly onSlashRestart: () => void;
+}) {
+  const {
+    agent, agentId, squadId, token, messages, chatNote, llmLabel,
+    thinkingLevel, thinkingBusy, onThinkingLevelChange, onSent,
+    taskThread, taskIndex, live, stalled, onOpenTaskThread, onCloseSidePanel,
+    onSlashReset, onSlashRestart,
+  } = props;
+  const agentName = agent?.name ?? "agent";
+  const agentDisplayName = agent?.name ?? "this agent";
+  return (
+    <section className="agent-chat-section" style={{ marginTop: "var(--space-4)" }}>
+      <div className="section-head">
+        <h2>Talk to {agentDisplayName}</h2>
+        {/* S-304: the "Reset chat" button was removed — reset is
+            now a "/reset" slash command in the chat composer. */}
+      </div>
+      {chatNote ? <p className="field-hint">{chatNote}</p> : null}
+      <ChatThread
+        messages={messages}
+        agentName={agentName}
+        onSent={onSent}
+        agentId={agentId}
+        squadId={squadId}
+        token={token}
+        llmLabel={llmLabel}
+        thinkingLevel={thinkingLevel}
+        thinkingBusy={thinkingBusy}
+        onThinkingLevelChange={onThinkingLevelChange}
+        sidePanel={
+          taskThread ? (
+            <TaskSubagentThreadPanel
+              task={taskThread}
+              onClose={onCloseSidePanel}
+            />
+          ) : null
+        }
+        onCloseSidePanel={onCloseSidePanel}
+        taskIndex={taskIndex}
+        onShowTaskThread={(taskId) =>
+          onOpenTaskThread(
+            taskIndex[taskId] ?? { id: taskId, title: `task ${taskId.slice(0, 8)}` } as Task,
+          )
+        }
+        onSlashReset={onSlashReset}
+        onSlashRestart={onSlashRestart}
+        // S-185: task lists ride inside the chat scroll area (they
+        // used to sit below the chat and push the page past the
+        // fold). S-169's "reachable without crowding" intent holds.
+        footer={
+          <>
+            <TaskListSection title="Working on" tasks={live} squadId={squadId} status="running" leaseLabel="lease expires" onShowThread={onOpenTaskThread} />
+            <TaskListSection title="Stalled work" tasks={stalled} squadId={squadId} status="stalled" leaseLabel="lease expired" onShowThread={onOpenTaskThread} />
+          </>
+        }
+      />
+    </section>
+  );
+}
+
+// S3776: the modal/confirm overlays were extracted from AgentProfilePage
+// so the page component stays under the cognitive-complexity limit.
+// Behavior is identical to the former inline blocks.
+function AgentProfileOverlays(props: {
+  readonly agent: Agent | undefined;
+  readonly agentId: string;
+  readonly squadId: string;
+  readonly token: string;
+  readonly resourceGrants: AgentPermission[];
+  readonly deleting: boolean;
+  readonly confirmReset: boolean;
+  readonly confirmRestart: boolean;
+  readonly granting: boolean;
+  readonly previewEffective: boolean;
+  readonly onDelete: () => Promise<void>;
+  readonly onConfirmReset: () => Promise<void>;
+  readonly onConfirmRestart: () => Promise<void>;
+  readonly onCloseDeleting: () => void;
+  readonly onCloseReset: () => void;
+  readonly onCloseRestart: () => void;
+  readonly onCloseGranting: () => void;
+  readonly onGranted: () => void;
+  readonly onClosePreview: () => void;
+}) {
+  const { agent, agentId, token, resourceGrants } = props;
+  return (
+    <>
+      {props.deleting && agent ? (
+        <ConfirmDialog
+          title={`Delete agent “${agent.name}”?`}
+          body="This removes the agent, its identity, grants and queued messages. Running work will be orphaned. This cannot be undone."
+          confirmText={agent.name}
+          onConfirm={props.onDelete}
+          onClose={props.onCloseDeleting}
+        />
+      ) : null}
+      {props.confirmReset ? (
+        <ConfirmDialog
+          title="Reset this chat thread?"
+          body="Earlier turns stop being included in the agent's context. The transcript is saved to the agent's memory."
+          confirmLabel="Reset chat"
+          onConfirm={props.onConfirmReset}
+          onClose={props.onCloseReset}
+        />
+      ) : null}
+      {props.confirmRestart ? (
+        <ConfirmDialog
+          title="Restart the agent?"
+          body="Its pod is evicted and a fresh one starts. Use this if the agent seems stuck."
+          confirmLabel="Restart agent"
+          onConfirm={props.onConfirmRestart}
+          onClose={props.onCloseRestart}
+        />
+      ) : null}
+      {props.granting ? (
+        <GrantModal
+          existing={resourceGrants}
+          token={token}
+          agentId={agentId}
+          onClose={props.onCloseGranting}
+          onGranted={props.onGranted}
+        />
+      ) : null}
+      {props.previewEffective && agent ? (
+        <Modal title={`Effective prompt — ${agent.name}`} wide onClose={props.onClosePreview}>
+          <EffectivePromptPanel agentId={agentId} />
+        </Modal>
+      ) : null}
+    </>
+  );
+}
+
 export default function AgentProfilePage() {
   const params = useParams<{ id: string; agentId: string }>();
   const squadId = String(params?.id ?? "");
@@ -514,42 +718,8 @@ export default function AgentProfilePage() {
     [agent?.ai_model_id, myModels.data],
   );
 
-  async function resetChat() {
-    setChatNote("");
-    try {
-      const res = await apiPost<{ archived: number }>(`/agents/${agentId}/chat/reset`, token, {});
-      setChatNote(`Thread reset · ${res?.archived ?? 0} earlier message(s) archived to memory`);
-      chat.refresh();
-    } catch (err) {
-      setChatNote(errMsg(err, "reset failed"));
-    }
-  }
-
-  async function restartAgent() {
-    setRestartNote("");
-    try {
-      const res = await apiPost<{ pods: number }>(`/agents/${agentId}/restart`, token, {});
-      setRestartNote(`Restarting agent (${res?.pods ?? 0} pod(s) evicted)`);
-    } catch (err) {
-      setRestartNote(errMsg(err, "restart failed"));
-    }
-  }
-
-  // S3776: extracted from the AgentConfigPane JSX callback so the page
-  // component stays under the cognitive-complexity limit.
-  async function identityAction() {
-    setIdentityBusy(true);
-    setIdentityError("");
-    try {
-      await apiPost(agent?.identity_id ? `/agents/${agentId}/identity/rotate` : `/agents/${agentId}/identity`, token, {});
-      agents.refresh();
-    } catch (err) {
-      const fallbackMsg = agent?.identity_id ? "rotate failed" : "provision failed";
-      setIdentityError(errMsg(err, fallbackMsg));
-    } finally {
-      setIdentityBusy(false);
-    }
-  }
+  // S3776: resetChat/restartAgent/identityAction now live at module scope
+  // (runResetChat/runRestartAgent/runIdentityAction above).
 
   if (!agent && !agents.loading) {
     return (
@@ -582,52 +752,27 @@ export default function AgentProfilePage() {
         {tab === "inbox" ? <AgentInboxPanel agentId={agentId} /> : null}
 
         {tab === "chat" ? (
-          <section className="agent-chat-section" style={{ marginTop: "var(--space-4)" }}>
-            <div className="section-head">
-              <h2>Talk to {agent?.name ?? "this agent"}</h2>
-              {/* S-304: the "Reset chat" button was removed — reset is
-                  now a "/reset" slash command in the chat composer. */}
-            </div>
-            {chatNote ? <p className="field-hint">{chatNote}</p> : null}
-            <ChatThread
-              messages={chat.data || []}
-              agentName={agent?.name ?? "agent"}
-              onSent={() => chat.refresh()}
-              agentId={agentId}
-              squadId={squadId}
-              token={token}
-              llmLabel={llmLabel}
-              thinkingLevel={resolveThinkingLevel(agent?.thinking_level)}
-              thinkingBusy={thinkingBusy}
-              onThinkingLevelChange={saveThinkingLevel}
-              sidePanel={
-                taskThread ? (
-                  <TaskSubagentThreadPanel
-                    task={taskThread}
-                    onClose={() => setTaskThread(null)}
-                  />
-                ) : null
-              }
-              onCloseSidePanel={() => setTaskThread(null)}
-              taskIndex={taskIndex}
-              onShowTaskThread={(taskId) =>
-                setTaskThread(
-                  taskIndex[taskId] ?? { id: taskId, title: `task ${taskId.slice(0, 8)}` } as Task,
-                )
-              }
-              onSlashReset={() => setConfirmReset(true)}
-              onSlashRestart={() => setConfirmRestart(true)}
-              // S-185: task lists ride inside the chat scroll area (they
-              // used to sit below the chat and push the page past the
-              // fold). S-169's "reachable without crowding" intent holds.
-              footer={
-                <>
-                  <TaskListSection title="Working on" tasks={live} squadId={squadId} status="running" leaseLabel="lease expires" onShowThread={setTaskThread} />
-                  <TaskListSection title="Stalled work" tasks={stalled} squadId={squadId} status="stalled" leaseLabel="lease expired" onShowThread={setTaskThread} />
-                </>
-              }
-            />
-          </section>
+          <AgentChatSection
+            agent={agent}
+            agentId={agentId}
+            squadId={squadId}
+            token={token}
+            messages={chat.data || []}
+            chatNote={chatNote}
+            llmLabel={llmLabel}
+            thinkingLevel={resolveThinkingLevel(agent?.thinking_level)}
+            thinkingBusy={thinkingBusy}
+            onThinkingLevelChange={saveThinkingLevel}
+            onSent={() => chat.refresh()}
+            taskThread={taskThread}
+            taskIndex={taskIndex}
+            live={live}
+            stalled={stalled}
+            onOpenTaskThread={setTaskThread}
+            onCloseSidePanel={() => setTaskThread(null)}
+            onSlashReset={() => setConfirmReset(true)}
+            onSlashRestart={() => setConfirmRestart(true)}
+          />
         ) : null}
 
         {tab === "config" && agent ? (
@@ -645,7 +790,9 @@ export default function AgentProfilePage() {
               await apiPut(`/agents/${agentId}/permissions`, token, next);
               perms.refresh();
             }}
-            onIdentityAction={identityAction}
+            onIdentityAction={() =>
+              runIdentityAction(agentId, agent?.identity_id, token, agents.refresh, setIdentityBusy, setIdentityError)
+            }
             onPreviewEffective={() => setPreviewEffective(true)}
             onRequestDelete={() => setDeleting(true)}
             onSaved={() => {
@@ -658,63 +805,39 @@ export default function AgentProfilePage() {
           />
         ) : null}
 
-        {deleting && agent ? (
-          <ConfirmDialog
-            title={`Delete agent “${agent.name}”?`}
-            body="This removes the agent, its identity, grants and queued messages. Running work will be orphaned. This cannot be undone."
-            confirmText={agent.name}
-            onConfirm={async () => {
-              await apiDelete(`/agents/${agentId}`, token);
-              router.push(`/squads/${squadId}/agents`);
-            }}
-            onClose={() => setDeleting(false)}
-          />
-        ) : null}
-
-        {confirmReset ? (
-          <ConfirmDialog
-            title="Reset this chat thread?"
-            body="Earlier turns stop being included in the agent's context. The transcript is saved to the agent's memory."
-            confirmLabel="Reset chat"
-            onConfirm={async () => {
-              setConfirmReset(false);
-              await resetChat();
-            }}
-            onClose={() => setConfirmReset(false)}
-          />
-        ) : null}
-
-        {confirmRestart ? (
-          <ConfirmDialog
-            title="Restart the agent?"
-            body="Its pod is evicted and a fresh one starts. Use this if the agent seems stuck."
-            confirmLabel="Restart agent"
-            onConfirm={async () => {
-              setConfirmRestart(false);
-              await restartAgent();
-            }}
-            onClose={() => setConfirmRestart(false)}
-          />
-        ) : null}
-
-        {granting ? (
-          <GrantModal
-            existing={resourceGrants}
-            token={token}
-            agentId={agentId}
-            onClose={() => setGranting(false)}
-            onGranted={() => {
-              setGranting(false);
-              perms.refresh();
-            }}
-          />
-        ) : null}
-
-        {previewEffective && agent ? (
-          <Modal title={`Effective prompt — ${agent.name}`} wide onClose={() => setPreviewEffective(false)}>
-            <EffectivePromptPanel agentId={agentId} />
-          </Modal>
-        ) : null}
+        <AgentProfileOverlays
+          agent={agent}
+          agentId={agentId}
+          squadId={squadId}
+          token={token}
+          resourceGrants={resourceGrants}
+          deleting={deleting}
+          confirmReset={confirmReset}
+          confirmRestart={confirmRestart}
+          granting={granting}
+          previewEffective={previewEffective}
+          onDelete={async () => {
+            await apiDelete(`/agents/${agentId}`, token);
+            router.push(`/squads/${squadId}/agents`);
+          }}
+          onConfirmReset={async () => {
+            setConfirmReset(false);
+            await runResetChat(agentId, token, setChatNote, chat.refresh);
+          }}
+          onConfirmRestart={async () => {
+            setConfirmRestart(false);
+            await runRestartAgent(agentId, token, setRestartNote);
+          }}
+          onCloseDeleting={() => setDeleting(false)}
+          onCloseReset={() => setConfirmReset(false)}
+          onCloseRestart={() => setConfirmRestart(false)}
+          onCloseGranting={() => setGranting(false)}
+          onGranted={() => {
+            setGranting(false);
+            perms.refresh();
+          }}
+          onClosePreview={() => setPreviewEffective(false)}
+        />
       </AppShell>
     </AuthGate>
   );
