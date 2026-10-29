@@ -40,53 +40,20 @@ func (p *PostgresStore) AddTaskDependency(ctx context.Context, taskID string, de
 	defer tx.Rollback(ctx)
 
 	var taskSquad, depSquad string
-	if err := tx.QueryRow(ctx, `SELECT squad_id::text FROM tasks WHERE id = $1`, taskID).Scan(&taskSquad); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, mapPgErr(err)
+	taskSquad, err = taskSquadTx(ctx, tx, taskID)
+	if err != nil {
+		return nil, err
 	}
-	if err := tx.QueryRow(ctx, `SELECT squad_id::text FROM tasks WHERE id = $1`, dependsOnID).Scan(&depSquad); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, mapPgErr(err)
+	depSquad, err = taskSquadTx(ctx, tx, dependsOnID)
+	if err != nil {
+		return nil, err
 	}
 	if taskSquad != depSquad {
 		return nil, fmt.Errorf("%w: dependencies must be within the same squad", ErrInvalidInput)
 	}
 
-	// Duplicate edge → ErrDependencyExists (PK violation, pre-checked for
-	// a precise error rather than a raw constraint name).
-	var exists bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM task_dependencies
-			WHERE task_id = $1 AND depends_on_task_id = $2
-		)`, taskID, dependsOnID).Scan(&exists); err != nil {
-		return nil, mapPgErr(err)
-	}
-	if exists {
-		return nil, ErrDependencyExists
-	}
-
-	// Cycle check: adding task→dep closes a cycle iff dep can already
-	// reach task by following depends-on edges. Depth-capped defensively.
-	var cycle bool
-	if err := tx.QueryRow(ctx, `
-		WITH RECURSIVE reach(id, depth) AS (
-			SELECT $2::uuid, 0
-			UNION ALL
-			SELECT td.depends_on_task_id, r.depth + 1
-			FROM task_dependencies td
-			JOIN reach r ON td.task_id = r.id
-			WHERE r.depth < 32
-		)
-		SELECT EXISTS (SELECT 1 FROM reach WHERE id = $1::uuid)`, taskID, dependsOnID).Scan(&cycle); err != nil {
-		return nil, mapPgErr(err)
-	}
-	if cycle {
-		return nil, ErrDependencyCycle
+	if err := checkDependencyEdgeFreeTx(ctx, tx, taskID, dependsOnID); err != nil {
+		return nil, err
 	}
 
 	if _, err := tx.Exec(ctx, `
@@ -101,6 +68,56 @@ func (p *PostgresStore) AddTaskDependency(ctx context.Context, taskID string, de
 		return nil, mapPgErr(err)
 	}
 	return p.taskDependencyRef(ctx, dependsOnID)
+}
+
+// taskSquadTx loads a task's squad id inside an open transaction
+// (ErrNotFound when the task does not exist).
+func taskSquadTx(ctx context.Context, tx pgx.Tx, taskID string) (string, error) {
+	var squad string
+	if err := tx.QueryRow(ctx, `SELECT squad_id::text FROM tasks WHERE id = $1`, taskID).Scan(&squad); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", mapPgErr(err)
+	}
+	return squad, nil
+}
+
+// checkDependencyEdgeFreeTx pre-checks the edge before insertion: a
+// duplicate edge → ErrDependencyExists (PK violation, pre-checked for
+// a precise error rather than a raw constraint name); a cycle →
+// ErrDependencyCycle (adding task→dep closes a cycle iff dep can
+// already reach task by following depends-on edges, depth-capped
+// defensively).
+func checkDependencyEdgeFreeTx(ctx context.Context, tx pgx.Tx, taskID, dependsOnID string) error {
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM task_dependencies
+			WHERE task_id = $1 AND depends_on_task_id = $2
+		)`, taskID, dependsOnID).Scan(&exists); err != nil {
+		return mapPgErr(err)
+	}
+	if exists {
+		return ErrDependencyExists
+	}
+	var cycle bool
+	if err := tx.QueryRow(ctx, `
+		WITH RECURSIVE reach(id, depth) AS (
+			SELECT $2::uuid, 0
+			UNION ALL
+			SELECT td.depends_on_task_id, r.depth + 1
+			FROM task_dependencies td
+			JOIN reach r ON td.task_id = r.id
+			WHERE r.depth < 32
+		)
+		SELECT EXISTS (SELECT 1 FROM reach WHERE id = $1::uuid)`, taskID, dependsOnID).Scan(&cycle); err != nil {
+		return mapPgErr(err)
+	}
+	if cycle {
+		return ErrDependencyCycle
+	}
+	return nil
 }
 
 // RemoveTaskDependency drops one depends-on edge.

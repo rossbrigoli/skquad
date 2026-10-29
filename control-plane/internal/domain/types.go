@@ -71,7 +71,7 @@ const (
 	AgentBusy  AgentStatus = "busy"
 	AgentError AgentStatus = "error"
 	// AgentBlocked (S-300) means the agent owns work it cannot start yet:
-	// every remaining todo has an unsatisfied upstream dependency. It is
+	// every remaining to-do has an unsatisfied upstream dependency. It is
 	// DERIVED by the control plane, never agent-reported — the runtime only
 	// ever sends idle/busy/error. Blocked behaves like idle for scaling
 	// (the Agent CR's desiredActive stays false) but is wakeable: a chat

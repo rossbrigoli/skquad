@@ -113,41 +113,57 @@ type CronSpec struct {
 func BuildScheduleSpec(kind ScheduleKind, at string, intervalSeconds int, expression, timezone string) (json.RawMessage, error) {
 	switch kind {
 	case ScheduleAt:
-		at = strings.TrimSpace(at)
-		if at == "" {
-			return nil, fmt.Errorf("schedule.at is required for kind=at")
-		}
-		if _, err := time.Parse(time.RFC3339, at); err != nil {
-			return nil, fmt.Errorf("schedule.at must be an RFC3339 timestamp (e.g. 2026-10-21T19:30:00+09:30): %v", err)
-		}
-		return json.Marshal(AtSpec{At: at})
+		return buildAtScheduleSpec(at)
 	case ScheduleEvery:
-		if intervalSeconds < MinEverySeconds {
-			return nil, fmt.Errorf("schedule.interval_seconds must be at least %d", MinEverySeconds)
-		}
-		if intervalSeconds > MaxEverySeconds {
-			return nil, fmt.Errorf("schedule.interval_seconds must be at most %d (90 days)", MaxEverySeconds)
-		}
-		return json.Marshal(EverySpec{IntervalSeconds: intervalSeconds})
+		return buildEveryScheduleSpec(intervalSeconds)
 	case ScheduleCron:
-		expression = strings.TrimSpace(expression)
-		if expression == "" {
-			return nil, fmt.Errorf("schedule.expression is required for kind=cron")
-		}
-		if _, err := ParseCronExpression(expression); err != nil {
-			return nil, fmt.Errorf("schedule.expression: %w", err)
-		}
-		timezone = strings.TrimSpace(timezone)
-		if timezone == "" {
-			timezone = DefaultScheduleTimezone
-		}
-		if _, err := time.LoadLocation(timezone); err != nil {
-			return nil, fmt.Errorf("schedule.timezone %q is not a valid IANA timezone: %v", timezone, err)
-		}
-		return json.Marshal(CronSpec{Expression: expression, Timezone: timezone})
+		return buildCronScheduleSpec(expression, timezone)
 	default:
 		return nil, fmt.Errorf("unknown schedule kind %q (want at, every or cron)", kind)
 	}
+}
+
+// buildAtScheduleSpec validates and marshals the kind=at spec.
+func buildAtScheduleSpec(at string) (json.RawMessage, error) {
+	at = strings.TrimSpace(at)
+	if at == "" {
+		return nil, fmt.Errorf("schedule.at is required for kind=at")
+	}
+	if _, err := time.Parse(time.RFC3339, at); err != nil {
+		return nil, fmt.Errorf("schedule.at must be an RFC3339 timestamp (e.g. 2026-10-21T19:30:00+09:30): %v", err)
+	}
+	return json.Marshal(AtSpec{At: at})
+}
+
+// buildEveryScheduleSpec validates and marshals the kind=every spec.
+func buildEveryScheduleSpec(intervalSeconds int) (json.RawMessage, error) {
+	if intervalSeconds < MinEverySeconds {
+		return nil, fmt.Errorf("schedule.interval_seconds must be at least %d", MinEverySeconds)
+	}
+	if intervalSeconds > MaxEverySeconds {
+		return nil, fmt.Errorf("schedule.interval_seconds must be at most %d (90 days)", MaxEverySeconds)
+	}
+	return json.Marshal(EverySpec{IntervalSeconds: intervalSeconds})
+}
+
+// buildCronScheduleSpec validates and marshals the kind=cron spec,
+// defaulting the timezone to DefaultScheduleTimezone.
+func buildCronScheduleSpec(expression, timezone string) (json.RawMessage, error) {
+	expression = strings.TrimSpace(expression)
+	if expression == "" {
+		return nil, fmt.Errorf("schedule.expression is required for kind=cron")
+	}
+	if _, err := ParseCronExpression(expression); err != nil {
+		return nil, fmt.Errorf("schedule.expression: %w", err)
+	}
+	timezone = strings.TrimSpace(timezone)
+	if timezone == "" {
+		timezone = DefaultScheduleTimezone
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		return nil, fmt.Errorf("schedule.timezone %q is not a valid IANA timezone: %v", timezone, err)
+	}
+	return json.Marshal(CronSpec{Expression: expression, Timezone: timezone})
 }
 
 // cronParser parses the standard 5-field cron format (minute hour
@@ -172,50 +188,65 @@ func ParseCronExpression(expr string) (cron.Schedule, error) {
 func ComputeNextRun(kind ScheduleKind, spec json.RawMessage, after time.Time) (time.Time, error) {
 	switch kind {
 	case ScheduleAt:
-		var s AtSpec
-		if err := json.Unmarshal(spec, &s); err != nil {
-			return time.Time{}, fmt.Errorf("invalid at schedule spec: %w", err)
-		}
-		at, err := time.Parse(time.RFC3339, s.At)
-		if err != nil {
-			return time.Time{}, fmt.Errorf("invalid at timestamp: %w", err)
-		}
-		if !at.After(after) {
-			return time.Time{}, fmt.Errorf("schedule.at must be in the future")
-		}
-		return at.UTC(), nil
+		return computeAtNextRun(spec, after)
 	case ScheduleEvery:
-		var s EverySpec
-		if err := json.Unmarshal(spec, &s); err != nil {
-			return time.Time{}, fmt.Errorf("invalid every schedule spec: %w", err)
-		}
-		if s.IntervalSeconds < MinEverySeconds || s.IntervalSeconds > MaxEverySeconds {
-			return time.Time{}, fmt.Errorf("interval_seconds %d out of range [%d, %d]", s.IntervalSeconds, MinEverySeconds, MaxEverySeconds)
-		}
-		return after.UTC().Add(time.Duration(s.IntervalSeconds) * time.Second), nil
+		return computeEveryNextRun(spec, after)
 	case ScheduleCron:
-		var s CronSpec
-		if err := json.Unmarshal(spec, &s); err != nil {
-			return time.Time{}, fmt.Errorf("invalid cron schedule spec: %w", err)
-		}
-		sched, err := ParseCronExpression(s.Expression)
-		if err != nil {
-			return time.Time{}, err
-		}
-		tz := strings.TrimSpace(s.Timezone)
-		if tz == "" {
-			tz = DefaultScheduleTimezone
-		}
-		loc, err := time.LoadLocation(tz)
-		if err != nil {
-			return time.Time{}, fmt.Errorf("invalid timezone %q: %w", tz, err)
-		}
-		// Evaluate in the job's timezone so DST transitions follow the
-		// wall clock: robfig/cron's Next skips instants that do not
-		// exist on a spring-forward day and lands on the next valid
-		// wall-clock match.
-		return sched.Next(after.In(loc)).UTC(), nil
+		return computeCronNextRun(spec, after)
 	default:
 		return time.Time{}, fmt.Errorf("unknown schedule kind %q", kind)
 	}
+}
+
+// computeAtNextRun returns the fixed instant for kind=at (callers must
+// disable one-shot jobs after firing).
+func computeAtNextRun(spec json.RawMessage, after time.Time) (time.Time, error) {
+	var s AtSpec
+	if err := json.Unmarshal(spec, &s); err != nil {
+		return time.Time{}, fmt.Errorf("invalid at schedule spec: %w", err)
+	}
+	at, err := time.Parse(time.RFC3339, s.At)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid at timestamp: %w", err)
+	}
+	if !at.After(after) {
+		return time.Time{}, fmt.Errorf("schedule.at must be in the future")
+	}
+	return at.UTC(), nil
+}
+
+// computeEveryNextRun returns after + interval for kind=every.
+func computeEveryNextRun(spec json.RawMessage, after time.Time) (time.Time, error) {
+	var s EverySpec
+	if err := json.Unmarshal(spec, &s); err != nil {
+		return time.Time{}, fmt.Errorf("invalid every schedule spec: %w", err)
+	}
+	if s.IntervalSeconds < MinEverySeconds || s.IntervalSeconds > MaxEverySeconds {
+		return time.Time{}, fmt.Errorf("interval_seconds %d out of range [%d, %d]", s.IntervalSeconds, MinEverySeconds, MaxEverySeconds)
+	}
+	return after.UTC().Add(time.Duration(s.IntervalSeconds) * time.Second), nil
+}
+
+// computeCronNextRun evaluates the cron schedule in the job's timezone
+// so DST transitions follow the wall clock: robfig/cron's Next skips
+// instants that do not exist on a spring-forward day and lands on the
+// next valid wall-clock match.
+func computeCronNextRun(spec json.RawMessage, after time.Time) (time.Time, error) {
+	var s CronSpec
+	if err := json.Unmarshal(spec, &s); err != nil {
+		return time.Time{}, fmt.Errorf("invalid cron schedule spec: %w", err)
+	}
+	sched, err := ParseCronExpression(s.Expression)
+	if err != nil {
+		return time.Time{}, err
+	}
+	tz := strings.TrimSpace(s.Timezone)
+	if tz == "" {
+		tz = DefaultScheduleTimezone
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid timezone %q: %w", tz, err)
+	}
+	return sched.Next(after.In(loc)).UTC(), nil
 }

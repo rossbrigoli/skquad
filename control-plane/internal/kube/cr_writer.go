@@ -130,6 +130,33 @@ func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identit
 	if strings.TrimSpace(agent.DeploymentName) != "" {
 		spec["deploymentName"] = agent.DeploymentName
 	}
+	// Durable workspace PVC (S-138) + optional identity/workspace secrets
+	// and platform URLs — all conditionally-emitted fields live in the
+	// helper so UpsertAgent stays readable.
+	w.applyOptionalAgentSpecFields(spec, agent, identity)
+	body := map[string]any{
+		"apiVersion": w.groupVersion,
+		"kind":       "Agent",
+		"metadata": map[string]any{
+			"name":      agentCRName(agent.ID),
+			"namespace": w.namespace,
+			"labels": map[string]string{
+				managedByLabel:       controlPlaneName,
+				"skquad.io/agent-id": agent.ID,
+				"skquad.io/squad-id": agent.SquadID,
+			},
+		},
+		"spec": spec,
+	}
+	return w.apply(ctx, "agents", agentCRName(agent.ID), body)
+}
+
+// applyOptionalAgentSpecFields adds every conditionally-emitted Agent
+// CR spec field: the durable workspace PVC (S-138, with the S-261
+// friendly PVC name), platform URLs, identity secret refs, and
+// workspace secret mounts. Emitted-only-when-set semantics are
+// preserved exactly.
+func (w *CRWriter) applyOptionalAgentSpecFields(spec map[string]any, agent *domain.Agent, identity *domain.AgentIdentity) {
 	// Durable workspace PVC (S-138): emitted only when the agent opted in.
 	// storageClass rides along solely when the platform set it; the CRD
 	// defaults size to 2Gi when empty, so we resolve the default here for
@@ -168,21 +195,6 @@ func (w *CRWriter) UpsertAgent(ctx context.Context, agent *domain.Agent, identit
 		}
 		spec["workspaceSecrets"] = ws
 	}
-	body := map[string]any{
-		"apiVersion": w.groupVersion,
-		"kind":       "Agent",
-		"metadata": map[string]any{
-			"name":      agentCRName(agent.ID),
-			"namespace": w.namespace,
-			"labels": map[string]string{
-				managedByLabel:       controlPlaneName,
-				"skquad.io/agent-id": agent.ID,
-				"skquad.io/squad-id": agent.SquadID,
-			},
-		},
-		"spec": spec,
-	}
-	return w.apply(ctx, "agents", agentCRName(agent.ID), body)
 }
 
 func (w *CRWriter) DeleteAgent(ctx context.Context, agent *domain.Agent) error {
