@@ -2193,40 +2193,11 @@ class ApplyPatchTool:
         while i < len(body):
             line = body[i]
             if line.startswith(DIFF_ADD_PREFIX):
-                path = line[len(DIFF_ADD_PREFIX):].strip()
-                i += 1
-                content: list[str] = []
-                while i < len(body) and not body[i].startswith("*** "):
-                    if not body[i].startswith("+"):
-                        raise ValueError(f"Add File {path!r}: expected '+' lines, got {body[i]!r}")
-                    content.append(body[i][1:])
-                    i += 1
-                adds.append((path, "\n".join(content) + ("\n" if content else "")))
+                item, i = ApplyPatchTool._parse_add(body, i)
+                adds.append(item)
             elif line.startswith(DIFF_UPDATE_PREFIX):
-                path = line[len(DIFF_UPDATE_PREFIX):].strip()
-                i += 1
-                hunks: list[list[str]] = []
-                current: list[str] | None = None
-                while i < len(body) and not body[i].startswith(DIFF_ADD_PREFIX) and not body[i].startswith(DIFF_UPDATE_PREFIX) and not body[i].startswith(DIFF_DELETE_PREFIX):
-                    hline = body[i]
-                    if hline.startswith("@@"):
-                        if current:
-                            hunks.append(current)
-                        current = []
-                    elif hline.startswith("*** Move to:"):
-                        raise ValueError(f"Update File {path!r}: 'Move to' (rename) is not supported")
-                    elif hline.startswith("***"):
-                        break
-                    else:
-                        if current is None:
-                            current = []
-                        current.append(hline)
-                    i += 1
-                if current:
-                    hunks.append(current)
-                if not hunks:
-                    raise ValueError(f"Update File {path!r}: no hunks")
-                updates.append((path, hunks))
+                item, i = ApplyPatchTool._parse_update(body, i)
+                updates.append(item)
             elif line.startswith(DIFF_DELETE_PREFIX):
                 path = line[len(DIFF_DELETE_PREFIX):].strip()
                 deletes.append(path)
@@ -2236,6 +2207,47 @@ class ApplyPatchTool:
             else:
                 raise ValueError(f"unexpected patch line: {line!r}")
         return adds, updates, deletes
+
+    @staticmethod
+    def _parse_add(body: list[str], i: int) -> tuple[tuple[str, str], int]:
+        path = body[i][len(DIFF_ADD_PREFIX):].strip()
+        i += 1
+        content: list[str] = []
+        while i < len(body) and not body[i].startswith("*** "):
+            if not body[i].startswith("+"):
+                raise ValueError(f"Add File {path!r}: expected '+' lines, got {body[i]!r}")
+            content.append(body[i][1:])
+            i += 1
+        return (path, "\n".join(content) + ("\n" if content else "")), i
+
+    @staticmethod
+    def _parse_update(body: list[str], i: int) -> tuple[tuple[str, list[list[str]]], int]:
+        path = body[i][len(DIFF_UPDATE_PREFIX):].strip()
+        i += 1
+        hunks: list[list[str]] = []
+        current: list[str] | None = None
+        while i < len(body) and not body[i].startswith(
+            (DIFF_ADD_PREFIX, DIFF_UPDATE_PREFIX, DIFF_DELETE_PREFIX)
+        ):
+            hline = body[i]
+            if hline.startswith("@@"):
+                if current:
+                    hunks.append(current)
+                current = []
+            elif hline.startswith("*** Move to:"):
+                raise ValueError(f"Update File {path!r}: 'Move to' (rename) is not supported")
+            elif hline.startswith("***"):
+                break
+            else:
+                if current is None:
+                    current = []
+                current.append(hline)
+            i += 1
+        if current:
+            hunks.append(current)
+        if not hunks:
+            raise ValueError(f"Update File {path!r}: no hunks")
+        return (path, hunks), i
 
     @staticmethod
     def _apply_hunks(text: str, hunks: list[list[str]], fname: str) -> tuple[str, str]:
@@ -2261,17 +2273,7 @@ class ApplyPatchTool:
                 # Pure-addition hunk: insert at cursor.
                 lines[cursor:cursor] = replace
                 continue
-            found = -1
-            for start in range(cursor, len(lines) - len(search) + 1):
-                if lines[start : start + len(search)] == search:
-                    found = start
-                    break
-            if found == -1:
-                # Retry from the top of the file (hunks not strictly ordered).
-                for start in range(0, len(lines) - len(search) + 1):
-                    if lines[start : start + len(search)] == search:
-                        found = start
-                        break
+            found = ApplyPatchTool._locate_hunk(search, lines, cursor)
             if found == -1:
                 return text, f"hunk {h_idx} in {fname!r} did not match (context line: {search[0][:80]!r})"
             lines[found : found + len(search)] = replace
@@ -2280,6 +2282,17 @@ class ApplyPatchTool:
         if trailing_newline:
             new_text += "\n"
         return new_text, ""
+
+    @staticmethod
+    def _locate_hunk(search: list[str], lines: list[str], cursor: int) -> int:
+        """Locate the search block from cursor, then retry from file top; -1 if absent."""
+        for start in range(cursor, len(lines) - len(search) + 1):
+            if lines[start : start + len(search)] == search:
+                return start
+        for start in range(0, len(lines) - len(search) + 1):
+            if lines[start : start + len(search)] == search:
+                return start
+        return -1
 
 
 # ---------------------------------------------------------------------------
@@ -2523,59 +2536,14 @@ class CronTool:
         if title:
             body["title"] = title
         if kind == "at":
-            at = str(schedule.get("at", "") or "").strip()
-            if not at:
-                return ToolResult(content="cron add: schedule.at is required for kind=at", ok=False)
-            if _parse_rfc3339(at) is None:
-                return ToolResult(
-                    content=(
-                        "cron add: schedule.at must be an RFC3339 timestamp "
-                        "with a UTC offset (e.g. 2026-10-21T19:30:00+10:30)"
-                    ),
-                    ok=False,
-                )
-            body["schedule"]["at"] = at
+            fields, err = self._at_fields(schedule)
         elif kind == "every":
-            raw_interval = schedule.get("interval_seconds")
-            if raw_interval is None:
-                return ToolResult(
-                    content="cron add: schedule.interval_seconds is required for kind=every",
-                    ok=False,
-                )
-            try:
-                interval = int(raw_interval)
-            except (TypeError, ValueError):
-                return ToolResult(
-                    content="cron add: schedule.interval_seconds must be a whole number of seconds",
-                    ok=False,
-                )
-            if interval < CRON_MIN_INTERVAL_SECONDS or interval > CRON_MAX_INTERVAL_SECONDS:
-                return ToolResult(
-                    content=(
-                        f"cron add: interval_seconds {interval} out of range "
-                        f"[{CRON_MIN_INTERVAL_SECONDS}, {CRON_MAX_INTERVAL_SECONDS}] "
-                        "(1 minute to 90 days)"
-                    ),
-                    ok=False,
-                )
-            body["schedule"]["interval_seconds"] = interval
+            fields, err = self._every_fields(schedule)
         else:  # cron
-            expression = str(schedule.get("expression", "") or "").strip()
-            if not expression:
-                return ToolResult(
-                    content="cron add: schedule.expression is required for kind=cron",
-                    ok=False,
-                )
-            expr_err = _validate_cron_expression(expression)
-            if expr_err:
-                return ToolResult(content=f"cron add: {expr_err}", ok=False)
-            tz = str(schedule.get("timezone", "") or "").strip()
-            tz_err = _validate_cron_timezone(tz)
-            if tz_err:
-                return ToolResult(content=f"cron add: {tz_err}", ok=False)
-            body["schedule"]["expression"] = expression
-            if tz:
-                body["schedule"]["timezone"] = tz
+            fields, err = self._cron_fields(schedule)
+        if err:
+            return ToolResult(content=err, ok=False)
+        body["schedule"].update(fields)
 
         cap_err = self._check_active_cap()
         if cap_err:
@@ -2587,14 +2555,61 @@ class CronTool:
             return ToolResult(content=f"cron add: {self._http_detail(exc)}", ok=False)
         except (error.URLError, OSError, json.JSONDecodeError) as exc:
             return ToolResult(content=f"cron add: {exc}", ok=False)
+        return ToolResult(content=self._created_job_text(data, kind), ok=True)
+
+    @staticmethod
+    def _at_fields(schedule: Mapping[str, object]) -> tuple[dict[str, object], str]:
+        at = str(schedule.get("at", "") or "").strip()
+        if not at:
+            return {}, "cron add: schedule.at is required for kind=at"
+        if _parse_rfc3339(at) is None:
+            return {}, (
+                "cron add: schedule.at must be an RFC3339 timestamp "
+                "with a UTC offset (e.g. 2026-10-21T19:30:00+10:30)"
+            )
+        return {"at": at}, ""
+
+    @staticmethod
+    def _every_fields(schedule: Mapping[str, object]) -> tuple[dict[str, object], str]:
+        raw_interval = schedule.get("interval_seconds")
+        if raw_interval is None:
+            return {}, "cron add: schedule.interval_seconds is required for kind=every"
+        try:
+            interval = int(raw_interval)
+        except (TypeError, ValueError):
+            return {}, "cron add: schedule.interval_seconds must be a whole number of seconds"
+        if interval < CRON_MIN_INTERVAL_SECONDS or interval > CRON_MAX_INTERVAL_SECONDS:
+            return {}, (
+                f"cron add: interval_seconds {interval} out of range "
+                f"[{CRON_MIN_INTERVAL_SECONDS}, {CRON_MAX_INTERVAL_SECONDS}] "
+                "(1 minute to 90 days)"
+            )
+        return {"interval_seconds": interval}, ""
+
+    @staticmethod
+    def _cron_fields(schedule: Mapping[str, object]) -> tuple[dict[str, object], str]:
+        expression = str(schedule.get("expression", "") or "").strip()
+        if not expression:
+            return {}, "cron add: schedule.expression is required for kind=cron"
+        expr_err = _validate_cron_expression(expression)
+        if expr_err:
+            return {}, f"cron add: {expr_err}"
+        tz = str(schedule.get("timezone", "") or "").strip()
+        tz_err = _validate_cron_timezone(tz)
+        if tz_err:
+            return {}, f"cron add: {tz_err}"
+        fields: dict[str, object] = {"expression": expression}
+        if tz:
+            fields["timezone"] = tz
+        return fields, ""
+
+    @staticmethod
+    def _created_job_text(data: object, kind: str) -> str:
         job_id = str(data.get("id", "")) if isinstance(data, dict) else ""
         next_run = str(data.get("next_run_at", "")) if isinstance(data, dict) else ""
-        return ToolResult(
-            content=(
-                f"created scheduled job {job_id} ({kind})"
-                + (f" — next run {next_run}" if next_run else "")
-            ),
-            ok=True,
+        return (
+            f"created scheduled job {job_id} ({kind})"
+            + (f" — next run {next_run}" if next_run else "")
         )
 
     def _check_active_cap(self) -> str:
@@ -2943,77 +2958,70 @@ class SessionsListTool(_SessionToolBase):
 
         sections: list[str] = []
         if kind in ("tasks", "all"):
-            try:
-                tasks = self._get(TASKS_PATH)
-            except error.HTTPError as exc:
-                return ToolResult(
-                    content=f"sessions_list: tasks lookup failed: {self._http_detail(exc)}",
-                    ok=False,
-                )
-            except (error.URLError, OSError, json.JSONDecodeError) as exc:
-                return ToolResult(
-                    content=f"sessions_list: tasks lookup failed: {exc}", ok=False
-                )
-            if not isinstance(tasks, list):
-                return ToolResult(
-                    content="sessions_list: tasks lookup returned an unexpected shape",
-                    ok=False,
-                )
-            rows: list[str] = []
-            skipped = 0
-            for task in tasks:
-                if not isinstance(task, dict):
-                    continue
-                status = str(task.get("status", "?"))
-                if status_filter and status.lower() != status_filter:
-                    skipped += 1
-                    continue
-                if len(rows) >= limit:
-                    skipped += 1
-                    continue
-                number = task.get("task_number")
-                label = f"T-{number}" if number else str(task.get("id", "?"))[:8]
-                title = str(task.get("title", "")).strip() or "(untitled)"
-                updated = str(task.get("updated_at", "")) or "—"
-                rows.append(
-                    f"{label} [{status}] {_redact_text(title)} "
-                    f"(id={task.get('id', '?')}, updated={updated})"
-                )
-            header = f"TASKS — {len(rows)} shown"
-            if skipped:
-                header += f" ({skipped} filtered out / over limit)"
-            sections.append(header + "\n" + ("\n".join(rows) if rows else EMPTY_DISPLAY))
-
+            section, err = self._tasks_section(status_filter, limit)
+            if err:
+                return ToolResult(content=err, ok=False)
+            sections.append(section)
         if kind in ("peers", "all"):
-            try:
-                peers = self._get(PEERS_PATH)
-            except error.HTTPError as exc:
-                return ToolResult(
-                    content=f"sessions_list: peers lookup failed: {self._http_detail(exc)}",
-                    ok=False,
-                )
-            except (error.URLError, OSError, json.JSONDecodeError) as exc:
-                return ToolResult(
-                    content=f"sessions_list: peers lookup failed: {exc}", ok=False
-                )
-            if not isinstance(peers, list):
-                return ToolResult(
-                    content="sessions_list: peers lookup returned an unexpected shape",
-                    ok=False,
-                )
-            rows = []
-            for peer in peers[:limit]:
-                if not isinstance(peer, dict):
-                    continue
-                rows.append(
-                    f"{peer.get('name', '?')} [{peer.get('status', '?')}] "
-                    f"role={peer.get('role', '?')} (id={peer.get('id', '?')})"
-                )
-            sections.append(
-                f"PEERS — {len(rows)} shown\n" + ("\n".join(rows) if rows else EMPTY_DISPLAY)
-            )
+            section, err = self._peers_section(limit)
+            if err:
+                return ToolResult(content=err, ok=False)
+            sections.append(section)
 
         return ToolResult(content="\n\n".join(sections), ok=True)
+
+    def _tasks_section(self, status_filter: str, limit: int) -> tuple[str, str]:
+        try:
+            tasks = self._get(TASKS_PATH)
+        except error.HTTPError as exc:
+            return "", f"sessions_list: tasks lookup failed: {self._http_detail(exc)}"
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return "", f"sessions_list: tasks lookup failed: {exc}"
+        if not isinstance(tasks, list):
+            return "", "sessions_list: tasks lookup returned an unexpected shape"
+        rows: list[str] = []
+        skipped = 0
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            status = str(task.get("status", "?"))
+            if status_filter and status.lower() != status_filter:
+                skipped += 1
+                continue
+            if len(rows) >= limit:
+                skipped += 1
+                continue
+            number = task.get("task_number")
+            label = f"T-{number}" if number else str(task.get("id", "?"))[:8]
+            title = str(task.get("title", "")).strip() or "(untitled)"
+            updated = str(task.get("updated_at", "")) or "—"
+            rows.append(
+                f"{label} [{status}] {_redact_text(title)} "
+                f"(id={task.get('id', '?')}, updated={updated})"
+            )
+        header = f"TASKS — {len(rows)} shown"
+        if skipped:
+            header += f" ({skipped} filtered out / over limit)"
+        return header + "\n" + ("\n".join(rows) if rows else EMPTY_DISPLAY), ""
+
+    def _peers_section(self, limit: int) -> tuple[str, str]:
+        try:
+            peers = self._get(PEERS_PATH)
+        except error.HTTPError as exc:
+            return "", f"sessions_list: peers lookup failed: {self._http_detail(exc)}"
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return "", f"sessions_list: peers lookup failed: {exc}"
+        if not isinstance(peers, list):
+            return "", "sessions_list: peers lookup returned an unexpected shape"
+        rows = []
+        for peer in peers[:limit]:
+            if not isinstance(peer, dict):
+                continue
+            rows.append(
+                f"{peer.get('name', '?')} [{peer.get('status', '?')}] "
+                f"role={peer.get('role', '?')} (id={peer.get('id', '?')})"
+            )
+        return f"PEERS — {len(rows)} shown\n" + ("\n".join(rows) if rows else EMPTY_DISPLAY), ""
 
 
 class SessionsHistoryTool(_SessionToolBase):
@@ -3146,39 +3154,7 @@ class SessionsHistoryTool(_SessionToolBase):
                 continue
             if shown >= limit:
                 break
-            payload = _payload_dict(message)
-            had_tools = any(key in payload for key in _TOOL_PAYLOAD_KEYS)
-            if not include_tools:
-                payload = {k: v for k, v in payload.items() if k not in _TOOL_PAYLOAD_KEYS}
-            sanitized = _sanitize(payload)
-            text_main = sanitized.get("message") if isinstance(sanitized, dict) else None
-            extras = {
-                k: v
-                for k, v in (sanitized.items() if isinstance(sanitized, dict) else [])
-                if k != "message"
-            }
-            parts: list[str] = []
-            if text_main:
-                parts.append(str(text_main))
-            if extras:
-                parts.append("extras: " + json.dumps(extras, default=str))
-            if not parts:
-                parts.append(
-                    "[tool payload hidden — pass include_tools=true]"
-                    if had_tools and not include_tools
-                    else "(empty)"
-                )
-            text = " | ".join(parts)
-            sender = str(
-                message.get("from_display")
-                or message.get("from_id")
-                or message.get("from_type")
-                or "?"
-            )
-            created = str(message.get("created_at", "")) or "—"
-            mtype = str(message.get("type", "?"))
-            status = str(message.get("status", "?"))
-            lines.append(f"[{created}] {sender} ({mtype}/{status}): {text}")
+            lines.append(self._render_message(message, include_tools))
             shown += 1
         remaining = sum(1 for m in data if isinstance(m, dict)) - shown
         notice = f"\n[{remaining} more entries omitted (limit {limit})]" if remaining > 0 else ""
@@ -3186,6 +3162,43 @@ class SessionsHistoryTool(_SessionToolBase):
             content=header + f" — {shown} shown\n" + ("\n".join(lines) if lines else EMPTY_DISPLAY) + notice,
             ok=True,
         )
+
+
+    @staticmethod
+    def _render_message(message: Mapping[str, object], include_tools: bool) -> str:
+        payload = _payload_dict(message)
+        had_tools = any(key in payload for key in _TOOL_PAYLOAD_KEYS)
+        if not include_tools:
+            payload = {k: v for k, v in payload.items() if k not in _TOOL_PAYLOAD_KEYS}
+        sanitized = _sanitize(payload)
+        text_main = sanitized.get("message") if isinstance(sanitized, dict) else None
+        extras = {
+            k: v
+            for k, v in (sanitized.items() if isinstance(sanitized, dict) else [])
+            if k != "message"
+        }
+        parts: list[str] = []
+        if text_main:
+            parts.append(str(text_main))
+        if extras:
+            parts.append("extras: " + json.dumps(extras, default=str))
+        if not parts:
+            parts.append(
+                "[tool payload hidden — pass include_tools=true]"
+                if had_tools and not include_tools
+                else "(empty)"
+            )
+        text = " | ".join(parts)
+        sender = str(
+            message.get("from_display")
+            or message.get("from_id")
+            or message.get("from_type")
+            or "?"
+        )
+        created = str(message.get("created_at", "")) or "—"
+        mtype = str(message.get("type", "?"))
+        status = str(message.get("status", "?"))
+        return f"[{created}] {sender} ({mtype}/{status}): {text}"
 
 
 def _indent(text: str) -> str:
@@ -3597,25 +3610,7 @@ class SessionStatusTool(_SessionToolBase):
         # Tasks: counts by status + the active (in-progress) ones.
         try:
             tasks = self._get(TASKS_PATH)
-            if isinstance(tasks, list):
-                counts: dict[str, int] = {}
-                active: list[str] = []
-                for task in tasks:
-                    if not isinstance(task, dict):
-                        continue
-                    status = str(task.get("status", "?"))
-                    counts[status] = counts.get(status, 0) + 1
-                    if status == "in-progress":
-                        number = task.get("task_number")
-                        label = f"T-{number}" if number else str(task.get("id", "?"))[:8]
-                        title = str(task.get("title", "")).strip() or "(untitled)"
-                        active.append(f"{label} {_redact_text(title)}")
-                counts_text = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-                lines.append(f"tasks: {len(tasks)} total" + (f" ({counts_text})" if counts_text else ""))
-                if active:
-                    lines.append("active: " + "; ".join(active))
-            else:
-                lines.append("tasks: unavailable")
+            lines.extend(self._task_status_lines(tasks))
         except Exception:  # noqa: BLE001 — graceful omission per contract
             lines.append("tasks: unavailable")
 
@@ -3628,6 +3623,28 @@ class SessionStatusTool(_SessionToolBase):
             pass
 
         return ToolResult(content="\n".join(lines), ok=True)
+
+    @staticmethod
+    def _task_status_lines(tasks: object) -> list[str]:
+        if not isinstance(tasks, list):
+            return ["tasks: unavailable"]
+        counts: dict[str, int] = {}
+        active: list[str] = []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            status = str(task.get("status", "?"))
+            counts[status] = counts.get(status, 0) + 1
+            if status == "in-progress":
+                number = task.get("task_number")
+                label = f"T-{number}" if number else str(task.get("id", "?"))[:8]
+                title = str(task.get("title", "")).strip() or "(untitled)"
+                active.append(f"{label} {_redact_text(title)}")
+        counts_text = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        lines = [f"tasks: {len(tasks)} total" + (f" ({counts_text})" if counts_text else "")]
+        if active:
+            lines.append("active: " + "; ".join(active))
+        return lines
 
 
 # ---------------------------------------------------------------------------
