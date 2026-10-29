@@ -331,6 +331,15 @@ type AgentMemoryStore interface {
 	// (raw_model_output/distilled/verified) are recallable. Score is
 	// cosine similarity in [-1, 1] (1 = identical direction).
 	SearchAgentMemory(ctx context.Context, agentID string, squadID string, queryEmbedding []float64, limit int) ([]MemorySearchHit, error)
+	// ImportAgentMemory (S-309) inserts owner-supplied memory items
+	// idempotently. Every item must carry `batch_id` and
+	// `content_sha256` in its Metadata; an item whose
+	// (agent_id, batch_id, content_sha256) triple already exists is
+	// skipped instead of duplicated. Returns the number of rows
+	// actually inserted — skipped == len(items) - inserted. The whole
+	// batch is atomic: any invalid item fails the call with no partial
+	// writes.
+	ImportAgentMemory(ctx context.Context, memories []*domain.AgentMemory) (int, error)
 }
 
 // MemorySearchHit is one ranked result of SearchAgentMemory.
