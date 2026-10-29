@@ -5921,13 +5921,7 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 		return
 	}
 	summary := trimRunes(strings.TrimSpace(req.Summary), maxAgentMemoryContentChars)
-	var auditMeta json.RawMessage
-	if selfApproved {
-		if meta, err := json.Marshal(map[string]any{"self_approved": true, "justification": justification}); err == nil {
-			auditMeta = meta
-		}
-	}
-	updated, err := s.store.CompleteTaskExecution(s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.complete", "task", taskID, principal.Agent.SquadID, auditMeta), principal.Agent.ID, taskID, executionID, fencingToken, req.Status, summary)
+	updated, err := s.store.CompleteTaskExecution(s.pendingAgentAuditCtx(r, principal.Agent.ID, "task.complete", "task", taskID, principal.Agent.SquadID, completionAuditMeta(selfApproved, justification)), principal.Agent.ID, taskID, executionID, fencingToken, req.Status, summary)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -5945,34 +5939,54 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	subject, body := taskNotifySubjectBody(updated, principal.Agent.Name, string(req.Status), summary)
-	s.notifySquadOwnerRich(r.Context(), ownerNotification{
+	s.notifyTaskCompletion(r.Context(), updated, principal, string(req.Status), summary)
+	if req.PersistMemory && strings.TrimSpace(req.Summary) != "" {
+		s.persistCompletionMemory(w, r, principal, updated, summary, strings.TrimSpace(req.Summary), req)
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// completionAuditMeta builds the audit metadata attached to a task
+// completion. Only self-approvals carry metadata; ordinary completions
+// return nil (S3776 extraction).
+func completionAuditMeta(selfApproved bool, justification string) json.RawMessage {
+	if !selfApproved {
+		return nil
+	}
+	if meta, err := json.Marshal(map[string]any{"self_approved": true, "justification": justification}); err == nil {
+		return meta
+	}
+	return nil
+}
+
+// notifyTaskCompletion fans out the owner inbox notification, delegation
+// result and chat-thread events for a completed task run (S3776
+// extraction; behavior identical to the former inline block).
+func (s *Server) notifyTaskCompletion(ctx context.Context, updated *domain.Task, principal *agentPrincipal, status, summary string) {
+	subject, body := taskNotifySubjectBody(updated, principal.Agent.Name, status, summary)
+	s.notifySquadOwnerRich(ctx, ownerNotification{
 		SquadID:     updated.SquadID,
 		Kind:        domain.InboxTaskCompleted,
 		FromAgentID: principal.Agent.ID,
 		TaskID:      updated.ID,
-		Message:     fmt.Sprintf("Agent %s moved task %q to %s", principal.Agent.Name, updated.Title, req.Status),
+		Message:     fmt.Sprintf("Agent %s moved task %q to %s", principal.Agent.Name, updated.Title, status),
 		Subject:     subject,
 		Body:        body,
 	})
-	s.notifyDelegationResult(r.Context(), updated, principal.Agent, string(req.Status), summary)
+	s.notifyDelegationResult(ctx, updated, principal.Agent, status, summary)
 	// S-181: the agent's turn itself must appear in the task thread, not
 	// only in the owner's inbox. Empty summaries are surfaced explicitly
 	// rather than silently vanishing (see S-182).
 	threadText := strings.TrimSpace(summary)
 	if threadText == "" {
-		threadText = fmt.Sprintf("Moved this task to %s without a summary.", req.Status)
+		threadText = fmt.Sprintf("Moved this task to %s without a summary.", status)
 	}
-	s.appendTaskThreadEvent(r.Context(), updated, "agent", principal.Agent.ID, domain.MessageReply, threadText)
+	s.appendTaskThreadEvent(ctx, updated, "agent", principal.Agent.ID, domain.MessageReply, threadText)
 	// S-301 follow-up: a thin "Task done" divider closes the run in the
 	// chat thread. Only for a genuine done (not an in-review hand-off).
 	if updated.Status == domain.TaskDone {
-		s.appendTaskLifecycleEvent(r.Context(), updated, "agent", principal.Agent.ID, "done", "Task done")
+		s.appendTaskLifecycleEvent(ctx, updated, "agent", principal.Agent.ID, "done", "Task done")
 	}
-	if req.PersistMemory && strings.TrimSpace(req.Summary) != "" {
-		s.persistCompletionMemory(w, r, principal, updated, summary, strings.TrimSpace(req.Summary), req)
-	}
-	writeJSON(w, http.StatusOK, updated)
 }
 
 // persistCompletionMemory stores the runtime completion summary as raw-model
