@@ -2724,7 +2724,7 @@ _SECRET_KEY_RE = re.compile(
 # Value shapes that look like live credentials wherever they appear in text.
 _SECRET_VALUE_RES = (
     re.compile(r"\bsk-[A-Za-z0-9_\-]{12,}"),
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{12,}"),
+    re.compile(r"(?i)\bbearer\s+[a-z0-9._\-]{12,}"),
     re.compile(r"\b(?:kb|squ|ghp|gho|ghu|ghs|ghr|xox[baprs])_[A-Za-z0-9]{10,}"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_\-]{10,}"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
@@ -3824,7 +3824,7 @@ class BoardAssignTool(_BoardToolBase):
             return ToolResult(
                 content="board.assign: assignee_agent_id is required", ok=False
             )
-        data, err = self._call(
+        _, err = self._call(
             "PATCH",
             f"/api/v1/agents/me/tasks/{task_id}/assignee",
             {"assignee_agent_id": assignee},
@@ -4227,7 +4227,7 @@ class BoardRequestChangesTool(_BoardToolBase):
             return ToolResult(
                 content="board.request_changes: comment is required", ok=False
             )
-        data, err = self._call(
+        _, err = self._call(
             "POST",
             f"/api/v1/agents/me/tasks/{task_id}/request-changes",
             {"comment": comment},
