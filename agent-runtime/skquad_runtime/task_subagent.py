@@ -362,6 +362,26 @@ def _result_block_candidates(text: str) -> list[str]:
     return candidates
 
 
+def _coerce_object_field(payload: Mapping[str, object], key: str) -> "dict | None":
+    """Return a dict field, {} when absent, or None when present but not an object."""
+    value = payload.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        return None
+    return value
+
+
+def _coerce_array_field(payload: Mapping[str, object], key: str) -> "list | None":
+    """Return a list field, [] when absent, or None when present but not an array."""
+    value = payload.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return None
+    return value
+
+
 def validate_task_result(
     payload: Mapping[str, object], *, turns_used: int = 0, raw: str = ""
 ) -> SubTaskResult:
@@ -394,18 +414,14 @@ def validate_task_result(
             turns_used=turns_used,
             raw=raw,
         )
-    tests = payload.get("tests")
+    tests = _coerce_object_field(payload, "tests")
     if tests is None:
-        tests = {}
-    if not isinstance(tests, dict):
         return contract_violation("`tests` must be an object", turns_used=turns_used, raw=raw)
 
     changed_files = _coerce_str_tuple(payload.get("changed_files"))
     concerns = _coerce_str_tuple(payload.get("concerns"))
-    artifacts = payload.get("artifacts")
+    artifacts = _coerce_array_field(payload, "artifacts")
     if artifacts is None:
-        artifacts = []
-    if not isinstance(artifacts, list):
         return contract_violation("`artifacts` must be an array", turns_used=turns_used, raw=raw)
 
     return SubTaskResult(

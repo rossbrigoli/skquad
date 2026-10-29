@@ -533,6 +533,20 @@ def _read_capped(path: Path, max_bytes: int) -> tuple[str, bool]:
     return data[:max_bytes].decode("utf-8", errors="replace"), truncated
 
 
+def _wait_for_session(session: dict, wait: int, workspace_dir: str, max_log_bytes: int) -> None:
+    """Poll a running session until it finishes, the wait elapses, or the log cap trips."""
+    if wait <= 0 or session.get("status") != "running":
+        return
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and session.get("status") == "running":
+        _refresh_session(session)
+        if session.get("status") != "running":
+            return
+        if _enforce_log_cap(workspace_dir, session, max_log_bytes):
+            return
+        time.sleep(0.2)
+
+
 class ProcessTool:
     """S-280: manage background exec sessions started by this agent task.
 
@@ -669,20 +683,10 @@ class ProcessTool:
 
     def _poll(self, session: dict, call: ToolCall) -> ToolResult:
         try:
-            wait = min(int(call.arguments.get("timeoutSeconds", 0) or 0), MAX_POLL_WAIT_SECONDS)
+            wait = max(0, min(int(call.arguments.get("timeoutSeconds", 0) or 0), MAX_POLL_WAIT_SECONDS))
         except (TypeError, ValueError):
             wait = 0
-        if wait < 0:
-            wait = 0
-        if wait > 0 and session.get("status") == "running":
-            deadline = time.monotonic() + wait
-            while time.monotonic() < deadline and session.get("status") == "running":
-                _refresh_session(session)
-                if session.get("status") != "running":
-                    break
-                if _enforce_log_cap(self.context.workspace_dir, session, self.max_log_bytes):
-                    break
-                time.sleep(0.2)
+        _wait_for_session(session, wait, self.context.workspace_dir, self.max_log_bytes)
         _enforce_log_cap(self.context.workspace_dir, session, self.max_log_bytes)
         sessions = _load_sessions(self.context.workspace_dir)
         sessions[session["id"]] = session
@@ -1794,25 +1798,41 @@ class ReadTool:
             lines[-1] = lines[-1][:-1]
 
         total_lines = len(lines)
-        offset = call.arguments.get("offset")
-        limit = call.arguments.get("limit")
+        start, end, range_err = self._line_range(
+            total_lines, call.arguments.get("offset"), call.arguments.get("limit")
+        )
+        if range_err:
+            return ToolResult(content=range_err, ok=False)
+
+        selected = lines[start:end]
+        content = "\n".join(selected)
+        notices = self._read_notices(byte_truncated, max_bytes, start, end, total_lines)
+        if notices:
+            content += "\n[" + "; ".join(notices) + "]"
+        return ToolResult(content=content, ok=True)
+
+    @staticmethod
+    def _line_range(total_lines: int, offset: object, limit: object) -> tuple[int, int, str]:
         start = 0
         if offset is not None:
             try:
                 start = max(int(offset) - 1, 0)
             except (TypeError, ValueError):
-                return ToolResult(content="read: offset must be an integer", ok=False)
+                return 0, 0, "read: offset must be an integer"
         if start >= total_lines:
-            return ToolResult(content=f"read: offset {start + 1} is past end of file ({total_lines} lines)", ok=False)
+            return 0, 0, f"read: offset {start + 1} is past end of file ({total_lines} lines)"
         end = total_lines
         if limit is not None:
             try:
                 end = min(start + max(int(limit), 0), total_lines)
             except (TypeError, ValueError):
-                return ToolResult(content="read: limit must be an integer", ok=False)
+                return 0, 0, "read: limit must be an integer"
+        return start, end, ""
 
-        selected = lines[start:end]
-        content = "\n".join(selected)
+    @staticmethod
+    def _read_notices(
+        byte_truncated: bool, max_bytes: int, start: int, end: int, total_lines: int
+    ) -> list[str]:
         notices: list[str] = []
         if byte_truncated:
             notices.append(f"content truncated at maxBytes={max_bytes}")
@@ -1820,9 +1840,7 @@ class ReadTool:
             notices.append(f"showing lines {start + 1}-{end} of {total_lines} (limit reached)")
         elif start > 0:
             notices.append(f"showing lines {start + 1}-{end} of {total_lines}")
-        if notices:
-            content += "\n[" + "; ".join(notices) + "]"
-        return ToolResult(content=content, ok=True)
+        return notices
 
 
 class WriteTool:
@@ -1957,26 +1975,10 @@ class EditTool:
         # Phase 1: locate every edit in the ORIGINAL text (validate-before-write).
         spans: list[tuple[int, int, str]] = []  # (start, end, newText)
         for idx, item in enumerate(edits):
-            if not isinstance(item, dict) or "oldText" not in item or "newText" not in item:
-                return ToolResult(content=f"edit: edits[{idx}] must have oldText and newText", ok=False)
-            old = str(item["oldText"])
-            new = str(item["newText"])
-            if old == "":
-                return ToolResult(content=f"edit: edits[{idx}].oldText must not be empty", ok=False)
-            occurrences = _find_all(original, old)
-            if not occurrences:
-                return ToolResult(
-                    content=f"edit: oldText not found in file (edit #{idx + 1}): {old[:80]!r}", ok=False
-                )
-            if len(occurrences) > 1:
-                return ToolResult(
-                    content=(
-                        f"edit: oldText is ambiguous — occurs {len(occurrences)} times "
-                        f"(edit #{idx + 1}); include more context. Nothing was written."
-                    ),
-                    ok=False,
-                )
-            spans.append((occurrences[0], occurrences[0] + len(old), new))
+            span, err = self._locate_edit(original, item, idx)
+            if err:
+                return ToolResult(content=err, ok=False)
+            spans.append(span)
 
         # Phase 2: overlap check on the original-text spans.
         spans.sort(key=lambda s: s[0])
@@ -2008,6 +2010,24 @@ class EditTool:
             return ToolResult(content=f"edit: write failed: {exc}", ok=False)
         rel = _relpath_in_workspace(self.context.workspace_dir, target)
         return ToolResult(content=f"applied {len(edits)} edit(s) to {rel}", ok=True)
+
+    @staticmethod
+    def _locate_edit(original: str, item: object, idx: int) -> tuple[tuple[int, int, str] | None, str]:
+        if not isinstance(item, dict) or "oldText" not in item or "newText" not in item:
+            return None, f"edit: edits[{idx}] must have oldText and newText"
+        old = str(item["oldText"])
+        new = str(item["newText"])
+        if old == "":
+            return None, f"edit: edits[{idx}].oldText must not be empty"
+        occurrences = _find_all(original, old)
+        if not occurrences:
+            return None, f"edit: oldText not found in file (edit #{idx + 1}): {old[:80]!r}"
+        if len(occurrences) > 1:
+            return None, (
+                f"edit: oldText is ambiguous — occurs {len(occurrences)} times "
+                f"(edit #{idx + 1}); include more context. Nothing was written."
+            )
+        return (occurrences[0], occurrences[0] + len(old), new), ""
 
 
 def _find_all(haystack: str, needle: str) -> list[int]:
@@ -2081,22 +2101,11 @@ class ApplyPatchTool:
 
         # Phase 1: compute all new contents in memory.
         new_files: dict[Path, bytes] = {}
-        for path, content in add_paths:
-            if path.exists():
-                return ToolResult(content=f"apply_patch: cannot add, file already exists: {_relpath_in_workspace(ws, path)}", ok=False)
-            new_files[path] = content.encode("utf-8")
-
-        for path, hunks in update_paths:
-            if not path.is_file():
-                return ToolResult(content=f"apply_patch: cannot update, file not found: {_relpath_in_workspace(ws, path)}", ok=False)
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError) as exc:
-                return ToolResult(content=f"apply_patch: cannot read {_relpath_in_workspace(ws, path)}: {exc}", ok=False)
-            updated_text, err = self._apply_hunks(text, hunks, _relpath_in_workspace(ws, path))
-            if err:
-                return ToolResult(content=f"apply_patch: {err}; no files were written", ok=False)
-            new_files[path] = updated_text.encode("utf-8")
+        stage_err = self._stage_adds(ws, add_paths, new_files)
+        if not stage_err:
+            stage_err = self._stage_updates(update_paths, new_files)
+        if stage_err:
+            return ToolResult(content=stage_err, ok=False)
 
         # maxBytes caps the total bytes written across the patch's files.
         max_bytes = _max_bytes(self.policy)
@@ -2133,6 +2142,31 @@ class ApplyPatchTool:
         return _resolve_in_workspace(ws, rel)
 
     @staticmethod
+    def _stage_adds(ws: str, add_paths: list[tuple[Path, str]], new_files: dict[Path, bytes]) -> str:
+        """Stage added files into new_files; returns an error message or ''."""
+        for path, content in add_paths:
+            if path.exists():
+                return f"apply_patch: cannot add, file already exists: {_relpath_in_workspace(ws, path)}"
+            new_files[path] = content.encode("utf-8")
+        return ""
+
+    def _stage_updates(self, update_paths: list[tuple[Path, list[list[str]]]], new_files: dict[Path, bytes]) -> str:
+        """Stage updated files into new_files; returns an error message or ''."""
+        ws = self.context.workspace_dir
+        for path, hunks in update_paths:
+            if not path.is_file():
+                return f"apply_patch: cannot update, file not found: {_relpath_in_workspace(ws, path)}"
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                return f"apply_patch: cannot read {_relpath_in_workspace(ws, path)}: {exc}"
+            updated_text, err = self._apply_hunks(text, hunks, _relpath_in_workspace(ws, path))
+            if err:
+                return f"apply_patch: {err}; no files were written"
+            new_files[path] = updated_text.encode("utf-8")
+        return ""
+
+    @staticmethod
     def _parse(patch: str) -> tuple[list[tuple[str, str]], list[tuple[str, list[list[str]]]], list[str]]:
         """Parse the patch into (adds, updates, deletes).
 
@@ -2159,40 +2193,11 @@ class ApplyPatchTool:
         while i < len(body):
             line = body[i]
             if line.startswith(DIFF_ADD_PREFIX):
-                path = line[len(DIFF_ADD_PREFIX):].strip()
-                i += 1
-                content: list[str] = []
-                while i < len(body) and not body[i].startswith("*** "):
-                    if not body[i].startswith("+"):
-                        raise ValueError(f"Add File {path!r}: expected '+' lines, got {body[i]!r}")
-                    content.append(body[i][1:])
-                    i += 1
-                adds.append((path, "\n".join(content) + ("\n" if content else "")))
+                item, i = ApplyPatchTool._parse_add(body, i)
+                adds.append(item)
             elif line.startswith(DIFF_UPDATE_PREFIX):
-                path = line[len(DIFF_UPDATE_PREFIX):].strip()
-                i += 1
-                hunks: list[list[str]] = []
-                current: list[str] | None = None
-                while i < len(body) and not body[i].startswith(DIFF_ADD_PREFIX) and not body[i].startswith(DIFF_UPDATE_PREFIX) and not body[i].startswith(DIFF_DELETE_PREFIX):
-                    hline = body[i]
-                    if hline.startswith("@@"):
-                        if current:
-                            hunks.append(current)
-                        current = []
-                    elif hline.startswith("*** Move to:"):
-                        raise ValueError(f"Update File {path!r}: 'Move to' (rename) is not supported")
-                    elif hline.startswith("***"):
-                        break
-                    else:
-                        if current is None:
-                            current = []
-                        current.append(hline)
-                    i += 1
-                if current:
-                    hunks.append(current)
-                if not hunks:
-                    raise ValueError(f"Update File {path!r}: no hunks")
-                updates.append((path, hunks))
+                item, i = ApplyPatchTool._parse_update(body, i)
+                updates.append(item)
             elif line.startswith(DIFF_DELETE_PREFIX):
                 path = line[len(DIFF_DELETE_PREFIX):].strip()
                 deletes.append(path)
@@ -2202,6 +2207,47 @@ class ApplyPatchTool:
             else:
                 raise ValueError(f"unexpected patch line: {line!r}")
         return adds, updates, deletes
+
+    @staticmethod
+    def _parse_add(body: list[str], i: int) -> tuple[tuple[str, str], int]:
+        path = body[i][len(DIFF_ADD_PREFIX):].strip()
+        i += 1
+        content: list[str] = []
+        while i < len(body) and not body[i].startswith("*** "):
+            if not body[i].startswith("+"):
+                raise ValueError(f"Add File {path!r}: expected '+' lines, got {body[i]!r}")
+            content.append(body[i][1:])
+            i += 1
+        return (path, "\n".join(content) + ("\n" if content else "")), i
+
+    @staticmethod
+    def _parse_update(body: list[str], i: int) -> tuple[tuple[str, list[list[str]]], int]:
+        path = body[i][len(DIFF_UPDATE_PREFIX):].strip()
+        i += 1
+        hunks: list[list[str]] = []
+        current: list[str] | None = None
+        while i < len(body) and not body[i].startswith(
+            (DIFF_ADD_PREFIX, DIFF_UPDATE_PREFIX, DIFF_DELETE_PREFIX)
+        ):
+            hline = body[i]
+            if hline.startswith("@@"):
+                if current:
+                    hunks.append(current)
+                current = []
+            elif hline.startswith("*** Move to:"):
+                raise ValueError(f"Update File {path!r}: 'Move to' (rename) is not supported")
+            elif hline.startswith("***"):
+                break
+            else:
+                if current is None:
+                    current = []
+                current.append(hline)
+            i += 1
+        if current:
+            hunks.append(current)
+        if not hunks:
+            raise ValueError(f"Update File {path!r}: no hunks")
+        return (path, hunks), i
 
     @staticmethod
     def _apply_hunks(text: str, hunks: list[list[str]], fname: str) -> tuple[str, str]:
@@ -2227,17 +2273,7 @@ class ApplyPatchTool:
                 # Pure-addition hunk: insert at cursor.
                 lines[cursor:cursor] = replace
                 continue
-            found = -1
-            for start in range(cursor, len(lines) - len(search) + 1):
-                if lines[start : start + len(search)] == search:
-                    found = start
-                    break
-            if found == -1:
-                # Retry from the top of the file (hunks not strictly ordered).
-                for start in range(0, len(lines) - len(search) + 1):
-                    if lines[start : start + len(search)] == search:
-                        found = start
-                        break
+            found = ApplyPatchTool._locate_hunk(search, lines, cursor)
             if found == -1:
                 return text, f"hunk {h_idx} in {fname!r} did not match (context line: {search[0][:80]!r})"
             lines[found : found + len(search)] = replace
@@ -2246,6 +2282,17 @@ class ApplyPatchTool:
         if trailing_newline:
             new_text += "\n"
         return new_text, ""
+
+    @staticmethod
+    def _locate_hunk(search: list[str], lines: list[str], cursor: int) -> int:
+        """Locate the search block from cursor, then retry from file top; -1 if absent."""
+        for start in range(cursor, len(lines) - len(search) + 1):
+            if lines[start : start + len(search)] == search:
+                return start
+        for start in range(0, len(lines) - len(search) + 1):
+            if lines[start : start + len(search)] == search:
+                return start
+        return -1
 
 
 # ---------------------------------------------------------------------------
@@ -2489,59 +2536,14 @@ class CronTool:
         if title:
             body["title"] = title
         if kind == "at":
-            at = str(schedule.get("at", "") or "").strip()
-            if not at:
-                return ToolResult(content="cron add: schedule.at is required for kind=at", ok=False)
-            if _parse_rfc3339(at) is None:
-                return ToolResult(
-                    content=(
-                        "cron add: schedule.at must be an RFC3339 timestamp "
-                        "with a UTC offset (e.g. 2026-10-21T19:30:00+10:30)"
-                    ),
-                    ok=False,
-                )
-            body["schedule"]["at"] = at
+            fields, err = self._at_fields(schedule)
         elif kind == "every":
-            raw_interval = schedule.get("interval_seconds")
-            if raw_interval is None:
-                return ToolResult(
-                    content="cron add: schedule.interval_seconds is required for kind=every",
-                    ok=False,
-                )
-            try:
-                interval = int(raw_interval)
-            except (TypeError, ValueError):
-                return ToolResult(
-                    content="cron add: schedule.interval_seconds must be a whole number of seconds",
-                    ok=False,
-                )
-            if interval < CRON_MIN_INTERVAL_SECONDS or interval > CRON_MAX_INTERVAL_SECONDS:
-                return ToolResult(
-                    content=(
-                        f"cron add: interval_seconds {interval} out of range "
-                        f"[{CRON_MIN_INTERVAL_SECONDS}, {CRON_MAX_INTERVAL_SECONDS}] "
-                        "(1 minute to 90 days)"
-                    ),
-                    ok=False,
-                )
-            body["schedule"]["interval_seconds"] = interval
+            fields, err = self._every_fields(schedule)
         else:  # cron
-            expression = str(schedule.get("expression", "") or "").strip()
-            if not expression:
-                return ToolResult(
-                    content="cron add: schedule.expression is required for kind=cron",
-                    ok=False,
-                )
-            expr_err = _validate_cron_expression(expression)
-            if expr_err:
-                return ToolResult(content=f"cron add: {expr_err}", ok=False)
-            tz = str(schedule.get("timezone", "") or "").strip()
-            tz_err = _validate_cron_timezone(tz)
-            if tz_err:
-                return ToolResult(content=f"cron add: {tz_err}", ok=False)
-            body["schedule"]["expression"] = expression
-            if tz:
-                body["schedule"]["timezone"] = tz
+            fields, err = self._cron_fields(schedule)
+        if err:
+            return ToolResult(content=err, ok=False)
+        body["schedule"].update(fields)
 
         cap_err = self._check_active_cap()
         if cap_err:
@@ -2553,14 +2555,61 @@ class CronTool:
             return ToolResult(content=f"cron add: {self._http_detail(exc)}", ok=False)
         except (error.URLError, OSError, json.JSONDecodeError) as exc:
             return ToolResult(content=f"cron add: {exc}", ok=False)
+        return ToolResult(content=self._created_job_text(data, kind), ok=True)
+
+    @staticmethod
+    def _at_fields(schedule: Mapping[str, object]) -> tuple[dict[str, object], str]:
+        at = str(schedule.get("at", "") or "").strip()
+        if not at:
+            return {}, "cron add: schedule.at is required for kind=at"
+        if _parse_rfc3339(at) is None:
+            return {}, (
+                "cron add: schedule.at must be an RFC3339 timestamp "
+                "with a UTC offset (e.g. 2026-10-21T19:30:00+10:30)"
+            )
+        return {"at": at}, ""
+
+    @staticmethod
+    def _every_fields(schedule: Mapping[str, object]) -> tuple[dict[str, object], str]:
+        raw_interval = schedule.get("interval_seconds")
+        if raw_interval is None:
+            return {}, "cron add: schedule.interval_seconds is required for kind=every"
+        try:
+            interval = int(raw_interval)
+        except (TypeError, ValueError):
+            return {}, "cron add: schedule.interval_seconds must be a whole number of seconds"
+        if interval < CRON_MIN_INTERVAL_SECONDS or interval > CRON_MAX_INTERVAL_SECONDS:
+            return {}, (
+                f"cron add: interval_seconds {interval} out of range "
+                f"[{CRON_MIN_INTERVAL_SECONDS}, {CRON_MAX_INTERVAL_SECONDS}] "
+                "(1 minute to 90 days)"
+            )
+        return {"interval_seconds": interval}, ""
+
+    @staticmethod
+    def _cron_fields(schedule: Mapping[str, object]) -> tuple[dict[str, object], str]:
+        expression = str(schedule.get("expression", "") or "").strip()
+        if not expression:
+            return {}, "cron add: schedule.expression is required for kind=cron"
+        expr_err = _validate_cron_expression(expression)
+        if expr_err:
+            return {}, f"cron add: {expr_err}"
+        tz = str(schedule.get("timezone", "") or "").strip()
+        tz_err = _validate_cron_timezone(tz)
+        if tz_err:
+            return {}, f"cron add: {tz_err}"
+        fields: dict[str, object] = {"expression": expression}
+        if tz:
+            fields["timezone"] = tz
+        return fields, ""
+
+    @staticmethod
+    def _created_job_text(data: object, kind: str) -> str:
         job_id = str(data.get("id", "")) if isinstance(data, dict) else ""
         next_run = str(data.get("next_run_at", "")) if isinstance(data, dict) else ""
-        return ToolResult(
-            content=(
-                f"created scheduled job {job_id} ({kind})"
-                + (f" — next run {next_run}" if next_run else "")
-            ),
-            ok=True,
+        return (
+            f"created scheduled job {job_id} ({kind})"
+            + (f" — next run {next_run}" if next_run else "")
         )
 
     def _check_active_cap(self) -> str:
@@ -2591,21 +2640,26 @@ class CronTool:
             state = "enabled" if job.get("enabled") else "paused"
             summary = self._schedule_summary(job)
             next_run = str(job.get("next_run_at", "")) or "—"
-            last = str(job.get("last_run_status", "") or "")
-            extras = []
-            if last:
-                extras.append(f"last={last}")
-            fail_count = job.get("fail_count")
-            if isinstance(fail_count, int) and fail_count > 0:
-                extras.append(f"fails={fail_count}")
-            reason = str(job.get("disabled_reason", "") or "")
-            if reason:
-                extras.append(reason)
+            extras = self._job_extras(job)
             title = str(job.get("title", "") or "")
             label = f" {title!r}" if title else ""
             suffix = f" ({'; '.join(extras)})" if extras else ""
             lines.append(f"{job_id} [{state}] {summary} next={next_run}{label}{suffix}")
         return ToolResult(content="\n".join(lines), ok=True)
+
+    @staticmethod
+    def _job_extras(job: Mapping[str, object]) -> list[str]:
+        extras: list[str] = []
+        last = str(job.get("last_run_status", "") or "")
+        if last:
+            extras.append(f"last={last}")
+        fail_count = job.get("fail_count")
+        if isinstance(fail_count, int) and fail_count > 0:
+            extras.append(f"fails={fail_count}")
+        reason = str(job.get("disabled_reason", "") or "")
+        if reason:
+            extras.append(reason)
+        return extras
 
     @staticmethod
     def _schedule_summary(job: Mapping[str, object]) -> str:
@@ -2904,77 +2958,70 @@ class SessionsListTool(_SessionToolBase):
 
         sections: list[str] = []
         if kind in ("tasks", "all"):
-            try:
-                tasks = self._get(TASKS_PATH)
-            except error.HTTPError as exc:
-                return ToolResult(
-                    content=f"sessions_list: tasks lookup failed: {self._http_detail(exc)}",
-                    ok=False,
-                )
-            except (error.URLError, OSError, json.JSONDecodeError) as exc:
-                return ToolResult(
-                    content=f"sessions_list: tasks lookup failed: {exc}", ok=False
-                )
-            if not isinstance(tasks, list):
-                return ToolResult(
-                    content="sessions_list: tasks lookup returned an unexpected shape",
-                    ok=False,
-                )
-            rows: list[str] = []
-            skipped = 0
-            for task in tasks:
-                if not isinstance(task, dict):
-                    continue
-                status = str(task.get("status", "?"))
-                if status_filter and status.lower() != status_filter:
-                    skipped += 1
-                    continue
-                if len(rows) >= limit:
-                    skipped += 1
-                    continue
-                number = task.get("task_number")
-                label = f"T-{number}" if number else str(task.get("id", "?"))[:8]
-                title = str(task.get("title", "")).strip() or "(untitled)"
-                updated = str(task.get("updated_at", "")) or "—"
-                rows.append(
-                    f"{label} [{status}] {_redact_text(title)} "
-                    f"(id={task.get('id', '?')}, updated={updated})"
-                )
-            header = f"TASKS — {len(rows)} shown"
-            if skipped:
-                header += f" ({skipped} filtered out / over limit)"
-            sections.append(header + "\n" + ("\n".join(rows) if rows else EMPTY_DISPLAY))
-
+            section, err = self._tasks_section(status_filter, limit)
+            if err:
+                return ToolResult(content=err, ok=False)
+            sections.append(section)
         if kind in ("peers", "all"):
-            try:
-                peers = self._get(PEERS_PATH)
-            except error.HTTPError as exc:
-                return ToolResult(
-                    content=f"sessions_list: peers lookup failed: {self._http_detail(exc)}",
-                    ok=False,
-                )
-            except (error.URLError, OSError, json.JSONDecodeError) as exc:
-                return ToolResult(
-                    content=f"sessions_list: peers lookup failed: {exc}", ok=False
-                )
-            if not isinstance(peers, list):
-                return ToolResult(
-                    content="sessions_list: peers lookup returned an unexpected shape",
-                    ok=False,
-                )
-            rows = []
-            for peer in peers[:limit]:
-                if not isinstance(peer, dict):
-                    continue
-                rows.append(
-                    f"{peer.get('name', '?')} [{peer.get('status', '?')}] "
-                    f"role={peer.get('role', '?')} (id={peer.get('id', '?')})"
-                )
-            sections.append(
-                f"PEERS — {len(rows)} shown\n" + ("\n".join(rows) if rows else EMPTY_DISPLAY)
-            )
+            section, err = self._peers_section(limit)
+            if err:
+                return ToolResult(content=err, ok=False)
+            sections.append(section)
 
         return ToolResult(content="\n\n".join(sections), ok=True)
+
+    def _tasks_section(self, status_filter: str, limit: int) -> tuple[str, str]:
+        try:
+            tasks = self._get(TASKS_PATH)
+        except error.HTTPError as exc:
+            return "", f"sessions_list: tasks lookup failed: {self._http_detail(exc)}"
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return "", f"sessions_list: tasks lookup failed: {exc}"
+        if not isinstance(tasks, list):
+            return "", "sessions_list: tasks lookup returned an unexpected shape"
+        rows: list[str] = []
+        skipped = 0
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            status = str(task.get("status", "?"))
+            if status_filter and status.lower() != status_filter:
+                skipped += 1
+                continue
+            if len(rows) >= limit:
+                skipped += 1
+                continue
+            number = task.get("task_number")
+            label = f"T-{number}" if number else str(task.get("id", "?"))[:8]
+            title = str(task.get("title", "")).strip() or "(untitled)"
+            updated = str(task.get("updated_at", "")) or "—"
+            rows.append(
+                f"{label} [{status}] {_redact_text(title)} "
+                f"(id={task.get('id', '?')}, updated={updated})"
+            )
+        header = f"TASKS — {len(rows)} shown"
+        if skipped:
+            header += f" ({skipped} filtered out / over limit)"
+        return header + "\n" + ("\n".join(rows) if rows else EMPTY_DISPLAY), ""
+
+    def _peers_section(self, limit: int) -> tuple[str, str]:
+        try:
+            peers = self._get(PEERS_PATH)
+        except error.HTTPError as exc:
+            return "", f"sessions_list: peers lookup failed: {self._http_detail(exc)}"
+        except (error.URLError, OSError, json.JSONDecodeError) as exc:
+            return "", f"sessions_list: peers lookup failed: {exc}"
+        if not isinstance(peers, list):
+            return "", "sessions_list: peers lookup returned an unexpected shape"
+        rows = []
+        for peer in peers[:limit]:
+            if not isinstance(peer, dict):
+                continue
+            rows.append(
+                f"{peer.get('name', '?')} [{peer.get('status', '?')}] "
+                f"role={peer.get('role', '?')} (id={peer.get('id', '?')})"
+            )
+        return f"PEERS — {len(rows)} shown\n" + ("\n".join(rows) if rows else EMPTY_DISPLAY), ""
 
 
 class SessionsHistoryTool(_SessionToolBase):
@@ -3107,39 +3154,7 @@ class SessionsHistoryTool(_SessionToolBase):
                 continue
             if shown >= limit:
                 break
-            payload = _payload_dict(message)
-            had_tools = any(key in payload for key in _TOOL_PAYLOAD_KEYS)
-            if not include_tools:
-                payload = {k: v for k, v in payload.items() if k not in _TOOL_PAYLOAD_KEYS}
-            sanitized = _sanitize(payload)
-            text_main = sanitized.get("message") if isinstance(sanitized, dict) else None
-            extras = {
-                k: v
-                for k, v in (sanitized.items() if isinstance(sanitized, dict) else [])
-                if k != "message"
-            }
-            parts: list[str] = []
-            if text_main:
-                parts.append(str(text_main))
-            if extras:
-                parts.append("extras: " + json.dumps(extras, default=str))
-            if not parts:
-                parts.append(
-                    "[tool payload hidden — pass include_tools=true]"
-                    if had_tools and not include_tools
-                    else "(empty)"
-                )
-            text = " | ".join(parts)
-            sender = str(
-                message.get("from_display")
-                or message.get("from_id")
-                or message.get("from_type")
-                or "?"
-            )
-            created = str(message.get("created_at", "")) or "—"
-            mtype = str(message.get("type", "?"))
-            status = str(message.get("status", "?"))
-            lines.append(f"[{created}] {sender} ({mtype}/{status}): {text}")
+            lines.append(self._render_message(message, include_tools))
             shown += 1
         remaining = sum(1 for m in data if isinstance(m, dict)) - shown
         notice = f"\n[{remaining} more entries omitted (limit {limit})]" if remaining > 0 else ""
@@ -3147,6 +3162,43 @@ class SessionsHistoryTool(_SessionToolBase):
             content=header + f" — {shown} shown\n" + ("\n".join(lines) if lines else EMPTY_DISPLAY) + notice,
             ok=True,
         )
+
+
+    @staticmethod
+    def _render_message(message: Mapping[str, object], include_tools: bool) -> str:
+        payload = _payload_dict(message)
+        had_tools = any(key in payload for key in _TOOL_PAYLOAD_KEYS)
+        if not include_tools:
+            payload = {k: v for k, v in payload.items() if k not in _TOOL_PAYLOAD_KEYS}
+        sanitized = _sanitize(payload)
+        text_main = sanitized.get("message") if isinstance(sanitized, dict) else None
+        extras = {
+            k: v
+            for k, v in (sanitized.items() if isinstance(sanitized, dict) else [])
+            if k != "message"
+        }
+        parts: list[str] = []
+        if text_main:
+            parts.append(str(text_main))
+        if extras:
+            parts.append("extras: " + json.dumps(extras, default=str))
+        if not parts:
+            parts.append(
+                "[tool payload hidden — pass include_tools=true]"
+                if had_tools and not include_tools
+                else "(empty)"
+            )
+        text = " | ".join(parts)
+        sender = str(
+            message.get("from_display")
+            or message.get("from_id")
+            or message.get("from_type")
+            or "?"
+        )
+        created = str(message.get("created_at", "")) or "—"
+        mtype = str(message.get("type", "?"))
+        status = str(message.get("status", "?"))
+        return f"[{created}] {sender} ({mtype}/{status}): {text}"
 
 
 def _indent(text: str) -> str:
@@ -3306,27 +3358,7 @@ class BrowserTool:
                 ok=False,
             )
         try:
-            if action == "open":
-                return self._open(str(args.get("url", "") or "").strip())
-            if action == "snapshot":
-                return self._snapshot()
-            if action == "screenshot":
-                return self._screenshot(bool(args.get("full_page", False)))
-            if action == "click":
-                selector = str(args.get("selector", "") or "").strip()
-                if not selector:
-                    return ToolResult(content="browser click: selector is required", ok=False)
-                return self._call("browser.click", {"selector": selector})
-            if action == "type":
-                selector = str(args.get("selector", "") or "").strip()
-                if not selector:
-                    return ToolResult(content="browser type: selector is required", ok=False)
-                text = str(args.get("text", "") or "")
-                payload: dict[str, object] = {"selector": selector, "text": text}
-                if args.get("submit") is not None:
-                    payload["submit"] = bool(args.get("submit"))
-                return self._call("browser.type", payload)
-            return self._call("browser.close_session", {})
+            return self._dispatch(action, args)
         except error.HTTPError as exc:
             return ToolResult(content=f"browser {action}: {self._http_detail(exc)}", ok=False)
         except (error.URLError, OSError) as exc:
@@ -3334,6 +3366,35 @@ class BrowserTool:
                 content=f"browser {action}: gateway request failed: {type(exc).__name__}",
                 ok=False,
             )
+
+    def _dispatch(self, action: str, args: Mapping[str, object]) -> ToolResult:
+        if action == "open":
+            return self._open(str(args.get("url", "") or "").strip())
+        if action == "snapshot":
+            return self._snapshot()
+        if action == "screenshot":
+            return self._screenshot(bool(args.get("full_page", False)))
+        if action == "click":
+            return self._click(args)
+        if action == "type":
+            return self._type(args)
+        return self._call("browser.close_session", {})
+
+    def _click(self, args: Mapping[str, object]) -> ToolResult:
+        selector = str(args.get("selector", "") or "").strip()
+        if not selector:
+            return ToolResult(content="browser click: selector is required", ok=False)
+        return self._call("browser.click", {"selector": selector})
+
+    def _type(self, args: Mapping[str, object]) -> ToolResult:
+        selector = str(args.get("selector", "") or "").strip()
+        if not selector:
+            return ToolResult(content="browser type: selector is required", ok=False)
+        text = str(args.get("text", "") or "")
+        payload: dict[str, object] = {"selector": selector, "text": text}
+        if args.get("submit") is not None:
+            payload["submit"] = bool(args.get("submit"))
+        return self._call("browser.type", payload)
 
     # -- action implementations -------------------------------------------
 
@@ -3549,25 +3610,7 @@ class SessionStatusTool(_SessionToolBase):
         # Tasks: counts by status + the active (in-progress) ones.
         try:
             tasks = self._get(TASKS_PATH)
-            if isinstance(tasks, list):
-                counts: dict[str, int] = {}
-                active: list[str] = []
-                for task in tasks:
-                    if not isinstance(task, dict):
-                        continue
-                    status = str(task.get("status", "?"))
-                    counts[status] = counts.get(status, 0) + 1
-                    if status == "in-progress":
-                        number = task.get("task_number")
-                        label = f"T-{number}" if number else str(task.get("id", "?"))[:8]
-                        title = str(task.get("title", "")).strip() or "(untitled)"
-                        active.append(f"{label} {_redact_text(title)}")
-                counts_text = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-                lines.append(f"tasks: {len(tasks)} total" + (f" ({counts_text})" if counts_text else ""))
-                if active:
-                    lines.append("active: " + "; ".join(active))
-            else:
-                lines.append("tasks: unavailable")
+            lines.extend(self._task_status_lines(tasks))
         except Exception:  # noqa: BLE001 — graceful omission per contract
             lines.append("tasks: unavailable")
 
@@ -3580,6 +3623,28 @@ class SessionStatusTool(_SessionToolBase):
             pass
 
         return ToolResult(content="\n".join(lines), ok=True)
+
+    @staticmethod
+    def _task_status_lines(tasks: object) -> list[str]:
+        if not isinstance(tasks, list):
+            return ["tasks: unavailable"]
+        counts: dict[str, int] = {}
+        active: list[str] = []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            status = str(task.get("status", "?"))
+            counts[status] = counts.get(status, 0) + 1
+            if status == "in-progress":
+                number = task.get("task_number")
+                label = f"T-{number}" if number else str(task.get("id", "?"))[:8]
+                title = str(task.get("title", "")).strip() or "(untitled)"
+                active.append(f"{label} {_redact_text(title)}")
+        counts_text = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        lines = [f"tasks: {len(tasks)} total" + (f" ({counts_text})" if counts_text else "")]
+        if active:
+            lines.append("active: " + "; ".join(active))
+        return lines
 
 
 # ---------------------------------------------------------------------------
@@ -3670,19 +3735,7 @@ class _BoardToolBase:
             with request.urlopen(req, timeout=timeout) as response:
                 raw = response.read()
         except error.HTTPError as exc:
-            code, message = "", ""
-            try:
-                err_body = json.loads(exc.read().decode("utf-8"))
-                err_obj = err_body.get("error")
-                if isinstance(err_obj, dict):
-                    code = str(err_obj.get("code", "") or "")
-                    message = str(err_obj.get("message", "") or "")
-            except Exception:  # noqa: BLE001 — error body is best-effort
-                pass
-            detail = f" {code}" if code else ""
-            if message:
-                detail += f": {message}"
-            return {}, f"HTTP {exc.code}{detail}"
+            return {}, self._http_error_detail(exc)
         except (error.URLError, OSError, json.JSONDecodeError) as exc:
             return {}, f"control-plane request failed: {exc}"
         if not raw:
@@ -3694,6 +3747,22 @@ class _BoardToolBase:
         if not isinstance(data, dict):
             return {}, "control-plane returned an unexpected shape"
         return data, ""
+
+    @staticmethod
+    def _http_error_detail(exc: error.HTTPError) -> str:
+        code, message = "", ""
+        try:
+            err_body = json.loads(exc.read().decode("utf-8"))
+            err_obj = err_body.get("error")
+            if isinstance(err_obj, dict):
+                code = str(err_obj.get("code", "") or "")
+                message = str(err_obj.get("message", "") or "")
+        except Exception:  # noqa: BLE001 — error body is best-effort
+            pass
+        detail = f" {code}" if code else ""
+        if message:
+            detail += f": {message}"
+        return f"HTTP {exc.code}{detail}"
 
 
 class BoardCreateTaskTool(_BoardToolBase):
