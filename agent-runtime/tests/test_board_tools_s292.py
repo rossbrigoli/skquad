@@ -152,7 +152,7 @@ class BoardToolHTTPTests(unittest.TestCase):
         self.assertFalse(res.ok)
         self.assertIn("403", res.content)
         self.assertIn("leader_capability_required", res.content)
-        self.assertEqual(json.loads(rec.calls[0][2])["ready"], True)
+        self.assertTrue(json.loads(rec.calls[0][2])["ready"])
 
     def test_create_task_requires_title(self):
         rec = _Recorder([FakeResponse(201, {})])
@@ -240,7 +240,7 @@ class BoardToolHTTPTests(unittest.TestCase):
             )
         self.assertTrue(res.ok)
         sent = json.loads(rec.calls[0][2])
-        self.assertEqual(sent["review_needed"], True)
+        self.assertTrue(sent["review_needed"])
         self.assertEqual(sent["summary"], "All good")
         self.assertEqual(sent["execution_id"], "exec-1")
         self.assertEqual(sent["fencing_token"], "fence-1")
@@ -264,7 +264,7 @@ class BoardToolHTTPTests(unittest.TestCase):
             )
         self.assertTrue(res.ok)
         sent = json.loads(rec.calls[0][2])
-        self.assertEqual(sent["review_needed"], False)
+        self.assertFalse(sent["review_needed"])
         self.assertEqual(sent["justification"], "typo fix, fully verified, no judgment needed")
         self.assertIn("DONE", res.content)
 

@@ -3266,7 +3266,7 @@ class LiteLLMTaskHandler:
 
 def invoke_plugin_tool(
     call: ToolCall,
-    config: BootstrapConfig,
+    config: BootstrapConfig | None,
     plugins: list[RuntimePlugin],
 ) -> ToolResult:
     """Invoke a tool call against the plugin list (shared by the task handler

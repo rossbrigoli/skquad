@@ -236,7 +236,6 @@ class ExecTool:
             self.context.workspace_dir,
             command,
             proc_tool.max_sessions,
-            proc_tool.max_log_bytes,
         )
         if err:
             return ToolResult(content=f"exec background: {err}", ok=False)
@@ -394,7 +393,7 @@ def _new_session_id() -> str:
 
 
 def _start_background_session(
-    workspace_dir: str, command: str, max_sessions: int, max_log_bytes: int
+    workspace_dir: str, command: str, max_sessions: int
 ) -> tuple[dict | None, str]:
     """Start ``command`` detached; returns (session, error_message)."""
     with _PROCESS_LOCK:
@@ -624,7 +623,7 @@ class ProcessTool:
         if action == "write":
             return self._write(session, call)
         if action == "kill":
-            return self._kill(sessions, session)
+            return self._kill(session)
         if action == "clear":
             return self._clear(sessions, session)
         return ToolResult(
@@ -733,11 +732,11 @@ class ProcessTool:
         try:
             proc.stdin.write(str(data).encode("utf-8"))
             proc.stdin.flush()
-        except (BrokenPipeError, OSError) as exc:
+        except OSError as exc:
             return ToolResult(content=f"process write: failed: {exc}", ok=False)
         return ToolResult(content=f"wrote {len(str(data))} chars to {session['id']} stdin", ok=True)
 
-    def _kill(self, sessions: dict, session: dict) -> ToolResult:
+    def _kill(self, session: dict) -> ToolResult:
         if session.get("status") != "running":
             return ToolResult(
                 content=f"process kill: session {session['id']} already {session.get('status')}",
@@ -3515,7 +3514,7 @@ class SessionStatusTool(_SessionToolBase):
             }
         ]
 
-    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+    def invoke(self, _call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
         lines: list[str] = ["SESSION STATUS"]
         lines.append(f"agent_id: {self.context.agent_id or '(unknown)'}")
         elapsed = int(time.time() - self._started_at)
