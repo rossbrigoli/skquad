@@ -86,8 +86,8 @@ export default function SquadBoardPage() {
   }
 
   // S-304: persist a column's new vertical order. The order IS the
-  // pickup priority: the control plane claims the lowest-positioned todo
-  // first (dependency-blocked tasks are still skipped). Optimistic — the
+  // pickup priority: the control plane claims the lowest-positioned
+  // to-do task first (dependency-blocked tasks are still skipped). Optimistic — the
   // UI already shows the new order; a failed PUT surfaces a notice and
   // the next poll restores the server truth.
   const [orderError, setOrderError] = useState("");
@@ -127,6 +127,25 @@ export default function SquadBoardPage() {
       return;
     }
     void moveTask(taskId, status);
+  }
+
+  // S-304: dropping onto a card means "insert at this card's slot".
+  // Extracted to the component level so the JSX callbacks stay within
+  // the function-nesting limit (S2004).
+  function onCardDrop(event: DragEvent<HTMLDivElement>, task: Task, status: TaskStatus) {
+    if (!draggingTaskId || draggingTaskId === task.id) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDragOver(null);
+    const draggedId = event.dataTransfer.getData("text/skquad-task") || draggingTaskId;
+    const dragged = tasks.find((t) => t.id === draggedId);
+    if (!dragged) return;
+    if (dragged.status === status) {
+      reorderWithinColumn(status, draggedId, task.id);
+    } else {
+      void moveTask(draggedId, status);
+    }
+    setDraggingTaskId(null);
   }
 
   return (
@@ -220,21 +239,7 @@ export default function SquadBoardPage() {
                             e.stopPropagation();
                             setDragOver(col.status);
                           }}
-                          onDrop={(e) => {
-                            if (!draggingTaskId || draggingTaskId === task.id) return;
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setDragOver(null);
-                            const draggedId = e.dataTransfer.getData("text/skquad-task") || draggingTaskId;
-                            const dragged = tasks.find((t) => t.id === draggedId);
-                            if (!dragged) return;
-                            if (dragged.status === col.status) {
-                              reorderWithinColumn(col.status, draggedId, task.id);
-                            } else {
-                              void moveTask(draggedId, col.status);
-                            }
-                            setDraggingTaskId(null);
-                          }}
+                          onDrop={(e) => onCardDrop(e, task, col.status)}
                         >
                           <div className="task-title">
                             {formatTaskRef(task) ? (

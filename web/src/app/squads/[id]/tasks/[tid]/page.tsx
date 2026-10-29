@@ -151,69 +151,13 @@ export default function TaskDetailPage() {
   return (
     <AuthGate>
       <AppShell>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "var(--space-3)" }}>
-          <h1 className="page-title">
-            {formatTaskRef(current) ? (
-              <span className="task-ref" title={`Task reference ${formatTaskRef(current)}`}>
-                {formatTaskRef(current)}
-              </span>
-            ) : null}
-            {current.title}
-          </h1>
-          <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
-            <StatusChip status={taskStatus(current)} />
-            {/* S-278: blocked badge — unfinished dependencies stop agent pickup. */}
-            {current.blocked_by_count ? (
-              <span className="chip chip-blocked" title={`${current.blocked_by_count} unfinished dependenc${current.blocked_by_count === 1 ? "y" : "ies"}`}>
-                🔒 blocked by {current.blocked_by_count}
-              </span>
-            ) : null}
-            <button type="button" className="btn btn-sm" onClick={() => setEditing(true)}>
-              Edit
-            </button>
-            <button type="button" className="btn btn-sm btn-danger" onClick={() => setDeleting(true)}>
-              Delete
-            </button>
-          </div>
-        </div>
-        {/* S-235: back-to-board moved to the top, just under the title, so
-            it's reachable without scrolling to the bottom of a long page. */}
-        <p style={{ margin: "var(--space-2) 0 0" }}>
-          <Link href={`/squads/${squadId}/board`} style={{ color: "var(--accent)" }}>
-            ← Back to board
-          </Link>
-        </p>
-        {/* S-235: lease/assignee meta row doubles as the home for the
-            agent-chat button (was buried at the bottom of the thread). */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: "var(--space-3)",
-            marginTop: "var(--space-1)",
-          }}
-        >
-          <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)", margin: 0 }}>
-            {assignee ? (
-              <>
-                assigned to <strong>{assignee.name}</strong>
-              </>
-            ) : (
-              "unassigned"
-            )}{" "}
-            · updated {formatRelativeTime(current.updated_at)}
-            {leaseSuffix(leaseState(current))}
-          </p>
-          {assignee ? (
-            <Link
-              href={`/squads/${squadId}/agents/${assignee.id}`}
-              className="btn btn-sm btn-primary"
-            >
-              Talk to {assignee.name}
-            </Link>
-          ) : null}
-        </div>
+        <TaskHeader
+          task={current}
+          squadId={squadId}
+          assignee={assignee}
+          onEdit={() => setEditing(true)}
+          onDelete={() => setDeleting(true)}
+        />
         {current.description ? (
           <p style={{ whiteSpace: "pre-wrap", marginTop: "var(--space-3)" }}>{current.description}</p>
         ) : null}
@@ -311,6 +255,92 @@ export default function TaskDetailPage() {
         ) : null}
       </AppShell>
     </AuthGate>
+  );
+}
+
+// S3776: title row + back link + assignee/lease meta extracted from
+// TaskDetailPage so the page component stays under the
+// cognitive-complexity limit.
+function TaskHeader({
+  task,
+  squadId,
+  assignee,
+  onEdit,
+  onDelete,
+}: {
+  readonly task: Task;
+  readonly squadId: string;
+  readonly assignee: Agent | undefined;
+  readonly onEdit: () => void;
+  readonly onDelete: () => void;
+}) {
+  const depsWord = task.blocked_by_count === 1 ? "y" : "ies";
+  return (
+    <>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "var(--space-3)" }}>
+        <h1 className="page-title">
+          {formatTaskRef(task) ? (
+            <span className="task-ref" title={`Task reference ${formatTaskRef(task)}`}>
+              {formatTaskRef(task)}
+            </span>
+          ) : null}
+          {task.title}
+        </h1>
+        <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
+          <StatusChip status={taskStatus(task)} />
+          {/* S-278: blocked badge — unfinished dependencies stop agent pickup. */}
+          {task.blocked_by_count ? (
+            <span className="chip chip-blocked" title={`${task.blocked_by_count} unfinished dependenc${depsWord}`}>
+              🔒 blocked by {task.blocked_by_count}
+            </span>
+          ) : null}
+          <button type="button" className="btn btn-sm" onClick={onEdit}>
+            Edit
+          </button>
+          <button type="button" className="btn btn-sm btn-danger" onClick={onDelete}>
+            Delete
+          </button>
+        </div>
+      </div>
+      {/* S-235: back-to-board moved to the top, just under the title, so
+          it's reachable without scrolling to the bottom of a long page. */}
+      <p style={{ margin: "var(--space-2) 0 0" }}>
+        <Link href={`/squads/${squadId}/board`} style={{ color: "var(--accent)" }}>
+          ← Back to board
+        </Link>
+      </p>
+      {/* S-235: lease/assignee meta row doubles as the home for the
+          agent-chat button (was buried at the bottom of the thread). */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: "var(--space-3)",
+          marginTop: "var(--space-1)",
+        }}
+      >
+        <p style={{ color: "var(--ink-muted)", fontSize: "var(--text-sm)", margin: 0 }}>
+          {assignee ? (
+            <>
+              assigned to <strong>{assignee.name}</strong>
+            </>
+          ) : (
+            "unassigned"
+          )}{" "}
+          · updated {formatRelativeTime(task.updated_at)}
+          {leaseSuffix(leaseState(task))}
+        </p>
+        {assignee ? (
+          <Link
+            href={`/squads/${squadId}/agents/${assignee.id}`}
+            className="btn btn-sm btn-primary"
+          >
+            Talk to {assignee.name}
+          </Link>
+        ) : null}
+      </div>
+    </>
   );
 }
 

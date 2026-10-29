@@ -103,6 +103,40 @@ function optionalInt(value: string): number | undefined {
   return n;
 }
 
+// checkBaseUrl returns an error message when the raw value is not an
+// absolute http(s) URL, or null when it parses.
+function checkBaseUrl(raw: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw.trim());
+  } catch {
+    return "Base URL must be an absolute http(s) URL";
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "Base URL must be http(s)";
+  return null;
+}
+
+// checkRequiredSecrets enforces that every auth-kind secret field is
+// non-empty (only when `requireSecrets` — see validateRestForm).
+function checkRequiredSecrets(form: RestResourceForm): string | null {
+  for (const f of REST_AUTH_FIELDS[form.authKind]) {
+    if ((form.secrets[f.field] ?? "").trim() === "") return `${f.label} is required`;
+  }
+  return null;
+}
+
+// checkNumericBounds validates the optional positive-integer limits.
+function checkNumericBounds(form: RestResourceForm): string | null {
+  try {
+    optionalInt(form.maxRequestBytes);
+    optionalInt(form.maxResponseBytes);
+    optionalInt(form.ratePerMin);
+  } catch (err) {
+    return err instanceof Error ? err.message : "invalid numeric bound";
+  }
+  return null;
+}
+
 // validateRestForm returns a human-readable error or null.
 //
 // `requireSecrets` (default true) controls whether the auth kind's secret
@@ -114,30 +148,19 @@ function optionalInt(value: string): number | undefined {
 export function validateRestForm(form: RestResourceForm, requireSecrets = true): string | null {
   if (form.name.trim() === "") return "Name is required";
   if (form.baseUrl.trim() === "") return "Base URL is required";
-  let parsed: URL;
-  try {
-    parsed = new URL(form.baseUrl.trim());
-  } catch {
-    return "Base URL must be an absolute http(s) URL";
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "Base URL must be http(s)";
+  const baseErr = checkBaseUrl(form.baseUrl);
+  if (baseErr) return baseErr;
   if (form.authKind === "api_key_header" && form.headerName.trim() === "") return "Header name is required for api_key_header auth";
   if (form.authKind !== "api_key_header" && form.headerName.trim() !== "") return "Header name only applies to api_key_header auth";
   if (requireSecrets) {
-    for (const f of REST_AUTH_FIELDS[form.authKind]) {
-      if ((form.secrets[f.field] ?? "").trim() === "") return `${f.label} is required`;
-    }
+    const secretErr = checkRequiredSecrets(form);
+    if (secretErr) return secretErr;
   }
-  try {
-    optionalInt(form.maxRequestBytes);
-    optionalInt(form.maxResponseBytes);
-    optionalInt(form.ratePerMin);
-  } catch (err) {
-    return err instanceof Error ? err.message : "invalid numeric bound";
-  }
-  return null;
+  const boundsErr = checkNumericBounds(form);
+  if (boundsErr) return boundsErr;
   const meteringError = validateMeteringFields({ metered: form.metered, pricePerCall: form.pricePerCall });
   if (meteringError) return meteringError;
+  return null;
 }
 
 // buildRestResourcePayload builds the CP create/patch body. `includeAuth`

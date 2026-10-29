@@ -64,8 +64,8 @@ export function agentStatus(agent: Agent): StatusKey {
   if (status === "error" || status === "failed") return "error";
   if (status === "paused") return "paused";
   if (status === "busy") return "running";
-  // S-300: the agent owns work it cannot start yet (every remaining todo
-  // has an unsatisfied upstream dependency). Render the same Blocked chip
+  // S-300: the agent owns work it cannot start yet (every remaining
+  // to-do task has an unsatisfied upstream dependency). Render the same Blocked chip
   // tasks use, so "why isn't this agent moving" is answerable at a glance.
   if (status === "blocked") return "blocked";
   return "idle";

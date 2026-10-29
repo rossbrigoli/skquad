@@ -64,6 +64,19 @@ function optionalInt(value: string): number | undefined {
   return n;
 }
 
+// checkBaseUrl returns an error message when the raw value is not an
+// absolute http(s) URL, or null when it parses.
+function checkBaseUrl(raw: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw.trim());
+  } catch {
+    return "Base URL must be an absolute http(s) URL";
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "Base URL must be http(s)";
+  return null;
+}
+
 // validateGitForm returns a human-readable error or null. Mirrors the
 // control-plane validation: absolute http(s) base URL, non-empty
 // repos_allow (required, default-deny), positive-integer rate. The
@@ -72,13 +85,8 @@ function optionalInt(value: string): number | undefined {
 export function validateGitForm(form: GitResourceForm, requireToken = true): string | null {
   if (form.name.trim() === "") return "Name is required";
   if (form.baseUrl.trim() === "") return "Base URL is required";
-  let parsed: URL;
-  try {
-    parsed = new URL(form.baseUrl.trim());
-  } catch {
-    return "Base URL must be an absolute http(s) URL";
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "Base URL must be http(s)";
+  const baseErr = checkBaseUrl(form.baseUrl);
+  if (baseErr) return baseErr;
   if (splitList(form.reposAllow).length === 0)
     return "At least one repo pattern is required (e.g. myorg/*, myorg/app) — default-deny";
   if (requireToken) {

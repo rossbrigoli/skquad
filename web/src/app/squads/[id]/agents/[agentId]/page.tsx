@@ -221,7 +221,7 @@ function TaskDelegatedChip({
   onShowDetails: (taskId: string) => void;
 }>) {
   const ref = formatTaskRef(task);
-  const label = task?.title || `task ${taskId.slice(0, 8)}`;
+  const label = task?.title ? task.title : `task ${taskId.slice(0, 8)}`;
   return (
     <div className="chat-tool subagent-chip delegated-chip">
       <div className="chat-tool-summary">
@@ -535,6 +535,22 @@ export default function AgentProfilePage() {
     }
   }
 
+  // S3776: extracted from the AgentConfigPane JSX callback so the page
+  // component stays under the cognitive-complexity limit.
+  async function identityAction() {
+    setIdentityBusy(true);
+    setIdentityError("");
+    try {
+      await apiPost(agent?.identity_id ? `/agents/${agentId}/identity/rotate` : `/agents/${agentId}/identity`, token, {});
+      agents.refresh();
+    } catch (err) {
+      const fallbackMsg = agent?.identity_id ? "rotate failed" : "provision failed";
+      setIdentityError(errMsg(err, fallbackMsg));
+    } finally {
+      setIdentityBusy(false);
+    }
+  }
+
   if (!agent && !agents.loading) {
     return (
       <AuthGate>
@@ -629,19 +645,7 @@ export default function AgentProfilePage() {
               await apiPut(`/agents/${agentId}/permissions`, token, next);
               perms.refresh();
             }}
-            onIdentityAction={async () => {
-              setIdentityBusy(true);
-              setIdentityError("");
-              try {
-                await apiPost(agent?.identity_id ? `/agents/${agentId}/identity/rotate` : `/agents/${agentId}/identity`, token, {});
-                agents.refresh();
-              } catch (err) {
-                const fallbackMsg = agent?.identity_id ? "rotate failed" : "provision failed";
-                setIdentityError(errMsg(err, fallbackMsg));
-              } finally {
-                setIdentityBusy(false);
-              }
-            }}
+            onIdentityAction={identityAction}
             onPreviewEffective={() => setPreviewEffective(true)}
             onRequestDelete={() => setDeleting(true)}
             onSaved={() => {
@@ -722,6 +726,44 @@ export default function AgentProfilePage() {
 // PATCH /agents/{id}. Grants and runtime identity stay immediate-action
 // sections (they were never part of the modal); recent activity closes the
 // tab.
+// S3358: tri-state self-approve → <select> value (extracted from a
+// nested ternary in the Configuration form).
+function selfApproveSelectValue(selfApprove: boolean | null): "inherit" | "allowed" | "blocked" {
+  if (selfApprove === null) return "inherit";
+  return selfApprove ? "allowed" : "blocked";
+}
+
+// S3776: the dirty-check moved out of AgentConfigPane — the ||/??
+// chain alone blew the component's cognitive-complexity budget.
+function isAgentConfigDirty(
+  agent: Agent,
+  v: {
+    role: string;
+    prompt: string;
+    idleTimeout: string;
+    storageEnabled: boolean;
+    storageSizeDirty: boolean;
+    primary: string;
+    fallback: string;
+    selfApprove: boolean | null;
+    selfApproveInitial: boolean | null;
+    turnBudget: string;
+    turnBudgetInitial: string;
+  },
+): boolean {
+  return (
+    v.role !== (agent.role ?? "") ||
+    v.prompt !== (agent.system_prompt ?? "") ||
+    Number(v.idleTimeout || 0) !== (agent.idle_timeout_sec ?? 0) ||
+    v.storageEnabled !== (agent.storage_enabled ?? false) ||
+    v.storageSizeDirty ||
+    v.primary !== (agent.ai_model_id ?? "") ||
+    v.fallback !== (agent.fallback_ai_model_id ?? "") ||
+    v.selfApprove !== v.selfApproveInitial ||
+    v.turnBudget !== v.turnBudgetInitial
+  );
+}
+
 function AgentConfigPane({
   agent,
   token,
@@ -779,16 +821,19 @@ function AgentConfigPane({
   const turnBudgetInvalid = turnBudget.trim() !== "" && (Number(turnBudget) < 1 || Number(turnBudget) > 512);
   const storageBaseline = agent.storage_size ? agent.storage_size : DEFAULT_AGENT_STORAGE_SIZE;
   const storageSizeDirty = storageEnabled && storageSize.trim() !== storageBaseline;
-  const dirty =
-    role !== (agent.role ?? "") ||
-    prompt !== (agent.system_prompt ?? "") ||
-    Number(idleTimeout || 0) !== (agent.idle_timeout_sec ?? 0) ||
-    storageEnabled !== (agent.storage_enabled ?? false) ||
-    storageSizeDirty ||
-    primary !== (agent.ai_model_id ?? "") ||
-    fallback !== (agent.fallback_ai_model_id ?? "") ||
-    selfApprove !== selfApproveInitial ||
-    turnBudget !== turnBudgetInitial;
+  const dirty = isAgentConfigDirty(agent, {
+    role,
+    prompt,
+    idleTimeout,
+    storageEnabled,
+    storageSizeDirty,
+    primary,
+    fallback,
+    selfApprove,
+    selfApproveInitial,
+    turnBudget,
+    turnBudgetInitial,
+  });
 
   async function saveAll() {
     setBusy(true);
@@ -887,7 +932,7 @@ function AgentConfigPane({
             <span>Self-approve allowed</span>
             <select
               aria-label="Self-approve allowed"
-              value={selfApprove === null ? "inherit" : selfApprove ? "allowed" : "blocked"}
+              value={selfApproveSelectValue(selfApprove)}
               onChange={(e) => {
                 const next = e.target.value;
                 setSelfApprove(next === "inherit" ? null : next === "allowed");

@@ -36,9 +36,9 @@ export function defaultAgentResources(): AgentResourcesSettings {
 }
 
 // CPU quantities: plain decimal cores or milli-cores ("100m").
-const CPU_QUANTITY_RE = /^([0-9]+(?:\.[0-9]+)?)(m?)$/;
+const CPU_QUANTITY_RE = /^(\d+(?:\.\d+)?)(m?)$/;
 // Memory quantities: decimal with binary (Ki/Mi/…) or decimal (K/M/…) suffix.
-const MEMORY_QUANTITY_RE = /^([0-9]+(?:\.[0-9]+)?)(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)?$/;
+const MEMORY_QUANTITY_RE = /^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)?$/;
 
 const MEMORY_MULTIPLIERS: Record<string, number> = {
   "": 1,
