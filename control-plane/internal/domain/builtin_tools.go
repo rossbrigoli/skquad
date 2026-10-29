@@ -265,17 +265,14 @@ func ValidateBuiltinPolicy(name string, policy json.RawMessage) []string {
 		// policy keys yet. The empty allow-set means only "{}" validates;
 		// any key is rejected so a future key can be pinned deliberately.
 		allowed = map[string]func(string, json.RawMessage) []string{}
-	case BuiltinToolRead:
-		// S-279: timeoutSeconds bounds the file read; maxBytes caps the
+	case BuiltinToolRead, BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch:
+		// S-279: reads and writes share the same policy shape. For reads,
+		// timeoutSeconds bounds the file read and maxBytes caps the
 		// returned content so one read cannot flood the model context.
-		allowed = map[string]func(string, json.RawMessage) []string{
-			"timeoutSeconds": requirePositiveInt,
-			"maxBytes":       requirePositiveInt,
-		}
-	case BuiltinToolWrite, BuiltinToolEdit, BuiltinToolApplyPatch:
-		// S-279: maxBytes caps the total bytes written (for apply_patch,
-		// the sum across the patch's files) so a runaway agent cannot fill
-		// the workspace PVC. timeoutSeconds bounds the whole operation.
+		// For write/edit/apply_patch, maxBytes caps the total bytes
+		// written (for apply_patch, the sum across the patch's files) so
+		// a runaway agent cannot fill the workspace PVC; timeoutSeconds
+		// bounds the whole operation.
 		allowed = map[string]func(string, json.RawMessage) []string{
 			"timeoutSeconds": requirePositiveInt,
 			"maxBytes":       requirePositiveInt,

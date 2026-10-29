@@ -307,42 +307,10 @@ func (s *Server) reconcileGatewayModels(w http.ResponseWriter, r *http.Request) 
 	for _, model := range models {
 		if dep, ok := byModel[model.ModelName]; ok {
 			delete(byModel, model.ModelName)
-			// Key-drift check (S-303): rebuild the spec from the
-			// provider's CURRENT key and compare its fingerprint against
-			// the one last persisted on the registry row. A mismatch — or
-			// a never-stamped row — means the gateway deployment is
-			// serving a stale credential the Test button (provider-
-			// direct) cannot see. Re-key it in place and re-stamp.
-			spec, err := s.buildGatewayModelSpec(r.Context(), s.providerForAIModel(r, model), model.ModelName, model.SupportsVision)
-			if err != nil {
-				report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: err.Error()})
-				continue
-			}
-			if model.GatewayKeyFingerprint == spec.KeyFingerprint {
-				report.AlreadyPresent = append(report.AlreadyPresent, model.ModelName)
-				continue
-			}
-			if err := s.gwModels.UpdateModelDeployment(r.Context(), dep.DeploymentID, spec); err != nil {
-				report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: err.Error()})
-				continue
-			}
-			if err := s.store.SetAIModelGatewayKeyFingerprint(r.Context(), model.ID, spec.KeyFingerprint); err != nil {
-				report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: "rekeyed but fingerprint persist failed: " + err.Error()})
-				continue
-			}
-			report.Rekeyed = append(report.Rekeyed, model.ModelName)
+			s.reconcileRegisteredGatewayModel(r, model, dep, &report)
 			continue
 		}
-		_, fp, err := s.provisionGatewayModel(r.Context(), s.providerForAIModel(r, model), model.ModelName, model.SupportsVision)
-		if err != nil {
-			report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: err.Error()})
-			continue
-		}
-		if err := s.store.SetAIModelGatewayKeyFingerprint(r.Context(), model.ID, fp); err != nil {
-			report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: "registered but fingerprint persist failed: " + err.Error()})
-			continue
-		}
-		report.Registered = append(report.Registered, model.ModelName)
+		s.provisionMissingGatewayModel(r, model, &report)
 	}
 	for _, d := range byModel {
 		report.Extras = append(report.Extras, gatewayModelExtra{ModelName: d.ModelName, DeploymentID: d.DeploymentID})
@@ -353,6 +321,51 @@ func (s *Server) reconcileGatewayModels(w http.ResponseWriter, r *http.Request) 
 	metadata, _ := json.Marshal(report)
 	s.recordUserAudit(r, "gateway.models.reconcile", "gateway", "", "", metadata)
 	writeJSON(w, http.StatusOK, report)
+}
+
+// reconcileRegisteredGatewayModel handles one ACTIVE model that
+// already has a gateway deployment: the S-303 key-drift check rebuilds
+// the spec from the provider's CURRENT key and compares its
+// fingerprint against the one last persisted on the registry row. A
+// mismatch — or a never-stamped row — means the gateway deployment is
+// serving a stale credential the Test button (provider-direct) cannot
+// see: re-key it in place and re-stamp. Appends the outcome to the
+// report; never aborts the pass.
+func (s *Server) reconcileRegisteredGatewayModel(r *http.Request, model *domain.AIModel, dep GatewayModelDeployment, report *gatewayModelReconcileReport) {
+	spec, err := s.buildGatewayModelSpec(r.Context(), s.providerForAIModel(r, model), model.ModelName, model.SupportsVision)
+	if err != nil {
+		report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: err.Error()})
+		return
+	}
+	if model.GatewayKeyFingerprint == spec.KeyFingerprint {
+		report.AlreadyPresent = append(report.AlreadyPresent, model.ModelName)
+		return
+	}
+	if err := s.gwModels.UpdateModelDeployment(r.Context(), dep.DeploymentID, spec); err != nil {
+		report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: err.Error()})
+		return
+	}
+	if err := s.store.SetAIModelGatewayKeyFingerprint(r.Context(), model.ID, spec.KeyFingerprint); err != nil {
+		report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: "rekeyed but fingerprint persist failed: " + err.Error()})
+		return
+	}
+	report.Rekeyed = append(report.Rekeyed, model.ModelName)
+}
+
+// provisionMissingGatewayModel registers an ACTIVE model that has no
+// gateway deployment yet (same shape as create) and stamps its key
+// fingerprint. Appends the outcome to the report; never aborts the pass.
+func (s *Server) provisionMissingGatewayModel(r *http.Request, model *domain.AIModel, report *gatewayModelReconcileReport) {
+	_, fp, err := s.provisionGatewayModel(r.Context(), s.providerForAIModel(r, model), model.ModelName, model.SupportsVision)
+	if err != nil {
+		report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: err.Error()})
+		return
+	}
+	if err := s.store.SetAIModelGatewayKeyFingerprint(r.Context(), model.ID, fp); err != nil {
+		report.Failed = append(report.Failed, gatewayModelFailure{Model: model.ModelName, Error: "registered but fingerprint persist failed: " + err.Error()})
+		return
+	}
+	report.Registered = append(report.Registered, model.ModelName)
 }
 
 // providerForAIModel resolves the model's provider for registration.

@@ -145,25 +145,35 @@ func (s *Server) putAdminSettings(w http.ResponseWriter, r *http.Request) {
 
 	ctx := s.pendingUserAuditCtx(r, "settings.platform.update", "platform_settings", "", "", nil)
 
+	if !s.applyPlatformSettingBlocks(ctx, w, userID, runtime, minutes, agentRes) {
+		return
+	}
+}
+
+// applyPlatformSettingBlocks applies the validated setting blocks in
+// order (embedder runtime ConfigMap first, then the idle-scale mirror,
+// then agent resources) and writes the combined response. Writes the
+// error response and returns false on the first failure.
+func (s *Server) applyPlatformSettingBlocks(ctx context.Context, w http.ResponseWriter, userID, runtime string, minutes int, agentRes *domain.AgentResourceSettings) bool {
 	resp := map[string]any{}
 	// Embedder runtime: ConfigMap first (operator intent), DB second.
 	if runtime != "" {
 		if !s.applyEmbedderRuntimeSetting(ctx, w, runtime, userID) {
-			return
+			return false
 		}
 		resp["embedder_runtime"] = runtime
 	}
 	if minutes != 0 {
 		mirrored, ok := s.applyIdleScaleSetting(ctx, w, minutes, userID)
 		if !ok {
-			return
+			return false
 		}
 		resp["idle_scale_to_zero_minutes"] = minutes
 		resp["mirrored_agents"] = mirrored
 	}
 	if agentRes != nil {
 		if !s.applyAgentResourcesSetting(ctx, w, *agentRes, userID) {
-			return
+			return false
 		}
 		resp["agent_resources"] = agentResourcesView{
 			CPURequest:    agentRes.CPURequest,
@@ -173,6 +183,7 @@ func (s *Server) putAdminSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+	return true
 }
 
 // validateAgentResources normalises and validates the requested agent

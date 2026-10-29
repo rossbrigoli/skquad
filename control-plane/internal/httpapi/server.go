@@ -706,7 +706,7 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			// in-progress with a NEW fenced execution attempt.
 			r.Post("/tasks/{taskID}/reopen", s.reopenCurrentAgentTask)
 			// S-292 (ADR-0016 D1): assignee returns its own reviewed card
-			// to the pool — in-review → todo, assignee cleared.
+			// to the pool — in-review → to-do, assignee cleared.
 			r.Post("/tasks/{taskID}/request-changes", s.requestChangesOnMyTask)
 			// S-294 (ADR-0016 D5/D8): leader approval of others' tasks —
 			// in-review → done, gated on leader grant + leader_approval_allowed.
@@ -4724,7 +4724,7 @@ func (s *Server) validateTaskAssignee(w http.ResponseWriter, r *http.Request, sq
 func (s *Server) seedTaskThreadOnCreate(w http.ResponseWriter, r *http.Request, created *domain.Task, userID string) bool {
 	// ADR-0016 D6: a backlog task is invisible in the agent's chat until
 	// a human prioritises it, so no thread event is seeded while the task
-	// sits in Backlog. The event fires on the backlog→todo move instead.
+	// sits in Backlog. The event fires on the backlog→to-do move instead.
 	if created.Status == domain.TaskBacklog {
 		return true
 	}
@@ -5554,46 +5554,48 @@ func (s *Server) recordWakeLatency(ctx context.Context, agent *domain.Agent, tas
 	}
 }
 
-func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
-	// S-PROMPT WP5 run-audit: the runtime reports the composed-prompt
-	// sha it is running under (or "env_legacy") in the start body so
-	// "what did the agent see for run X" is one server-side query.
-	// Old runtimes send no body — that stays valid (sha stays "").
+// parseStartPromptSHA decodes the optional start body and validates the
+// reported composed-prompt sha (S-PROMPT WP5 run-audit: the runtime
+// reports the composed-prompt sha it runs under, or "env_legacy", so
+// "what did the agent see for run X" is one server-side query). Old
+// runtimes send no body — that stays valid (sha stays "").
+func parseStartPromptSHA(w http.ResponseWriter, r *http.Request) (string, bool) {
 	var req struct {
 		PromptSHA string `json:"prompt_sha"`
 	}
 	if r.Body != nil && r.ContentLength != 0 {
 		if !decodeJSON(w, r, &req) {
-			return
+			return "", false
 		}
 	}
 	promptSHA := strings.TrimSpace(req.PromptSHA)
 	if promptSHA != "" && !validRunPromptSHA(promptSHA) {
 		writeError(w, http.StatusBadRequest, "invalid_prompt_sha", "prompt_sha must be a 64-char hex sha256 or the literal env_legacy")
-		return
+		return "", false
 	}
-	// S-213/S-228: an agent may only start work from a pickup column —
-	// TO DO, or resuming its own in-progress task. Backlog and every other
-	// column are rejected here with a machine-readable reason before the
-	// status update runs; pickup must go through the claim path, which
-	// only serves the TO DO column. A human moving the card out of Backlog is the
-	// instruction to start it. Missing/foreign tasks are still reported by
-	// updateCurrentAgentTaskStatus below.
-	existing, existingErr := s.store.GetTask(r.Context(), chi.URLParam(r, "taskID"))
+	return promptSHA, true
+}
+
+// validateTaskStartable enforces the S-213/S-228 pickup-column rule —
+// an agent may only start work from a pickup column: TO DO, or resuming
+// its own in-progress task (Backlog and every other column are rejected
+// with a machine-readable reason; a human moving the card out of
+// Backlog is the instruction to start it) — and the S-278 dependency
+// guard (no starting work that depends on unfinished work). Writes the
+// error response and returns false when the start must not proceed.
+// Missing/foreign tasks are still reported by updateCurrentAgentTaskStatus.
+func (s *Server) validateTaskStartable(w http.ResponseWriter, ctx context.Context, taskID string) bool {
+	existing, existingErr := s.store.GetTask(ctx, taskID)
 	if existingErr == nil && !existing.Status.IsAgentPickupStatus() {
 		if existing.Status == domain.TaskBacklog {
 			writeError(w, http.StatusConflict, "task_in_backlog", "task is in the backlog and must be moved out by a human before it can be started")
-			return
+			return false
 		}
 		writeError(w, http.StatusConflict, "task_not_claimable", fmt.Sprintf("task is in %q and is not ready to start; only TO DO column tasks are claimable", existing.Status))
-		return
+		return false
 	}
-	// S-278: an agent may not start a task that depends on unfinished
-	// work. The claim path already skips blocked tasks; this guards the
-	// explicit start so the agent gets a machine-readable reason and
-	// the blocking list instead of silently succeeding.
 	if existingErr == nil {
-		if blocking, berr := s.store.UnsatisfiedDependencies(r.Context(), existing.ID); berr == nil && len(blocking) > 0 {
+		if blocking, berr := s.store.UnsatisfiedDependencies(ctx, existing.ID); berr == nil && len(blocking) > 0 {
 			writeJSON(w, http.StatusConflict, map[string]any{
 				"error": map[string]string{
 					"code":    "dependencies_unsatisfied",
@@ -5601,8 +5603,54 @@ func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 				},
 				"blocking": blocking,
 			})
-			return
+			return false
 		}
+	}
+	return true
+}
+
+// prepareStartExecution resolves the live-execution picture for the
+// start path (S-292, ADR-0016 D1). It returns the agent's existing
+// live execution when one is owned by this agent, and/or a freshly
+// minted execution when neither this agent nor another holds a live
+// lease. Writes the error response and returns false when minting
+// fails. A live execution owned by another agent yields (nil, nil,
+// true): the start proceeds but carries no fence.
+func (s *Server) prepareStartExecution(w http.ResponseWriter, r *http.Request, principal *agentPrincipal, taskID string) (liveExec, newExec *domain.TaskExecution, ok bool) {
+	exec, execErr := s.store.GetLatestTaskExecution(r.Context(), taskID)
+	if execErr != nil && !errors.Is(execErr, storage.ErrNotFound) {
+		writeStorageError(w, execErr)
+		return nil, nil, false
+	}
+	liveOwned := execErr == nil && exec.Status == domain.TaskExecutionActive && exec.AgentID == principal.Agent.ID
+	liveOther := execErr == nil && exec.Status == domain.TaskExecutionActive &&
+		exec.LeaseExpiresAt.After(time.Now().UTC()) && exec.AgentID != principal.Agent.ID
+	if liveOwned {
+		return exec, nil, true
+	}
+	if liveOther {
+		return nil, nil, true
+	}
+	created, err := s.store.StartTaskExecution(r.Context(), principal.Agent.ID, taskID, workerIDFromRequest(r, principal.Agent.ID), defaultTaskExecutionLease)
+	if err != nil {
+		if errors.Is(err, storage.ErrConflict) {
+			writeError(w, http.StatusConflict, "already_active_task", "agent already holds a live task execution; finish or release it before claiming another task")
+			return nil, nil, false
+		}
+		writeStorageError(w, err)
+		return nil, nil, false
+	}
+	return nil, created, true
+}
+
+func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
+	promptSHA, ok := parseStartPromptSHA(w, r)
+	if !ok {
+		return
+	}
+	taskID := chi.URLParam(r, "taskID")
+	if !s.validateTaskStartable(w, r.Context(), taskID) {
+		return
 	}
 	principal := currentAgent(r.Context())
 	// S-290 (ADR-0016 D3): surface the active execution's reviewer_feedback
@@ -5618,27 +5666,9 @@ func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	// another agent is never hijacked — the response then simply carries
 	// no fence. The fencing token is attached so the agent-side tool can
 	// hold it internally; it is never rendered into tool output.
-	taskID := chi.URLParam(r, "taskID")
-	exec, execErr := s.store.GetLatestTaskExecution(r.Context(), taskID)
-	if execErr != nil && !errors.Is(execErr, storage.ErrNotFound) {
-		writeStorageError(w, execErr)
+	liveExec, newExec, ok := s.prepareStartExecution(w, r, principal, taskID)
+	if !ok {
 		return
-	}
-	liveOwned := execErr == nil && exec.Status == domain.TaskExecutionActive && exec.AgentID == principal.Agent.ID
-	liveOther := execErr == nil && exec.Status == domain.TaskExecutionActive &&
-		exec.LeaseExpiresAt.After(time.Now().UTC()) && exec.AgentID != principal.Agent.ID
-	var newExec *domain.TaskExecution
-	if !liveOwned && !liveOther {
-		created, err := s.store.StartTaskExecution(r.Context(), principal.Agent.ID, taskID, workerIDFromRequest(r, principal.Agent.ID), defaultTaskExecutionLease)
-		if err != nil {
-			if errors.Is(err, storage.ErrConflict) {
-				writeError(w, http.StatusConflict, "already_active_task", "agent already holds a live task execution; finish or release it before claiming another task")
-				return
-			}
-			writeStorageError(w, err)
-			return
-		}
-		newExec = created
 	}
 	updated, ok := s.updateCurrentAgentTaskStatus(w, r, domain.TaskInProgress, domain.AgentBusy, "task.start")
 	if !ok {
@@ -5654,12 +5684,12 @@ func (s *Server) startCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 		}
 		updated.PromptSHA = promptSHA
 	}
-	if liveOwned {
-		updated.ExecutionID = exec.ID
-		updated.WorkerID = exec.WorkerID
-		updated.LeaseExpiresAt = exec.LeaseExpiresAt
-		updated.ReviewerFeedback = exec.ReviewerFeedback
-		updated.FencingToken = exec.FencingToken
+	if liveExec != nil {
+		updated.ExecutionID = liveExec.ID
+		updated.WorkerID = liveExec.WorkerID
+		updated.LeaseExpiresAt = liveExec.LeaseExpiresAt
+		updated.ReviewerFeedback = liveExec.ReviewerFeedback
+		updated.FencingToken = liveExec.FencingToken
 	} else if newExec != nil {
 		updated.ExecutionID = newExec.ID
 		updated.WorkerID = newExec.WorkerID
@@ -5829,11 +5859,14 @@ type taskCompletionRequest struct {
 	Justification string `json:"justification"`
 }
 
-func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
+// decodeTaskCompletionRequest decodes the completion body and
+// normalises/validates the requested status (default in-review).
+// Writes the error response and returns false on rejection.
+func decodeTaskCompletionRequest(w http.ResponseWriter, r *http.Request) (taskCompletionRequest, bool) {
 	var req taskCompletionRequest
 	if r.Body != nil && r.ContentLength != 0 {
 		if !decodeJSON(w, r, &req) {
-			return
+			return req, false
 		}
 	}
 	if req.Status == "" {
@@ -5841,28 +5874,44 @@ func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request
 	}
 	if req.Status != domain.TaskInReview && req.Status != domain.TaskDone {
 		writeError(w, http.StatusBadRequest, "bad_request", "status must be in-review or done")
+		return req, false
+	}
+	return req, true
+}
+
+// validateSelfApproval checks the S-290 (ADR-0016 D2) self-approval
+// path: review_needed=false is the self-approval path — straight to
+// done, but only with a recorded justification and only when the
+// effective policy allows it. Rejections apply nothing: the task stays
+// in-progress. Writes the error response and returns false on reject.
+func (s *Server) validateSelfApproval(w http.ResponseWriter, r *http.Request, principal *agentPrincipal, justification string) bool {
+	if justification == "" {
+		writeError(w, http.StatusBadRequest, "self_approval_justification_required", "completing without review requires a non-empty justification")
+		return false
+	}
+	squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	if !domain.EffectiveSelfApprove(principal.Agent, squad) {
+		writeError(w, http.StatusConflict, "self_approval_disabled", "self-approval is disabled for this agent; complete with review_needed=true instead")
+		return false
+	}
+	return true
+}
+
+func (s *Server) completeCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
+	req, ok := decodeTaskCompletionRequest(w, r)
+	if !ok {
 		return
 	}
 	principal := currentAgent(r.Context())
 	taskID := chi.URLParam(r, "taskID")
-	// S-290 (ADR-0016 D2): review_needed=false is the self-approval
-	// path — straight to done, but only with a recorded justification and
-	// only when the effective policy allows it. Rejections apply nothing:
-	// the task stays in-progress.
 	selfApproved := req.ReviewNeeded != nil && !*req.ReviewNeeded
 	justification := trimRunes(strings.TrimSpace(req.Justification), maxAgentMemoryContentChars)
 	if selfApproved {
-		if justification == "" {
-			writeError(w, http.StatusBadRequest, "self_approval_justification_required", "completing without review requires a non-empty justification")
-			return
-		}
-		squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		if !domain.EffectiveSelfApprove(principal.Agent, squad) {
-			writeError(w, http.StatusConflict, "self_approval_disabled", "self-approval is disabled for this agent; complete with review_needed=true instead")
+		if !s.validateSelfApproval(w, r, principal, justification) {
 			return
 		}
 		req.Status = domain.TaskDone
@@ -6044,6 +6093,39 @@ func (s *Server) reportCurrentAgentTaskWorkspace(w http.ResponseWriter, r *http.
 // agent-reopenable (D4). The rolling-24h reopen cap (squad board policy,
 // default 3) breaks the loop with 429 when the agent cannot fix the
 // issue; the cap counts agent reopens only.
+// validateAgentReopen enforces the S-290 (ADR-0016 D3/D4) reopen
+// preconditions on the loaded task: never from done (D4), assignee-only,
+// in-review-only. Writes the error response and returns false on reject.
+func validateAgentReopen(w http.ResponseWriter, task *domain.Task, agentID string) bool {
+	if task.Status == domain.TaskDone {
+		writeError(w, http.StatusConflict, "reopen_final_status", "done is the approved terminal state; only a human may reopen it (ADR-0016 D4)")
+		return false
+	}
+	if task.AssigneeAgentID != agentID {
+		writeError(w, http.StatusConflict, "reopen_not_allowed", "only the assigned agent can reopen this task")
+		return false
+	}
+	if task.Status != domain.TaskInReview {
+		writeError(w, http.StatusConflict, "reopen_wrong_status", fmt.Sprintf("task is in %q; only in-review tasks can be reopened", task.Status))
+		return false
+	}
+	return true
+}
+
+// writeReopenError maps a ReopenTaskExecution failure to its HTTP
+// response (cap exceeded → 429, state race → 409, else the generic
+// storage mapping).
+func writeReopenError(w http.ResponseWriter, err error, reopenCap int) {
+	switch {
+	case errors.Is(err, storage.ErrReopenCapExceeded):
+		writeError(w, http.StatusTooManyRequests, "reopen_cap_exceeded", fmt.Sprintf("reopen cap of %d per rolling 24h reached; the task stays in-review and needs human intervention", reopenCap))
+	case errors.Is(err, storage.ErrConflict):
+		writeError(w, http.StatusConflict, "reopen_wrong_status", "task is no longer reopenable (state changed concurrently)")
+	default:
+		writeStorageError(w, err)
+	}
+}
+
 func (s *Server) reopenCurrentAgentTask(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Reason           string `json:"reason"`
@@ -6067,16 +6149,7 @@ func (s *Server) reopenCurrentAgentTask(w http.ResponseWriter, r *http.Request) 
 		writeStorageError(w, err)
 		return
 	}
-	if task.Status == domain.TaskDone {
-		writeError(w, http.StatusConflict, "reopen_final_status", "done is the approved terminal state; only a human may reopen it (ADR-0016 D4)")
-		return
-	}
-	if task.AssigneeAgentID != principal.Agent.ID {
-		writeError(w, http.StatusConflict, "reopen_not_allowed", "only the assigned agent can reopen this task")
-		return
-	}
-	if task.Status != domain.TaskInReview {
-		writeError(w, http.StatusConflict, "reopen_wrong_status", fmt.Sprintf("task is in %q; only in-review tasks can be reopened", task.Status))
+	if !validateAgentReopen(w, task, principal.Agent.ID) {
 		return
 	}
 	squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
@@ -6101,15 +6174,7 @@ func (s *Server) reopenCurrentAgentTask(w http.ResponseWriter, r *http.Request) 
 		reopenCap,
 	)
 	if err != nil {
-		if errors.Is(err, storage.ErrReopenCapExceeded) {
-			writeError(w, http.StatusTooManyRequests, "reopen_cap_exceeded", fmt.Sprintf("reopen cap of %d per rolling 24h reached; the task stays in-review and needs human intervention", reopenCap))
-			return
-		}
-		if errors.Is(err, storage.ErrConflict) {
-			writeError(w, http.StatusConflict, "reopen_wrong_status", "task is no longer reopenable (state changed concurrently)")
-			return
-		}
-		writeStorageError(w, err)
+		writeReopenError(w, err, reopenCap)
 		return
 	}
 	if err := s.setAgentStatusAndMirror(r.Context(), principal.Agent.ID, domain.AgentBusy); err != nil {
@@ -6205,6 +6270,39 @@ func (s *Server) createMyTask(w http.ResponseWriter, r *http.Request) {
 // syncAffectedAgentsFromTaskChange wake (D5/D7), no parallel mechanism.
 // The wake path is the existing
 // syncAffectedAgentsFromTaskChange (D7).
+// taskAssignedThreadPrefix is the thread event line emitted when a task
+// gains a new assignee (S1192: single definition, three call sites).
+const taskAssignedThreadPrefix = "Task assigned to you: "
+
+// validateAssignOtherAgent enforces the S-294 (ADR-0016 D5)
+// can_assign_others leader capability and squad membership when an
+// agent assigns a task to ANOTHER agent. The leader path reuses the
+// same assignment machinery as the self-assign path — the same
+// UpdateTask + thread event + syncAffectedAgentsFromTaskChange wake the
+// delegate materialization funnels into (D5/D7) — no parallel
+// mechanism. Writes the error response and returns false on reject.
+func (s *Server) validateAssignOtherAgent(w http.ResponseWriter, r *http.Request, principal *agentPrincipal, assignee string) bool {
+	squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	if !squad.BoardPolicy.CanAssignOthers(principal.Agent.ID) {
+		writeError(w, http.StatusForbidden, "leader_capability_required", "assigning a task to another agent requires the can_assign_others leader capability (ADR-0016 D5), which this agent has not been granted on this squad")
+		return false
+	}
+	target, err := s.store.GetAgent(r.Context(), assignee)
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	if target.SquadID != principal.Agent.SquadID {
+		writeError(w, http.StatusForbidden, "assignee_not_squad_member", "the target agent is not a member of this agent's squad")
+		return false
+	}
+	return true
+}
+
 func (s *Server) assignMyTask(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		AssigneeAgentID string `json:"assignee_agent_id"`
@@ -6229,27 +6327,7 @@ func (s *Server) assignMyTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if assignee != principal.Agent.ID {
-		// S-294 (ADR-0016 D5): assigning to ANOTHER agent requires the
-		// can_assign_others leader capability. The leader path reuses
-		// this exact assignment machinery — the same UpdateTask + thread
-		// event + syncAffectedAgentsFromTaskChange wake the delegate
-		// materialization funnels into (D5/D7) — no parallel mechanism.
-		squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		if !squad.BoardPolicy.CanAssignOthers(principal.Agent.ID) {
-			writeError(w, http.StatusForbidden, "leader_capability_required", "assigning a task to another agent requires the can_assign_others leader capability (ADR-0016 D5), which this agent has not been granted on this squad")
-			return
-		}
-		target, err := s.store.GetAgent(r.Context(), assignee)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-		if target.SquadID != principal.Agent.SquadID {
-			writeError(w, http.StatusForbidden, "assignee_not_squad_member", "the target agent is not a member of this agent's squad")
+		if !s.validateAssignOtherAgent(w, r, principal, assignee) {
 			return
 		}
 	}
@@ -6261,9 +6339,9 @@ func (s *Server) assignMyTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// S-181/D6: the assignment thread event is suppressed while the
-	// task sits in Backlog — it fires on the backlog→todo move instead.
+	// task sits in Backlog — it fires on the backlog→to-do move instead.
 	if updated.AssigneeAgentID != "" && updated.AssigneeAgentID != previousAssignee && updated.Status != domain.TaskBacklog {
-		s.appendTaskThreadEvent(r.Context(), updated, "agent", principal.Agent.ID, domain.MessageConsult, trimRunes("Task assigned to you: "+updated.Title, maxTaskThreadTurnChars))
+		s.appendTaskThreadEvent(r.Context(), updated, "agent", principal.Agent.ID, domain.MessageConsult, trimRunes(taskAssignedThreadPrefix+updated.Title, maxTaskThreadTurnChars))
 	}
 	if err := s.syncAffectedAgentsFromTaskChange(r.Context(), previousAssignee, updated.AssigneeAgentID); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
@@ -6274,7 +6352,7 @@ func (s *Server) assignMyTask(w http.ResponseWriter, r *http.Request) {
 
 // requestChangesOnMyTask S-292 (ADR-0016 D1): the board.request_changes
 // builtin — the assignee returns its OWN reviewed card to the pool:
-// in-review → todo with the assignee cleared, so any (future) claimant
+// in-review → to-do with the assignee cleared, so any (future) claimant
 // picks it up fresh. Assignee-only (403), in-review-only (409), the
 // comment is required and carried in the audit entry and the task
 // thread. Leader-origin variants arrive with S-294; this is the
@@ -6336,6 +6414,28 @@ func (s *Server) requestChangesOnMyTask(w http.ResponseWriter, r *http.Request) 
 // board.complete(review_needed=false) under its own policy (D2), so this
 // verb never bypasses the self-approval knobs. Every approval is audited
 // as task.leader_approved with the comment (D2/D3 audit pattern).
+// validateLeaderApproval checks the two server-side knobs of S-294
+// (ADR-0016 D5/D8): the agent holds a leader grant on the squad AND
+// the squad's board_policy.leader_approval_allowed is enabled
+// (default false — approval is strictly human). Writes the error
+// response and returns false on reject.
+func (s *Server) validateLeaderApproval(w http.ResponseWriter, r *http.Request, principal *agentPrincipal) bool {
+	squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
+	if err != nil {
+		writeStorageError(w, err)
+		return false
+	}
+	if !squad.BoardPolicy.IsLeader(principal.Agent.ID) {
+		writeError(w, http.StatusForbidden, "leader_capability_required", "approving another agent's task requires a leader capability grant on this squad (ADR-0016 D5)")
+		return false
+	}
+	if !domain.EffectiveLeaderApproval(squad) {
+		writeError(w, http.StatusForbidden, "leader_approval_disabled", "the squad's board_policy.leader_approval_allowed is off (default); in-review → done remains strictly human (ADR-0016 D8)")
+		return false
+	}
+	return true
+}
+
 func (s *Server) approveTaskAsLeader(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Comment string `json:"comment"`
@@ -6361,17 +6461,7 @@ func (s *Server) approveTaskAsLeader(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "leader_approval_self_not_allowed", "board.approve is for OTHER agents' tasks; your own in-review card stays subject to human approval (self-approval happens at board.complete time, ADR-0016 D2)")
 		return
 	}
-	squad, err := s.store.GetSquad(r.Context(), principal.Agent.SquadID)
-	if err != nil {
-		writeStorageError(w, err)
-		return
-	}
-	if !squad.BoardPolicy.IsLeader(principal.Agent.ID) {
-		writeError(w, http.StatusForbidden, "leader_capability_required", "approving another agent's task requires a leader capability grant on this squad (ADR-0016 D5)")
-		return
-	}
-	if !domain.EffectiveLeaderApproval(squad) {
-		writeError(w, http.StatusForbidden, "leader_approval_disabled", "the squad's board_policy.leader_approval_allowed is off (default); in-review → done remains strictly human (ADR-0016 D8)")
+	if !s.validateLeaderApproval(w, r, principal) {
 		return
 	}
 	if task.Status != domain.TaskInReview {
@@ -6746,10 +6836,10 @@ func (s *Server) updateTask(w http.ResponseWriter, r *http.Request) {
 	// S-181: assigning a task later (board drag-drop / edit) is the moment
 	// the agent joins — record it in the thread just like create-with-assignee.
 	// ADR-0016 D6: suppressed while the task is in Backlog; the event is
-	// deferred to the backlog→todo move in moveTask.
+	// deferred to the backlog→to-do move in moveTask.
 	if updated.AssigneeAgentID != "" && updated.AssigneeAgentID != previousAssignee && updated.Status != domain.TaskBacklog {
 		if u := currentUser(r.Context()); u != nil {
-			s.appendTaskThreadEvent(r.Context(), updated, "user", u.ID, domain.MessageConsult, "Task assigned to you: "+updated.Title)
+			s.appendTaskThreadEvent(r.Context(), updated, "user", u.ID, domain.MessageConsult, taskAssignedThreadPrefix+updated.Title)
 		}
 	}
 	if err := s.syncAffectedAgentsFromTaskChange(r.Context(), previousAssignee, updated.AssigneeAgentID); err != nil {
@@ -6804,14 +6894,14 @@ func (s *Server) moveTask(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	// ADR-0016 D6: a human promoting a task from Backlog to Todo is the
+	// ADR-0016 D6: a human promoting a task from Backlog to To-Do is the
 	// moment it becomes claimable — emit the assignment thread event then,
 	// attributed to the human who moved it. Only for assigned tasks; this
 	// handler is human-only (agents move tasks via their own status paths,
-	// which never target todo).
+	// which never target to-do).
 	if previousStatus == domain.TaskBacklog && updated.Status == domain.TaskTodo && updated.AssigneeAgentID != "" {
 		if u := currentUser(r.Context()); u != nil {
-			s.appendTaskThreadEvent(r.Context(), updated, "user", u.ID, domain.MessageConsult, "Task assigned to you: "+updated.Title)
+			s.appendTaskThreadEvent(r.Context(), updated, "user", u.ID, domain.MessageConsult, taskAssignedThreadPrefix+updated.Title)
 		}
 	}
 	if err := s.syncAffectedAgentsFromTaskChange(r.Context(), previousAssignee, updated.AssigneeAgentID); err != nil {
@@ -6832,9 +6922,31 @@ func (s *Server) moveTask(w http.ResponseWriter, r *http.Request) {
 // reorderBoardColumn (S-304) persists the vertical order of one board
 // column: body {"task_ids": ["<uuid>", ...]} becomes positions 1..n for
 // the squad's tasks in the given status column. The reorder is the
-// pickup priority — ClaimNextTask takes the lowest-positioned todo, so
+// pickup priority — ClaimNextTask takes the lowest-positioned to-do, so
 // the topmost card is worked first. Dependency blocking (S-278) is
 // untouched: blocked tasks are skipped regardless of position.
+// resyncAgentsAfterReorder re-evaluates the busy/idle mirror for every
+// agent holding a task in the reordered column (S-304). Best-effort on
+// the listing: the reorder itself has already succeeded, so a listing
+// failure only skips the wake-ups.
+func (s *Server) resyncAgentsAfterReorder(ctx context.Context, boardID string, status domain.TaskStatus) error {
+	tasks, err := s.store.ListTasks(ctx, boardID, status)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, t := range tasks {
+		if t.AssigneeAgentID == "" || seen[t.AssigneeAgentID] {
+			continue
+		}
+		seen[t.AssigneeAgentID] = true
+		if err := s.syncAgentStatusFromPendingWork(ctx, t.AssigneeAgentID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Server) reorderBoardColumn(w http.ResponseWriter, r *http.Request) {
 	squad, ok := s.loadAccessibleSquad(w, r)
 	if !ok {
@@ -6867,18 +6979,9 @@ func (s *Server) reorderBoardColumn(w http.ResponseWriter, r *http.Request) {
 	// The column order changed; agents' pickup queues follow it on the
 	// next claim. Re-sync affected agents' busy/idle mirror so wake-ups
 	// reflect the new priority immediately.
-	tasks, err := s.store.ListTasks(r.Context(), board.ID, status)
-	if err == nil {
-		seen := map[string]bool{}
-		for _, t := range tasks {
-			if t.AssigneeAgentID != "" && !seen[t.AssigneeAgentID] {
-				seen[t.AssigneeAgentID] = true
-				if err := s.syncAgentStatusFromPendingWork(r.Context(), t.AssigneeAgentID); err != nil {
-					writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
-					return
-				}
-			}
-		}
+	if err := s.resyncAgentsAfterReorder(r.Context(), board.ID, status); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", msgUpdateAssignedAgentState)
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -7181,13 +7284,13 @@ func (s *Server) syncAgentStatusFromPendingWork(ctx context.Context, agentID str
 // deriveAgentStatusFromWork S-300: single source of truth for what an
 // agent's status should be given the work it owns.
 //
-//	in-progress task, a todo with no unsatisfied dependency, or an
+//	in-progress task, a to-do with no unsatisfied dependency, or an
 //	unread inbox message  -> busy   (there is something to do NOW)
-//	every remaining todo blocked upstream -> blocked (work exists but is
+//	every remaining to-do blocked upstream -> blocked (work exists but is
 //	unclaimable — ClaimNextTask (S-278) will not pick it up)
 //	nothing             -> idle
 //
-// Before this, any todo counted as "pending", so an agent whose only
+// Before this, any to-do counted as "pending", so an agent whose only
 // work was dependency-blocked was held ghost-busy forever: the idle
 // heartbeat kept upgrading to busy with no reachable work.
 func (s *Server) deriveAgentStatusFromWork(ctx context.Context, agentID string) (domain.AgentStatus, error) {
@@ -7201,7 +7304,7 @@ func (s *Server) deriveAgentStatusFromWork(ctx context.Context, agentID string) 
 		case domain.TaskInProgress:
 			return domain.AgentBusy, nil
 		case domain.TaskTodo:
-			// S-300: a todo whose upstream dependencies are not done is
+			// S-300: a to-do whose upstream dependencies are not done is
 			// WAITING, not pending — ClaimNextTask (S-278) will not pick it
 			// up, so counting it here would hold the agent ghost-busy: the
 			// idle heartbeat keeps upgrading to busy with no reachable work.

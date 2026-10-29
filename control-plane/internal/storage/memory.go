@@ -1436,63 +1436,31 @@ func (m *MemoryStore) SumMeteringByResource(_ context.Context, since time.Time, 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	type bucket struct {
-		row domain.ResourceMeteringRow
-	}
-	agg := map[string]*bucket{}
+	agg := map[string]*domain.ResourceMeteringRow{}
 	for _, event := range m.metering {
-		if event.ResourceID == "" {
+		effType, ok := m.resourceMeteringMatchLocked(event, since, resourceID, resourceType)
+		if !ok {
 			continue
 		}
-		if !since.IsZero() && event.Timestamp.Before(since) {
-			continue
+		row := agg[event.ResourceID]
+		if row == nil {
+			initial := m.newResourceMeteringRowLocked(event, effType)
+			row = &initial
+			agg[event.ResourceID] = row
 		}
-		if resourceID != "" && event.ResourceID != resourceID {
-			continue
-		}
-		effType := event.ResourceType
-		if resourceType != "" {
-			want := string(domain.CanonicalResourceType(domain.ResourceType(resourceType)))
-			if effType != "" && effType != want {
-				continue
-			}
-			effType = want
-		}
-		b := agg[event.ResourceID]
-		if b == nil {
-			b = &bucket{row: domain.ResourceMeteringRow{
-				ResourceID:   event.ResourceID,
-				ResourceType: effType,
-				Currency:     "USD",
-				LastSeen:     event.Timestamp,
-			}}
-			// Registry metadata: name + metering config come from the
-			// live registry row when present (LEFT JOIN semantics).
-			if res, ok := m.resources[event.ResourceID]; ok {
-				b.row.Name = res.Name
-				b.row.Metered = res.Metered
-				if res.Currency != "" {
-					b.row.Currency = res.Currency
-				}
-				if b.row.ResourceType == "" {
-					b.row.ResourceType = string(domain.CanonicalResourceType(res.Type))
-				}
-			}
-			agg[event.ResourceID] = b
-		}
-		b.row.Calls++
-		b.row.Cost += event.Cost
+		row.Calls++
+		row.Cost += event.Cost
 		if event.Currency != "" {
-			b.row.Currency = event.Currency
+			row.Currency = event.Currency
 		}
-		if event.Timestamp.After(b.row.LastSeen) {
-			b.row.LastSeen = event.Timestamp
+		if event.Timestamp.After(row.LastSeen) {
+			row.LastSeen = event.Timestamp
 		}
 	}
 
 	out := make([]domain.ResourceMeteringRow, 0, len(agg))
-	for _, b := range agg {
-		out = append(out, b.row)
+	for _, row := range agg {
+		out = append(out, *row)
 	}
 	slices.SortFunc(out, func(a, b domain.ResourceMeteringRow) int {
 		if a.Calls != b.Calls {
@@ -1501,6 +1469,55 @@ func (m *MemoryStore) SumMeteringByResource(_ context.Context, since time.Time, 
 		return strings.Compare(a.ResourceID, b.ResourceID)
 	})
 	return out, nil
+}
+
+// resourceMeteringMatchLocked applies the since-window, resource-id and
+// resource-type filters to one metering event (S-269). Returns the
+// effective resource type (canonicalised when a filter was given) and
+// whether the event belongs in the per-resource aggregation.
+func (m *MemoryStore) resourceMeteringMatchLocked(event *domain.MeteringEvent, since time.Time, resourceID, resourceType string) (string, bool) {
+	if event.ResourceID == "" {
+		return "", false
+	}
+	if !since.IsZero() && event.Timestamp.Before(since) {
+		return "", false
+	}
+	if resourceID != "" && event.ResourceID != resourceID {
+		return "", false
+	}
+	effType := event.ResourceType
+	if resourceType != "" {
+		want := string(domain.CanonicalResourceType(domain.ResourceType(resourceType)))
+		if effType != "" && effType != want {
+			return "", false
+		}
+		effType = want
+	}
+	return effType, true
+}
+
+// newResourceMeteringRowLocked builds the initial aggregation row for
+// a resource's first metering event. Registry metadata: name +
+// metering config come from the live registry row when present (LEFT
+// JOIN semantics).
+func (m *MemoryStore) newResourceMeteringRowLocked(event *domain.MeteringEvent, effType string) domain.ResourceMeteringRow {
+	row := domain.ResourceMeteringRow{
+		ResourceID:   event.ResourceID,
+		ResourceType: effType,
+		Currency:     "USD",
+		LastSeen:     event.Timestamp,
+	}
+	if res, ok := m.resources[event.ResourceID]; ok {
+		row.Name = res.Name
+		row.Metered = res.Metered
+		if res.Currency != "" {
+			row.Currency = res.Currency
+		}
+		if row.ResourceType == "" {
+			row.ResourceType = string(domain.CanonicalResourceType(res.Type))
+		}
+	}
+	return row
 }
 
 // meteringGroupKey is the aggregation key for daily metering rows

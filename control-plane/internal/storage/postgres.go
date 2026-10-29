@@ -2772,6 +2772,45 @@ func (p *PostgresStore) CompleteTaskExecution(ctx context.Context, agentID strin
 	return task, nil
 }
 
+// checkReopenCapTx enforces the rolling-24h reopen cap over this
+// task's reopen_seq attempts (agent-only; maxReopens < 0 disables the
+// cap). Returns ErrReopenCapExceeded when the cap is already reached.
+func (p *PostgresStore) checkReopenCapTx(ctx context.Context, tx pgx.Tx, taskID string, maxReopens int) error {
+	if maxReopens < 0 {
+		return nil
+	}
+	var reopens int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM task_executions
+		WHERE task_id = $1 AND reopen_seq
+		  AND started_at > now() - interval '24 hours'
+	`, taskID).Scan(&reopens); err != nil {
+		return mapPgErr(err)
+	}
+	if reopens >= maxReopens {
+		return ErrReopenCapExceeded
+	}
+	return nil
+}
+
+// checkNoLiveExecutionTx returns ErrConflict when the agent still
+// holds a live (unexpired-lease) task execution.
+func (p *PostgresStore) checkNoLiveExecutionTx(ctx context.Context, tx pgx.Tx, agentID string) error {
+	var live bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM task_executions
+			WHERE agent_id = $1 AND status = $2 AND lease_expires_at > now()
+		)
+	`, agentID, domain.TaskExecutionActive).Scan(&live); err != nil {
+		return mapPgErr(err)
+	}
+	if live {
+		return ErrConflict
+	}
+	return nil
+}
+
 // ReopenTaskExecution implements the agent reopen (ADR-0016 D3, S-290).
 // Only the assignee may reopen, only from in-review; the prior completed
 // attempt is retained and a NEW active attempt (new fencing token, fresh
@@ -2804,32 +2843,13 @@ func (p *PostgresStore) ReopenTaskExecution(ctx context.Context, agentID string,
 	}
 
 	// Rolling-24h reopen cap over reopen_seq attempts (agent-only).
-	if maxReopens >= 0 {
-		var reopens int
-		if err := tx.QueryRow(ctx, `
-			SELECT count(*) FROM task_executions
-			WHERE task_id = $1 AND reopen_seq
-			  AND started_at > now() - interval '24 hours'
-		`, taskID).Scan(&reopens); err != nil {
-			return nil, mapPgErr(err)
-		}
-		if reopens >= maxReopens {
-			return nil, ErrReopenCapExceeded
-		}
+	if err := p.checkReopenCapTx(ctx, tx, taskID, maxReopens); err != nil {
+		return nil, err
 	}
 
 	// The agent must not hold another live execution lease.
-	var live bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM task_executions
-			WHERE agent_id = $1 AND status = $2 AND lease_expires_at > now()
-		)
-	`, agentID, domain.TaskExecutionActive).Scan(&live); err != nil {
-		return nil, mapPgErr(err)
-	}
-	if live {
-		return nil, ErrConflict
+	if err := p.checkNoLiveExecutionTx(ctx, tx, agentID); err != nil {
+		return nil, err
 	}
 
 	row := tx.QueryRow(ctx, `
