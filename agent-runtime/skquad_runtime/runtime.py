@@ -2976,6 +2976,30 @@ class LiteLLMTaskHandler:
                 model=model,
                 virtual_key=virtual_key,
             )
+        # S-263/S-161/S-183: the step loop lives in _task_loop.
+        return self._task_loop(
+            messages=messages,
+            completion=completion,
+            tools=tools,
+            plugins=plugins,
+            model=model,
+            config=config,
+            virtual_key=virtual_key,
+            task=task,
+        )
+
+    def _task_loop(
+        self,
+        *,
+        messages: list[dict[str, object]],
+        completion: Callable[..., object],
+        tools: object,
+        plugins: list,
+        model: str,
+        config: BootstrapConfig,
+        virtual_key: str,
+        task: RuntimeTask,
+    ) -> TaskResult:
         last_content = ""
         last_model_used = model
         # S-263: consecutive all-failed tool rounds (reset by any
@@ -3919,6 +3943,36 @@ def _persist_resume_note(workspace: object, task: RuntimeTask) -> None:
         )
 
 
+def _attach_handler_sinks(
+    handler: TaskHandler,
+    control_plane: ControlPlaneClient,
+    task: RuntimeTask,
+    workspace: object,
+) -> None:
+    """Attach all best-effort streaming sinks (S-183, S-301) to the handler."""
+    # S-183: stream the handler's working turns into the task thread
+    # (best-effort; the sink swallows its own errors).
+    attacher = getattr(handler, "attach_thread_sink", None)
+    if callable(attacher):
+        attacher(lambda text: control_plane.append_task_thread(task.id, text))
+    # S-301: the task-subagent's live thread snapshot (replaceable view
+    # for the chat task-card Details panel; best-effort like the sink).
+    snap_attacher = getattr(handler, "attach_subagent_thread_sink", None)
+    if callable(snap_attacher):
+        snap_attacher(lambda snap: control_plane.publish_subagent_thread(task.id, snap))
+    # S-301 follow-up: the delegation turn becomes a 🤖 Details chip.
+    deleg_attacher = getattr(handler, "attach_delegation_sink", None)
+    if callable(deleg_attacher):
+        deleg_attacher(lambda text: control_plane.mark_task_delegated(task.id, text))
+    # S-293 I4: give the handler the workspace handle so the parent's
+    # review of a task-subagent result can be checked against the real
+    # git state. Duck-typed like attach_thread_sink; the legacy path
+    # ignores it entirely.
+    ws_attacher = getattr(handler, "attach_review_workspace", None)
+    if callable(ws_attacher):
+        ws_attacher(workspace)
+
+
 def run_task_once(
     config: BootstrapConfig,
     handler: TaskHandler,
@@ -3953,24 +4007,6 @@ def run_task_once(
         )
         return _fail_wake(control_plane, task, state, f"prompt fetch failed: {exc}")
     control_plane.start_task(task.id, prompt_sha)
-    # S-183: stream the handler's working turns into the task thread
-    # (best-effort; the sink swallows its own errors).
-    attacher = getattr(handler, "attach_thread_sink", None)
-    if callable(attacher):
-        attacher(lambda text: control_plane.append_task_thread(task.id, text))
-    # S-301: the task-subagent's live thread snapshot (replaceable view
-    # for the chat task-card Details panel; best-effort like the sink).
-    snap_attacher = getattr(handler, "attach_subagent_thread_sink", None)
-    if callable(snap_attacher):
-        snap_attacher(
-            lambda snap: control_plane.publish_subagent_thread(task.id, snap)
-        )
-    # S-301 follow-up: the delegation turn becomes a 🤖 Details chip.
-    deleg_attacher = getattr(handler, "attach_delegation_sink", None)
-    if callable(deleg_attacher):
-        deleg_attacher(
-            lambda text: control_plane.mark_task_delegated(task.id, text)
-        )
     resumed = False
     if config.workspace_enabled:
         # S-139: disk-full guards BEFORE any workspace work (extracted
@@ -3984,13 +4020,7 @@ def run_task_once(
     workspace = _prepare_task_workspace(config, control_plane, task, resumed=resumed)
     if workspace is not None and workspace.resume_note:
         _persist_resume_note(workspace, task)
-    # S-293 I4: give the handler the workspace handle so the parent's
-    # review of a task-subagent result can be checked against the real
-    # git state. Duck-typed like attach_thread_sink; the legacy path
-    # ignores it entirely.
-    ws_attacher = getattr(handler, "attach_review_workspace", None)
-    if callable(ws_attacher):
-        ws_attacher(workspace)
+    _attach_handler_sinks(handler, control_plane, task, workspace)
     try:
         with TaskLeaseHeartbeat(control_plane, task, config.heartbeat_interval_seconds):
             result = handle_task_with_timeout(handler, task, config)
