@@ -47,9 +47,9 @@ export default function SquadSettingsPage() {
         ) : null}
 
         {squad && !isOwner ? (
-          <div className="notice" role="status">
+          <output className="notice">
             Only the squad owner can view and edit board policy.
-          </div>
+          </output>
         ) : null}
 
         {isOwner && policy.error ? (
@@ -319,7 +319,7 @@ function BoardPolicyForm({
                       <span className="entity-meta" aria-label={`${agent.name} is leader-capable`}> &bull; leader</span>
                     ) : null}
                   </td>
-                  <td className="entity-meta">{agent.role || "—"}</td>
+                  <td className="entity-meta">{agent.role ? agent.role : "—"}</td>
                   <td>
                     <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer" }}>
                       <input

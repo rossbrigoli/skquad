@@ -37,6 +37,14 @@ function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+// secretPlaceholder explains what typing into the write-only secret
+// field does (S3358: extracted from a nested ternary in the JSX).
+function secretPlaceholder(hasStoredCredential: boolean, isEdit: boolean): string {
+  if (hasStoredCredential) return "•••••••• (unchanged — paste a new value to replace)";
+  if (isEdit) return "write-only — leave blank to keep current";
+  return "stored as a managed K8s Secret, never re-displayed";
+}
+
 function asNumberOpt(value: unknown): string {
   return typeof value === "number" ? String(value) : "";
 }
@@ -256,13 +264,7 @@ export function RestResourceModal({
               value={form.secrets[f.field] ?? ""}
               onChange={(e) => setSecret(f.field, e.target.value)}
               autoComplete="new-password"
-              placeholder={
-                hasStoredCredential
-                  ? "•••••••• (unchanged — paste a new value to replace)"
-                  : isEdit
-                    ? "write-only — leave blank to keep current"
-                    : "stored as a managed K8s Secret, never re-displayed"
-              }
+              placeholder={secretPlaceholder(hasStoredCredential, isEdit)}
             />
           </label>
         ))}

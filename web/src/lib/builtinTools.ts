@@ -368,46 +368,55 @@ export function validateToolForm(name: BuiltinToolName, form: ToolFormValues): s
   }
   const timeoutErr = checkPositiveInt(form.timeoutSeconds, "timeoutSeconds");
   if (timeoutErr) return timeoutErr;
-  if (name === "exec") {
-    const bytesErr = checkPositiveInt(form.maxOutputBytes, "maxOutputBytes");
-    if (bytesErr) return bytesErr;
-    return checkDeniedPatterns(form.deniedPatterns);
+  return validateToolSpecificPolicy(name, form);
+}
+
+// validateToolSpecificPolicy checks the per-tool extra fields after the
+// shared timeoutSeconds check (S3776: split out of validateToolForm).
+// Mirrors the server's per-tool policy schemas.
+function validateToolSpecificPolicy(name: BuiltinToolName, form: ToolFormValues): string | null {
+  switch (name) {
+    case "exec": {
+      const bytesErr = checkPositiveInt(form.maxOutputBytes, "maxOutputBytes");
+      if (bytesErr) return bytesErr;
+      return checkDeniedPatterns(form.deniedPatterns);
+    }
+    case "web_fetch":
+      return checkPositiveInt(form.maxBytes, "maxBytes");
+    case "send_message":
+    case "send_inbox":
+    case "notify_owner":
+      return checkPositiveInt(form.maxMessageChars, "maxMessageChars");
+    case "memory_search":
+      return checkPositiveInt(form.maxResults, "maxResults");
+    case "spawn_subagent":
+      return null;
+    case "process": {
+      // S-280: mirror the server's {maxSessions, maxLogBytes} schema.
+      const sessionsErr = checkPositiveInt(form.maxSessions, "maxSessions");
+      if (sessionsErr) return sessionsErr;
+      return checkPositiveInt(form.maxLogBytes, "maxLogBytes");
+    }
+    case "browser": {
+      // S-283: mirror the server's {timeoutSeconds, maxSnapshotChars,
+      // maxScreenshotBytes} schema (timeout already checked above).
+      const snapErr = checkPositiveInt(form.maxSnapshotChars, "maxSnapshotChars");
+      if (snapErr) return snapErr;
+      return checkPositiveInt(form.maxScreenshotBytes, "maxScreenshotBytes");
+    }
+    default: {
+      if (isFileToolName(name)) {
+        // S-279: mirror the server's {timeoutSeconds, maxBytes} schema.
+        return checkPositiveInt(form.maxBytes, "maxBytes");
+      }
+      const resultsErr = checkPositiveInt(form.maxResults, "maxResults");
+      if (resultsErr) return resultsErr;
+      if (!SEARCH_PROVIDERS.includes(form.provider)) {
+        return `provider must be one of: ${SEARCH_PROVIDERS.join(", ")}`;
+      }
+      return null;
+    }
   }
-  if (name === "web_fetch") {
-    return checkPositiveInt(form.maxBytes, "maxBytes");
-  }
-  if (name === "send_message" || name === "send_inbox" || name === "notify_owner") {
-    return checkPositiveInt(form.maxMessageChars, "maxMessageChars");
-  }
-  if (name === "memory_search") {
-    return checkPositiveInt(form.maxResults, "maxResults");
-  }
-  if (name === "spawn_subagent") {
-    return null;
-  }
-  if (isFileToolName(name)) {
-    // S-279: mirror the server's {timeoutSeconds, maxBytes} schema.
-    return checkPositiveInt(form.maxBytes, "maxBytes");
-  }
-  if (name === "process") {
-    // S-280: mirror the server's {maxSessions, maxLogBytes} schema.
-    const sessionsErr = checkPositiveInt(form.maxSessions, "maxSessions");
-    if (sessionsErr) return sessionsErr;
-    return checkPositiveInt(form.maxLogBytes, "maxLogBytes");
-  }
-  if (name === "browser") {
-    // S-283: mirror the server's {timeoutSeconds, maxSnapshotChars,
-    // maxScreenshotBytes} schema (timeout already checked above).
-    const snapErr = checkPositiveInt(form.maxSnapshotChars, "maxSnapshotChars");
-    if (snapErr) return snapErr;
-    return checkPositiveInt(form.maxScreenshotBytes, "maxScreenshotBytes");
-  }
-  const resultsErr = checkPositiveInt(form.maxResults, "maxResults");
-  if (resultsErr) return resultsErr;
-  if (!SEARCH_PROVIDERS.includes(form.provider)) {
-    return `provider must be one of: ${SEARCH_PROVIDERS.join(", ")}`;
-  }
-  return null;
 }
 
 function checkPositiveInt(raw: string, label: string): string | null {

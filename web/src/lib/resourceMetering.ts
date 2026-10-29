@@ -35,7 +35,8 @@ export function resourceMeteringPath(resourceId: string, since?: string): string
   const params = new URLSearchParams();
   if (since) params.set("since", since);
   const qs = params.toString();
-  return `/resources/${encodeURIComponent(resourceId)}/metering${qs ? `?${qs}` : ""}`;
+  const suffix = qs === "" ? "" : "?" + qs;
+  return `/resources/${encodeURIComponent(resourceId)}/metering${suffix}`;
 }
 
 // listResourceMeteringPath builds the platform list endpoint path with
@@ -45,7 +46,8 @@ export function listResourceMeteringPath(since?: string, type?: string): string 
   if (since) params.set("since", since);
   if (type) params.set("type", type);
   const qs = params.toString();
-  return `/metering/resources${qs ? `?${qs}` : ""}`;
+  const suffix = qs === "" ? "" : "?" + qs;
+  return `/metering/resources${suffix}`;
 }
 
 function num(value: unknown, fallback = 0): number {
