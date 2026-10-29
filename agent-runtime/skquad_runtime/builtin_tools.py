@@ -44,6 +44,23 @@ DEFAULT_DENY_PATTERNS: list[str] = [
 # Shared MIME type for control-plane proxy calls (S1192).
 JSON_CONTENT_TYPE = "application/json"
 
+# Shared literals (S1192).
+EMPTY_DISPLAY = "(none)"
+PEERS_PATH = "/api/v1/agents/me/peers"
+TASKS_PATH = "/api/v1/agents/me/tasks"
+PATH_DESC_WORKSPACE_RELATIVE = "File path relative to the workspace."
+DIFF_ADD_PREFIX = "*** Add File: "
+DIFF_UPDATE_PREFIX = "*** Update File: "
+DIFF_DELETE_PREFIX = "*** Delete File: "
+TOOL_CREATE_TASK = "board.create_task"
+TOOL_ASSIGN = "board.assign"
+TOOL_CLAIM = "board.claim"
+TOOL_COMPLETE = "board.complete"
+TOOL_BLOCK = "board.block"
+TOOL_REOPEN = "board.reopen"
+TOOL_REQUEST_CHANGES = "board.request_changes"
+TOOL_APPROVE = "board.approve"
+
 
 @dataclass
 class BuiltinToolContext:
@@ -236,7 +253,6 @@ class ExecTool:
             self.context.workspace_dir,
             command,
             proc_tool.max_sessions,
-            proc_tool.max_log_bytes,
         )
         if err:
             return ToolResult(content=f"exec background: {err}", ok=False)
@@ -394,7 +410,7 @@ def _new_session_id() -> str:
 
 
 def _start_background_session(
-    workspace_dir: str, command: str, max_sessions: int, max_log_bytes: int
+    workspace_dir: str, command: str, max_sessions: int
 ) -> tuple[dict | None, str]:
     """Start ``command`` detached; returns (session, error_message)."""
     with _PROCESS_LOCK:
@@ -624,7 +640,7 @@ class ProcessTool:
         if action == "write":
             return self._write(session, call)
         if action == "kill":
-            return self._kill(sessions, session)
+            return self._kill(session)
         if action == "clear":
             return self._clear(sessions, session)
         return ToolResult(
@@ -733,11 +749,11 @@ class ProcessTool:
         try:
             proc.stdin.write(str(data).encode("utf-8"))
             proc.stdin.flush()
-        except (BrokenPipeError, OSError) as exc:
+        except OSError as exc:
             return ToolResult(content=f"process write: failed: {exc}", ok=False)
         return ToolResult(content=f"wrote {len(str(data))} chars to {session['id']} stdin", ok=True)
 
-    def _kill(self, sessions: dict, session: dict) -> ToolResult:
+    def _kill(self, session: dict) -> ToolResult:
         if session.get("status") != "running":
             return ToolResult(
                 content=f"process kill: session {session['id']} already {session.get('status')}",
@@ -1084,7 +1100,7 @@ class SendMessageTool:
             return ToolResult(content=err, ok=False)
         resolved = self._resolve_peer(peers, target)
         if resolved is None:
-            names = ", ".join(str(p.get("name", "?")) for p in peers) or "(none)"
+            names = ", ".join(str(p.get("name", "?")) for p in peers) or EMPTY_DISPLAY
             return ToolResult(
                 content=(
                     f"send_message: no squad-mate named {target!r} found. "
@@ -1138,7 +1154,7 @@ class SendMessageTool:
 
     def _list_peers(self) -> tuple[list, str]:
         try:
-            data = self._request("GET", "/api/v1/agents/me/peers")
+            data = self._request("GET", PEERS_PATH)
         except error.HTTPError as exc:
             return [], f"send_message: peers lookup failed: HTTP {exc.code}"
         except (error.URLError, OSError, json.JSONDecodeError) as exc:
@@ -1726,7 +1742,7 @@ class ReadTool:
                         "properties": {
                             "path": {
                                 "type": "string",
-                                "description": "File path relative to the workspace.",
+                                "description": PATH_DESC_WORKSPACE_RELATIVE,
                             },
                             "offset": {
                                 "type": "integer",
@@ -1833,7 +1849,7 @@ class WriteTool:
                         "properties": {
                             "path": {
                                 "type": "string",
-                                "description": "File path relative to the workspace.",
+                                "description": PATH_DESC_WORKSPACE_RELATIVE,
                             },
                             "content": {
                                 "type": "string",
@@ -1902,7 +1918,7 @@ class EditTool:
                         "properties": {
                             "path": {
                                 "type": "string",
-                                "description": "File path relative to the workspace.",
+                                "description": PATH_DESC_WORKSPACE_RELATIVE,
                             },
                             "edits": {
                                 "type": "array",
@@ -2142,8 +2158,8 @@ class ApplyPatchTool:
         i = 0
         while i < len(body):
             line = body[i]
-            if line.startswith("*** Add File: "):
-                path = line[len("*** Add File: "):].strip()
+            if line.startswith(DIFF_ADD_PREFIX):
+                path = line[len(DIFF_ADD_PREFIX):].strip()
                 i += 1
                 content: list[str] = []
                 while i < len(body) and not body[i].startswith("*** "):
@@ -2152,12 +2168,12 @@ class ApplyPatchTool:
                     content.append(body[i][1:])
                     i += 1
                 adds.append((path, "\n".join(content) + ("\n" if content else "")))
-            elif line.startswith("*** Update File: "):
-                path = line[len("*** Update File: "):].strip()
+            elif line.startswith(DIFF_UPDATE_PREFIX):
+                path = line[len(DIFF_UPDATE_PREFIX):].strip()
                 i += 1
                 hunks: list[list[str]] = []
                 current: list[str] | None = None
-                while i < len(body) and not body[i].startswith("*** Add File: ") and not body[i].startswith("*** Update File: ") and not body[i].startswith("*** Delete File: "):
+                while i < len(body) and not body[i].startswith(DIFF_ADD_PREFIX) and not body[i].startswith(DIFF_UPDATE_PREFIX) and not body[i].startswith(DIFF_DELETE_PREFIX):
                     hline = body[i]
                     if hline.startswith("@@"):
                         if current:
@@ -2177,8 +2193,8 @@ class ApplyPatchTool:
                 if not hunks:
                     raise ValueError(f"Update File {path!r}: no hunks")
                 updates.append((path, hunks))
-            elif line.startswith("*** Delete File: "):
-                path = line[len("*** Delete File: "):].strip()
+            elif line.startswith(DIFF_DELETE_PREFIX):
+                path = line[len(DIFF_DELETE_PREFIX):].strip()
                 deletes.append(path)
                 i += 1
             elif line.strip() == "":
@@ -2708,7 +2724,7 @@ _SECRET_KEY_RE = re.compile(
 # Value shapes that look like live credentials wherever they appear in text.
 _SECRET_VALUE_RES = (
     re.compile(r"\bsk-[A-Za-z0-9_\-]{12,}"),
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{12,}"),
+    re.compile(r"(?i)\bbearer\s+[a-z0-9._\-]{12,}"),
     re.compile(r"\b(?:kb|squ|ghp|gho|ghu|ghs|ghr|xox[baprs])_[A-Za-z0-9]{10,}"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_\-]{10,}"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
@@ -2889,7 +2905,7 @@ class SessionsListTool(_SessionToolBase):
         sections: list[str] = []
         if kind in ("tasks", "all"):
             try:
-                tasks = self._get("/api/v1/agents/me/tasks")
+                tasks = self._get(TASKS_PATH)
             except error.HTTPError as exc:
                 return ToolResult(
                     content=f"sessions_list: tasks lookup failed: {self._http_detail(exc)}",
@@ -2927,11 +2943,11 @@ class SessionsListTool(_SessionToolBase):
             header = f"TASKS — {len(rows)} shown"
             if skipped:
                 header += f" ({skipped} filtered out / over limit)"
-            sections.append(header + "\n" + ("\n".join(rows) if rows else "(none)"))
+            sections.append(header + "\n" + ("\n".join(rows) if rows else EMPTY_DISPLAY))
 
         if kind in ("peers", "all"):
             try:
-                peers = self._get("/api/v1/agents/me/peers")
+                peers = self._get(PEERS_PATH)
             except error.HTTPError as exc:
                 return ToolResult(
                     content=f"sessions_list: peers lookup failed: {self._http_detail(exc)}",
@@ -2955,7 +2971,7 @@ class SessionsListTool(_SessionToolBase):
                     f"role={peer.get('role', '?')} (id={peer.get('id', '?')})"
                 )
             sections.append(
-                f"PEERS — {len(rows)} shown\n" + ("\n".join(rows) if rows else "(none)")
+                f"PEERS — {len(rows)} shown\n" + ("\n".join(rows) if rows else EMPTY_DISPLAY)
             )
 
         return ToolResult(content="\n\n".join(sections), ok=True)
@@ -3128,7 +3144,7 @@ class SessionsHistoryTool(_SessionToolBase):
         remaining = sum(1 for m in data if isinstance(m, dict)) - shown
         notice = f"\n[{remaining} more entries omitted (limit {limit})]" if remaining > 0 else ""
         return ToolResult(
-            content=header + f" — {shown} shown\n" + ("\n".join(lines) if lines else "(none)") + notice,
+            content=header + f" — {shown} shown\n" + ("\n".join(lines) if lines else EMPTY_DISPLAY) + notice,
             ok=True,
         )
 
@@ -3515,7 +3531,7 @@ class SessionStatusTool(_SessionToolBase):
             }
         ]
 
-    def invoke(self, call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
+    def invoke(self, _call: ToolCall, _config) -> ToolResult:  # noqa: ANN001
         lines: list[str] = ["SESSION STATUS"]
         lines.append(f"agent_id: {self.context.agent_id or '(unknown)'}")
         elapsed = int(time.time() - self._started_at)
@@ -3532,7 +3548,7 @@ class SessionStatusTool(_SessionToolBase):
 
         # Tasks: counts by status + the active (in-progress) ones.
         try:
-            tasks = self._get("/api/v1/agents/me/tasks")
+            tasks = self._get(TASKS_PATH)
             if isinstance(tasks, list):
                 counts: dict[str, int] = {}
                 active: list[str] = []
@@ -3557,7 +3573,7 @@ class SessionStatusTool(_SessionToolBase):
 
         # Peers: count only, best-effort.
         try:
-            peers = self._get("/api/v1/agents/me/peers")
+            peers = self._get(PEERS_PATH)
             if isinstance(peers, list):
                 lines.append(f"visible_peers: {len(peers)}")
         except Exception:  # noqa: BLE001
@@ -3683,14 +3699,14 @@ class _BoardToolBase:
 class BoardCreateTaskTool(_BoardToolBase):
     """S-292: board.create_task — create a task on the agent's own squad."""
 
-    name = "board.create_task"
+    name = TOOL_CREATE_TASK
 
     def tools(self) -> list[Mapping[str, object]]:
         return [
             {
                 "type": "function",
                 "function": {
-                    "name": "board.create_task",
+                    "name": TOOL_CREATE_TASK,
                     "description": (
                         "Create a task on your own squad's board. It "
                         "lands in BACKLOG: not claimable and invisible "
@@ -3749,7 +3765,7 @@ class BoardCreateTaskTool(_BoardToolBase):
             body["squad_id"] = squad_id
         if bool(call.arguments.get("ready", False)):
             body["ready"] = True
-        data, err = self._call("POST", "/api/v1/agents/me/tasks", body)
+        data, err = self._call("POST", TASKS_PATH, body)
         if err:
             return ToolResult(content=f"board.create_task: {err}", ok=False)
         task_id = str(data.get("id", ""))
@@ -3762,14 +3778,14 @@ class BoardCreateTaskTool(_BoardToolBase):
 class BoardAssignTool(_BoardToolBase):
     """S-292: board.assign — set a task's assignee (own squad only)."""
 
-    name = "board.assign"
+    name = TOOL_ASSIGN
 
     def tools(self) -> list[Mapping[str, object]]:
         return [
             {
                 "type": "function",
                 "function": {
-                    "name": "board.assign",
+                    "name": TOOL_ASSIGN,
                     "description": (
                         "Set a task's assignee. The task must live in "
                         "your squad and the assignee must be a squad "
@@ -3808,7 +3824,7 @@ class BoardAssignTool(_BoardToolBase):
             return ToolResult(
                 content="board.assign: assignee_agent_id is required", ok=False
             )
-        data, err = self._call(
+        _, err = self._call(
             "PATCH",
             f"/api/v1/agents/me/tasks/{task_id}/assignee",
             {"assignee_agent_id": assignee},
@@ -3828,14 +3844,14 @@ class BoardClaimTool(_BoardToolBase):
     rendered into the tool result.
     """
 
-    name = "board.claim"
+    name = TOOL_CLAIM
 
     def tools(self) -> list[Mapping[str, object]]:
         return [
             {
                 "type": "function",
                 "function": {
-                    "name": "board.claim",
+                    "name": TOOL_CLAIM,
                     "description": (
                         "Claim a task and start working it: TO DO -> "
                         "IN PROGRESS (or resume your own stalled IN "
@@ -3896,14 +3912,14 @@ class BoardClaimTool(_BoardToolBase):
 class BoardCompleteTool(_BoardToolBase):
     """S-292: board.complete — IN PROGRESS -> DONE | IN REVIEW (D2)."""
 
-    name = "board.complete"
+    name = TOOL_COMPLETE
 
     def tools(self) -> list[Mapping[str, object]]:
         return [
             {
                 "type": "function",
                 "function": {
-                    "name": "board.complete",
+                    "name": TOOL_COMPLETE,
                     "description": (
                         "Complete your in-progress task. Legal source "
                         "column: IN PROGRESS only. review_needed=true "
@@ -3987,8 +4003,7 @@ class BoardCompleteTool(_BoardToolBase):
             return ToolResult(
                 content=(
                     f"board.complete: no active claim held by this "
-                    f"session for task {task_id} — claim it first with "
-                    "board.claim"
+                    f"session for task {task_id} — claim it first with {TOOL_CLAIM}"
                 ),
                 ok=False,
             )
@@ -4013,14 +4028,14 @@ class BoardCompleteTool(_BoardToolBase):
 class BoardBlockTool(_BoardToolBase):
     """S-292: board.block — IN PROGRESS -> BLOCKED with a reason."""
 
-    name = "board.block"
+    name = TOOL_BLOCK
 
     def tools(self) -> list[Mapping[str, object]]:
         return [
             {
                 "type": "function",
                 "function": {
-                    "name": "board.block",
+                    "name": TOOL_BLOCK,
                     "description": (
                         "Block your in-progress task (legal source "
                         "column: IN PROGRESS only) with a reason. The "
@@ -4060,8 +4075,7 @@ class BoardBlockTool(_BoardToolBase):
             return ToolResult(
                 content=(
                     f"board.block: no active claim held by this "
-                    f"session for task {task_id} — claim it first with "
-                    "board.claim"
+                    f"session for task {task_id} — claim it first with {TOOL_CLAIM}"
                 ),
                 ok=False,
             )
@@ -4083,14 +4097,14 @@ class BoardBlockTool(_BoardToolBase):
 class BoardReopenTool(_BoardToolBase):
     """S-292: board.reopen — IN REVIEW -> IN PROGRESS, new attempt (D3)."""
 
-    name = "board.reopen"
+    name = TOOL_REOPEN
 
     def tools(self) -> list[Mapping[str, object]]:
         return [
             {
                 "type": "function",
                 "function": {
-                    "name": "board.reopen",
+                    "name": TOOL_REOPEN,
                     "description": (
                         "Reopen YOUR task that sits in IN REVIEW back "
                         "to IN PROGRESS (legal source column: IN "
@@ -4164,14 +4178,14 @@ class BoardReopenTool(_BoardToolBase):
 class BoardRequestChangesTool(_BoardToolBase):
     """S-292: board.request_changes — IN REVIEW -> TO DO, unassigned."""
 
-    name = "board.request_changes"
+    name = TOOL_REQUEST_CHANGES
 
     def tools(self) -> list[Mapping[str, object]]:
         return [
             {
                 "type": "function",
                 "function": {
-                    "name": "board.request_changes",
+                    "name": TOOL_REQUEST_CHANGES,
                     "description": (
                         "Return YOUR reviewed card to the pool: legal "
                         "source column IN REVIEW only, you must be the "
@@ -4213,7 +4227,7 @@ class BoardRequestChangesTool(_BoardToolBase):
             return ToolResult(
                 content="board.request_changes: comment is required", ok=False
             )
-        data, err = self._call(
+        _, err = self._call(
             "POST",
             f"/api/v1/agents/me/tasks/{task_id}/request-changes",
             {"comment": comment},
@@ -4233,14 +4247,14 @@ class BoardApproveTool(_BoardToolBase):
     (D8, default off — approval strictly human). Self-approval is NOT
     reachable here; your own card self-approves at board.complete time."""
 
-    name = "board.approve"
+    name = TOOL_APPROVE
 
     def tools(self) -> list[Mapping[str, object]]:
         return [
             {
                 "type": "function",
                 "function": {
-                    "name": "board.approve",
+                    "name": TOOL_APPROVE,
                     "description": (
                         "Leader approval: move ANOTHER agent's "
                         "in-review task to DONE. Only for agents the "
@@ -4330,16 +4344,16 @@ _BUILTIN_REGISTRY: dict[str, type] = {
     "browser": BrowserTool,
     # S-292 (ADR-0016 D1): board.* — agent-driven board work. Each
     # verb is a thin client over a server-guarded transition endpoint.
-    "board.create_task": BoardCreateTaskTool,
-    "board.assign": BoardAssignTool,
-    "board.claim": BoardClaimTool,
-    "board.complete": BoardCompleteTool,
-    "board.block": BoardBlockTool,
-    "board.reopen": BoardReopenTool,
-    "board.request_changes": BoardRequestChangesTool,
+    TOOL_CREATE_TASK: BoardCreateTaskTool,
+    TOOL_ASSIGN: BoardAssignTool,
+    TOOL_CLAIM: BoardClaimTool,
+    TOOL_COMPLETE: BoardCompleteTool,
+    TOOL_BLOCK: BoardBlockTool,
+    TOOL_REOPEN: BoardReopenTool,
+    TOOL_REQUEST_CHANGES: BoardRequestChangesTool,
     # S-294 (ADR-0016 D5/D8): leader approval of others' in-review
     # tasks — server-side default-deny (grant + leader_approval_allowed).
-    "board.approve": BoardApproveTool,
+    TOOL_APPROVE: BoardApproveTool,
 }
 
 # Built-ins that are listed in the platform catalog (S-232) for admin

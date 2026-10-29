@@ -44,7 +44,10 @@ import re
 import threading
 from collections import Counter
 from dataclasses import dataclass, field, replace
-from typing import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Callable, Mapping, Sequence
+
+if TYPE_CHECKING:  # pragma: no cover — typing only, avoids the runtime cycle
+    from .runtime import RuntimePlugin
 
 from .subagents import (
     SUBAGENT_THREAD_ITEM_MAX_CHARS,
@@ -384,14 +387,13 @@ def validate_task_result(
             turns_used=turns_used,
             raw=raw,
         )
-    if not succeeded:
-        if failure_class not in FAILURE_CLASSES:
-            return contract_violation(
-                f"a failed result requires `failure_class` in {sorted(FAILURE_CLASSES)}, "
-                f"got {failure_class!r}",
-                turns_used=turns_used,
-                raw=raw,
-            )
+    if not succeeded and failure_class not in FAILURE_CLASSES:
+        return contract_violation(
+            f"a failed result requires `failure_class` in {sorted(FAILURE_CLASSES)}, "
+            f"got {failure_class!r}",
+            turns_used=turns_used,
+            raw=raw,
+        )
     tests = payload.get("tests")
     if tests is None:
         tests = {}
@@ -496,6 +498,70 @@ class SubagentRun:
     steps: tuple[str, ...] = ()
 
 
+def _emit_snapshot(
+    progress: "Callable[[Mapping[str, object]], None] | None",
+    thread: "list[dict[str, object]]",
+    turns: int,
+    steps: "list[str]",
+) -> None:
+    """S-301: publish the observational snapshot; a failed publish is swallowed."""
+    if progress is None:
+        return
+    try:
+        # list() copy: _cap_thread returns the LIVE list when it
+        # fits — without the copy every "snapshot" would alias the
+        # growing thread and show its final state.
+        progress(
+            {
+                "thread": list(_cap_thread(thread)),
+                "turns": turns,
+                "steps": list(steps),
+            }
+        )
+    except Exception:  # noqa: BLE001 — never break the run
+        pass
+
+
+def _run_child_tool_round(
+    calls: Sequence[object],
+    messages: "list[dict[str, object]]",
+    thread: "list[dict[str, object]]",
+    steps: "list[str]",
+) -> None:
+    """Execute one round of the subagent's tool calls, appending results."""
+    from .runtime import invoke_plugin_tool, wrap_untrusted
+
+    for call in calls:
+        # Belt and braces: a forbidden tool cannot be executed even if
+        # it somehow appears in a model response.
+        if forbidden_subagent_tool(call.name):  # type: ignore[attr-defined]
+            tool_content = f"tool {call.name!r} is not available to task subagents"  # type: ignore[attr-defined]
+            ok = False
+        else:
+            tool_result = invoke_plugin_tool(call, None, _runner_plugins())  # type: ignore[arg-type]
+            tool_content = tool_result.content
+            ok = tool_result.ok
+        steps.append(call.name)  # type: ignore[attr-defined]
+        thread.append(
+            {
+                "role": "tool",
+                "name": call.name,  # type: ignore[attr-defined]
+                "ok": ok,
+                "content": _trim(tool_content, SUBAGENT_THREAD_ITEM_MAX_CHARS),
+            }
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": call.id,  # type: ignore[attr-defined]
+                "name": call.name,  # type: ignore[attr-defined]
+                "content": wrap_untrusted(
+                    tool_content, "tool_result", tool=call.name, subagent="true"  # type: ignore[attr-defined]
+                ),
+            }
+        )
+
+
 def run_task_subagent(
     brief: TaskBrief,
     *,
@@ -540,24 +606,6 @@ def run_task_subagent(
     steps: list[str] = []
     turns = 0
     last_content = ""
-    # S-301: the snapshot is observational — a failed publish is
-    # swallowed, and the runner's own thread caps bound its size.
-    def emit_snapshot() -> None:
-        if progress is None:
-            return
-        try:
-            # list() copy: _cap_thread returns the LIVE list when it
-            # fits — without the copy every "snapshot" would alias the
-            # growing thread and show its final state.
-            progress(
-                {
-                    "thread": list(_cap_thread(thread)),
-                    "turns": turns,
-                    "steps": list(steps),
-                }
-            )
-        except Exception:  # noqa: BLE001 — never break the run
-            pass
 
     while turns < budget:
         turns += 1
@@ -566,7 +614,7 @@ def run_task_subagent(
         try:
             response = completion(**kwargs)
         except Exception as exc:  # noqa: BLE001 — a subagent failure is data
-            emit_snapshot()
+            _emit_snapshot(progress, thread, turns, steps)
             return SubagentRun(
                 result=SubTaskResult(
                     succeeded=False,
@@ -594,7 +642,7 @@ def run_task_subagent(
             result = replace(result, turns_used=turns)
             thread.append({"role": "assistant", "content": _trim(content, SUBAGENT_THREAD_ITEM_MAX_CHARS)})
             # S-301: final snapshot carries the complete thread.
-            emit_snapshot()
+            _emit_snapshot(progress, thread, turns, steps)
             return SubagentRun(
                 result=result, thread=tuple(_cap_thread(thread)), steps=tuple(steps)
             )
@@ -609,38 +657,10 @@ def run_task_subagent(
                 ],
             }
         )
-        for call in calls:
-            # Belt and braces: a forbidden tool cannot be executed even if
-            # it somehow appears in a model response.
-            if forbidden_subagent_tool(call.name):
-                tool_content = f"tool {call.name!r} is not available to task subagents"
-                ok = False
-            else:
-                tool_result = invoke_plugin_tool(call, None, _runner_plugins())
-                tool_content = tool_result.content
-                ok = tool_result.ok
-            steps.append(call.name)
-            thread.append(
-                {
-                    "role": "tool",
-                    "name": call.name,
-                    "ok": ok,
-                    "content": _trim(tool_content, SUBAGENT_THREAD_ITEM_MAX_CHARS),
-                }
-            )
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "name": call.name,
-                    "content": wrap_untrusted(
-                        tool_content, "tool_result", tool=call.name, subagent="true"
-                    ),
-                }
-            )
+        _run_child_tool_round(calls, messages, thread, steps)
         # S-301: one snapshot per completed turn — the Details panel
         # polls the replaceable view instead of a message flood.
-        emit_snapshot()
+        _emit_snapshot(progress, thread, turns, steps)
 
     # Turn budget exhausted (spec §4 failure example, §9). The last
     # completed turn already emitted the current snapshot; the failed
@@ -667,7 +687,7 @@ def run_task_subagent(
 _RUNNER_PLUGINS: list = []
 
 
-def _runner_plugins() -> list:
+def _runner_plugins() -> "list[RuntimePlugin]":
     """The plugin set the runner executes child tool calls against.
 
     Set once by the runtime at wake (see
