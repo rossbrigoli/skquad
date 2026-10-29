@@ -568,7 +568,6 @@ function AgentChatSection(props: {
 function AgentProfileOverlays(props: {
   readonly agent: Agent | undefined;
   readonly agentId: string;
-  readonly squadId: string;
   readonly token: string;
   readonly resourceGrants: AgentPermission[];
   readonly deleting: boolean;
@@ -808,7 +807,6 @@ export default function AgentProfilePage() {
         <AgentProfileOverlays
           agent={agent}
           agentId={agentId}
-          squadId={squadId}
           token={token}
           resourceGrants={resourceGrants}
           deleting={deleting}
