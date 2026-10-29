@@ -13,6 +13,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +23,21 @@ import (
 const scheduledJobColumns = `id, agent_id, squad_id, title, message, schedule_kind, schedule_spec,
 	enabled, next_run_at, last_run_at, last_run_status, fail_count, disabled_reason,
 	created_by_type, created_by_id, created_at`
+
+// qualifyScheduledJobColumns prefixes every column in scheduledJobColumns
+// with the given table alias. BUG df5b2277: the claim query's outer
+// UPDATE ... FROM picked RETURNING used the bare column list, and `id`
+// exists on both scheduled_jobs and picked — Postgres rejected every
+// cron tick with `column reference "id" is ambiguous`. Single-table
+// queries keep the bare list; anything with a FROM/JOIN source must use
+// this qualified form.
+func qualifyScheduledJobColumns(alias string) string {
+	parts := strings.Split(scheduledJobColumns, ",")
+	for i, p := range parts {
+		parts[i] = alias + "." + strings.TrimSpace(p)
+	}
+	return strings.Join(parts, ", ")
+}
 
 func scanScheduledJob(scan func(dest ...any) error) (*domain.ScheduledJob, error) {
 	var j domain.ScheduledJob
@@ -133,7 +149,7 @@ func (p *PostgresStore) ClaimDueScheduledJobs(ctx context.Context, now time.Time
 		    next_run_at = $1 + ($3 * interval '1 microsecond')
 		FROM picked
 		WHERE s.id = picked.id
-		RETURNING `+scheduledJobColumns,
+		RETURNING `+qualifyScheduledJobColumns("s"),
 		now, limit, claimSafetyNet.Microseconds(),
 	)
 	if err != nil {
