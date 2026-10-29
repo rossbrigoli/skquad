@@ -19,5 +19,5 @@ dependencies = [
 skquad-agent-runtime = "skquad_runtime.runtime:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=83.0.0"]  # PYSEC-2026-3447 / GHSA-h35f-9h28-mq5c: <83 sdist NFD-exclusion bypass
 build-backend = "setuptools.build_meta"
