@@ -533,6 +533,20 @@ def _read_capped(path: Path, max_bytes: int) -> tuple[str, bool]:
     return data[:max_bytes].decode("utf-8", errors="replace"), truncated
 
 
+def _wait_for_session(session: dict, wait: int, workspace_dir: str, max_log_bytes: int) -> None:
+    """Poll a running session until it finishes, the wait elapses, or the log cap trips."""
+    if wait <= 0 or session.get("status") != "running":
+        return
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and session.get("status") == "running":
+        _refresh_session(session)
+        if session.get("status") != "running":
+            return
+        if _enforce_log_cap(workspace_dir, session, max_log_bytes):
+            return
+        time.sleep(0.2)
+
+
 class ProcessTool:
     """S-280: manage background exec sessions started by this agent task.
 
@@ -669,20 +683,10 @@ class ProcessTool:
 
     def _poll(self, session: dict, call: ToolCall) -> ToolResult:
         try:
-            wait = min(int(call.arguments.get("timeoutSeconds", 0) or 0), MAX_POLL_WAIT_SECONDS)
+            wait = max(0, min(int(call.arguments.get("timeoutSeconds", 0) or 0), MAX_POLL_WAIT_SECONDS))
         except (TypeError, ValueError):
             wait = 0
-        if wait < 0:
-            wait = 0
-        if wait > 0 and session.get("status") == "running":
-            deadline = time.monotonic() + wait
-            while time.monotonic() < deadline and session.get("status") == "running":
-                _refresh_session(session)
-                if session.get("status") != "running":
-                    break
-                if _enforce_log_cap(self.context.workspace_dir, session, self.max_log_bytes):
-                    break
-                time.sleep(0.2)
+        _wait_for_session(session, wait, self.context.workspace_dir, self.max_log_bytes)
         _enforce_log_cap(self.context.workspace_dir, session, self.max_log_bytes)
         sessions = _load_sessions(self.context.workspace_dir)
         sessions[session["id"]] = session
@@ -1794,25 +1798,41 @@ class ReadTool:
             lines[-1] = lines[-1][:-1]
 
         total_lines = len(lines)
-        offset = call.arguments.get("offset")
-        limit = call.arguments.get("limit")
+        start, end, range_err = self._line_range(
+            total_lines, call.arguments.get("offset"), call.arguments.get("limit")
+        )
+        if range_err:
+            return ToolResult(content=range_err, ok=False)
+
+        selected = lines[start:end]
+        content = "\n".join(selected)
+        notices = self._read_notices(byte_truncated, max_bytes, start, end, total_lines)
+        if notices:
+            content += "\n[" + "; ".join(notices) + "]"
+        return ToolResult(content=content, ok=True)
+
+    @staticmethod
+    def _line_range(total_lines: int, offset: object, limit: object) -> tuple[int, int, str]:
         start = 0
         if offset is not None:
             try:
                 start = max(int(offset) - 1, 0)
             except (TypeError, ValueError):
-                return ToolResult(content="read: offset must be an integer", ok=False)
+                return 0, 0, "read: offset must be an integer"
         if start >= total_lines:
-            return ToolResult(content=f"read: offset {start + 1} is past end of file ({total_lines} lines)", ok=False)
+            return 0, 0, f"read: offset {start + 1} is past end of file ({total_lines} lines)"
         end = total_lines
         if limit is not None:
             try:
                 end = min(start + max(int(limit), 0), total_lines)
             except (TypeError, ValueError):
-                return ToolResult(content="read: limit must be an integer", ok=False)
+                return 0, 0, "read: limit must be an integer"
+        return start, end, ""
 
-        selected = lines[start:end]
-        content = "\n".join(selected)
+    @staticmethod
+    def _read_notices(
+        byte_truncated: bool, max_bytes: int, start: int, end: int, total_lines: int
+    ) -> list[str]:
         notices: list[str] = []
         if byte_truncated:
             notices.append(f"content truncated at maxBytes={max_bytes}")
@@ -1820,9 +1840,7 @@ class ReadTool:
             notices.append(f"showing lines {start + 1}-{end} of {total_lines} (limit reached)")
         elif start > 0:
             notices.append(f"showing lines {start + 1}-{end} of {total_lines}")
-        if notices:
-            content += "\n[" + "; ".join(notices) + "]"
-        return ToolResult(content=content, ok=True)
+        return notices
 
 
 class WriteTool:
@@ -1957,26 +1975,10 @@ class EditTool:
         # Phase 1: locate every edit in the ORIGINAL text (validate-before-write).
         spans: list[tuple[int, int, str]] = []  # (start, end, newText)
         for idx, item in enumerate(edits):
-            if not isinstance(item, dict) or "oldText" not in item or "newText" not in item:
-                return ToolResult(content=f"edit: edits[{idx}] must have oldText and newText", ok=False)
-            old = str(item["oldText"])
-            new = str(item["newText"])
-            if old == "":
-                return ToolResult(content=f"edit: edits[{idx}].oldText must not be empty", ok=False)
-            occurrences = _find_all(original, old)
-            if not occurrences:
-                return ToolResult(
-                    content=f"edit: oldText not found in file (edit #{idx + 1}): {old[:80]!r}", ok=False
-                )
-            if len(occurrences) > 1:
-                return ToolResult(
-                    content=(
-                        f"edit: oldText is ambiguous — occurs {len(occurrences)} times "
-                        f"(edit #{idx + 1}); include more context. Nothing was written."
-                    ),
-                    ok=False,
-                )
-            spans.append((occurrences[0], occurrences[0] + len(old), new))
+            span, err = self._locate_edit(original, item, idx)
+            if err:
+                return ToolResult(content=err, ok=False)
+            spans.append(span)
 
         # Phase 2: overlap check on the original-text spans.
         spans.sort(key=lambda s: s[0])
@@ -2008,6 +2010,24 @@ class EditTool:
             return ToolResult(content=f"edit: write failed: {exc}", ok=False)
         rel = _relpath_in_workspace(self.context.workspace_dir, target)
         return ToolResult(content=f"applied {len(edits)} edit(s) to {rel}", ok=True)
+
+    @staticmethod
+    def _locate_edit(original: str, item: object, idx: int) -> tuple[tuple[int, int, str] | None, str]:
+        if not isinstance(item, dict) or "oldText" not in item or "newText" not in item:
+            return None, f"edit: edits[{idx}] must have oldText and newText"
+        old = str(item["oldText"])
+        new = str(item["newText"])
+        if old == "":
+            return None, f"edit: edits[{idx}].oldText must not be empty"
+        occurrences = _find_all(original, old)
+        if not occurrences:
+            return None, f"edit: oldText not found in file (edit #{idx + 1}): {old[:80]!r}"
+        if len(occurrences) > 1:
+            return None, (
+                f"edit: oldText is ambiguous — occurs {len(occurrences)} times "
+                f"(edit #{idx + 1}); include more context. Nothing was written."
+            )
+        return (occurrences[0], occurrences[0] + len(old), new), ""
 
 
 def _find_all(haystack: str, needle: str) -> list[int]:
@@ -2081,22 +2101,11 @@ class ApplyPatchTool:
 
         # Phase 1: compute all new contents in memory.
         new_files: dict[Path, bytes] = {}
-        for path, content in add_paths:
-            if path.exists():
-                return ToolResult(content=f"apply_patch: cannot add, file already exists: {_relpath_in_workspace(ws, path)}", ok=False)
-            new_files[path] = content.encode("utf-8")
-
-        for path, hunks in update_paths:
-            if not path.is_file():
-                return ToolResult(content=f"apply_patch: cannot update, file not found: {_relpath_in_workspace(ws, path)}", ok=False)
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError) as exc:
-                return ToolResult(content=f"apply_patch: cannot read {_relpath_in_workspace(ws, path)}: {exc}", ok=False)
-            updated_text, err = self._apply_hunks(text, hunks, _relpath_in_workspace(ws, path))
-            if err:
-                return ToolResult(content=f"apply_patch: {err}; no files were written", ok=False)
-            new_files[path] = updated_text.encode("utf-8")
+        stage_err = self._stage_adds(ws, add_paths, new_files)
+        if not stage_err:
+            stage_err = self._stage_updates(update_paths, new_files)
+        if stage_err:
+            return ToolResult(content=stage_err, ok=False)
 
         # maxBytes caps the total bytes written across the patch's files.
         max_bytes = _max_bytes(self.policy)
@@ -2131,6 +2140,31 @@ class ApplyPatchTool:
     @staticmethod
     def _check_path(ws: str, rel: str) -> Path:
         return _resolve_in_workspace(ws, rel)
+
+    @staticmethod
+    def _stage_adds(ws: str, add_paths: list[tuple[Path, str]], new_files: dict[Path, bytes]) -> str:
+        """Stage added files into new_files; returns an error message or ''."""
+        for path, content in add_paths:
+            if path.exists():
+                return f"apply_patch: cannot add, file already exists: {_relpath_in_workspace(ws, path)}"
+            new_files[path] = content.encode("utf-8")
+        return ""
+
+    def _stage_updates(self, update_paths: list[tuple[Path, list[list[str]]]], new_files: dict[Path, bytes]) -> str:
+        """Stage updated files into new_files; returns an error message or ''."""
+        ws = self.context.workspace_dir
+        for path, hunks in update_paths:
+            if not path.is_file():
+                return f"apply_patch: cannot update, file not found: {_relpath_in_workspace(ws, path)}"
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                return f"apply_patch: cannot read {_relpath_in_workspace(ws, path)}: {exc}"
+            updated_text, err = self._apply_hunks(text, hunks, _relpath_in_workspace(ws, path))
+            if err:
+                return f"apply_patch: {err}; no files were written"
+            new_files[path] = updated_text.encode("utf-8")
+        return ""
 
     @staticmethod
     def _parse(patch: str) -> tuple[list[tuple[str, str]], list[tuple[str, list[list[str]]]], list[str]]:
@@ -2591,21 +2625,26 @@ class CronTool:
             state = "enabled" if job.get("enabled") else "paused"
             summary = self._schedule_summary(job)
             next_run = str(job.get("next_run_at", "")) or "—"
-            last = str(job.get("last_run_status", "") or "")
-            extras = []
-            if last:
-                extras.append(f"last={last}")
-            fail_count = job.get("fail_count")
-            if isinstance(fail_count, int) and fail_count > 0:
-                extras.append(f"fails={fail_count}")
-            reason = str(job.get("disabled_reason", "") or "")
-            if reason:
-                extras.append(reason)
+            extras = self._job_extras(job)
             title = str(job.get("title", "") or "")
             label = f" {title!r}" if title else ""
             suffix = f" ({'; '.join(extras)})" if extras else ""
             lines.append(f"{job_id} [{state}] {summary} next={next_run}{label}{suffix}")
         return ToolResult(content="\n".join(lines), ok=True)
+
+    @staticmethod
+    def _job_extras(job: Mapping[str, object]) -> list[str]:
+        extras: list[str] = []
+        last = str(job.get("last_run_status", "") or "")
+        if last:
+            extras.append(f"last={last}")
+        fail_count = job.get("fail_count")
+        if isinstance(fail_count, int) and fail_count > 0:
+            extras.append(f"fails={fail_count}")
+        reason = str(job.get("disabled_reason", "") or "")
+        if reason:
+            extras.append(reason)
+        return extras
 
     @staticmethod
     def _schedule_summary(job: Mapping[str, object]) -> str:
@@ -3306,27 +3345,7 @@ class BrowserTool:
                 ok=False,
             )
         try:
-            if action == "open":
-                return self._open(str(args.get("url", "") or "").strip())
-            if action == "snapshot":
-                return self._snapshot()
-            if action == "screenshot":
-                return self._screenshot(bool(args.get("full_page", False)))
-            if action == "click":
-                selector = str(args.get("selector", "") or "").strip()
-                if not selector:
-                    return ToolResult(content="browser click: selector is required", ok=False)
-                return self._call("browser.click", {"selector": selector})
-            if action == "type":
-                selector = str(args.get("selector", "") or "").strip()
-                if not selector:
-                    return ToolResult(content="browser type: selector is required", ok=False)
-                text = str(args.get("text", "") or "")
-                payload: dict[str, object] = {"selector": selector, "text": text}
-                if args.get("submit") is not None:
-                    payload["submit"] = bool(args.get("submit"))
-                return self._call("browser.type", payload)
-            return self._call("browser.close_session", {})
+            return self._dispatch(action, args)
         except error.HTTPError as exc:
             return ToolResult(content=f"browser {action}: {self._http_detail(exc)}", ok=False)
         except (error.URLError, OSError) as exc:
@@ -3334,6 +3353,35 @@ class BrowserTool:
                 content=f"browser {action}: gateway request failed: {type(exc).__name__}",
                 ok=False,
             )
+
+    def _dispatch(self, action: str, args: Mapping[str, object]) -> ToolResult:
+        if action == "open":
+            return self._open(str(args.get("url", "") or "").strip())
+        if action == "snapshot":
+            return self._snapshot()
+        if action == "screenshot":
+            return self._screenshot(bool(args.get("full_page", False)))
+        if action == "click":
+            return self._click(args)
+        if action == "type":
+            return self._type(args)
+        return self._call("browser.close_session", {})
+
+    def _click(self, args: Mapping[str, object]) -> ToolResult:
+        selector = str(args.get("selector", "") or "").strip()
+        if not selector:
+            return ToolResult(content="browser click: selector is required", ok=False)
+        return self._call("browser.click", {"selector": selector})
+
+    def _type(self, args: Mapping[str, object]) -> ToolResult:
+        selector = str(args.get("selector", "") or "").strip()
+        if not selector:
+            return ToolResult(content="browser type: selector is required", ok=False)
+        text = str(args.get("text", "") or "")
+        payload: dict[str, object] = {"selector": selector, "text": text}
+        if args.get("submit") is not None:
+            payload["submit"] = bool(args.get("submit"))
+        return self._call("browser.type", payload)
 
     # -- action implementations -------------------------------------------
 
@@ -3670,19 +3718,7 @@ class _BoardToolBase:
             with request.urlopen(req, timeout=timeout) as response:
                 raw = response.read()
         except error.HTTPError as exc:
-            code, message = "", ""
-            try:
-                err_body = json.loads(exc.read().decode("utf-8"))
-                err_obj = err_body.get("error")
-                if isinstance(err_obj, dict):
-                    code = str(err_obj.get("code", "") or "")
-                    message = str(err_obj.get("message", "") or "")
-            except Exception:  # noqa: BLE001 — error body is best-effort
-                pass
-            detail = f" {code}" if code else ""
-            if message:
-                detail += f": {message}"
-            return {}, f"HTTP {exc.code}{detail}"
+            return {}, self._http_error_detail(exc)
         except (error.URLError, OSError, json.JSONDecodeError) as exc:
             return {}, f"control-plane request failed: {exc}"
         if not raw:
@@ -3694,6 +3730,22 @@ class _BoardToolBase:
         if not isinstance(data, dict):
             return {}, "control-plane returned an unexpected shape"
         return data, ""
+
+    @staticmethod
+    def _http_error_detail(exc: error.HTTPError) -> str:
+        code, message = "", ""
+        try:
+            err_body = json.loads(exc.read().decode("utf-8"))
+            err_obj = err_body.get("error")
+            if isinstance(err_obj, dict):
+                code = str(err_obj.get("code", "") or "")
+                message = str(err_obj.get("message", "") or "")
+        except Exception:  # noqa: BLE001 — error body is best-effort
+            pass
+        detail = f" {code}" if code else ""
+        if message:
+            detail += f": {message}"
+        return f"HTTP {exc.code}{detail}"
 
 
 class BoardCreateTaskTool(_BoardToolBase):
