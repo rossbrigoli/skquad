@@ -805,6 +805,8 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			// S-162: reset the chat thread / restart the agent pod.
 			r.Post("/agents/{agentID}/chat/reset", s.resetAgentChat)
 			r.Post("/agents/{agentID}/restart", s.restartAgent)
+			// S-309: bulk memory import (owner-only, trusted provenance).
+			r.Post("/agents/{agentID}/memory/import", s.importAgentMemory)
 			r.Post("/agents/{agentID}/wake", s.wakeAgent)
 			r.Post("/agents/{agentID}/identity", s.createAgentIdentity)
 			r.Post("/agents/{agentID}/identity/rotate", s.rotateAgentIdentity)
