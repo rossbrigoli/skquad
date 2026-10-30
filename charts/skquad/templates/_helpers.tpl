@@ -149,3 +149,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-internal-token" (include "skquad.terminalServiceName" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "skquad.buildServiceName" -}}
+{{- printf "%s-build-service" (include "skquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "skquad.buildServiceImage" -}}
+{{- printf "%s:%s" .Values.image.buildService.repository .Values.image.buildService.tag -}}
+{{- end -}}

@@ -1,0 +1,32 @@
+{{- if .Values.buildService.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "skquad.buildServiceName" . }}-config
+  namespace: {{ .Values.buildService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: build-service
+data:
+  config.yaml: |
+    listen: ":{{ .Values.buildService.port }}"
+    namespace: {{ .Values.buildService.namespace }}
+    kaniko_image: {{ .Values.buildService.kanikoImage | default "gcr.io/kaniko-project/executor:v1.23.2" | quote }}
+    kaniko_service_account: {{ .Values.buildService.kanikoServiceAccount }}
+    registry_secret: {{ .Values.buildService.registrySecret }}
+    principals_file: /etc/build-service/principals.json
+    cp_policy_url: {{ .Values.buildService.cpPolicyUrl | quote }}
+    cp_policy_ttl_seconds: {{ .Values.buildService.cpPolicyTtlSeconds }}
+    destinations_allow:
+      {{- toYaml .Values.buildService.destinationsAllow | nindent 6 }}
+    git_hosts_allow:
+      {{- toYaml .Values.buildService.gitHostsAllow | nindent 6 }}
+    limits:
+      max_concurrent_per_principal: {{ .Values.buildService.limits.maxConcurrentPerPrincipal }}
+      max_per_hour_per_principal: {{ .Values.buildService.limits.maxPerHourPerPrincipal }}
+    job:
+      active_deadline_seconds: {{ .Values.buildService.job.activeDeadlineSeconds }}
+      ttl_seconds_after_finished: {{ .Values.buildService.job.ttlSecondsAfterFinished }}
+      cpu_request: {{ .Values.buildService.job.cpuRequest | quote }}
+      memory_request: {{ .Values.buildService.job.memoryRequest | quote }}
+{{- end }}

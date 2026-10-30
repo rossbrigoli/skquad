@@ -1,0 +1,38 @@
+{{- if .Values.buildService.enabled }}
+# MIG-8: least-privilege, namespace-scoped RBAC for the build service.
+# It may manage ONLY its kaniko Jobs and read their pods, ONLY inside the
+# build namespace. No cluster-wide permissions, no secret read via API
+# (the registry secret reaches kaniko only as a mounted volume).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "skquad.buildServiceName" . }}
+  namespace: {{ .Values.buildService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: build-service
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "skquad.buildServiceName" . }}
+  namespace: {{ .Values.buildService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: build-service
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "skquad.buildServiceName" . }}
+    namespace: {{ .Values.buildService.namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "skquad.buildServiceName" . }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

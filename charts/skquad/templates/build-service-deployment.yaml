@@ -1,0 +1,78 @@
+{{- if .Values.buildService.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "skquad.buildServiceName" . }}
+  namespace: {{ .Values.buildService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: build-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: build-service
+  template:
+    metadata:
+      labels:
+        {{- include "skquad.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: build-service
+    spec:
+      serviceAccountName: {{ include "skquad.buildServiceName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: build-service
+          image: {{ include "skquad.buildServiceImage" . | quote }}
+          imagePullPolicy: IfNotPresent
+          args: ["-config", "/etc/build-service/config.yaml"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.buildService.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/build-service/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: principals
+              mountPath: /etc/build-service/principals.json
+              subPath: principals.json
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "skquad.buildServiceName" . }}-config
+        - name: principals
+          secret:
+            secretName: {{ .Values.buildService.principalsSecret }}
+{{- end }}

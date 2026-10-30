@@ -1,0 +1,30 @@
+{{- if .Values.buildService.enabled }}
+# MIG-8: the build service is reached ONLY by the tool-gateway (which
+# injects per-agent credentials) inside the release namespace. Agents
+# never connect directly. Egress from kaniko pods (github.com, ghcr.io)
+# is intentionally not CIDR-restricted here — the destination allowlist
+# is enforced at request time by the service.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "skquad.buildServiceName" . }}-ingress
+  namespace: {{ .Values.buildService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: build-service
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "skquad.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: build-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.buildService.port }}
+{{- end }}
