@@ -1,0 +1,101 @@
+{{- /* MIG-7: scoped Kubernetes/gitops MCP server. Disabled by default;
+  enable with k8sMcp.enabled=true plus explicit readNamespaces and
+  argoAllowedApps. All scoping is mirrored between the server config and
+  the RBAC below (belt and braces). */ -}}
+{{- if .Values.k8sMcp.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "skquad.k8sMcpName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: k8s-mcp
+automountServiceAccountToken: true
+---
+# Read-only Role rendered into EVERY allowlisted namespace. Least privilege:
+# pods + logs + events + services only. No secrets, no configmaps, no RBAC,
+# nothing cluster-scoped.
+{{- range $ns := .Values.k8sMcp.readNamespaces }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "skquad.k8sMcpName" $ }}-reader
+  namespace: {{ $ns }}
+  labels:
+    {{- include "skquad.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: k8s-mcp
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "skquad.k8sMcpName" $ }}-reader
+  namespace: {{ $ns }}
+  labels:
+    {{- include "skquad.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: k8s-mcp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "skquad.k8sMcpName" $ }}-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "skquad.k8sMcpName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+---
+# ArgoCD Role: read Application CRs; patch is pinned by resourceNames to
+# exactly the allowlisted apps, so even a compromised server config cannot
+# sync an app the RBAC has not named.
+{{- if .Values.k8sMcp.argoAllowedApps }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "skquad.k8sMcpName" . }}-argocd
+  namespace: {{ .Values.k8sMcp.argoNamespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: k8s-mcp
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    resourceNames:
+      {{- range .Values.k8sMcp.argoAllowedApps }}
+      - {{ . | quote }}
+      {{- end }}
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "skquad.k8sMcpName" . }}-argocd
+  namespace: {{ .Values.k8sMcp.argoNamespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: k8s-mcp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "skquad.k8sMcpName" . }}-argocd
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "skquad.k8sMcpName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}
