@@ -120,14 +120,19 @@ func TestCostSummaryTotalVsMTD(t *testing.T) {
 	recordCost(t, store, squad.ID, agent.ID, "p", "m", 6, lastMonth)
 
 	var view CostSummaryPayload
-	doJSONAuth(t, handler, authOwner, http.MethodGet, "/api/v1/costs/summary?days=30", nil, http.StatusOK, &view)
+	// days=60 (not 30): with days=30 the window start is only ~29 days
+	// back, so on the 30th/31st of a month the previous month's day
+	// falls OUTSIDE the window and this scenario is unsatisfiable — the
+	// test was date-flaky (observed 2026-10-31). A 60-day window always
+	// contains the last-month boundary day.
+	doJSONAuth(t, handler, authOwner, http.MethodGet, "/api/v1/costs/summary?days=60", nil, http.StatusOK, &view)
 	require.InDelta(t, 10.0, view.TotalCost, 1e-9, "total is all-time")
 	require.InDelta(t, 4.0, view.MTDCost, 1e-9, "MTD excludes last month")
 	require.InDelta(t, 4.0, view.RunningCost, 1e-9)
-	// The 30-day window includes last month's day (it is within 30
+	// The 60-day window includes last month's day (it is within 60
 	// days), so the series total is 10 while MTD is 4.
 	require.InDelta(t, 10.0, seriesCost(view.BySquad, squad.ID), 1e-9)
-	require.Len(t, view.Days, 30)
+	require.Len(t, view.Days, 60)
 }
 
 func TestCostSummaryIncludesCallerBudget(t *testing.T) {
