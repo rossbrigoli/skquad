@@ -232,6 +232,10 @@ def _safe_read_error_body(exc: error.HTTPError) -> str:
         err = parsed.get("error")
         if isinstance(err, Mapping):
             return f"{err.get('code', '')} {err.get('message', '')}".strip()
+        # Flat gateway envelope (writeError): {"error": kind, "message": ...}
+        if isinstance(err, str) and err:
+            msg = parsed.get("message")
+            return f"{err} {msg}".strip() if isinstance(msg, str) else err
     return ""
 
 
@@ -622,11 +626,207 @@ def build_mcp_tools(
     ]
 
 
+# MIG-6 (S-312): ssh_exec — governed SSH diagnostics via the terminal
+# service. Phase A of docs/tool-gateway.md §6.6 ("ssh_exec first"): the
+# per-command tool surface. The interactive session family
+# (ssh_session_*) and the TG-11 apply lane are routable at the gateway
+# but not registered to agents in this slice.
+SSH_EXEC_TOOL_NAME = "ssh_exec"
+
+
+class SshExecTool:
+    """Synthetic ``ssh_exec`` plugin: one governed command on an
+    allowlisted host, executed in the quarantined terminal-service.
+
+    One instance covers ALL granted ssh resources for the wake (the
+    schema's ``resource_id`` enum is the granted-id list). The agent
+    holds NO ssh credentials: the gateway resolves them from custody
+    (CA-minted or BYO static key) and the terminal-service owns the
+    wire. Every command is audited BEFORE execution; deny-pattern hits
+    surface as a pending-confirmation result the agent retries with
+    after owner approval.
+    """
+
+    name = SSH_EXEC_TOOL_NAME
+
+    def __init__(self, gateway_url: str, resource_ids: tuple[str, ...]) -> None:
+        self.gateway_url = gateway_url.rstrip("/")
+        self.resource_ids = resource_ids
+        self._opener = request.urlopen
+
+    def tools(self) -> list[Mapping[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": SSH_EXEC_TOOL_NAME,
+                    "description": (
+                        "Run one command on an allowlisted host through the skquad "
+                        "tool gateway (diagnostic path: logs, status, inspection). "
+                        "SSH credentials never enter your sandbox; every command is "
+                        "audited before execution. Commands matching denied patterns "
+                        "pause for owner confirmation and can be retried with the "
+                        "returned confirmation id. No scp, no port-forwarding."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "resource_id": {
+                                "type": "string",
+                                "enum": list(self.resource_ids),
+                                "description": "The granted ssh resource (host inventory) to target.",
+                            },
+                            "host": {
+                                "type": "string",
+                                "description": "Target host. Must match the grant's hosts_allow and no hosts_deny pattern.",
+                            },
+                            "command": {
+                                "type": "string",
+                                "description": "Shell command to execute on the host.",
+                            },
+                            "timeout_seconds": {
+                                "type": "integer",
+                                "description": "Optional exec timeout; the effective timeout is min(requested, ceiling).",
+                            },
+                        },
+                        "required": ["resource_id", "host", "command"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        ]
+
+    def invoke(self, call: ToolCall, config: BootstrapConfig) -> ToolResult:
+        args = call.arguments if isinstance(call.arguments, Mapping) else {}
+        resource_id = str(args.get("resource_id", ""))
+        if resource_id not in self.resource_ids:
+            return ToolResult(content=RESOURCE_NOT_GRANTED, ok=False)
+        host = str(args.get("host", "")).strip()
+        command = str(args.get("command", ""))
+        if not host or not command:
+            return ToolResult(content="ssh_exec: 'host' and 'command' are required", ok=False)
+
+        payload: dict[str, object] = {
+            "tool": SSH_EXEC_TOOL_NAME,
+            "host": host,
+            "command": command,
+        }
+        timeout = args.get("timeout_seconds")
+        if isinstance(timeout, int) and timeout > 0:
+            payload["timeout_seconds"] = timeout
+
+        credential = read_secret_value(config.agent_credential_path) or ""
+        url = f"{self.gateway_url}/v1/ssh/{quote(resource_id, safe='')}"
+        req = request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {credential}",
+                "X-Skquad-Agent-ID": config.agent_id,
+                "Content-Type": JSON_CONTENT_TYPE,
+                "Accept": JSON_CONTENT_TYPE,
+            },
+            method="POST",
+        )
+        try:
+            with self._opener(req) as response:
+                status = getattr(response, "status", None) or response.getcode()
+                raw = response.read()
+        except error.HTTPError as exc:
+            body_text = _safe_read_error_body(exc)
+            logger.info(
+                "ssh_exec: gateway rejected call for resource=%s: HTTP %s %s",
+                resource_id,
+                exc.code,
+                body_text,
+            )
+            return ToolResult(
+                content=f"gateway rejected the call: HTTP {exc.code} {body_text}".strip(),
+                ok=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — transport failure
+            logger.warning(
+                "ssh_exec: gateway transport failure for resource %s: %s",
+                resource_id,
+                type(exc).__name__,
+            )
+            return ToolResult(content="tool 'ssh_exec' failed: gateway unreachable", ok=False)
+
+        try:
+            envelope = json.loads(raw.decode("utf-8", errors="replace"))
+        except ValueError:
+            return ToolResult(content="tool 'ssh_exec' failed: malformed gateway response", ok=False)
+        if not isinstance(envelope, Mapping):
+            return ToolResult(content="tool 'ssh_exec' failed: malformed gateway response", ok=False)
+
+        # 202 pending_confirmation: the deny-pattern gate paused this
+        # command. Surface the id + retry contract, never execute-blind.
+        if status == 202 or envelope.get("error") == "pending_confirmation":
+            conf_id = str(envelope.get("confirmation_id", "") or "")
+            return ToolResult(
+                content=(
+                    "PENDING OWNER CONFIRMATION: this command matched a denied "
+                    f"pattern and was NOT executed. confirmation_id={conf_id} — "
+                    "after the owner approves, retry the identical command with "
+                    "that confirmation id."
+                ),
+                ok=True,
+            )
+
+        logger.info(
+            "ssh_exec: resource=%s host=%s exit_code=%s recording=%s",
+            resource_id,
+            host,
+            envelope.get("exit_code", "?"),
+            bool(envelope.get("recording_id")),
+        )
+        return ToolResult(content=json.dumps(dict(envelope)), ok=True)
+
+
+def granted_ssh_resources(resources: list[RuntimeResource]) -> list[RuntimeResource]:
+    """Ssh resources whose published tool surface includes ``ssh_exec``
+    (the CP's ssh_tool_surface.go publishes it exactly when an active
+    grant exists — the fetch-at-wake contract)."""
+    granted: list[RuntimeResource] = []
+    for resource in resources:
+        if resource.resource_type != "ssh" or not resource.resource_id:
+            continue
+        names = {str(tool.get("name", "")) for tool in resource.tools}
+        if SSH_EXEC_TOOL_NAME in names:
+            granted.append(resource)
+    return granted
+
+
+def build_ssh_tools(
+    resources: list[RuntimeResource], config: BootstrapConfig
+) -> list:
+    """Register the single synthetic ssh_exec tool (MIG-6 slice).
+
+    Present only when (a) at least one granted ssh resource publishes
+    the ssh_exec surface AND (b) SKQUAD_TOOL_GATEWAY_URL is configured.
+    Otherwise [] — absent, fail-closed.
+    """
+    ssh_resources = granted_ssh_resources(resources)
+    if not ssh_resources:
+        return []
+    if not config.tool_gateway_url:
+        logger.info(
+            "ssh_exec: %d ssh grant(s) present but SKQUAD_TOOL_GATEWAY_URL is unset; "
+            "tool not registered (fail-closed)",
+            len(ssh_resources),
+        )
+        return []
+    resource_ids = tuple(r.resource_id for r in ssh_resources if r.resource_id)
+    if not resource_ids:
+        return []
+    return [SshExecTool(config.tool_gateway_url, resource_ids)]
+
+
 # Generic synthetic-tool registry: future drivers (browser, ssh) append
 # their builder here and inherit both turn paths.
 SYNTHETIC_TOOL_BUILDERS: tuple[
     Callable[[list[RuntimeResource], BootstrapConfig], list], ...
-] = (build_rest_call_tools, build_mcp_tools)
+] = (build_rest_call_tools, build_mcp_tools, build_ssh_tools)
 
 
 def build_synthetic_tools(

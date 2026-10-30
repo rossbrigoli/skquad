@@ -94,6 +94,8 @@ func New(deps Deps) *Server {
 	// {tool, arguments}). Trailing /call keeps the verb explicit and
 	// mirrors the rest resource addressing by id.
 	s.mux.HandleFunc("POST /v1/mcp/{resourceID}/call", s.handleMCPCall)
+	// MIG-6 (S-312): agent-facing ssh tool dispatch (ssh_exec first slice).
+	s.mux.HandleFunc("POST /v1/ssh/{resourceID}", s.handleSSHCall)
 	// TG-5 slice B1: CP-facing enumeration of an upstream MCP server
 	// (registration-time tool snapshot + drift hash). Internal-only:
 	// requires the shared internal token, never agent-facing.
