@@ -17,58 +17,58 @@ import (
 // Config is the full service configuration (YAML at --config path).
 type Config struct {
 	// Listen is the HTTP listen address, e.g. ":8080".
-	Listen string `yaml:"listen"`
+	Listen string `json:"listen" yaml:"listen"`
 	// Namespace is the dedicated build namespace where kaniko Jobs run
 	// (expected: skquad-builds). The service's RBAC is scoped to it.
-	Namespace string `yaml:"namespace"`
+	Namespace string `json:"namespace" yaml:"namespace"`
 	// KanikoImage is the kaniko executor image used for build Jobs.
-	KanikoImage string `yaml:"kaniko_image"`
+	KanikoImage string `json:"kaniko_image" yaml:"kaniko_image"`
 	// KanikoServiceAccount is the build-namespace SA for kaniko pods.
 	// It holds NO RBAC (automount disabled): kaniko never talks to the API.
-	KanikoServiceAccount string `yaml:"kaniko_service_account"`
+	KanikoServiceAccount string `json:"kaniko_service_account" yaml:"kaniko_service_account"`
 	// RegistrySecret is the build-namespace docker-config Secret mounted
 	// into kaniko pods at /kaniko/.docker for pushing allowlisted images.
 	// Agents never see its contents.
-	RegistrySecret string `yaml:"registry_secret"`
+	RegistrySecret string `json:"registry_secret" yaml:"registry_secret"`
 	// PrincipalsFile is the mounted JSON file of build principals
 	// (per-agent identities, token hashes, allowlists).
-	PrincipalsFile string `yaml:"principals_file"`
+	PrincipalsFile string `json:"principals_file" yaml:"principals_file"`
 	// CPPolicyURL is the control-plane base URL for the internal policy
 	// read API (GET {CP}/internal/v1/policy?agent=). Empty disables the
 	// live git-grant-scope check (static allowlists only) — allowed for
 	// dev, NOT recommended for production.
-	CPPolicyURL string `yaml:"cp_policy_url"`
+	CPPolicyURL string `json:"cp_policy_url" yaml:"cp_policy_url"`
 	// CPPolicyTTLSeconds bounds policy cache freshness (fail-closed on
 	// expiry + fetch error, same posture as the tool-gateway policy cache).
-	CPPolicyTTLSeconds int `yaml:"cp_policy_ttl_seconds"`
+	CPPolicyTTLSeconds int `json:"cp_policy_ttl_seconds" yaml:"cp_policy_ttl_seconds"`
 	// CPPolicyTimeoutSeconds bounds each CP fetch.
-	CPPolicyTimeoutSeconds int `yaml:"cp_policy_timeout_seconds"`
+	CPPolicyTimeoutSeconds int `json:"cp_policy_timeout_seconds" yaml:"cp_policy_timeout_seconds"`
 	// DestinationsAllow are global destination prefixes (e.g.
 	// "ghcr.io/rossbrigoli/agent-builds/"). A request destination must
 	// start with one of these AND with one of the principal's prefixes.
-	DestinationsAllow []string `yaml:"destinations_allow"`
+	DestinationsAllow []string `json:"destinations_allow" yaml:"destinations_allow"`
 	// GitHostsAllow is the SSRF floor for ls-remote probes: only these
 	// canonical git hosts may be probed (e.g. ["github.com"]).
-	GitHostsAllow []string `yaml:"git_hosts_allow"`
+	GitHostsAllow []string `json:"git_hosts_allow" yaml:"git_hosts_allow"`
 	// Limits are per-principal quotas.
-	Limits Limits `yaml:"limits"`
+	Limits Limits `json:"limits" yaml:"limits"`
 	// Job bounds the kaniko Job lifecycle and resources.
-	Job JobConfig `yaml:"job"`
+	Job JobConfig `json:"job" yaml:"job"`
 }
 
 // Limits are per-principal build quotas (enforced best-effort in-process;
 // concurrent-build counting is authoritative via the Jobs API).
 type Limits struct {
-	MaxConcurrentPerPrincipal int `yaml:"max_concurrent_per_principal"`
-	MaxPerHourPerPrincipal    int `yaml:"max_per_hour_per_principal"`
+	MaxConcurrentPerPrincipal int `json:"max_concurrent_per_principal" yaml:"max_concurrent_per_principal"`
+	MaxPerHourPerPrincipal    int `json:"max_per_hour_per_principal" yaml:"max_per_hour_per_principal"`
 }
 
 // JobConfig bounds each kaniko Job.
 type JobConfig struct {
-	ActiveDeadlineSeconds   int64  `yaml:"active_deadline_seconds"`
-	TTLSecondsAfterFinished int64  `yaml:"ttl_seconds_after_finished"`
-	CPURequest              string `yaml:"cpu_request"`
-	MemoryRequest           string `yaml:"memory_request"`
+	ActiveDeadlineSeconds   int64  `json:"active_deadline_seconds" yaml:"active_deadline_seconds"`
+	TTLSecondsAfterFinished int64  `json:"ttl_seconds_after_finished" yaml:"ttl_seconds_after_finished"`
+	CPURequest              string `json:"cpu_request" yaml:"cpu_request"`
+	MemoryRequest           string `json:"memory_request" yaml:"memory_request"`
 }
 
 // Load reads, parses (strict) and validates the config file.

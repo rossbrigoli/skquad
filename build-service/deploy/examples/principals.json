@@ -1,0 +1,12 @@
+{
+  "principals": [
+    {
+      "id": "sherlock",
+      "agent_id": "48da5ca3-5657-4115-a49e-caa643399683",
+      "display_name": "Sherlock",
+      "token_sha256_b64": "REPLACE: base64(sha256(raw_token)) — generate: openssl rand -hex 24 > tok; sha256sum tok | awk '{print $1}' | xxd -r -p | base64",
+      "repos_allow": ["rossbrigoli/*"],
+      "destinations_allow": ["docker.io/brigss007/agent-builds/"]
+    }
+  ]
+}

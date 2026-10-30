@@ -1,0 +1,74 @@
+# MIG-8 network posture for skquad-builds (sketch — labels must match
+# the live platform namespaces; apply via k3s-cluster gitops).
+#
+# Ingress: ONLY the tool-gateway may reach the build-service API.
+# (Agents reach it exclusively through the gateway's governed rest
+# driver; direct access is never needed.)
+#
+# Egress:
+#  - build-service → control-plane (internal policy API) and DNS.
+#  - kaniko pods  → git host (443) and registry (443). Hostname-level
+#    filtering is impossible in NetworkPolicy; the allowlists in the
+#    service config are the semantic control, netpol narrows ports.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: build-service-ingress-from-tool-gateway
+  namespace: skquad-builds
+spec:
+  podSelector:
+    matchLabels:
+      app: skquad-build-service
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/component: tool-gateway
+      ports:
+        - port: 8090
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: build-service-egress
+  namespace: skquad-builds
+spec:
+  podSelector:
+    matchLabels:
+      app: skquad-build-service
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/component: api
+      ports:
+        - port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kaniko-egress-git-registry
+  namespace: skquad-builds
+spec:
+  podSelector:
+    matchLabels:
+      app: skquad-build
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: {cidr: 0.0.0.0/0}
+      ports:
+        - port: 443
+        - port: 53
+          protocol: UDP

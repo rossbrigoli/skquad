@@ -1,0 +1,43 @@
+# Example build-service config (mounted at /etc/skquad-build/config.yaml).
+# All governance boundaries live here — tighten without code changes.
+listen: ":8090"
+namespace: skquad-builds
+
+# Kaniko executor. v1.24.0 is the LAST official upstream release
+# (Google deprecated gcr.io/kaniko-project in 2026). Actively
+# maintained community fork: ghcr.io/osscontainertools/kaniko
+# (v1.28.x) — switch only after supply-chain review by Ross.
+kaniko_image: gcr.io/kaniko-project/executor:v1.24.0
+kaniko_service_account: skquad-kaniko
+
+# docker-config Secret (kubernetes.io/dockerconfigjson) in the build
+# namespace, scoped to the allowlisted destination registry ONLY
+# (e.g. push rights limited to brigss007/agent-builds/**).
+registry_secret: skquad-build-registry
+
+# Per-agent caller identities (token hashes + allowlists).
+principals_file: /etc/skquad-build/principals.json
+
+# Control-plane internal policy API for the live git-grant-scope check.
+# Empty disables the CP check (static allowlists only) — dev only.
+cp_policy_url: http://skquad-api.skquad-system.svc.cluster.local
+cp_policy_ttl_seconds: 60
+cp_policy_timeout_seconds: 5
+
+# Global destination floor (default-deny; entries must end in '/').
+destinations_allow:
+  - docker.io/brigss007/agent-builds/
+
+# SSRF floor for revision probes.
+git_hosts_allow:
+  - github.com
+
+limits:
+  max_concurrent_per_principal: 1
+  max_per_hour_per_principal: 4
+
+job:
+  active_deadline_seconds: 1800
+  ttl_seconds_after_finished: 3600
+  cpu_request: 250m
+  memory_request: 512Mi
