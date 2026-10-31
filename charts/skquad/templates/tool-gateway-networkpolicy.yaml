@@ -59,6 +59,27 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.browserService.port }}
+    {{- if .Values.k8sMcp.enabled }}
+    # MIG-7: scoped Kubernetes MCP server (k8s-mcp). The gateway is the ONLY
+    # caller: registration enumerates tools through it (POST /internal/mcp/
+    # enumerate) and every agent call is proxied (POST /v1/mcp/{id}/call).
+    # Without this rule the blanket "public minus cluster CIDRs" egress allow
+    # drops gateway → k8s-mcp, so registration fails hard (the CP deletes the
+    # half-registered row) rather than leaving an unusable resource.
+    # Port is the CONTAINER port (.Values.k8sMcp.port), not servicePort: a
+    # podSelector matches post-DNAT traffic to podIP:targetPort.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "skquad.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: k8s-mcp
+      ports:
+        - protocol: TCP
+          port: {{ .Values.k8sMcp.port }}
+    {{- end }}
     # Public internet: 80,443 everywhere EXCEPT the cluster's own
     # pod/service CIDRs (configured via toolGateway.clusterCIDRs — adjust
     # to the actual cluster CIDRs; k3s defaults shipped).
