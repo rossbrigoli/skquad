@@ -11,6 +11,11 @@ import (
 	"net/http"
 	"os"
 	"time"
+	// MIG-9: embed the IANA tz database so timezone-aware cron schedules
+	// (time.LoadLocation) work in the distless/scratch image, which ships
+	// no /usr/share/zoneinfo. Without this, every scheduled job with a
+	// timezone is rejected: "unknown time zone Australia/Adelaide".
+	_ "time/tzdata"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/auth"
 	"github.com/rossbrigoli/skquad/control-plane/internal/config"
