@@ -1,0 +1,52 @@
+# MIG-8 least-privilege RBAC, namespace-scoped to skquad-builds.
+#
+# The build SERVICE gets exactly: create/read/list/delete on Jobs and
+# read/list on Pods (digest extraction from the kaniko pod termination
+# message). Nothing else. No cluster-wide roles, no secrets read (the
+# registry Secret is mounted into the kaniko pod by kubelet, the
+# service never reads Secret objects).
+#
+# The kaniko ServiceAccount gets NO Role at all and automount disabled:
+# kaniko builds from the git URL + mounted docker-config and must never
+# reach the Kubernetes API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: skquad-build-service
+  namespace: skquad-builds
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: skquad-build-service
+  namespace: skquad-builds
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: skquad-build-service
+  namespace: skquad-builds
+subjects:
+  - kind: ServiceAccount
+    name: skquad-build-service
+    namespace: skquad-builds
+roleRef:
+  kind: Role
+  name: skquad-build-service
+  apiGroup: rbac.authorization.k8s.io
+---
+# kaniko executor identity: NO RBAC, NO token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: skquad-kaniko
+  namespace: skquad-builds
+automountServiceAccountToken: false

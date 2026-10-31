@@ -205,6 +205,42 @@ jobs:
       - name: Build image
         run: docker build -t skquad-k8s-mcp-ci ./k8s-mcp
 
+  # MIG-8 (S-314): governed kaniko build path for agents.
+  build-service:
+    name: Build service
+    needs: go-version-sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.10'
+          cache-dependency-path: build-service/go.sum
+      - name: Go vet
+        working-directory: build-service
+        run: go vet ./...
+      - name: Go test
+        working-directory: build-service
+        run: |
+          set -o pipefail
+          go test ./... -coverpkg=./... -covermode=atomic -coverprofile=coverage.out -json | tee go-test.json
+      - name: Coverage report and gate
+        working-directory: build-service
+        run: |
+          go tool cover -func=coverage.out | tail -n 25
+          python3 ../scripts/go-coverage-gate.py coverage.out --min 70
+      - name: Convert test results for SonarQube (S-171)
+        working-directory: build-service
+        run: python3 ../scripts/testreport-to-sonar.py gojson --prefix build-service --out ../test-results/build-service.xml go-test.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-build-service
+          path: build-service/coverage.out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tests-build-service
+          path: test-results/build-service.xml
+
   operator:
     name: Operator
     needs: go-version-sync
@@ -559,6 +595,7 @@ jobs:
     needs:
       - control-plane
       - operator
+      - build-service
       - agent-runtime
       - llm-gateway
       - web
@@ -599,6 +636,10 @@ jobs:
           path: operator
       - uses: actions/download-artifact@v7
         with:
+          name: coverage-build-service
+          path: build-service
+      - uses: actions/download-artifact@v7
+        with:
           name: coverage-agent-runtime
           path: agent-runtime
       - uses: actions/download-artifact@v7
@@ -620,6 +661,10 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: tests-operator
+          path: test-results
+      - uses: actions/download-artifact@v7
+        with:
+          name: tests-build-service
           path: test-results
       - uses: actions/download-artifact@v7
         with:
@@ -663,6 +708,7 @@ jobs:
             tool-gateway/go.sum
             browser-proxy/go.sum
             terminal-service/go.sum
+            build-service/go.sum
           # GO-2026-66xx (net/http HPACK race, crypto/tls) fixed in go1.26.9 —
           # toolchain directive in go.mod now selects 1.26.9 (runner cache has
           # 1.26.8 pre-seeded per K-37; setup-go downloads 1.26.9, ~1 min).
@@ -696,6 +742,9 @@ jobs:
         run: $(go env GOPATH)/bin/govulncheck ./...
       - name: govulncheck terminal-service
         working-directory: terminal-service
+        run: $(go env GOPATH)/bin/govulncheck ./...
+      - name: govulncheck build-service
+        working-directory: build-service
         run: $(go env GOPATH)/bin/govulncheck ./...
       - name: pip-audit agent-runtime
         run: |

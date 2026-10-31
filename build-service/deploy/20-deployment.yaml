@@ -1,0 +1,79 @@
+# MIG-8: build-service Deployment + Service (in skquad-builds).
+# Secrets (principals JSON, registry docker-config) arrive via
+# SealedSecrets rendered by the k3s-cluster gitops repo — this manifest
+# references them by name only.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skquad-build-service
+  namespace: skquad-builds
+  labels:
+    app: skquad-build-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skquad-build-service
+  template:
+    metadata:
+      labels:
+        app: skquad-build-service
+    spec:
+      serviceAccountName: skquad-build-service
+      automountServiceAccountToken: true
+      containers:
+        - name: build-service
+          image: docker.io/brigss007/skquad-build-service:latest
+          args: ["--config", "/etc/skquad-build/config.yaml"]
+          ports:
+            - containerPort: 8090
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: config
+              mountPath: /etc/skquad-build
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8090}
+          readinessProbe:
+            httpGet: {path: /readyz, port: 8090}
+      volumes:
+        - name: config
+          secret:
+            secretName: skquad-build-service-config
+            items:
+              - key: config.yaml
+                path: config.yaml
+              - key: principals.json
+                path: principals.json
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skquad-build-service
+  namespace: skquad-builds
+  labels:
+    app: skquad-build-service
+spec:
+  selector:
+    app: skquad-build-service
+  ports:
+    - name: http
+      port: 8090
+      targetPort: 8090
