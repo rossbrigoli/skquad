@@ -149,3 +149,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-internal-token" (include "skquad.terminalServiceName" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
+
+{{- /* MIG-7: scoped k8s/gitops MCP server helpers */ -}}
+{{- define "skquad.k8sMcpName" -}}
+{{- printf "%s-k8s-mcp" (include "skquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "skquad.k8sMcpImage" -}}
+{{- printf "%s:%s" .Values.image.k8sMcp.repository .Values.image.k8sMcp.tag -}}
+{{- end -}}
