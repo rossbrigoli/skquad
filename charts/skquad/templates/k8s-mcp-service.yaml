@@ -1,0 +1,20 @@
+{{- if .Values.k8sMcp.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "skquad.k8sMcpName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: k8s-mcp
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.k8sMcp.servicePort }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "skquad.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: k8s-mcp
+{{- end }}
