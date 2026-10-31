@@ -1,7 +1,7 @@
 # MIG-8: build service. Standalone Go module (no ../shared replace),
 # builds with context build-service:
 #   docker build -f build-service/Dockerfile build-service
-ARG GO_VERSION=1.26.8
+ARG GO_VERSION=1.26.10
 
 FROM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
