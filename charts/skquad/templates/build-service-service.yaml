@@ -1,0 +1,19 @@
+{{- if .Values.buildService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "skquad.buildServiceName" . }}
+  namespace: {{ .Values.buildService.namespace }}
+  labels:
+    {{- include "skquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: build-service
+spec:
+  selector:
+    {{- include "skquad.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: build-service
+  ports:
+    - name: http
+      port: {{ .Values.buildService.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

@@ -107,6 +107,11 @@ jobs:
             context: .
             dockerfile: tool-gateway/Dockerfile
             image: skquad-tool-gateway
+          # MIG-8: build service (standalone module, no ../shared replace).
+          - component: build-service
+            context: build-service
+            dockerfile: build-service/Dockerfile
+            image: skquad-build-service
           # MIG-7: scoped Kubernetes/gitops MCP server (self-contained
           # module — builds from the component directory).
           - component: k8s-mcp

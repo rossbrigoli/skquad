@@ -23,6 +23,9 @@ image:
   web:
     repository: ghcr.io/rossbrigoli/skquad-web
     tag: "0.1.0"
+  buildService:
+    repository: ghcr.io/rossbrigoli/skquad-build-service
+    tag: "0.1.0"
 
 replicas:
   apiServer: 2
@@ -729,3 +732,41 @@ terminalService:
     # Coarse L4 fence for the registered git hosts (https only —
     # ls-remote/clone). MUST cover every artifact git_url host.
     gitEgressNetworks: []
+
+# MIG-8 (S-314): agent-facing build service. Governed kaniko build Jobs
+# in a dedicated namespace; agents submit builds through the tool-gateway
+# `rest` driver with per-agent credentials. Opt-in: disabled by default.
+# See build-service/README.md for the governance model and provisioning.
+buildService:
+  enabled: false
+  port: 8080
+  # Dedicated build namespace (isolated from skquad-system).
+  namespace: skquad-builds
+  # Kaniko pods run under this SA: no RBAC at all, token automount off.
+  kanikoServiceAccount: skquad-kaniko
+  # docker-config Secret for pushing to allowlisted destinations.
+  # Provisioned out-of-band by the platform admin; never committed.
+  registrySecret: agent-builds-registry-creds
+  # Secret with key principals.json (per-agent token hashes + allowlists).
+  # Provisioned out-of-band by the platform admin; never committed.
+  principalsSecret: build-service-principals
+  # Control-plane base URL for the live git-grant-scope check
+  # (GET {cp}/internal/v1/policy?agent=). Empty disables the live check
+  # (static allowlists only) — NOT recommended outside dev.
+  cpPolicyUrl: ""
+  cpPolicyTtlSeconds: 30
+  # Global destination prefix allowlist. Keep agent builds namespaced away
+  # from platform images so a build can never overwrite a component.
+  destinationsAllow:
+    - "ghcr.io/rossbrigoli/agent-builds/"
+  # SSRF floor for revision ls-remote probes.
+  gitHostsAllow:
+    - github.com
+  limits:
+    maxConcurrentPerPrincipal: 2
+    maxPerHourPerPrincipal: 20
+  job:
+    activeDeadlineSeconds: 3600
+    ttlSecondsAfterFinished: 604800
+    cpuRequest: "1"
+    memoryRequest: 2Gi

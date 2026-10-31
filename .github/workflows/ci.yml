@@ -177,6 +177,24 @@ jobs:
         working-directory: tool-gateway
         run: go test ./...
 
+  # MIG-8 (S-314): agent-facing build service (governed kaniko Jobs).
+  build-service:
+    name: Build service
+    needs: go-version-sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: build-service/go.mod
+          cache-dependency-path: build-service/go.sum
+      - name: Go vet
+        working-directory: build-service
+        run: go vet ./...
+      - name: Go test
+        working-directory: build-service
+        run: go test ./...
+
   # MIG-7: scoped Kubernetes/gitops MCP server. Self-contained module
   # (no shared replace); scoping/deny-path unit tests are the gate.
   k8s-mcp:
