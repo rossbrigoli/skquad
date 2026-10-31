@@ -13,6 +13,10 @@ image:
   toolGateway:
     repository: ghcr.io/rossbrigoli/skquad-tool-gateway
     tag: "0.1.0"
+  # MIG-7: scoped Kubernetes/gitops MCP server.
+  k8sMcp:
+    repository: ghcr.io/rossbrigoli/skquad-k8s-mcp
+    tag: "0.1.0"
   agentRuntime:
     repository: ghcr.io/rossbrigoli/skquad-agent-runtime
     tag: "0.1.0"
@@ -29,6 +33,40 @@ replicas:
   toolGateway: 2
   operator: 1
   web: 1
+  k8sMcp: 1
+
+# MIG-7: scoped Kubernetes/gitops MCP server (k8s-mcp). DISABLED by
+# default — enable explicitly with a scoped namespace list and ArgoCD app
+# allowlist. The server itself also fails closed if these are empty. See
+# k8s-mcp/README.md for the tool catalog and the registration example
+# (mcp resource + policy_ceiling; grant gitops-write tools per-agent via
+# the approve-tools flow).
+k8sMcp:
+  enabled: false
+  imagePullPolicy: IfNotPresent
+  port: 8081
+  servicePort: 8081
+  # Bearer token presented by callers (skquad mcp auth_kind=bearer).
+  # Create the Secret out-of-band like other skquad credentials.
+  authTokenSecret:
+    name: skquad-k8s-mcp-auth
+    key: token
+  # Namespaces the read tools may touch. Rendered into per-namespace
+  # Roles AND the server's allowlist — both must agree. No wildcards.
+  readNamespaces:
+    - skquad-system
+  # ArgoCD namespace and the ONLY apps status/refresh/sync may target.
+  argoNamespace: argocd
+  argoAllowedApps: []
+  # Hard cap on pod-log tail length.
+  maxLogLines: 500
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
 
 # S-130: overrides for the component versions shown on the About page.
 # Leave empty to use the image tag deployed for each component.

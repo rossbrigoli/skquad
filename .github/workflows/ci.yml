@@ -180,6 +180,7 @@ jobs:
   # MIG-8 (S-314): agent-facing build service (governed kaniko Jobs).
   build-service:
     name: Build service
+    needs: go-version-sync
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -193,6 +194,34 @@ jobs:
       - name: Go test
         working-directory: build-service
         run: go test ./...
+
+  # MIG-7: scoped Kubernetes/gitops MCP server. Self-contained module
+  # (no shared replace); scoping/deny-path unit tests are the gate.
+  k8s-mcp:
+    name: K8s MCP server
+    needs: go-version-sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.10' # GO-2026-66xx fix; modules also carry 'toolchain go1.26.10'
+          cache-dependency-path: k8s-mcp/go.sum
+      - name: Go vet
+        working-directory: k8s-mcp
+        run: go vet ./...
+      - name: Go test
+        working-directory: k8s-mcp
+        run: |
+          set -o pipefail
+          go test ./... -coverpkg=./... -covermode=atomic -coverprofile=coverage.out -json | tee go-test.json
+      - name: Coverage report and gate
+        working-directory: k8s-mcp
+        run: |
+          go tool cover -func=coverage.out | tail -n 25
+          python3 ../scripts/go-coverage-gate.py coverage.out --min 70
+      - name: Build image
+        run: docker build -t skquad-k8s-mcp-ci ./k8s-mcp
 
   operator:
     name: Operator
