@@ -80,6 +80,22 @@ spec:
         - protocol: TCP
           port: {{ .Values.k8sMcp.port }}
     {{- end }}
+    {{- range .Values.toolGateway.internalServiceEgress }}
+    # Internal-class resource "{{ .name }}" (namespace {{ .namespace }}).
+    # Pod-selector so the gateway reaches the pod post-DNAT; node-IP
+    # targets (e.g. *.lab via Traefik) are unreachable from a netpol-
+    # selected pod under Flannel+kube-router. See values.yaml note.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .podSelector | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .port }}
+    {{- end }}
     # Public internet: 80,443 everywhere EXCEPT the cluster's own
     # pod/service CIDRs (configured via toolGateway.clusterCIDRs — adjust
     # to the actual cluster CIDRs; k3s defaults shipped).
