@@ -556,6 +556,22 @@ toolGateway:
   browserService:
     namespace: skquad-browser
     componentLabel: browser-service
+  # Internal-class REST/MCP resources the gateway must reach as
+  # in-cluster pods. Under Flannel + kube-router netpol, pod→node
+  # (host-IP) traffic is NOT covered by the blanket ipBlock allow —
+  # live incident 2026-11-04: kanbunny.lab resolved to node IPs and
+  # every gateway→node:80 dial was REFUSED even with 0.0.0.0/0 minus
+  # pod/service CIDRs. Such resources therefore register against
+  # their in-cluster service DNS (ClusterIP → kube-proxy DNAT → pod),
+  # and the gateway gets a pod-selector egress rule per entry here
+  # (matches post-DNAT podIP:targetPort, bypassing the service-CIDR
+  # except). Same mechanism as the api-server / k8s-mcp peers above.
+  internalServiceEgress:
+    - name: kanbunny
+      namespace: kanbunny
+      podSelector:
+        app: kanbunny
+      port: 3500
   resources:
     requests:
       cpu: "100m"
