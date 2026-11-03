@@ -58,6 +58,17 @@ import { SubagentThreadPanel } from "../../../../../components/SubagentThreadPan
 import { AgentInboxPanel } from "../../../../../components/AgentInboxPanel";
 import { AttachmentThumbs } from "../../../../../components/AttachmentThumbs";
 import { MAX_MESSAGE_ATTACHMENTS, extractPastedImages, messageAttachments, validateImageFile, type UploadRef } from "../../../../../lib/uploads";
+import { SLASH_LISTBOX_ID, SlashSuggestions, slashOptionId } from "../../../../../components/SlashSuggestions";
+import {
+  SLASH_COMMANDS,
+  cycleSlashIndex,
+  filterSlashCommands,
+  matchSlashCommand,
+  slashCommandTokens,
+  slashQuery,
+  slashSuggestionsVisible,
+  type SlashCommand,
+} from "../../../../../lib/slashCommands";
 import { apiUploadImage } from "../../../../../lib/api";
 import { agentStatus } from "../../../../../lib/status";
 import { THINKING_LEVELS, resolveThinkingLevel, thinkingLevelLabel, type ThinkingLevel } from "../../../../../lib/thinking";
@@ -1357,6 +1368,13 @@ function ChatThread({
   const [pendingAttachments, setPendingAttachments] = useState<UploadRef[]>([]);
   const [uploadBusy, setUploadBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // S-304 follow-up: slash-command autocomplete. `slashIndex` is the
+  // highlighted row in the suggestion popup; `slashDismissed` is set by
+  // Escape so the popup stays down until the user changes the draft
+  // again (otherwise it would pop straight back up on the next
+  // keystroke).
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
   const { user } = useAuth();
   const scrollRef = useRef<HTMLDivElement>(null);
   // S-175: auto-scroll only while the user is already near the bottom, so
@@ -1366,6 +1384,16 @@ function ChatThread({
   const lastWakeAt = useRef(0);
 
   const sorted = useMemo(() => sortChatMessages(messages), [messages]);
+  // S-304 follow-up: what the suggestion popup shows right now. Empty
+  // array = no popup. Derived from the draft on every render so a newly
+  // registered command in SLASH_COMMANDS shows up with no other change.
+  const slashMatches = useMemo(
+    () =>
+      slashSuggestionsVisible(draft, SLASH_COMMANDS) && !slashDismissed
+        ? filterSlashCommands(slashQuery(draft) ?? "", SLASH_COMMANDS)
+        : [],
+    [draft, slashDismissed],
+  );
   // S-154: while the newest message is the user's (no agent reply yet),
   // the agent's turn is still in flight — lock the composer and show the
   // "Combobulating…" indicator. S-262: the turn stays pending through
@@ -1483,6 +1511,17 @@ function ChatThread({
           send();
         }}
       >
+        {slashMatches.length > 0 ? (
+          <SlashSuggestions
+            commands={slashMatches}
+            selectedIndex={Math.min(slashIndex, slashMatches.length - 1)}
+            onPick={(cmd) => {
+              setDraft(cmd.command);
+              setSlashDismissed(true);
+            }}
+            onHover={(i) => setSlashIndex(i)}
+          />
+        ) : null}
         <textarea
           value={draft}
           rows={1}
@@ -1506,14 +1545,70 @@ function ChatThread({
               }
             }
             setDraft(e.target.value);
+            // Typing changes the query, so the Escape-dismissal no longer
+            // applies and the highlight restarts at the top match.
+            setSlashDismissed(false);
+            setSlashIndex(0);
             autoGrow(e.target);
           }}
           placeholder={
             generating
               ? `Waiting for ${agentName} to finish…`
-              : `Message ${agentName}… (/reset, /restart)`
+              : `Message ${agentName}… (${slashCommandTokens().join(", ")})`
           }
+          role="combobox"
+          aria-expanded={slashMatches.length > 0}
+          aria-controls={slashMatches.length > 0 ? SLASH_LISTBOX_ID : undefined}
+          aria-autocomplete="list"
+          aria-activedescendant={
+            slashMatches.length > 0 ? slashOptionId(Math.min(slashIndex, slashMatches.length - 1)) : undefined
+          }
+          aria-label={`Message ${agentName}`}
           onKeyDown={(e) => {
+            // S-304 follow-up: slash-command autocomplete keys. Only
+            // consumed while the popup is showing, so ordinary messages
+            // keep Tab/Arrow behaviour untouched.
+            if (slashMatches.length > 0) {
+              const selected = slashMatches[Math.min(slashIndex, slashMatches.length - 1)];
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setSlashIndex((i) => cycleSlashIndex(i, slashMatches.length, 1));
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setSlashIndex((i) => cycleSlashIndex(i, slashMatches.length, -1));
+                return;
+              }
+              if (e.key === "Tab") {
+                // Complete the command into the box without sending —
+                // the user presses Enter to run it.
+                e.preventDefault();
+                setDraft(selected.command);
+                setSlashDismissed(true);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setSlashDismissed(true);
+                return;
+              }
+              if (e.key === "Enter" && !e.shiftKey) {
+                // Enter runs the highlighted command directly (the page
+                // still puts a confirm dialog in front of destructive
+                // ones), same as if it had been typed in full. With
+                // attachments staged the command is not lone, so it
+                // falls through and sends as a message — matching the
+                // dispatch rule in send().
+                if (pendingAttachments.length === 0) {
+                  e.preventDefault();
+                  setDraft("");
+                  setSlashDismissed(true);
+                  dispatchSlash(selected);
+                  return;
+                }
+              }
+            }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               send();
@@ -1650,14 +1745,15 @@ function ChatThread({
   );
 
   async function send() {
-    // S-304: slash commands in the composer. A lone "/reset" or
-    // "/restart" (no attachments) runs the corresponding agent action
-    // via the parent's confirm flow instead of sending a chat message.
-    const command = draft.trim().toLowerCase();
-    if (pendingAttachments.length === 0 && (command === "/reset" || command === "/restart")) {
+    // S-304 follow-up: slash commands in the composer. A lone known
+    // command (no attachments) runs the corresponding agent action via
+    // the parent's confirm flow instead of sending a chat message. The
+    // command set comes from the SLASH_COMMANDS registry, so new
+    // commands work here without touching this function.
+    const command = matchSlashCommand(draft, SLASH_COMMANDS);
+    if (command !== null && pendingAttachments.length === 0) {
       setDraft("");
-      if (command === "/reset") onSlashReset();
-      else onSlashRestart();
+      dispatchSlash(command);
       return;
     }
     // S-194: an image with no text is still a message (the runtime
@@ -1682,6 +1778,20 @@ function ChatThread({
       setError(err instanceof Error ? err.message : "send failed");
     } finally {
       setBusy(false);
+    }
+  }
+
+  // S-304 follow-up: route a command's action to the page. Adding a
+  // command means adding a registry entry plus a case here — the
+  // autocomplete, placeholder, and dispatch all stay in sync.
+  function dispatchSlash(cmd: SlashCommand) {
+    switch (cmd.action) {
+      case "reset":
+        onSlashReset();
+        break;
+      case "restart":
+        onSlashRestart();
+        break;
     }
   }
 

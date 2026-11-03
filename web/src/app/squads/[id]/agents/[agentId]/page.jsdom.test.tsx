@@ -1412,3 +1412,121 @@ describe("branch coverage extras 2", () => {
     );
   });
 });
+
+// S-304 follow-up: slash-command autocomplete in the composer.
+describe("slash command autocomplete", () => {
+  const composer = () => screen.getByPlaceholderText("Message coder… (/reset, /restart)");
+
+  it("typing / opens the suggestion popup with every registered command", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(composer(), "/");
+    const listbox = screen.getByRole("listbox", { name: "Slash commands" });
+    expect(within(listbox).getByRole("option", { name: /\/reset/ })).toBeInTheDocument();
+    expect(within(listbox).getByRole("option", { name: /\/restart/ })).toBeInTheDocument();
+    // Nothing has been sent or run yet.
+    expect(env.posts).toHaveLength(0);
+  });
+
+  it("filters suggestions as the query grows", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(composer(), "/res");
+    const listbox = screen.getByRole("listbox", { name: "Slash commands" });
+    expect(within(listbox).getAllByRole("option")).toHaveLength(1);
+    expect(within(listbox).getByRole("option", { name: /\/reset/ })).toBeInTheDocument();
+  });
+
+  it("Tab completes the highlighted command without sending it", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(composer(), "/resta");
+    await userEvent.keyboard("{Tab}");
+    // The command is in the box, the popup is gone, and nothing ran.
+    expect(composer()).toHaveValue("/restart");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(env.posts).toHaveLength(0);
+  });
+
+  it("Tab on a bare / completes the first (shortest) command", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(composer(), "/");
+    await userEvent.keyboard("{Tab}");
+    expect(composer()).toHaveValue("/reset");
+    expect(env.posts).toHaveLength(0);
+  });
+
+  it("arrow keys move the highlight and Enter runs the selected command", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(composer(), "/");
+    // /reset is first (shortest); Down wraps the highlight to /restart.
+    expect(composer()).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: /\/reset/ }).id,
+    );
+    await userEvent.keyboard("{ArrowDown}");
+    expect(composer()).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: /\/restart/ }).id,
+    );
+    await userEvent.keyboard("{Enter}");
+    // Enter runs the highlighted command through the page's confirm flow.
+    const dialog = screen.getByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Restart agent" }));
+    await vi.waitFor(() =>
+      expect(env.posts.some((p) => p.path === "/agents/ag1/restart")).toBe(true),
+    );
+    // The composer was cleared by the dispatch.
+    expect(composer()).toHaveValue("");
+  });
+
+  it("Enter on a partial query runs the highlighted command, not a message", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(composer(), "/rese");
+    await userEvent.keyboard("{Enter}");
+    // Confirm dialog for /reset — the partial completed-and-ran instead
+    // of sending "/rese" as chat text.
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: "Reset chat" })).toBeInTheDocument();
+    expect(env.posts.some((p) => p.path === "/agents/ag1/chat")).toBe(false);
+  });
+
+  it("Escape dismisses the popup and Enter then sends the text as a message", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(composer(), "/re");
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    await userEvent.keyboard("{Enter}");
+    await vi.waitFor(() =>
+      expect(env.posts.some((p) => p.path === "/agents/ag1/chat")).toBe(true),
+    );
+  });
+
+  it("clicking a suggestion inserts the command without running it", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(composer(), "/");
+    await userEvent.click(screen.getByRole("option", { name: /\/restart/ }));
+    expect(composer()).toHaveValue("/restart");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(env.posts).toHaveLength(0);
+  });
+
+  it("an unknown slash word shows no popup", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(composer(), "/nope");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("a fully typed command hides the popup; Enter still runs it", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(composer(), "/reset");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("the placeholder lists the registry's commands", () => {
+    render(<AgentProfilePage />);
+    expect(composer()).toHaveAttribute(
+      "placeholder",
+      "Message coder… (/reset, /restart)",
+    );
+  });
+});
