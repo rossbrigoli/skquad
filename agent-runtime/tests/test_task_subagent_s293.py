@@ -230,8 +230,8 @@ def _tool_call(name, args=None, call_id="c1"):
     }
 
 
-def _run(script, *, plugins=None, max_turns=5, brief=None, captured=None, progress=None):
-    ts.configure_runner_plugins(plugins or [_EchoPlugin()])
+def _run(script, *, plugins=None, max_turns=5, brief=None, captured=None, progress=None, config=None):
+    ts.configure_runner_plugins(plugins or [_EchoPlugin()], config)
     tools = [{"function": {"name": p}} for p in ["echo", "boom", "board.complete", "spawn_subagent"]]
 
     def kwargs_factory(messages, child_tools):
@@ -531,3 +531,57 @@ class ParentReviewTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunnerConfigThreadingTest(unittest.TestCase):
+    """TG-4c regression (live incident 2026-11-03, T-6): the task-subagent
+    runner invoked child tool calls with a hardcoded ``None`` config, so
+    every synthetic gateway tool (rest_call / mcp_call / ssh_exec) that
+    dereferences ``config.agent_credential_path`` crashed client-side with
+    "'NoneType' object has no attribute 'agent_credential_path'" before the
+    request ever reached the gateway. configure_runner_plugins must thread
+    the wake's real config through to plugin.invoke."""
+
+    def test_child_tool_invocation_receives_configured_config(self):
+        seen = {}
+        sentinel = object()
+
+        class _ConfigCapturingPlugin:
+            name = "rest_call"
+
+            def tools(self):
+                return [{"function": {"name": "rest_call"}}]
+
+            def invoke(self, call, config):
+                seen["config"] = config
+                return ToolResult(content="ok", ok=True)
+
+        _run(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [_tool_call("rest_call")],
+                },
+                {"role": "assistant", "content": fenced(GOOD_RESULT)},
+            ],
+            plugins=[_ConfigCapturingPlugin()],
+            config=sentinel,
+        )
+        self.assertIs(seen.get("config"), sentinel)
+        self.assertIs(ts._runner_config(), sentinel)
+
+    def test_config_defaults_to_none_without_breaking_tools(self):
+        # Legacy call shape (no config argument) must still work for
+        # plugins that ignore config.
+        _run(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [_tool_call("echo")],
+                },
+                {"role": "assistant", "content": fenced(GOOD_RESULT)},
+            ],
+        )
+        self.assertIsNone(ts._runner_config())

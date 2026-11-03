@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -105,8 +106,11 @@ func TestGitRouteClonePassthrough(t *testing.T) {
 	if rec.Body.String() != refs {
 		t.Fatalf("body = %q want %q", rec.Body.String(), refs)
 	}
-	if gotAuth != "Bearer "+gitFakeToken {
-		t.Fatalf("upstream auth = %q", gotAuth)
+	// TG-4c: git bearer custody rides upstream as HTTP Basic
+	// (x-access-token:<PAT>) — GitHub git-over-HTTPS rejects Bearer.
+	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+gitFakeToken))
+	if gotAuth != wantAuth {
+		t.Fatalf("upstream auth = %q want %q", gotAuth, wantAuth)
 	}
 	ev := lastAuditEvent(t, auditBuf)
 	if ev.Decision != audit.DecisionAllow || ev.Operation != "git_fetch" || ev.AgentID != "agent-1" {
