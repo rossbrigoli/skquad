@@ -265,6 +265,16 @@ func copyStream(w io.Writer, src io.Reader, flusher http.Flusher) (int64, error)
 // injectAuth attaches the resolved credential. Supported kinds:
 // bearer (GitHub fine-grained PAT / App installation token) and
 // basic (username + token, e.g. GitHub HTTPS with any username).
+//
+// NOTE (live incident 2026-11-03): GitHub's git smart-HTTP endpoints
+// reject `Authorization: Bearer <PAT>` with 401 "invalid credentials"
+// — Bearer is a REST-API-only scheme there. Git-over-HTTPS wants the
+// PAT as a *password*, so the bearer kind is sent as HTTP Basic with a
+// fixed username (`x-access-token`, the GitHub convention). GitLab and
+// Bitbucket also accept a PAT as a Basic password with any non-empty
+// username, so this stays portable across the hosts we support.
+const gitBasicUser = "x-access-token"
+
 func injectAuth(outReq *http.Request, secret *credentials.Secret) error {
 	switch secret.Kind {
 	case "bearer":
@@ -272,7 +282,7 @@ func injectAuth(outReq *http.Request, secret *credentials.Secret) error {
 		if tok == "" {
 			return drivers.Denied("credential_unusable")
 		}
-		outReq.Header.Set("Authorization", "Bearer "+tok)
+		outReq.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(gitBasicUser+":"+tok)))
 	case "basic":
 		user := secret.Fields["username"]
 		pass := secret.Fields["password"]

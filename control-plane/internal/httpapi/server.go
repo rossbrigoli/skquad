@@ -2040,11 +2040,44 @@ func (s *Server) validateAndRotateUpdateAuth(
 	eff updateEffective,
 	req *updateRegistryResourceReq,
 ) bool {
-	if req.Auth != nil && resource.Type != domain.ResRest && resource.Type != domain.ResMCP {
-		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest and mcp resources")
+	if req.Auth != nil && resource.Type != domain.ResRest && resource.Type != domain.ResGit && resource.Type != domain.ResMCP {
+		writeError(w, http.StatusBadRequest, "bad_request", "auth payload is only valid for rest, git and mcp resources")
 		return false
 	}
 	if resource.Type == domain.ResRest && req.Auth != nil && !s.rotateRestCredential(w, r, resource, eff.config, *req.Auth) {
+		return false
+	}
+	// TG-4c (live incident 2026-11-03): git resources were missing from
+	// this path — editing a git resource with a new PAT failed with
+	// "auth payload is only valid for rest and mcp resources" even though
+	// CREATE supports git custody. Git custody is the fixed bearer kind
+	// (single `token` field); an empty payload leaves the stored Secret
+	// untouched (edit-without-rotation).
+	if resource.Type == domain.ResGit && req.Auth != nil && !s.rotateGitCredential(w, r, resource, *req.Auth) {
+		return false
+	}
+	return true
+}
+
+// rotateGitCredential replaces the managed Secret for a git resource.
+// Mirrors the CREATE-path custody: fixed bearer kind, one `token`
+// field, write-only. An empty payload is a no-op (the UI omits it
+// when the operator is not rotating).
+func (s *Server) rotateGitCredential(w http.ResponseWriter, r *http.Request, resource *domain.RegistryResource, authRaw json.RawMessage) bool {
+	fields, v := parseRestAuth(gitAuthKind, authRaw)
+	if len(v) > 0 {
+		writeViolations(w, invalidAuthPayloadCode, authPayloadFailedValidationMsg, v)
+		return false
+	}
+	if len(fields) == 0 {
+		return true
+	}
+	if s.resourceSecrets == nil {
+		writeError(w, http.StatusServiceUnavailable, secretStoreUnavailableCode, byoRequiresKubeSecretStorageMsg)
+		return false
+	}
+	if err := s.setResourceSecret(r.Context(), resource, fields); err != nil {
+		writeError(w, http.StatusBadGateway, "resource_secret_store_failed", "could not store the resource credential as a Kubernetes Secret")
 		return false
 	}
 	return true

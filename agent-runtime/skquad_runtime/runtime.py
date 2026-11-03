@@ -2815,7 +2815,7 @@ class LiteLLMTaskHandler:
         process through the normal complete/block path."""
         from . import task_subagent as ts
 
-        ts.configure_runner_plugins(plugins)
+        ts.configure_runner_plugins(plugins, config)
         rework_max = ts.task_rework_max()
         reworks_used = 0
         brief = self._task_brief(task)

@@ -133,7 +133,7 @@ func TestUploadPackInfoRefsPassthrough(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, refsBody, rec.Body.String(), "body must pass through byte-identical")
-	require.Equal(t, "Bearer "+fakeToken, gotAuth, "credential injected upstream")
+	require.Equal(t, "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:"+fakeToken)), gotAuth, "credential injected upstream as Basic (GitHub git-over-HTTPS rejects Bearer)")
 	require.Equal(t, "/acme/widgets.git/info/refs", gotPath)
 	require.Equal(t, "service=git-upload-pack", gotQuery)
 	require.Equal(t, "acme/widgets", res.Repo)
@@ -340,7 +340,7 @@ func TestCredentialNeverLeaks(t *testing.T) {
 	_, res, err := serve(t, d, streamReq("a", g, "acme/widgets.git/info/refs"),
 		http.MethodGet, "http://g/x?service=git-upload-pack")
 	require.NoError(t, err)
-	require.Equal(t, "Bearer "+fakeToken, gotAuth, "credential injected upstream")
+	require.Equal(t, "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:"+fakeToken)), gotAuth, "credential injected upstream as Basic (GitHub git-over-HTTPS rejects Bearer)")
 
 	// The result (which flows into the audit detail) must not contain
 	// the token, and the captured log must be empty of it.

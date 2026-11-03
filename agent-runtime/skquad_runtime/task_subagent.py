@@ -558,7 +558,7 @@ def _run_child_tool_round(
             tool_content = f"tool {call.name!r} is not available to task subagents"  # type: ignore[attr-defined]
             ok = False
         else:
-            tool_result = invoke_plugin_tool(call, None, _runner_plugins())  # type: ignore[arg-type]
+            tool_result = invoke_plugin_tool(call, _runner_config(), _runner_plugins())  # type: ignore[arg-type]
             tool_content = tool_result.content
             ok = tool_result.ok
         steps.append(call.name)  # type: ignore[attr-defined]
@@ -705,6 +705,7 @@ def run_task_subagent(
 
 
 _RUNNER_PLUGINS: list = []
+_RUNNER_CONFIG: object = None
 
 
 def _runner_plugins() -> "list[RuntimePlugin]":
@@ -717,9 +718,23 @@ def _runner_plugins() -> "list[RuntimePlugin]":
     return _RUNNER_PLUGINS
 
 
-def configure_runner_plugins(plugins: Sequence[object]) -> None:
-    global _RUNNER_PLUGINS
+def _runner_config() -> object:
+    """The wake's :class:`BootstrapConfig` for child tool invocations.
+
+    Synthetic gateway tools (rest_call / mcp_call / ssh_exec) read
+    ``config.agent_credential_path`` and ``config.agent_id`` at invoke
+    time. The runner used to pass ``None`` here, so EVERY such call in a
+    task subagent died client-side with
+    ``'NoneType' object has no attribute 'agent_credential_path'``
+    (live incident 2026-11-03, T-6). The runtime now threads the real
+    config through ``configure_runner_plugins``."""
+    return _RUNNER_CONFIG
+
+
+def configure_runner_plugins(plugins: Sequence[object], config: object = None) -> None:
+    global _RUNNER_PLUGINS, _RUNNER_CONFIG
     _RUNNER_PLUGINS = [p for p in plugins if getattr(p, "name", None) != "spawn_subagent"]
+    _RUNNER_CONFIG = config
 
 
 def _mark_task_subagent_metadata(kwargs: dict, task_id: str) -> None:

@@ -217,3 +217,50 @@ func createTypedResourceAuthed(t *testing.T, handler http.Handler, name string) 
 	require.NotEmpty(t, res.ID)
 	return res
 }
+
+// ── TG-4c: git resource UPDATE custody (live incident 2026-11-03) ────────
+//
+// The update handler's auth type gate excluded git, so editing a git
+// resource with a new PAT failed with "auth payload is only valid for
+// rest and mcp resources" — the UI's Save-changes path was dead for git
+// even though CREATE supports git custody.
+
+func TestGitResourceUpdateRotatesCredential(t *testing.T) {
+	secrets := newFakeResourceSecretStore()
+	handler := newServer(testConfig(), storage.NewMemoryStore(), serverDeps{resourceSecrets: secrets})
+	res := createTypedResource(t, handler, "git", gitResourceBody("gh-rotate"))
+
+	rotated := "FAKE-GIT-TOKEN-rotated-DO-NOT-USE"
+	var out domain.RegistryResource
+	doJSON(t, handler, http.MethodPatch, registryBase+"git/"+res.ID,
+		map[string]any{"auth": map[string]string{"token": rotated}}, http.StatusOK, &out)
+
+	stored, ok := secrets.get(kube.GitSecretName(res.ID))
+	require.True(t, ok)
+	require.Equal(t, rotated, stored["token"], "managed secret replaced on update")
+	require.NotContains(t, mustMarshalString(t, out), rotated, "response never echoes the token")
+}
+
+func TestGitResourceUpdateWithoutAuthLeavesSecret(t *testing.T) {
+	secrets := newFakeResourceSecretStore()
+	handler := newServer(testConfig(), storage.NewMemoryStore(), serverDeps{resourceSecrets: secrets})
+	res := createTypedResource(t, handler, "git", gitResourceBody("gh-noauth"))
+
+	var out domain.RegistryResource
+	doJSON(t, handler, http.MethodPatch, registryBase+"git/"+res.ID,
+		map[string]any{"description": "renamed only"}, http.StatusOK, &out)
+	require.Equal(t, "renamed only", out.Description)
+
+	stored, ok := secrets.get(kube.GitSecretName(res.ID))
+	require.True(t, ok)
+	require.Equal(t, gitFakePAT, stored["token"], "no auth payload -> stored secret untouched")
+}
+
+func TestGitResourceUpdateEmptyTokenRejected(t *testing.T) {
+	handler := newServer(testConfig(), storage.NewMemoryStore(), serverDeps{resourceSecrets: newFakeResourceSecretStore()})
+	res := createTypedResource(t, handler, "git", gitResourceBody("gh-badauth"))
+
+	rec := doRawJSON(t, handler, http.MethodPatch, registryBase+"git/"+res.ID,
+		mustJSONString(t, map[string]any{"auth": map[string]string{"token": ""}}))
+	require.Equal(t, http.StatusBadRequest, rec.Code, "empty token fails bearer custody validation")
+}
