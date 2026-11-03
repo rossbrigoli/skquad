@@ -572,6 +572,12 @@ toolGateway:
       podSelector:
         app: kanbunny
       port: 3500
+    - name: sonarqube
+      namespace: sonarqube
+      podSelector:
+        app: sonarqube
+        release: sonarqube
+      port: 9000
   resources:
     requests:
       cpu: "100m"
