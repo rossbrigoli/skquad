@@ -46,8 +46,13 @@ export default function SquadPromptPage() {
   // S-211: one click saves BOTH the mission and the squad context.
   async function save() {
     await apiPatch<Squad>(`/squads/${squadId}`, token, buildContextSavePayload(mission, prompt));
+    // Await the refresh BEFORE re-arming the one-shot prefill. The
+    // prefill effect keys off `squad`, so re-arming first let it fire
+    // against the still-stale cached squad and lock `loadedOnce` back
+    // on — the fields then showed the OLD values and the fresh payload
+    // arriving later was ignored ("values revert after Save").
+    await squads.refresh();
     setLoadedOnce(false);
-    squads.refresh();
   }
 
   const agentItems = agents.data || [];

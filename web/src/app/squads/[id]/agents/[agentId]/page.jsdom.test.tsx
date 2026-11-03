@@ -7,6 +7,7 @@
 // the composer (send, wake-on-typing, stop, thinking level), the
 // Configuration form (dirty gating, single PATCH payload, storage
 // validation, LLM binding states), grants and identity actions.
+import * as React from "react";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +15,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const env = vi.hoisted(() => ({
   agents: [] as unknown[],
   agentsLoading: false,
+  // What the fake server serves on the NEXT refresh of the agent list.
+  // Models the network round-trip: the new values only become visible
+  // when the refresh promise resolves, never before.
+  agentsOnRefresh: null as unknown[] | null,
   tasks: [] as unknown[],
   taskMessages: {} as Record<string, unknown[]>,
   taskMessagesLoading: false,
@@ -186,11 +191,28 @@ vi.mock("../../../../../lib/useApi", () => ({
       error = env.registryError;
     }
     const key = path;
+    // The mock must behave like the real hook across a refresh: the
+    // payload changes only when the refresh promise settles, and the
+    // component re-renders with it. Reading `env` statically would hide
+    // ordering bugs, so a version counter drives the re-render.
+    const [version, setVersion] = React.useState(0);
+    void version;
     return {
       data,
       loading,
       error,
-      refresh: () => env.refreshes.push(key),
+      refresh: async () => {
+        env.refreshes.push(key);
+        // Simulate the fetch: nothing changes until the promise settles.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (key === "/squads/sq1/agents" && env.agentsOnRefresh) {
+          env.agents = env.agentsOnRefresh;
+        }
+        setVersion((v) => v + 1);
+        // Return the post-refresh payload (not the value captured at the
+        // previous render) so callers awaiting it get fresh data.
+        return key === "/squads/sq1/agents" ? env.agents : data;
+      },
     };
   },
 }));
@@ -289,6 +311,7 @@ function chatMsg(id: string, from: "user" | "agent", text: string, extra: Record
 beforeEach(() => {
   env.agents = [agent()];
   env.agentsLoading = false;
+  env.agentsOnRefresh = null;
   env.tasks = [];
   env.taskMessages = {};
   env.taskMessagesLoading = false;
@@ -730,6 +753,33 @@ describe("chat thread", () => {
 });
 
 describe("configuration tab", () => {
+  // Regression (task 6): after Save, the fields must show the NEW
+  // values immediately. The form remounts on save via a React key; if
+  // that remount happens before the refreshed agent payload has
+  // landed, the remounted form initialises from stale data and the
+  // fields snap back to the previous values until a page reload.
+  it("shows the saved fallback model immediately after Save, not the old one", async () => {
+    env.models = [model("m1", "Model One"), model("m2", "Model Two"), model("m3", "Model Three")];
+    env.agents = [agent({ ai_model_id: "m1", fallback_ai_model_id: "m2" })];
+    // The server's post-save state: only visible once refresh() resolves.
+    env.agentsOnRefresh = [agent({ ai_model_id: "m1", fallback_ai_model_id: "m3" })];
+    render(<AgentProfilePage />);
+    await openConfigTab();
+
+    expect(screen.getByLabelText("Fallback model (optional)")).toHaveValue("m2");
+
+    await userEvent.selectOptions(screen.getByLabelText("Fallback model (optional)"), "m3");
+    await userEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await vi.waitFor(() => expect(env.patches).toHaveLength(1));
+    expect((env.patches[0].body as Record<string, unknown>).fallback_ai_model_id).toBe("m3");
+
+    // The remounted form must come back showing the saved value.
+    await vi.waitFor(() =>
+      expect(screen.getByLabelText("Fallback model (optional)")).toHaveValue("m3"),
+    );
+    expect(screen.getByText("Configuration saved.")).toBeInTheDocument();
+  });
+
   it("prefills basics and saves one trimmed PATCH for the whole form", async () => {
     render(<AgentProfilePage />);
     await openConfigTab();

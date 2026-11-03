@@ -666,8 +666,16 @@ export default function AgentProfilePage() {
   const [identityBusy, setIdentityBusy] = useState(false);
   const [identityError, setIdentityError] = useState("");
   const [previewEffective, setPreviewEffective] = useState(false);
+  // Saved-confirmation text, owned by the page so it survives the
+  // remount that a successful save triggers.
+  const [configSavedNote, setConfigSavedNote] = useState("");
   // Bumped after a successful config save so the form remounts with the
-  // server's fresh values — no manual state reconciliation.
+  // server's fresh values — no manual state reconciliation. The bump must
+  // only happen AFTER the agent list refresh has resolved: bumping while
+  // the fetch is still in flight remounts the form against the stale
+  // cached payload, which is what made saved fields (fallback model,
+  // textboxes, dropdowns) snap back to their previous values until a
+  // page reload.
   const [savedTick, setSavedTick] = useState(0);
   // S-162 actions relocated by S-169 items 9a/9b; S-304 moved both to
   // slash commands in the composer — the note states survive to report the
@@ -684,7 +692,10 @@ export default function AgentProfilePage() {
     setThinkingBusy(true);
     try {
       await apiPatch(`/agents/${agentId}`, token, { thinking_level: level });
-      agents.refresh();
+      // Awaited so the prop-driven select shows the saved level as soon
+      // as the request settles instead of reverting to the stale value
+      // until the next 30s poll.
+      await agents.refresh();
     } finally {
       setThinkingBusy(false);
     }
@@ -794,12 +805,20 @@ export default function AgentProfilePage() {
             }
             onPreviewEffective={() => setPreviewEffective(true)}
             onRequestDelete={() => setDeleting(true)}
-            onSaved={() => {
-              setSavedTick((t) => t + 1);
-              agents.refresh();
-              perms.refresh();
-              metering.refresh();
-              meteringMtd.refresh();
+            savedNote={configSavedNote}
+            onSaved={async () => {
+              setConfigSavedNote("Configuration saved.");
+              // Remount the form only once the refreshed agent list has
+              // landed, so the remounted form initialises from the
+              // server's post-save values. If the refresh fails we do
+              // NOT remount: the form keeps showing what the user just
+              // saved (which is what the server accepted) instead of
+              // snapping back to stale polled data.
+              const fresh = await agents.refresh();
+              if (fresh) setSavedTick((t) => t + 1);
+              void perms.refresh();
+              void metering.refresh();
+              void meteringMtd.refresh();
             }}
           />
         ) : null}
@@ -899,6 +918,7 @@ function AgentConfigPane({
   onPreviewEffective,
   onRequestDelete,
   onSaved,
+  savedNote: initialSavedNote,
 }: {
   readonly agent: Agent;
   readonly token: string;
@@ -912,7 +932,11 @@ function AgentConfigPane({
   readonly onIdentityAction: () => Promise<void>;
   readonly onPreviewEffective: () => void;
   readonly onRequestDelete: () => void;
-  readonly onSaved: () => void;
+  // The post-save confirmation lives on the page so it survives the
+  // remount that a successful save triggers; it is handed back in as
+  // the initial value of the local note state.
+  readonly savedNote: string;
+  readonly onSaved: () => Promise<void>;
 }) {
   const [role, setRole] = useState(agent.role ?? "");
   // S-183: empty = follow the platform idle scale-to-zero setting (0).
@@ -936,7 +960,7 @@ function AgentConfigPane({
   const [promptBlocked, setPromptBlocked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [savedNote, setSavedNote] = useState("");
+  const [savedNote, setSavedNote] = useState(initialSavedNote);
 
   const storageInvalid = storageEnabled && !isValidStorageSize(storageSize);
   const turnBudgetInvalid = turnBudget.trim() !== "" && (Number(turnBudget) < 1 || Number(turnBudget) > 512);
@@ -987,7 +1011,10 @@ function AgentConfigPane({
       }
       await apiPatch(`/agents/${agent.id}`, token, body);
       setSavedNote("Configuration saved.");
-      onSaved();
+      // onSaved() refreshes the agent list and remounts this pane once
+      // fresh data lands, handing the confirmation back in as the new
+      // initial note so it survives the remount.
+      await onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "save failed");
     } finally {

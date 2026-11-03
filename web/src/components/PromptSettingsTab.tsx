@@ -46,8 +46,12 @@ export function OrganizationPromptTab() {
       org_name: orgName.trim(),
       org_prompt: prompt,
     });
+    // Await the refresh BEFORE re-arming the one-shot prefill: re-arming
+    // first lets the prefill effect fire against the still-stale cached
+    // settings and set loadedOnce back to true, so the fresh payload is
+    // then ignored and the fields show the OLD values after Save.
+    await settings.refresh();
     setLoadedOnce(false);
-    settings.refresh();
   }
 
   return (
