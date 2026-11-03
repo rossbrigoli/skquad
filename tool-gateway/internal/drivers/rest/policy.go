@@ -102,10 +102,17 @@ func parseConstraints(raw json.RawMessage) (restPolicyShape, error) {
 //   - path_deny: UNION of ceiling ∪ constraints (additive only), and
 //     deny always wins over allow.
 //   - numeric bounds: MIN of every layer that sets one.
-//   - egress: private networks allowed only when BOTH ceiling and grant
-//     constraints are egress_class=internal (mirrors web allow_private
-//     semantics).
-func EffectivePolicy(configRaw, ceilingRaw, constraintsRaw json.RawMessage) (*Policy, error) {
+//   - egress: the resource's registered egress_class column (surfaced
+//     per-grant by the CP as grantEgressClass) is the base class; the
+//     ceiling JSON egress_class overrides it when set (resource-level
+//     floor refinement). Grant constraints tighten only: empty inherits
+//     the base, "internal" is allowed only when the base is internal,
+//     anything else forces public (a grant can never widen egress).
+//     (TG-4c live incident 2026-11-03: kanbunny — registered
+//     egress_class=internal — was ssrf_blocked because its ceiling JSON
+//     carries no egress_class key and the old fold required BOTH JSON
+//     layers to explicitly say "internal".)
+func EffectivePolicy(configRaw, ceilingRaw, constraintsRaw json.RawMessage, grantEgressClass string) (*Policy, error) {
 	cfg, err := parseConfig(configRaw)
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
@@ -177,7 +184,13 @@ func EffectivePolicy(configRaw, ceilingRaw, constraintsRaw json.RawMessage) (*Po
 		}
 	}
 
-	p.AllowPrivate = ce.EgressClass == "internal" && con.EgressClass == "internal"
+	baseEgress := strings.TrimSpace(ce.EgressClass)
+	if baseEgress == "" {
+		baseEgress = strings.TrimSpace(grantEgressClass)
+	}
+	conEgress := strings.TrimSpace(con.EgressClass)
+	p.AllowPrivate = strings.EqualFold(baseEgress, "internal") &&
+		(conEgress == "" || strings.EqualFold(conEgress, "internal"))
 	return p, nil
 }
 

@@ -129,7 +129,7 @@ func (d *Driver) Handle(ctx context.Context, req *drivers.Request) (*drivers.Res
 		return nil, fmt.Errorf("bad_request: %v", err)
 	}
 
-	pol, err := EffectivePolicy(req.Grant.Config, req.Grant.Ceiling, req.Grant.Constraints)
+	pol, err := EffectivePolicy(req.Grant.Config, req.Grant.Ceiling, req.Grant.Constraints, req.Grant.EgressClass)
 	if err != nil {
 		// A malformed policy must never widen reach: deny.
 		return nil, drivers.Denied("invalid_policy")

@@ -392,12 +392,12 @@ func TestRequiresConfirmationDeniedFailClosed(t *testing.T) {
 // ── policy folding ───────────────────────────────────────────────────────
 
 func TestEffectivePolicyRequiresBaseURL(t *testing.T) {
-	_, err := EffectivePolicy(raw(`{}`), raw(`{}`), raw(`{}`))
+	_, err := EffectivePolicy(raw(`{}`), raw(`{}`), raw(`{}`), "")
 	require.Error(t, err)
 }
 
 func TestEffectivePolicyDefaults(t *testing.T) {
-	p, err := EffectivePolicy(raw(`{"url":"https://mcp.example.com/"}`), nil, nil)
+	p, err := EffectivePolicy(raw(`{"url":"https://mcp.example.com/"}`), nil, nil, "")
 	require.NoError(t, err)
 	require.Equal(t, "https://mcp.example.com", p.BaseURL, "trailing slash trimmed, url alias accepted")
 	require.Equal(t, AuthBearer, p.AuthKind, "bearer is the default kind")
@@ -410,7 +410,7 @@ func TestEffectivePolicyDefaults(t *testing.T) {
 func TestEffectivePolicyFoldsTighter(t *testing.T) {
 	ce := `{"tools_allow":["a","b","c"],"tools_deny":["b"],"max_args_bytes":1000,"rate_per_min":30}`
 	con := `{"tools_allow":["a","c"],"tools_deny":["c"],"max_args_bytes":500,"rate_per_min":10,"egress_class":"internal"}`
-	p, err := EffectivePolicy(raw(`{"base_url":"https://x.test/mcp"}`), raw(ce), raw(con))
+	p, err := EffectivePolicy(raw(`{"base_url":"https://x.test/mcp"}`), raw(ce), raw(con), "")
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "c"}, p.ToolsAllow, "grant list wins")
 	require.Contains(t, p.ToolsDeny, "b")
@@ -423,7 +423,7 @@ func TestEffectivePolicyFoldsTighter(t *testing.T) {
 	require.False(t, p.AllowPrivate, "internal requires BOTH layers")
 
 	p2, err := EffectivePolicy(raw(`{"base_url":"https://x.test/mcp"}`),
-		raw(`{"egress_class":"internal"}`), raw(`{"egress_class":"internal"}`))
+		raw(`{"egress_class":"internal"}`), raw(`{"egress_class":"internal"}`), "")
 	require.NoError(t, err)
 	require.True(t, p2.AllowPrivate)
 }
@@ -431,7 +431,7 @@ func TestEffectivePolicyFoldsTighter(t *testing.T) {
 func TestPerToolConfirmationSticky(t *testing.T) {
 	p, err := EffectivePolicy(raw(`{"base_url":"https://x.test/mcp"}`),
 		raw(`{"per_tool":{"t":{"requires_confirmation":true}}}`),
-		raw(`{"per_tool":{"t":{"requires_confirmation":false}}}`))
+		raw(`{"per_tool":{"t":{"requires_confirmation":false}}}`), "")
 	require.NoError(t, err)
 	require.True(t, p.requiresConfirmation("t"), "confirmation is sticky-true across layers")
 	require.False(t, p.requiresConfirmation("other"))

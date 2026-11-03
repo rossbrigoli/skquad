@@ -104,12 +104,12 @@ func respOf(t *testing.T, r *drivers.Response) *Response {
 // ── EffectivePolicy folding ───────────────────────────────────────────────
 
 func TestEffectivePolicyRequiresBaseURL(t *testing.T) {
-	_, err := EffectivePolicy(raw(`{}`), raw(`{}`), raw(`{}`))
+	_, err := EffectivePolicy(raw(`{}`), raw(`{}`), raw(`{}`), "")
 	require.Error(t, err)
 }
 
 func TestEffectivePolicyDefaults(t *testing.T) {
-	p, err := EffectivePolicy(raw(`{"base_url":"https://api.example.com/","auth_kind":"none"}`), nil, nil)
+	p, err := EffectivePolicy(raw(`{"base_url":"https://api.example.com/","auth_kind":"none"}`), nil, nil, "")
 	require.NoError(t, err)
 	require.Equal(t, "https://api.example.com", p.BaseURL, "trailing slash trimmed")
 	require.Equal(t, DefaultMaxRequestBytes, p.MaxRequestBytes)
@@ -125,6 +125,7 @@ func TestEffectivePolicyMethodIntersection(t *testing.T) {
 		raw(`{"base_url":"https://x.example"}`),
 		raw(`{"methods":["GET","POST"]}`),
 		raw(`{"methods":["get"]}`),
+		"",
 	)
 	require.NoError(t, err)
 	require.Equal(t, []string{"GET"}, p.Methods)
@@ -139,6 +140,7 @@ func TestEffectivePolicyPathFold(t *testing.T) {
 		raw(`{"base_url":"https://x.example"}`),
 		raw(`{"path_allow":["/issues/**","/search"],"path_deny":["/issues/private/**"]}`),
 		raw(`{"path_allow":["/issues/**"],"path_deny":["/issues/secret*"]}`),
+		"",
 	)
 	require.NoError(t, err)
 	require.Equal(t, []string{"/issues/**"}, p.PathAllow)
@@ -153,6 +155,7 @@ func TestEffectivePolicyNumericMin(t *testing.T) {
 		raw(`{"base_url":"https://x.example"}`),
 		raw(`{"max_request_bytes":5000,"max_response_bytes":9000,"rate_per_min":60}`),
 		raw(`{"max_request_bytes":1000,"max_response_bytes":2000,"rate_per_min":10}`),
+		"",
 	)
 	require.NoError(t, err)
 	require.Equal(t, 1000, p.MaxRequestBytes)
@@ -162,18 +165,61 @@ func TestEffectivePolicyNumericMin(t *testing.T) {
 
 func TestEffectivePolicyEgressRequiresBothInternal(t *testing.T) {
 	p, err := EffectivePolicy(raw(`{"base_url":"https://x.example"}`),
-		raw(`{"egress_class":"internal"}`), raw(`{"egress_class":"internal"}`))
+		raw(`{"egress_class":"internal"}`), raw(`{"egress_class":"internal"}`), "")
 	require.NoError(t, err)
 	require.True(t, p.AllowPrivate)
 
 	p, err = EffectivePolicy(raw(`{"base_url":"https://x.example"}`),
-		raw(`{"egress_class":"internal"}`), raw(`{"egress_class":"public"}`))
+		raw(`{"egress_class":"internal"}`), raw(`{"egress_class":"public"}`), "")
 	require.NoError(t, err)
 	require.False(t, p.AllowPrivate, "grant cannot widen egress")
 
-	p, err = EffectivePolicy(raw(`{"base_url":"https://x.example"}`), raw(`{}`), raw(`{"egress_class":"internal"}`))
+	p, err = EffectivePolicy(raw(`{"base_url":"https://x.example"}`), raw(`{}`), raw(`{"egress_class":"internal"}`), "")
 	require.NoError(t, err)
 	require.False(t, p.AllowPrivate, "grant cannot exceed ceiling")
+}
+
+// TG-4c regression (live incident 2026-11-03): kanbunny is registered
+// egress_class=internal but its policy_ceiling JSON carries no
+// egress_class key. The grant-level column must supply the base class,
+// or every call to an internal REST resource trips ssrf_blocked.
+func TestEffectivePolicyEgressColumnBaseTG4c(t *testing.T) {
+	// Column internal, no JSON egress keys → private allowed.
+	p, err := EffectivePolicy(raw(`{"base_url":"http://kanbunny.lab"}`),
+		raw(`{"methods":["GET"],"path_allow":["/api/**"]}`), raw(`{}`), "internal")
+	require.NoError(t, err)
+	require.True(t, p.AllowPrivate, "registered internal column is the base class")
+
+	// Column public → stays public.
+	p, err = EffectivePolicy(raw(`{"base_url":"https://api.example.com"}`),
+		raw(`{}`), raw(`{}`), "public")
+	require.NoError(t, err)
+	require.False(t, p.AllowPrivate)
+
+	// Column empty → unchanged (default-deny private).
+	p, err = EffectivePolicy(raw(`{"base_url":"https://x.example"}`), raw(`{}`), raw(`{}`), "")
+	require.NoError(t, err)
+	require.False(t, p.AllowPrivate)
+
+	// Ceiling overrides column (tighten): ceiling public + column internal → public.
+	p, err = EffectivePolicy(raw(`{"base_url":"https://x.example"}`),
+		raw(`{"egress_class":"public"}`), raw(`{}`), "internal")
+	require.NoError(t, err)
+	require.False(t, p.AllowPrivate, "ceiling JSON overrides the column")
+
+	// Ceiling overrides column (loosen is the admin's own floor choice):
+	// ceiling internal + column public → internal per ceiling.
+	p, err = EffectivePolicy(raw(`{"base_url":"https://x.example"}`),
+		raw(`{"egress_class":"internal"}`), raw(`{}`), "public")
+	require.NoError(t, err)
+	require.True(t, p.AllowPrivate, "explicit ceiling internal wins over column")
+
+	// Grant constraints still tighten only, never widen: column internal +
+	// constraint public → public.
+	p, err = EffectivePolicy(raw(`{"base_url":"http://kanbunny.lab"}`),
+		raw(`{}`), raw(`{"egress_class":"public"}`), "internal")
+	require.NoError(t, err)
+	require.False(t, p.AllowPrivate, "grant constraint tightens to public")
 }
 
 // ── Auth injection per kind ───────────────────────────────────────────────
