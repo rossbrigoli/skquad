@@ -89,7 +89,7 @@ func parseObject(raw json.RawMessage, out any) error {
 //   - max_args_bytes / rate_per_min: MIN of every layer that sets one.
 //   - egress: private networks only when BOTH ceiling and grant
 //     constraints are egress_class=internal (rest semantics).
-func EffectivePolicy(configRaw, ceilingRaw, constraintsRaw json.RawMessage) (*Policy, error) {
+func EffectivePolicy(configRaw, ceilingRaw, constraintsRaw json.RawMessage, grantEgressClass string) (*Policy, error) {
 	var cfg mcpConfigShape
 	if err := parseObject(configRaw, &cfg); err != nil {
 		return nil, fmt.Errorf("config: invalid mcp config JSON: %w", err)
@@ -147,9 +147,17 @@ func EffectivePolicy(configRaw, ceilingRaw, constraintsRaw json.RawMessage) (*Po
 	p.MaxArgsBytes = minPositive(ce.MaxArgsBytes, con.MaxArgsBytes, DefaultMaxArgsBytes)
 	p.RatePerMin = minPositive(ce.RatePerMin, con.RatePerMin, 0)
 
-	// Egress: private ranges require BOTH layers to be internal.
-	p.AllowPrivate = strings.EqualFold(strings.TrimSpace(ce.EgressClass), "internal") &&
-		strings.EqualFold(strings.TrimSpace(con.EgressClass), "internal")
+	// Egress (TG-4c): the resource's registered egress_class column is
+	// the base; the ceiling JSON overrides when set. Grant constraints
+	// tighten only: empty inherits, "internal" allowed only when the
+	// base is internal, anything else forces public.
+	baseEgress := strings.TrimSpace(ce.EgressClass)
+	if baseEgress == "" {
+		baseEgress = strings.TrimSpace(grantEgressClass)
+	}
+	conEgress := strings.TrimSpace(con.EgressClass)
+	p.AllowPrivate = strings.EqualFold(baseEgress, "internal") &&
+		(conEgress == "" || strings.EqualFold(conEgress, "internal"))
 
 	return p, nil
 }
