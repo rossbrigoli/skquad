@@ -355,12 +355,12 @@ func (s *Server) handleWebFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := drv.Handle(gateCtx, &drivers.Request{
-		Agent:     principal,
-		Resource:  grant.ResourceID,
-		Operation: operation,
-		Payload:   body,
-		Grant:     grant,
-	ConfirmationID: strings.TrimSpace(r.Header.Get(ConfirmationIDHeader)),
+		Agent:          principal,
+		Resource:       grant.ResourceID,
+		Operation:      operation,
+		Payload:        body,
+		Grant:          grant,
+		ConfirmationID: strings.TrimSpace(r.Header.Get(ConfirmationIDHeader)),
 	})
 	if err != nil {
 		var denied *drivers.DeniedError
@@ -500,12 +500,12 @@ func (s *Server) handleRestCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := drv.Handle(gateCtx, &drivers.Request{
-		Agent:     principal,
-		Resource:  grant.ResourceID,
-		Operation: operation,
-		Payload:   body,
-		Grant:     grant,
-	ConfirmationID: strings.TrimSpace(r.Header.Get(ConfirmationIDHeader)),
+		Agent:          principal,
+		Resource:       grant.ResourceID,
+		Operation:      operation,
+		Payload:        body,
+		Grant:          grant,
+		ConfirmationID: strings.TrimSpace(r.Header.Get(ConfirmationIDHeader)),
 	})
 	if err != nil {
 		var denied *drivers.DeniedError
@@ -684,12 +684,12 @@ func (s *Server) handleMCPCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := drv.Handle(gateCtx, &drivers.Request{
-		Agent:     principal,
-		Resource:  grant.ResourceID,
-		Operation: operation,
-		Payload:   body,
-		Grant:     grant,
-	ConfirmationID: strings.TrimSpace(r.Header.Get(ConfirmationIDHeader)),
+		Agent:          principal,
+		Resource:       grant.ResourceID,
+		Operation:      operation,
+		Payload:        body,
+		Grant:          grant,
+		ConfirmationID: strings.TrimSpace(r.Header.Get(ConfirmationIDHeader)),
 	})
 	if err != nil {
 		var denied *drivers.DeniedError
@@ -829,6 +829,13 @@ func (s *Server) handleGitProxy(w http.ResponseWriter, r *http.Request) {
 			emit(audit.DecisionDeny, http.StatusBadGateway, "policy_unavailable")
 			writeError(w, http.StatusBadGateway, "policy_unavailable", "policy could not be resolved; failing closed")
 		default:
+			// Raw git clients authenticate via the HTTP Basic challenge:
+			// without WWW-Authenticate on the 401, git's HTTP layer never
+			// attaches the credential its helper provided, so the retry
+			// arrives anonymous and fails "missing agent id" even though
+			// the helper answered correctly. Advertise Basic here; other
+			// gateway routes keep the standard (non-Basic) 401.
+			w.Header().Set("WWW-Authenticate", `Basic realm="skquad-git", charset="UTF-8"`)
 			emit(audit.DecisionDeny, http.StatusUnauthorized, err.Error())
 			writeError(w, http.StatusUnauthorized, "unauthorized", err.Error())
 		}
