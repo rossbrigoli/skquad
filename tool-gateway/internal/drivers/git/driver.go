@@ -208,7 +208,14 @@ func (d *Driver) ServeStream(w http.ResponseWriter, r *http.Request, req *driver
 
 	result := &drivers.StreamResult{Repo: repo, Service: service, StatusCode: resp.StatusCode}
 	flusher, _ := w.(http.Flusher)
-	if service == ServiceReceivePack && resp.StatusCode == http.StatusOK {
+	// The report-status tee applies ONLY to the POST push response.
+	// The GET receive-pack advertisement
+	// (info/refs?service=git-receive-pack) carries an early flush-pkt
+	// right after the service header, per git's smart-HTTP spec; the
+	// tee treats that flush as end-of-stream, which would truncate the
+	// advertisement to a zero-ref stub (the "push sees 0 refs" bug).
+	// Advertisements must ride the plain streaming passthrough path.
+	if service == ServiceReceivePack && resp.StatusCode == http.StatusOK && r.Method == http.MethodPost {
 		rs, terr := teeReportStatus(resp.Body, w, flusher)
 		result.RefsAdvanced = rs.Advanced
 		result.RefsRejected = rs.Rejected
