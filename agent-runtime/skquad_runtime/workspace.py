@@ -171,10 +171,42 @@ def _field(res: object, name: str, default: object = "") -> object:
 
 
 def find_git_workspace(resources: Sequence[object] | None):
-    """Return ``(resource_id, repo_url, default_branch)`` for the first granted
-    active git workspace, or ``None``."""
+    """Return ``(resource_id, repo_url_or_repo_path, default_branch, kind)``
+    for the first usable granted git workspace, or ``None``.
+
+    Two grant shapes are understood (S-T6, 2026-11-04):
+
+    - ``project_workspace`` (legacy, kind ``"project_workspace"``): the
+      resource endpoint is the direct repo URL and the workspace token is
+      mounted under the workspaces dir.
+    - ``git`` (TG-series, kind ``"git"``): the repo is reached through
+      the tool-gateway git proxy. The auto-workspace only prepares when
+      the grant's effective ``repos_allow`` names exactly ONE repo —
+      otherwise the choice is ambiguous and the task brief's git guidance
+      lets the agent pick. ``repo_url_or_repo_path`` is the repo path
+      (e.g. ``rossbrigoli/skquad``), not a full URL.
+    """
     for res in resources or []:
-        if str(_field(res, "resource_type", "")) != "project_workspace":
+        resource_type = str(_field(res, "resource_type", ""))
+        rid = str(_field(res, "resource_id", "") or "")
+        if resource_type == "git":
+            if not rid:
+                continue
+            constraints = _field(res, "constraints", {}) or {}
+            if not isinstance(constraints, Mapping):
+                continue
+            repos = [
+                str(r).strip()
+                for r in constraints.get("repos_allow", []) or []
+                if str(r).strip()
+            ]
+            # A glob ("rossbrigoli/*") names many repos — ambiguous for
+            # auto-prepare just like a multi-repo list.
+            if len(repos) != 1 or any(ch in repos[0] for ch in "*?["):
+                continue
+            default_branch = str(constraints.get("default_branch") or "main")
+            return rid, repos[0], default_branch, "git"
+        if resource_type != "project_workspace":
             continue
         manifest = _field(res, "manifest", {}) or {}
         if not isinstance(manifest, Mapping):
@@ -182,10 +214,9 @@ def find_git_workspace(resources: Sequence[object] | None):
         if str(manifest.get("kind", "")).lower() != "git":
             continue
         endpoint = str(_field(res, "endpoint", "") or "")
-        rid = str(_field(res, "resource_id", "") or "")
         default_branch = str(manifest.get("default_branch") or "main")
         if endpoint and rid:
-            return rid, endpoint, default_branch
+            return rid, endpoint, default_branch, "project_workspace"
     return None
 
 
@@ -217,14 +248,33 @@ def prepare_task_workspace(
     found = find_git_workspace(resources)
     if not found:
         return None
-    rid, endpoint, default_branch = found
-    token = read_workspace_token(rid, workspaces_dir)
-    if not token:
-        LOGGER.warning(
-            "git workspace token not mounted; skipping workspace",
-            extra={"workspace_resource_id": rid},
-        )
-        return None
+    rid, endpoint_or_repo, default_branch, kind = found
+    if kind == "git":
+        # TG-series git grant: clone through the gateway proxy. No URL-
+        # embedded secret and no mounted workspace token — the in-pod
+        # git credential helper (skquad_runtime/git_credential.py)
+        # answers the gateway's 401 with the agent's OWN credential, so
+        # the clone/push runs under the agent identity and the gateway
+        # enforces repos_allow/allow_push server-side.
+        gateway = (os.environ.get("SKQUAD_TOOL_GATEWAY_URL") or "").strip().rstrip("/")
+        if not gateway:
+            LOGGER.warning(
+                "git grant present but SKQUAD_TOOL_GATEWAY_URL unset; skipping workspace",
+                extra={"workspace_resource_id": rid},
+            )
+            return None
+        clone_url = f"{gateway}/git/{rid}/{endpoint_or_repo}.git"
+        push_url = clone_url
+    else:
+        token = read_workspace_token(rid, workspaces_dir)
+        if not token:
+            LOGGER.warning(
+                "git workspace token not mounted; skipping workspace",
+                extra={"workspace_resource_id": rid},
+            )
+            return None
+        clone_url = git_workspace.authed_https_url(endpoint_or_repo, token)
+        push_url = clone_url
     branch = git_workspace.work_branch_for(agent_id, task_id)
     base = resolve_workspace_base(base_dest)
     # PVC layout (S-136): persistent clone per granted workspace, durable
@@ -250,9 +300,8 @@ def prepare_task_workspace(
         # resume note can surface them instead of losing them silently.
         pre_sync_git = git_resume_info(dest)
     try:
-        push_url = git_workspace.authed_https_url(endpoint, token)
         git_workspace.prepare_workspace(
-            push_url,
+            clone_url,
             default_branch,
             branch,
             dest,

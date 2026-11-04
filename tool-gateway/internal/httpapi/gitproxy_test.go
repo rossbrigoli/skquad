@@ -124,6 +124,40 @@ func TestGitRouteClonePassthrough(t *testing.T) {
 	}
 }
 
+func TestGitRouteBasicAuthPassthrough(t *testing.T) {
+	// Subagent git inheritance: raw git clients present the gateway
+	// identity as HTTP Basic (username = agent id, password = the
+	// agent's gateway credential) via the in-pod credential helper.
+	// The proxy must accept that form without X-Skquad-Agent-ID.
+	const refs = "001e# service=git-upload-pack\n0000"
+	var sawAuth bool
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization") != ""
+		_, _ = w.Write([]byte(refs))
+	}))
+	defer up.Close()
+
+	srv, auditBuf := newGitRouteServer(t, up.URL, true)
+	req := httptest.NewRequest(http.MethodGet,
+		"/git/git-hub-1/acme/widgets.git/info/refs?service=git-upload-pack", nil)
+	req.SetBasicAuth("agent-1", testToken)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if !sawAuth {
+		t.Fatal("upstream request carried no Authorization")
+	}
+	ev := lastAuditEvent(t, auditBuf)
+	if ev.Decision != audit.DecisionAllow || ev.Operation != "git_fetch" || ev.AgentID != "agent-1" {
+		t.Fatalf("audit = %+v", ev)
+	}
+	if strings.Contains(auditBuf.String(), testToken) {
+		t.Fatal("token leaked into audit")
+	}
+}
+
 func TestGitRouteNoGrantDenied(t *testing.T) {
 	var hits atomic.Int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))

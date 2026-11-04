@@ -40,7 +40,7 @@ def _resource(rid="ws-1", endpoint="https://x/repo.git", kind="git", branch="mai
 class FindWorkspaceTests(unittest.TestCase):
     def test_finds_git_workspace(self):
         found = ws.find_git_workspace([_resource(rid="abc", endpoint="https://h/r.git", branch="dev")])
-        self.assertEqual(found, ("abc", "https://h/r.git", "dev"))
+        self.assertEqual(found, ("abc", "https://h/r.git", "dev", "project_workspace"))
 
     def test_ignores_non_workspace(self):
         self.assertIsNone(ws.find_git_workspace([{"resource_type": "skill", "resource_id": "s"}]))
@@ -56,6 +56,106 @@ class FindWorkspaceTests(unittest.TestCase):
             [{"resource_type": "project_workspace", "resource_id": "r", "endpoint": "https://h/r.git", "manifest": {"kind": "git"}}]
         )
         self.assertEqual(found[2], "main")
+
+
+class GitTypeWorkspaceFindTests(unittest.TestCase):
+    """S-T6: TG-series git grants feed the workspace pipeline via the
+    gateway proxy when the grant names exactly one repo."""
+
+    def _git_resource(self, repos, rid="git-1", constraints_extra=None):
+        constraints = {"repos_allow": repos, "allow_push": True}
+        constraints.update(constraints_extra or {})
+        return {
+            "resource_type": "git",
+            "resource_id": rid,
+            "endpoint": "",
+            "manifest": {},
+            "constraints": constraints,
+        }
+
+    def test_single_repo_grant_matches(self):
+        found = ws.find_git_workspace([self._git_resource(["rossbrigoli/skquad"])])
+        self.assertEqual(found, ("git-1", "rossbrigoli/skquad", "main", "git"))
+
+    def test_multi_repo_grant_is_ambiguous(self):
+        self.assertIsNone(
+            ws.find_git_workspace(
+                [self._git_resource(["rossbrigoli/skquad", "rossbrigoli/k3s-cluster"])]
+            )
+        )
+
+    def test_glob_repo_is_ambiguous(self):
+        # Sherlock's real grant shape: repos_allow: ["rossbrigoli/*"] —
+        # one entry, many repos. Must NOT auto-prepare a literal glob URL.
+        self.assertIsNone(ws.find_git_workspace([self._git_resource(["rossbrigoli/*"])]))
+
+    def test_empty_repos_allow_skipped(self):
+        self.assertIsNone(ws.find_git_workspace([self._git_resource([])]))
+
+    def test_legacy_still_wins_order(self):
+        resources = [
+            self._git_resource(["a/b"], rid="git-9"),
+            _resource(rid="pw-1", endpoint="https://h/r.git"),
+        ]
+        found = ws.find_git_workspace(resources)
+        self.assertEqual(found, ("git-9", "a/b", "main", "git"))
+
+
+class GitTypePrepareTests(unittest.TestCase):
+    """S-T6: git-type prepare builds the gateway proxy clone URL and
+    needs no mounted workspace token (the credential helper authenticates
+    the agent under its own identity)."""
+
+    def _resource(self):
+        return {
+            "resource_type": "git",
+            "resource_id": "git-1",
+            "endpoint": "",
+            "manifest": {},
+            "constraints": {"repos_allow": ["rossbrigoli/skquad"], "allow_push": True},
+        }
+
+    def test_prepare_uses_gateway_clone_url_without_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                "SKQUAD_TOOL_GATEWAY_URL": "http://skquad-tool-gateway.skquad-system.svc.cluster.local:8080/"
+            }
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+                ws.git_workspace, "prepare_workspace"
+            ) as prep:
+                handle = ws.prepare_task_workspace(
+                    [self._resource()],
+                    "agent1",
+                    "task1",
+                    workspaces_dir=Path(tmp) / "creds",  # intentionally empty
+                    base_dest=Path(tmp) / "work",
+                )
+            self.assertIsNotNone(handle)
+            clone_url = prep.call_args[0][0]
+            self.assertEqual(
+                clone_url,
+                "http://skquad-tool-gateway.skquad-system.svc.cluster.local:8080"
+                "/git/git-1/rossbrigoli/skquad.git",
+            )
+            self.assertEqual(handle.push_url, clone_url)
+            self.assertEqual(handle.branch, "skquad/agent1/task1")
+
+    def test_prepare_without_gateway_env_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ)
+            env.pop("SKQUAD_TOOL_GATEWAY_URL", None)
+            with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(
+                ws.git_workspace, "prepare_workspace"
+            ) as prep:
+                handle = ws.prepare_task_workspace(
+                    [self._resource()],
+                    "agent1",
+                    "task1",
+                    workspaces_dir=Path(tmp) / "creds",
+                    base_dest=Path(tmp) / "work",
+                )
+            self.assertIsNone(handle)
+            prep.assert_not_called()
 
 
 class TokenTests(unittest.TestCase):

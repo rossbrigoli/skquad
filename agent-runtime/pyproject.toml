@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 skquad-agent-runtime = "skquad_runtime.runtime:main"
+skquad-git-credential = "skquad_runtime.git_credential:main"
 
 [build-system]
 requires = ["setuptools>=83.0.0"]  # PYSEC-2026-3447 / GHSA-h35f-9h28-mq5c: <83 sdist NFD-exclusion bypass
