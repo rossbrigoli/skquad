@@ -116,7 +116,7 @@ def main(
     if pair is None:
         return 0
     username, password = pair
-    stdout.write(f"username={username}\npassword=***\n")
+    stdout.write(f"username={username}\npassword={password}\n")
     return 0
 
 

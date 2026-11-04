@@ -141,7 +141,13 @@ class MainTests(unittest.TestCase):
             stdout=out,
         )
         self.assertEqual(rc, 0)
-        self.assertEqual(out.getvalue(), "username=agent-abc\npassword=***\n")
+        self.assertEqual(out.getvalue(), "username=agent-abc\npassword=tok123\n")
+        # Regression (0.1.360): the shipped helper wrote a literal masked
+        # placeholder instead of the credential, and this assertion was
+        # corrupted identically, so the suite stayed green while every
+        # real git-over-gateway auth 401ed. Guard the real value AND
+        # the absence of any mask placeholder.
+        self.assertNotIn("***", out.getvalue())
         os.unlink(cred)
 
     def test_store_is_noop(self):

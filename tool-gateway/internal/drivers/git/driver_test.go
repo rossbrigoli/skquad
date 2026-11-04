@@ -529,3 +529,35 @@ func TestBasicAuthInjected(t *testing.T) {
 	require.NoError(t, derr)
 	require.Equal(t, "x-access-token:"+fakeToken, string(decoded))
 }
+
+// ── 4b. GET receive-pack advertisement must NOT be tee-truncated ────────
+//
+// git's smart-HTTP advertisement is: service-header pkt, flush-pkt,
+// THEN the ref list. The report-status tee treats the first flush-pkt
+// as end-of-stream; applying it to the advertisement truncated every
+// push-capable clone to a zero-ref stub (the "push sees 0 refs" bug).
+// Advertisements must ride the plain passthrough byte-identical.
+func TestReceivePackAdvertisementNotTruncatedByTee(t *testing.T) {
+	adv := "001f# service=git-receive-pack\n" +
+		"0000" +
+		pkt("1111111111111111111111111111111111111111 refs/heads/main\x00report-status report-status-v2 side-band-64k object-format=sha1 agent=git/2.40.0\n") +
+		pkt("2222222222222222222222222222222222222222 refs/heads/feature/x\n") +
+		"0000"
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/acme/widgets.git/info/refs", r.URL.Path)
+		require.Equal(t, "service=git-receive-pack", r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/x-git-receive-pack-advertisement")
+		_, _ = w.Write([]byte(adv))
+	}))
+	defer up.Close()
+
+	d := New(bearerCreds())
+	g := openGrant(up.URL)
+	rec, res, err := serve(t, d, streamReq("pusher", g, "acme/widgets.git/info/refs"),
+		http.MethodGet, "http://g/x?service=git-receive-pack")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, adv, rec.Body.String(),
+		"advertisement streamed whole: refs after the first flush must survive")
+	require.Equal(t, ServiceReceivePack, res.Service)
+}
