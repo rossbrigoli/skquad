@@ -6,6 +6,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const env = vi.hoisted(() => ({
+  user: { id: "u1" } as Record<string, unknown>,
+  adminFetch: false,
   squads: [] as Record<string, unknown>[],
   policy: null as Record<string, unknown> | null,
   agents: [] as Record<string, unknown>[],
@@ -35,7 +37,7 @@ vi.mock("../../../../components/EmptyState", () => ({
 }));
 
 vi.mock("../../../../lib/auth", () => ({
-  useAuth: () => ({ user: { id: "u1" }, token: "tok", mode: "token", logout: vi.fn() }),
+  useAuth: () => ({ user: env.user, token: "tok", mode: "token", logout: vi.fn() }),
 }));
 
 vi.mock("../../../../lib/api", () => ({
@@ -57,7 +59,10 @@ vi.mock("../../../../lib/api", () => ({
 vi.mock("../../../../lib/useApi", () => ({
   useApi: (path: string) => {
     let data: unknown = null;
-    if (path === "/squads") data = env.squads;
+    if (path === "/squads" || path === "/squads?all=true") {
+      if (path === "/squads?all=true") env.adminFetch = true;
+      data = env.squads;
+    }
     if (path.includes("/board-policy")) data = env.policy;
     if (path.includes("/agents")) data = env.agents;
     return {
@@ -72,6 +77,8 @@ vi.mock("../../../../lib/useApi", () => ({
 import SquadSettingsPage from "./page";
 
 beforeEach(() => {
+  env.user = { id: "u1" };
+  env.adminFetch = false;
   env.squads = [{ id: "sq1", name: "Alpha", owner_id: "u1" }];
   env.policy = {
     raw: { reopen_cap_per_day: 5 },
@@ -183,6 +190,22 @@ describe("SquadSettingsPage board policy", () => {
     env.squads = [];
     render(<SquadSettingsPage />);
     expect(screen.getByText("Squad not found")).toBeInTheDocument();
+  });
+
+  // S-BUGFIX (2026-11-04): a platform_admin opening a squad they don't
+  // own must resolve it via ?all=true (not "Squad not found") and be
+  // able to manage its board policy.
+  it("platform admin resolves a non-owned squad and can edit policy", () => {
+    env.user = { id: "admin-1", role: "platform_admin" };
+    env.squads = [{ id: "sq1", name: "Test Squad", owner_id: "someone-else" }];
+    render(<SquadSettingsPage />);
+    // Squad resolved — no empty state, correct title.
+    expect(screen.queryByText("Squad not found")).not.toBeInTheDocument();
+    expect(screen.getByText("Test Squad settings")).toBeInTheDocument();
+    // Admin is treated as a manager: the policy editor is present.
+    expect(screen.getByRole("button", { name: "Save board policy" })).toBeInTheDocument();
+    // And the admin path fetched the all-squads list.
+    expect(env.adminFetch).toBe(true);
   });
 });
 

@@ -24,8 +24,12 @@ type boardPolicyResponse struct {
 }
 
 func (s *Server) getBoardPolicy(w http.ResponseWriter, r *http.Request) {
-	// ADR-0016 D8: the board-policy page is squad-owner-only.
-	squad, ok := s.loadOwnedSquad(w, r)
+	// S-BUGFIX (2026-11-04): platform admins may manage any squad's board
+	// policy, matching the S-133 "admins may edit any squad" precedent
+	// (update/delete/agents all use loadOwnedOrAdminSquad). Previously
+	// owner-only, which blocked admins from the Settings page of squads
+	// they don't own.
+	squad, ok := s.loadOwnedOrAdminSquad(w, r)
 	if !ok {
 		return
 	}
@@ -36,7 +40,7 @@ func (s *Server) getBoardPolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) putBoardPolicy(w http.ResponseWriter, r *http.Request) {
-	squad, ok := s.loadOwnedSquad(w, r)
+	squad, ok := s.loadOwnedOrAdminSquad(w, r)
 	if !ok {
 		return
 	}

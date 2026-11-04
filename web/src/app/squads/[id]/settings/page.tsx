@@ -20,18 +20,28 @@ export default function SquadSettingsPage() {
   const squadId = String(params?.id ?? "");
   const router = useRouter();
   const { user, token } = useAuth();
-  const squads = useApi<Squad[]>("/squads");
+  // S-BUGFIX (2026-11-04): platform admins must resolve non-owned squads
+  // here. Plain /squads returns only the caller's OWNED squads, so an
+  // admin opening a squad they don't own (e.g. Test Squad, owned by
+  // another user) saw "Squad not found" even though the AppShell rail
+  // lists it. Match the rail/squads-page pattern: admins fetch ?all=true.
+  const isAdmin = user?.role === "platform_admin";
+  const squads = useApi<Squad[]>(isAdmin ? "/squads?all=true" : "/squads");
   const squad = (squads.data || []).find((item) => item.id === squadId);
   // S-304: the squad Danger zone moved here from the Overview tab —
   // destructive squad actions belong under Settings.
   const [deleting, setDeleting] = useState(false);
-  // Mirror the backend gate (loadOwnedSquad): board policy is strictly
-  // squad-owner only.
+  // S-BUGFIX (2026-11-04): board policy is manageable by the squad owner
+  // OR a platform admin. The old owner-only gate (loadOwnedSquad) left
+  // platform admins unable to manage a squad they don't own, which is
+  // inconsistent with the S-133 "admins may edit any squad" precedent
+  // used by update/delete/agents. Backend mirrored to loadOwnedOrAdminSquad.
   const isOwner = !!squad && !!user && squad.owner_id === user.id;
-  const policy = useApi<BoardPolicyResponse>(isOwner ? `/squads/${squadId}/board-policy` : "", 0);
+  const canManage = isOwner || isAdmin;
+  const policy = useApi<BoardPolicyResponse>(canManage ? `/squads/${squadId}/board-policy` : "", 0);
   // S-297: the leader-grants table lists the squad's agents (existing
   // endpoint; leader-capable = holds any grant, per ADR-0016 D5).
-  const agents = useApi<Agent[]>(isOwner ? `/squads/${squadId}/agents` : "", 0);
+  const agents = useApi<Agent[]>(canManage ? `/squads/${squadId}/agents` : "", 0);
 
   return (
     <AuthGate>
@@ -46,19 +56,19 @@ export default function SquadSettingsPage() {
           <EmptyState title="Squad not found" hint="It may have been removed." />
         ) : null}
 
-        {squad && !isOwner ? (
+        {squad && !canManage ? (
           <output className="notice">
             Only the squad owner can view and edit board policy.
           </output>
         ) : null}
 
-        {isOwner && policy.error ? (
+        {canManage && policy.error ? (
           <div className="notice error" role="alert">
             {policy.error}
           </div>
         ) : null}
 
-        {isOwner && policy.data ? (
+        {canManage && policy.data ? (
           // Remount on fresh server state so the form re-initialises
           // from the latest effective values *and* raw leader_grants
           // after each save (S-297: raw carries the grants).

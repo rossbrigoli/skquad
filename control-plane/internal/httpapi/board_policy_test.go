@@ -128,3 +128,32 @@ func TestBoardPolicyOwnerOnly(t *testing.T) {
 	doJSONAuth(t, handler, authOwner, http.MethodPut, path, map[string]any{"reopen_cap_per_day": 9}, http.StatusOK, &resp)
 	require.Equal(t, 9, resp.Effective.ReopenCapPerDay)
 }
+
+// S-BUGFIX (2026-11-04): a platform_admin may GET/PUT board policy on a
+// squad they do NOT own (S-133 "admins may edit any squad"). Previously
+// owner-only, which surfaced as "Squad not found" / 403 on the Settings
+// page for admins managing other users' squads (e.g. Test Squad).
+func TestBoardPolicyPlatformAdminCanManage(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.AuthMode = config.AuthOIDC
+	store := storage.NewMemoryStore()
+	handler := NewWithOIDCAuthenticator(cfg, store, headerOIDC{
+		authOwner:  {Email: "owner@example.com", Name: "Owner"},
+		authViewer: {Email: "viewer@example.com", Name: "Viewer"},
+	})
+
+	var squad domain.Squad
+	doJSONAuth(t, handler, authOwner, http.MethodPost, pathSquads, map[string]any{"name": "Someone Else Squad"}, http.StatusCreated, &squad)
+	path := "/api/v1/squads/" + squad.ID + "/board-policy"
+
+	// Promote the viewer to platform_admin.
+	promoteAdmin(t, store, handler, authViewer)
+
+	// Admin can now read and write the non-owned squad's board policy.
+	var resp boardPolicyResp
+	doJSONAuth(t, handler, authViewer, http.MethodGet, path, nil, http.StatusOK, &resp)
+	doJSONAuth(t, handler, authViewer, http.MethodPut, path, map[string]any{"reopen_cap_per_day": 7}, http.StatusOK, &resp)
+	require.Equal(t, 7, resp.Effective.ReopenCapPerDay)
+}
