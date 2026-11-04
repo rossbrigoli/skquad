@@ -18,7 +18,7 @@ RUN python -m pip install --upgrade pip "setuptools>=83.0.0" \
 # the tool-gateway's git proxy through the agent-identity credential
 # helper (answers ONLY for the gateway host; upstream PATs stay
 # server-side). See skquad_runtime/git_credential.py.
-RUN printf '[credential]\n\thelper = skquad-git-credential\n' >> /home/skquad/.gitconfig \
+RUN printf '[credential]\n\thelper = !skquad-git-credential\n' >> /home/skquad/.gitconfig \
     && chown skquad:skquad /home/skquad/.gitconfig
 
 USER 65532:65532
