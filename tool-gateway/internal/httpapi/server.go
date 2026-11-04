@@ -749,6 +749,27 @@ func grantRequestsBrowserDriver(grant *policy.Grant) bool {
 	return false
 }
 
+// gitProxyCredentials extracts (agentID, authorization) for a git
+// smart-HTTP request to the proxy. The explicit X-Skquad-Agent-ID +
+// Bearer form wins whenever the header is present; otherwise HTTP Basic
+// is mapped onto the gateway form (username -> agent id, password ->
+// Bearer token). Returns empty strings when neither form is usable so
+// auth.Middleware produces the typed missing-credential error.
+func gitProxyCredentials(r *http.Request) (string, string) {
+	if id := strings.TrimSpace(r.Header.Get("X-Skquad-Agent-ID")); id != "" {
+		return id, r.Header.Get("Authorization")
+	}
+	user, pass, ok := r.BasicAuth()
+	if !ok {
+		return "", ""
+	}
+	user = strings.TrimSpace(user)
+	if user == "" || pass == "" {
+		return "", ""
+	}
+	return user, "Bearer " + pass
+}
+
 // handleGitProxy runs the pipeline for the TG-4b `git` driver:
 // kill switch → authn → grant lookup (typed git resource addressed
 // by id) → streaming dispatch. The body is NEVER read into memory
@@ -792,9 +813,16 @@ func (s *Server) handleGitProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Authn.
-	principal, err := auth.Middleware(r.Context(), s.deps.Policy,
-		r.Header.Get("X-Skquad-Agent-ID"), r.Header.Get("Authorization"))
+	// 1. Authn. Raw git clients can only present HTTP Basic, so the git
+	// proxy accepts the gateway identity in either wire form:
+	//   - X-Skquad-Agent-ID + "Bearer <credential>" (gateway standard), or
+	//   - Basic with username = agent id, password = the agent's own
+	//     gateway credential (what the in-pod git credential helper
+	//     emits, so a plain `git push` in a task-subagent runs under the
+	//     agent's identity). The upstream PAT is injected server-side by
+	//     the driver and never exists in the pod.
+	gitAgentID, gitAuthHeader := gitProxyCredentials(r)
+	principal, err := auth.Middleware(r.Context(), s.deps.Policy, gitAgentID, gitAuthHeader)
 	if err != nil {
 		switch {
 		case errors.Is(err, policy.ErrPolicyUnavailable):

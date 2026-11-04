@@ -2767,20 +2767,87 @@ class LiteLLMTaskHandler:
             return False, "", ()
         return True, git_workspace.head_sha(path), git_workspace.dirty_files(path)
 
-    def _task_brief(self, task: RuntimeTask, *, attempt: int = 1) -> "object":
+    def _task_brief(self, task: RuntimeTask, *, attempt: int = 1, resources=None) -> "object":
         from .task_subagent import TaskBrief
 
         workspace = getattr(self, "_review_workspace", None)
-        branch_hint = str(getattr(workspace, "branch", "") or "")
+        ws_payload: dict[str, object] = {}
+        if workspace is not None:
+            branch = str(getattr(workspace, "branch", "") or "")
+            ws_payload = {
+                "prepared": True,
+                "path": str(getattr(workspace, "path", "") or ""),
+                "branch": branch,
+                "branch_hint": branch,
+                "resource_id": str(getattr(workspace, "resource_id", "") or ""),
+            }
+        git_guidance = self._git_grant_guidance(resources)
+        if git_guidance:
+            ws_payload["git"] = git_guidance
         return TaskBrief(
             task_id=task.id,
             task_number=task.task_number,
             title=task.title,
             description=task.description,
-            workspace={"branch_hint": branch_hint} if branch_hint else {},
+            workspace=ws_payload,
             reviewer_feedback=task.reviewer_feedback,
             attempt=attempt,
         )
+
+    def _git_grant_guidance(self, resources) -> dict[str, object]:
+        """S-T6 (2026-11-04): gateway git guidance for the task brief.
+
+        A task subagent inherits the parent agent's identity, so plain
+        ``git`` in its shell authenticates to the gateway git proxy with
+        the agent's OWN credential (credential helper) and the gateway
+        enforces the grant. The brief must tell the subagent WHICH git
+        resources exist and which repos the grant allows, so it stops
+        improvising against stale checkouts."""
+        import os as _os
+
+        gateway = (_os.environ.get("SKQUAD_TOOL_GATEWAY_URL") or "").strip().rstrip("/")
+        if not gateway:
+            return {}
+        for res in resources or []:
+            resource_type = str(
+                res.get("resource_type", "")
+                if isinstance(res, Mapping)
+                else getattr(res, "resource_type", "")
+            )
+            if resource_type != "git":
+                continue
+            rid = str(
+                res.get("resource_id", "")
+                if isinstance(res, Mapping)
+                else getattr(res, "resource_id", "")
+            )
+            if not rid:
+                continue
+            constraints = (
+                res.get("constraints", {})
+                if isinstance(res, Mapping)
+                else getattr(res, "constraints", {})
+            ) or {}
+            repos = [
+                str(r).strip()
+                for r in constraints.get("repos_allow", []) or []
+                if str(r).strip()
+            ]
+            return {
+                "gateway": f"{gateway}/git/{rid}/",
+                "resource_id": rid,
+                "repos_allow": repos,
+                "allow_push": bool(constraints.get("allow_push", False)),
+                "howto": (
+                    "Plain git works under your identity: the pod's credential "
+                    "helper answers the gateway's auth challenge with YOUR "
+                    "gateway credential. Clone with "
+                    "`git clone <gateway><repo>.git` (repo from repos_allow); "
+                    "push is enforced gateway-side by repos_allow/allow_push. "
+                    "Never embed tokens in URLs."
+                ),
+            }
+        return {}
 
     def _publish_subagent_thread_snapshot(self, snapshot: Mapping[str, object]) -> None:
         """S-301: publish the task-subagent's live thread snapshot.
@@ -2807,6 +2874,7 @@ class LiteLLMTaskHandler:
         completion: object,
         model: str,
         virtual_key: str,
+        resources=None,
     ) -> TaskResult:
         """S-293: run the task in a nested subagent, then review.
 
@@ -2818,7 +2886,7 @@ class LiteLLMTaskHandler:
         ts.configure_runner_plugins(plugins, config)
         rework_max = ts.task_rework_max()
         reworks_used = 0
-        brief = self._task_brief(task)
+        brief = self._task_brief(task, resources=resources)
 
         while True:
             if self.thread_sink is not None or self.delegation_sink is not None:
@@ -2874,7 +2942,7 @@ class LiteLLMTaskHandler:
                 reworks_used += 1
                 ts.note_rework()
                 brief = replace(
-                    self._task_brief(task, attempt=brief.attempt + 1),
+                    self._task_brief(task, attempt=brief.attempt + 1, resources=resources),
                     prior_result=result.to_payload(),
                     fix_instructions=decision.fix_instructions,
                 )
@@ -2975,6 +3043,7 @@ class LiteLLMTaskHandler:
                 completion=completion,
                 model=model,
                 virtual_key=virtual_key,
+                resources=resources,
             )
         # S-263/S-161/S-183: the step loop lives in _task_loop.
         return self._task_loop(

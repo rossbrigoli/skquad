@@ -14,6 +14,12 @@ RUN python -m pip install --upgrade pip "setuptools>=83.0.0" \
     && python -m pip install . \
     && python -m pip install --upgrade "setuptools>=83.0.0" \
     && useradd --create-home --uid 65532 --shell /usr/sbin/nologin skquad
+# S-T6 (2026-11-04): every git invocation in this image authenticates to
+# the tool-gateway's git proxy through the agent-identity credential
+# helper (answers ONLY for the gateway host; upstream PATs stay
+# server-side). See skquad_runtime/git_credential.py.
+RUN printf '[credential]\n\thelper = skquad-git-credential\n' >> /home/skquad/.gitconfig \
+    && chown skquad:skquad /home/skquad/.gitconfig
 
 USER 65532:65532
 EXPOSE 8080
