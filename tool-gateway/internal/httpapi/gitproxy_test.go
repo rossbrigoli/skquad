@@ -194,6 +194,12 @@ func TestGitRouteUnauthenticated(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d want 401", rec.Code)
 	}
+	// Raw git clients only attach their credential after seeing a Basic
+	// challenge. Without this header git's retry arrives anonymous and
+	// every helper-provided push/fetch dies at "missing agent id".
+	if wa := rec.Header().Get("WWW-Authenticate"); !strings.Contains(wa, "Basic") {
+		t.Fatalf("401 must advertise Basic challenge, got %q", wa)
+	}
 }
 
 func TestGitRouteKillSwitch(t *testing.T) {
