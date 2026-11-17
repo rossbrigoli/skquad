@@ -26,6 +26,9 @@ export type CostBudgetStatus = {
   mtd_cost: number;
   remaining_usd: number | null;
   over_budget: boolean;
+  // S-321/WI-10: server-computed actual overrun (never clamped).
+  // Null when within budget or unlimited. Prefer over client-side subtraction.
+  overrun_usd?: number | null;
   updated_at?: string;
   updated_by?: string;
 };
@@ -50,6 +53,9 @@ export type PlatformBudget = {
   max_usd: number | null;
   platform_monthly_limit_usd: number | null;
   platform_mtd_cost: number;
+  // S-321/WI-10: platform-wide actual overrun, reported separately
+  // from per-user overrun. Null when within limit or no limit set.
+  platform_overrun_usd?: number | null;
 };
 
 export type AdminBudgetsPayload = {

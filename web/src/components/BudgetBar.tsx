@@ -13,10 +13,15 @@ export function BudgetBar({
   spend,
   budget,
   currency = "USD",
+  overrunUsd,
 }: {
   readonly spend: number;
   readonly budget: number | null | undefined;
   readonly currency?: string;
+  // S-321/WI-10 follow-up: server-computed actual overrun (ADR-0017:
+  // reported, never clamped). Preferred over the client-side spend-budget
+  // difference when present; the client value is only a fallback.
+  readonly overrunUsd?: number | null;
 }) {
   const model = buildBudgetModel(spend, budget);
   if (!model.hasBudget) {
@@ -44,7 +49,7 @@ export function BudgetBar({
         </span>
         <span className={model.over ? "budget-bar-over-label" : undefined}>
           {model.over
-            ? `Over by ${formatMoney(model.spend - model.budget, currency)}`
+            ? `Over by ${formatMoney(overrunUsd ?? model.spend - model.budget, currency)}`
             : `${formatMoney(model.remaining, currency)} remaining`}
         </span>
       </div>
