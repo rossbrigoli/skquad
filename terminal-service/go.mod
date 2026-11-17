@@ -2,7 +2,7 @@ module github.com/rossbrigoli/skquad/terminal-service
 
 go 1.26.0
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
 	github.com/minio/minio-go/v7 v7.0.81
