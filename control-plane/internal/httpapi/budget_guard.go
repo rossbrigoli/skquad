@@ -26,10 +26,12 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -176,6 +178,9 @@ func (s *Server) applyBudgetVerdict(ctx context.Context, source, userID string, 
 		// idle-timeout override. Busy agents keep desiredActive=true and
 		// are torn down at end of turn, never mid-turn.
 		if !wasBlocked {
+			// S-320 / WI-5: expire pending chat rows addressed to this
+			// user's agents before they can resurrect later, then remirror.
+			s.expirePendingChatForBlockedUser(ctx, userID)
 			s.remirrorUserAgents(ctx, userID)
 		}
 		return nil
@@ -437,6 +442,208 @@ func (s *Server) checkAgentBudget(ctx context.Context, agentID string) budgetVer
 // budgetStopNotice is appended to API responses that refuse to start an
 // agent because of a confirmed budget block.
 const budgetStopNotice = "budget_blocked"
+
+// budgetExpiredChatReason is the terminal_reason stamped on chat rows
+// expired by a newly-created budget block (S-320 / WI-5).
+const budgetExpiredChatReason = "expired_budget"
+
+// unblock actions surfaced in the 402 rejection body (S-320 / WI-4):
+// the concrete thing the recipient must do to resume sends.
+const (
+	budgetUnblockRaiseBudget   = "raise_budget"
+	budgetUnblockContactAdmin  = "contact_platform_admin"
+)
+
+// expirePendingChatForBlockedUser (S-320 / S-203 WP3-R2 WI-5) expires
+// — never deletes — user→agent chat messages still `pending` to agents
+// of every squad owned by the newly-blocked user, so a later budget
+// raise cannot resurrect stale input as a surprise turn (plan G3).
+// Rows survive with status=expired and terminal_reason=expired_budget,
+// and one audit entry per affected squad records the sweep. Task rows
+// are untouched: task queues stay visible while blocked (WI-6).
+// Best-effort like the rest of the enforcement path: failures are
+// logged, never propagated (the block itself already stands).
+func (s *Server) expirePendingChatForBlockedUser(ctx context.Context, userID string) {
+	squads, err := s.store.ListSquads(ctx, userID)
+	if err != nil {
+		log.Printf("budget-enforce: pending-chat expiry list squads failed for %s: %v", userID, err)
+		return
+	}
+	for _, squad := range squads {
+		expired, err := s.store.ExpirePendingChatMessagesForSquad(ctx, squad.ID, budgetExpiredChatReason)
+		if err != nil {
+			log.Printf("budget-enforce: pending-chat expiry failed for squad %s: %v", squad.ID, err)
+			continue
+		}
+		if expired == 0 {
+			continue
+		}
+		metadata, _ := json.Marshal(map[string]any{
+			"reason":           budgetExpiredChatReason,
+			"expired_messages": expired,
+		})
+		if err := s.store.RecordAudit(ctx, &domain.AuditEntry{
+			ActorType:    "system",
+			ActorID:      "budget-enforcement",
+			Action:       "budget.chat_expired",
+			ResourceType: "squad",
+			ResourceID:   squad.ID,
+			SquadID:      squad.ID,
+			Metadata:     metadata,
+		}); err != nil {
+			log.Printf("budget-enforce: pending-chat expiry audit write failed for squad %s: %v", squad.ID, err)
+		}
+	}
+}
+
+// budgetSendRejection is the typed, actionable body returned when a
+// user-facing send is refused before the message row is created
+// (S-320 / S-203 WP3-R2 WI-4). Clients branch on `code`
+// (budget_blocked vs budget_verification_failed) — never on message
+// strings. The flat shape (code + fields + message) is deliberate per
+// the remediation plan so the rejection is self-describing.
+type budgetSendRejection struct {
+	Code          string  `json:"code"`
+	Source        string  `json:"source,omitempty"`
+	Period        string  `json:"period,omitempty"`
+	SpentUSD      float64 `json:"spent_usd"`
+	CapUSD        float64 `json:"cap_usd"`
+	UnblockAction string  `json:"unblock_action,omitempty"`
+	Message       string  `json:"message"`
+
+	status int
+}
+
+// checkBudgetForSend evaluates the budget verdict for a user-facing
+// message creation (chat send / task-page composer) BEFORE any row is
+// written. Returns nil when the send may proceed unchanged; returns a
+// typed rejection for BudgetBlocked (402, with source/period/spend/cap
+// resolved from the block row + budget/spend lookups) and for
+// BudgetUnverifiable (503, retry — clearly distinct from exhaustion).
+//
+// The chokepoint (setAgentStatusAndMirror) remains the enforcement
+// layer; this check exists to produce the response the client deserves
+// and to keep un-sendable rows out of the table (plan §3.2).
+func (s *Server) checkBudgetForSend(ctx context.Context, agentID string) *budgetSendRejection {
+	switch s.checkAgentBudget(ctx, agentID) {
+	case BudgetAllowed:
+		return nil
+	case BudgetUnverifiable:
+		return &budgetSendRejection{
+			Code:   budgetVerificationFailedNotice,
+			status: http.StatusServiceUnavailable,
+			Message: "Your budget could not be verified right now, so no new agent work was started. " +
+				"This is a temporary system issue, not a budget exhaustion — please retry shortly; " +
+				"nothing you sent before was lost.",
+		}
+	}
+	period := currentBudgetPeriod(time.Now())
+	if rej, confirmed := s.budgetBlockedSendDetails(ctx, agentID, period); confirmed {
+		if rej != nil {
+			return rej
+		}
+		// Block confirmed but the detail lookups failed: still a hard
+		// block (fail closed) — reject with a generic 402 rather than
+		// fabricate numbers or imply a retry would help.
+		return &budgetSendRejection{
+			Code:   budgetStopNotice,
+			Period: period,
+			status: http.StatusPaymentRequired,
+			Message: "Your budget is exhausted for " + period + ", so this message was not sent. " +
+			"Your previous turn completed — nothing was lost. " +
+			"Raise or reset the budget (or contact your platform administrator if the block is platform-wide) to resume.",
+		}
+	}
+	// The block row flipped clear between the verdict read and the
+	// detail read (a benign race the plan accepts): admit the send; the
+	// chokepoint still guards the actual start.
+	return nil
+}
+
+// budgetBlockedSendDetails resolves the actionable detail for a
+// confirmed block on agentID's owner. confirmed=false means the block
+// row is no longer effective for the current period (send may proceed);
+// confirmed=true with rej=nil means the block stands but the numbers
+// could not be read (generic 402). When BOTH sources block, the
+// platform source is reported: it is the one the user cannot resolve
+// themselves (T6).
+func (s *Server) budgetBlockedSendDetails(ctx context.Context, agentID, period string) (*budgetSendRejection, bool) {
+	agent, err := s.store.GetAgent(ctx, agentID)
+	if err != nil {
+		return nil, true
+	}
+	squad, err := s.store.GetSquad(ctx, agent.SquadID)
+	if err != nil {
+		return nil, true
+	}
+	block, err := s.store.GetBudgetBlock(ctx, squad.OwnerID)
+	if err != nil || !block.EffectiveBlocked(period) {
+		return nil, false
+	}
+	platform, err := s.store.GetPlatformBudgets(ctx)
+	if err != nil {
+		return nil, true
+	}
+	now := time.Now().UTC()
+	if block.BlockedByPlatform && platform.PlatformMonthlyLimitUSD != nil {
+		spent, err := s.platformMTDCostCtx(ctx, mtdStartUTC(now))
+		if err != nil {
+			return nil, true
+		}
+		return &budgetSendRejection{
+			Code:          budgetStopNotice,
+			Source:        domain.BudgetSourcePlatform,
+			Period:        period,
+			SpentUSD:      spent,
+			CapUSD:        *platform.PlatformMonthlyLimitUSD,
+			UnblockAction: budgetUnblockContactAdmin,
+			status:        http.StatusPaymentRequired,
+			Message: fmt.Sprintf(
+				"The platform-wide monthly spend limit of $%.2f is exhausted (platform spend: $%.2f, period %s), so this message was not sent. " +
+					"Your previous turn completed — nothing was lost. " +
+					"Your platform administrator can raise or reset the platform limit; your agents resume scheduling automatically once it clears.",
+				*platform.PlatformMonthlyLimitUSD, spent, period,
+			),
+		}, true
+	}
+	if block.BlockedByUser {
+		capUSD, err := s.effectiveUserBudget(ctx, squad.OwnerID, platform)
+		if err != nil || capUSD == nil {
+			return nil, true
+		}
+		spent, err := s.userMTDCostCtx(ctx, squad.OwnerID, mtdStartUTC(now))
+		if err != nil {
+			return nil, true
+		}
+		return &budgetSendRejection{
+			Code:          budgetStopNotice,
+			Source:        domain.BudgetSourceUser,
+			Period:        period,
+			SpentUSD:      spent,
+			CapUSD:        *capUSD,
+			UnblockAction: budgetUnblockRaiseBudget,
+			status:        http.StatusPaymentRequired,
+			Message: fmt.Sprintf(
+				"Your monthly budget is exhausted: $%.2f spent of $%.2f (period %s), so this message was not sent. " +
+					"Your previous turn completed — nothing was lost. " +
+					"Raising or resetting your budget resumes scheduling automatically — no other action is needed.",
+				spent, *capUSD, period,
+			),
+		}, true
+	}
+	// Neither source blocks in this period: not actually blocked.
+	return nil, false
+}
+
+// writeBudgetSendRejection emits the typed rejection with its mapped
+// HTTP status (402 exhaustion / 503 verification failure).
+func writeBudgetSendRejection(w http.ResponseWriter, rej *budgetSendRejection) {
+	status := rej.status
+	if status == 0 {
+		status = http.StatusPaymentRequired
+	}
+	writeJSON(w, status, rej)
+}
 
 // budgetVerificationFailedNotice is returned when the budget check
 // itself failed, so the client can distinguish "blocked" from "could not

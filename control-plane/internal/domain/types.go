@@ -351,6 +351,13 @@ type Task struct {
 	// tasks for this task — attached on read paths (board/task GETs)
 	// for the blocked badge. 0 when nothing blocks it.
 	BlockedByCount int `json:"blocked_by_count,omitempty"`
+	// BlockedBudget (S-320 / S-203 WP3-R2 WI-6) marks that the
+	// assignee agent's squad owner is currently budget-blocked. The
+	// task stays assigned and visible — queues ahead of a budget reset
+	// are legitimate — but execution is refused at the busy-transition
+	// chokepoint until the block clears. Attached on read paths only;
+	// lets the UI render "blocked: budget" without a second round-trip.
+	BlockedBudget bool `json:"blocked_budget,omitempty"`
 }
 
 // TaskDependencyRef (S-278) is one edge of the task dependency graph,
