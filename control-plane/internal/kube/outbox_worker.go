@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
+	"github.com/rossbrigoli/skquad/control-plane/internal/metrics"
 	"github.com/rossbrigoli/skquad/control-plane/internal/storage"
 )
 
@@ -278,6 +279,9 @@ func upsertAgentFromOutbox(ctx context.Context, store storage.KubernetesOutboxSt
 		if err != nil {
 			slog.Warn("budget enforcement: block check failed; failing closed with zero idle timeout",
 				"agent", payload.Agent.ID, "error", err)
+			// S-321 / WI-9: CR-sync fail-closed site. Sustained
+			// non-zero here means the mirror cannot verify budgets.
+			metrics.BudgetCheckErrors.WithLabelValues("crsync").Inc()
 			payload.Agent.IdleTimeoutSec = 0
 		} else if blocked {
 			payload.Agent.IdleTimeoutSec = 0

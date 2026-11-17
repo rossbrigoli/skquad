@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	dto "github.com/prometheus/client_model/go"
+
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
+	"github.com/rossbrigoli/skquad/control-plane/internal/metrics"
 	"github.com/rossbrigoli/skquad/control-plane/internal/storage"
 )
 
@@ -126,5 +129,45 @@ func TestUpsertAgentFromOutboxZeroIdleTimeoutWhenBlockCheckFails(t *testing.T) {
 	}
 	if writer.agents[0].IdleTimeoutSec != 0 {
 		t.Fatalf("check-error idle timeout = %d, want 0 (fail closed)", writer.agents[0].IdleTimeoutSec)
+	}
+}
+
+// S-321 / WI-9: the CR-sync fail-closed site must also increment
+// budget_check_errors_total{site="crsync"} — fail-closed without the
+// counter is fail-mysteriously. Delta assertion (process-global counter).
+func TestUpsertAgentFromOutboxBlockCheckFailureCounted(t *testing.T) {
+	ctx := context.Background()
+	base := storage.NewMemoryStore()
+	store := &failingBudgetChecker{MemoryStore: base}
+	squad, err := store.CreateSquad(ctx, &domain.Squad{Name: "CrsyncMetric Squad", OwnerID: "u1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := store.CreateAgent(ctx, &domain.Agent{SquadID: squad.ID, Name: "Worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	read := func() float64 {
+		c, err := metrics.BudgetCheckErrors.GetMetricWithLabelValues("crsync")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var dm dto.Metric
+		if err := c.Write(&dm); err != nil {
+			t.Fatal(err)
+		}
+		return dm.GetCounter().GetValue()
+	}
+
+	before := read()
+	writer := &captureAgentWriter{}
+	p := *agent
+	if err := upsertAgentFromOutbox(ctx, store, writer, &domain.KubernetesOutboxPayload{Agent: &p}); err != nil {
+		t.Fatal(err)
+	}
+	after := read()
+	if after-before != 1 {
+		t.Fatalf("crsync check-error delta = %v, want 1", after-before)
 	}
 }

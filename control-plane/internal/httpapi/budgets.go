@@ -51,8 +51,12 @@ type userBudgetStatusView struct {
 	MTDCost          float64  `json:"mtd_cost"`
 	RemainingUSD     *float64 `json:"remaining_usd"`
 	OverBudget       bool     `json:"over_budget"`
-	UpdatedAt        string   `json:"updated_at,omitempty"`
-	UpdatedBy        string   `json:"updated_by,omitempty"`
+	// OverrunUSD is the actual spend beyond the cap (S-321 / WI-10):
+	// MTD is real, never clamped — the overrun is the accepted final-
+	// turn cost beyond the budget. Nil when within budget or unlimited.
+	OverrunUSD *float64 `json:"overrun_usd"`
+	UpdatedAt  string   `json:"updated_at,omitempty"`
+	UpdatedBy  string   `json:"updated_by,omitempty"`
 }
 
 type platformBudgetView struct {
@@ -60,6 +64,10 @@ type platformBudgetView struct {
 	MaxUSD                  *float64 `json:"max_usd"`
 	PlatformMonthlyLimitUSD *float64 `json:"platform_monthly_limit_usd"`
 	PlatformMTDCost         float64  `json:"platform_mtd_cost"`
+	// PlatformOverrunUSD is the platform-wide spend beyond the monthly
+	// limit (S-321 / WI-10) — reported separately from per-user
+	// overrun. Nil when within limit or no limit set.
+	PlatformOverrunUSD *float64 `json:"platform_overrun_usd"`
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +152,12 @@ func (s *Server) buildUserBudgetStatus(r *http.Request, u *domain.User, mtdStart
 		remaining := budget.MonthlyBudgetUSD - mtd
 		view.RemainingUSD = &remaining
 		view.OverBudget = mtd > budget.MonthlyBudgetUSD
+		if view.OverBudget {
+			// S-321 / WI-10: explicit overrun line — the real dollars
+			// beyond the cap (final turn), never clamped to zero/cap.
+			overrun := mtd - budget.MonthlyBudgetUSD
+			view.OverrunUSD = &overrun
+		}
 		view.UpdatedAt = budget.UpdatedAt.Format(time.RFC3339)
 		view.UpdatedBy = budget.UpdatedBy
 	case errors.Is(err, storage.ErrNotFound):
@@ -191,6 +205,7 @@ func (s *Server) getPlatformBudget(w http.ResponseWriter, r *http.Request) {
 		MaxUSD:                  budgets.MaxUSD,
 		PlatformMonthlyLimitUSD: budgets.PlatformMonthlyLimitUSD,
 		PlatformMTDCost:         mtd,
+		PlatformOverrunUSD:      platformOverrun(budgets.PlatformMonthlyLimitUSD, mtd),
 	})
 }
 
@@ -463,9 +478,21 @@ func (s *Server) listBudgetsAdmin(w http.ResponseWriter, r *http.Request) {
 			MaxUSD:                  budgets.MaxUSD,
 			PlatformMonthlyLimitUSD: budgets.PlatformMonthlyLimitUSD,
 			PlatformMTDCost:         platformMTD,
+			PlatformOverrunUSD:      platformOverrun(budgets.PlatformMonthlyLimitUSD, platformMTD),
 		},
 		"users": views,
 	})
+}
+
+// platformOverrun returns the platform-wide spend beyond the monthly
+// limit (S-321 / WI-10), or nil when no limit is set or spend is
+// within it. Actuals only — never clamped.
+func platformOverrun(limit *float64, mtd float64) *float64 {
+	if limit == nil || mtd <= *limit {
+		return nil
+	}
+	overrun := mtd - *limit
+	return &overrun
 }
 
 // ---------------------------------------------------------------------------

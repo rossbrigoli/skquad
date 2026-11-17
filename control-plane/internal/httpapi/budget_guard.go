@@ -23,6 +23,20 @@ package httpapi
 // ends the agent goes idle, the CR mirror writes desiredActive=false
 // with a zeroed idle timeout for blocked owners (see the outbox
 // worker), and the operator tears the pod down immediately.
+//
+// Enforcement posture (S-203 WP3 R1–R3, ADR-0017):
+//   - Fail CLOSED on check errors at both sites: admission here
+//     (BudgetUnverifiable refuses new starts) and CR sync in the
+//     outbox worker (zeroed idle timeout). A check error never
+//     disturbs an admitted turn — already-busy pass-through holds.
+//   - Send-path rejection (S-320): user-facing sends are rejected
+//     BEFORE the message row is created — typed 402 budget_blocked /
+//     503 budget_verification_failed (checkBudgetForSend). The
+//     chokepoint stays as the enforcement layer; the send check
+//     produces the response the client deserves.
+//   - Metrics (S-321): every signal here is counted — blocks created,
+//     rejected turns per site, check errors per fail-closed site,
+//     accepted overrun, fan-out drain (internal/metrics).
 
 import (
 	"context"
@@ -36,6 +50,7 @@ import (
 	"time"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
+	"github.com/rossbrigoli/skquad/control-plane/internal/metrics"
 	"github.com/rossbrigoli/skquad/control-plane/internal/storage"
 )
 
@@ -172,6 +187,13 @@ func (s *Server) applyBudgetVerdict(ctx context.Context, source, userID string, 
 		return err
 	}
 	if blockedNow {
+		// S-321 / WI-9: block creation is a loudly-visible event.
+		metrics.BudgetBlocksCreated.WithLabelValues(source).Inc()
+		if overrun := spend - budget; overrun > 0 {
+			// Accepted overrun: cap + the crossing turn's cost.
+			// Reported, never prevented or clamped (ADR-0017).
+			metrics.BudgetOverrunDollars.WithLabelValues(source).Observe(overrun)
+		}
 		s.notifyBudgetStopped(ctx, source, userID, period, spend, budget)
 		// Newly blocked: push fresh CRs so idle-warm pods (desiredActive
 		// already false) scale to zero immediately under the blocked
@@ -360,6 +382,12 @@ func budgetNotificationText(source string, threshold int, spend, budget float64,
 // (via squads) by the user so the mirror picks up the current block
 // state — restoring the normal idle timeout after a resume.
 func (s *Server) remirrorUserAgents(ctx context.Context, userID string) {
+	start := time.Now()
+	defer func() {
+		// S-321 / WI-9: fan-out drain time — long tails mean block/
+		// resume enforcement lags after a budget change.
+		metrics.BudgetFanoutRemirrorDuration.Observe(time.Since(start).Seconds())
+	}()
 	squads, err := s.store.ListSquads(ctx, userID)
 	if err != nil {
 		log.Printf("budget-enforce: remirror list squads failed for %s: %v", userID, err)
@@ -431,12 +459,45 @@ func (s *Server) checkAgentBudget(ctx context.Context, agentID string) budgetVer
 	blocked, err := s.store.IsAgentBudgetBlocked(ctx, agentID, currentBudgetPeriod(time.Now()))
 	if err != nil {
 		log.Printf("budget-enforce: block check failed for agent %s (fail-closed as unverifiable): %v", agentID, err)
+		// S-321 / WI-9: every admission-path check failure is counted;
+		// sustained non-zero here means an outage is blocking users, not
+		// their budget.
+		metrics.BudgetCheckErrors.WithLabelValues("admission").Inc()
 		return BudgetUnverifiable
 	}
 	if blocked {
 		return BudgetBlocked
 	}
 	return BudgetAllowed
+}
+
+// budgetBlockSourceForAgent resolves which source backs a confirmed
+// block for an agent, for metrics labeling only (S-321 / WI-9). Best-
+// effort: returns "unknown" when the chain (agent → squad → owner →
+// block row) cannot be read or no source flag is effective in the
+// current period. Never used for an enforcement decision.
+func (s *Server) budgetBlockSourceForAgent(ctx context.Context, agentID string) string {
+	agent, err := s.store.GetAgent(ctx, agentID)
+	if err != nil {
+		return "unknown"
+	}
+	squad, err := s.store.GetSquad(ctx, agent.SquadID)
+	if err != nil {
+		return "unknown"
+	}
+	block, err := s.store.GetBudgetBlock(ctx, squad.OwnerID)
+	if err != nil || block == nil || block.Period != currentBudgetPeriod(time.Now()) {
+		return "unknown"
+	}
+	// Platform takes precedence in labeling (mirrors the rejection-body
+	// rule: it is the source the user cannot resolve themselves).
+	if block.BlockedByPlatform {
+		return domain.BudgetSourcePlatform
+	}
+	if block.BlockedByUser {
+		return domain.BudgetSourceUser
+	}
+	return "unknown"
 }
 
 // budgetStopNotice is appended to API responses that refuse to start an
@@ -633,6 +694,21 @@ func (s *Server) budgetBlockedSendDetails(ctx context.Context, agentID, period s
 	}
 	// Neither source blocks in this period: not actually blocked.
 	return nil, false
+}
+
+// recordBudgetSendRejection counts a CONFIRMED-block send rejection for
+// metrics (S-321 / WI-9). Verification failures are not counted here —
+// they already incremented budget_check_errors_total at the admission
+// site; a turn refused by an outage is an error signal, not a budget
+// signal.
+func recordBudgetSendRejection(rej *budgetSendRejection) {
+	if rej != nil && rej.Code == budgetStopNotice {
+		source := rej.Source
+		if source == "" {
+			source = "unknown"
+		}
+		metrics.TurnsRejectedBudget.WithLabelValues(source, "send").Inc()
+	}
 }
 
 // writeBudgetSendRejection emits the typed rejection with its mapped

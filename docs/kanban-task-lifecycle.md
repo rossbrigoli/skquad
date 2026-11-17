@@ -275,8 +275,25 @@ mute preferences (fail-open); the bell deep-links to `/costs`.
 
 | Transition | What happens |
 |---|---|
-| **Block** (spend > 0 and ≥ budget) | `budget_blocks` row per user/month; every **start** path refuses with `budget_blocked` (wake endpoint, message/task-driven busy transitions, heartbeat idle→busy upgrade); CRs are re-mirrored with `idleTimeout=0` (§9 coupling pt. 4) so idle-warm pods scale to zero immediately and busy pods die at end of turn. |
+| **Block** (spend > 0 and ≥ budget) | `budget_blocks` row per user/month; every **start** path refuses (wake endpoint, message/task-driven busy transitions, heartbeat idle→busy upgrade); user-facing **sends are rejected before the message row is created** — typed `402 budget_blocked` / `503 budget_verification_failed` (S-320, `checkBudgetForSend`); pending chat rows to the user's agents are expired (`expired_budget`, audit-kept) so a later raise cannot resurrect them; CRs are re-mirrored with `idleTimeout=0` (§9 coupling pt. 4) so idle-warm pods scale to zero immediately and busy pods die at end of turn. |
 | **Resume** (budget raised/reset, platform limit cleared) | Block row clears for the period; agents are re-mirrored with the normal idle timeout; scheduling resumes automatically. |
+
+**Fail-closed (S-319):** a budget-check *error* is typed
+`BudgetUnverifiable` and treated like a block on all start paths, and
+the CR mirror zeroes the idle timeout on check errors too. A check
+error never disturbs an already-busy agent (never-interrupt guardrail,
+ADR-0017).
+
+**Task-assignment asymmetry (S-320/WI-6):** unlike chat, a task
+assigned to a blocked agent **stays on the board** (planners assign
+ahead of resets; bulk assignment must not fail mid-batch). Execution
+is gated at the start path, and task detail surfaces
+`blocked: budget` for the assignee.
+
+**Overrun reporting (S-321):** MTD is actuals — nothing clamps to
+the cap. The budget views expose `overrun_usd` (per user) and
+`platform_overrun_usd` separately; the accepted overrun is cap +
+one turn's cost (ADR-0017).
 
 A zero budget blocks on the first recorded cost; zero spend never
 blocks. Platform-limit blocks are tagged by source so clearing the
@@ -289,9 +306,11 @@ tears the pod down immediately (§9 rule: the idle timeout is cost
 policy — budget enforcement makes that policy absolute).
 
 Code: `control-plane/internal/httpapi/budget_guard.go` (evaluation,
-verdicts, notifications), `budget_blocks`/`budget_notify_markers`
+verdicts, notifications, send rejection), `budget_blocks`/`budget_notify_markers`
 (migrations 0037/0036), outbox CR mirror blocked-idle-timeout override,
-wake guard `agentBudgetBlocked`.
+scheduling check `checkAgentBudget` (three-state: allowed / blocked /
+unverifiable), metrics in `control-plane/internal/metrics` (served at
+`/metrics`; see ADR-0017 for the series and required alert rule).
 
 ---
 
