@@ -1,7 +1,7 @@
 # MIG-7: scoped Kubernetes/gitops MCP server. Self-contained Go module
 # (stdlib-only runtime deps), builds from the component directory:
 #   docker build -t skquad-k8s-mcp ./k8s-mcp
-ARG GO_VERSION=1.26.10
+ARG GO_VERSION=1.26.11
 
 FROM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
