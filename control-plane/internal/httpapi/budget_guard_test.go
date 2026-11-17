@@ -7,6 +7,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/rossbrigoli/skquad/control-plane/internal/config"
 	"github.com/rossbrigoli/skquad/control-plane/internal/domain"
 	"github.com/rossbrigoli/skquad/control-plane/internal/storage"
 )
@@ -457,4 +459,145 @@ func TestWakeRefusedForBlockedOwner(t *testing.T) {
 	agent, err = store.GetAgent(ctx, agentID)
 	require.NoError(t, err)
 	require.Equal(t, domain.AgentIdle, agent.Status)
+}
+
+// ---------------------------------------------------------------------------
+// S-319 / S-203 WP3-R1: fail-closed budget checks + never-interrupt guarantee
+// ---------------------------------------------------------------------------
+
+// budgetErrStore wraps MemoryStore and can force IsAgentBudgetBlocked to fail,
+// simulating a storage outage at the scheduling chokepoint. It also records
+// every SetAgentStatus call so tests can distinguish "transition passed
+// through" from "transition refused" (refusal writes nothing).
+type budgetErrStore struct {
+	*storage.MemoryStore
+	failBudgetCheck bool
+	statusWrites    []domain.AgentStatus
+}
+
+func (s *budgetErrStore) IsAgentBudgetBlocked(ctx context.Context, agentID, period string) (bool, error) {
+	if s.failBudgetCheck {
+		return false, errors.New("forced budget check failure (test)")
+	}
+	return s.MemoryStore.IsAgentBudgetBlocked(ctx, agentID, period)
+}
+
+func (s *budgetErrStore) SetAgentStatus(ctx context.Context, agentID string, status domain.AgentStatus) error {
+	s.statusWrites = append(s.statusWrites, status)
+	return s.MemoryStore.SetAgentStatus(ctx, agentID, status)
+}
+
+// checkAgentBudget returns the three verdicts exactly: allowed, blocked,
+// unverifiable-on-error (WI-1).
+func TestCheckAgentBudgetThreeStates(t *testing.T) {
+	base := storage.NewMemoryStore()
+	f := &budgetErrStore{MemoryStore: base}
+	s := &Server{store: f}
+	ctx := context.Background()
+	userID := mustUser(t, base, "verdict@example.com")
+	_, agentID := seedSquadAgent(t, base, userID, "verdict")
+
+	require.Equal(t, BudgetAllowed, s.checkAgentBudget(ctx, agentID))
+
+	_, err := base.SetBudgetBlock(ctx, userID, currentBudgetPeriod(time.Now()), domain.BudgetSourceUser, true)
+	require.NoError(t, err)
+	require.Equal(t, BudgetBlocked, s.checkAgentBudget(ctx, agentID))
+
+	f.failBudgetCheck = true
+	require.Equal(t, BudgetUnverifiable, s.checkAgentBudget(ctx, agentID))
+}
+
+// T1 (control-plane half, the single most important test in this PR): an
+// already-busy agent — an admitted turn — passes the busy transition through
+// even when the owner is blocked AND the budget check is forced to error.
+// Fail-closed may refuse *new* starts; it must never disturb an admitted turn.
+func TestAlreadyBusyAgentPassesThroughWithForcedBudgetErrors(t *testing.T) {
+	base := storage.NewMemoryStore()
+	f := &budgetErrStore{MemoryStore: base}
+	s := &Server{store: f}
+	ctx := context.Background()
+	userID := mustUser(t, base, "neverinterrupt@example.com")
+	squadID, agentID := seedSquadAgent(t, base, userID, "neverint")
+
+	// Admitted turn in flight: agent is busy (seeded directly on the
+	// underlying store — the agent was admitted before the block existed).
+	require.NoError(t, f.MemoryStore.SetAgentStatus(ctx, agentID, domain.AgentBusy))
+	f.statusWrites = nil
+
+	// Cap crossed mid-turn: block row created for the current period.
+	_, err := base.SetBudgetBlock(ctx, userID, currentBudgetPeriod(time.Now()), domain.BudgetSourceUser, true)
+	require.NoError(t, err)
+
+	// Blocked (not even unverifiable) + already busy => pass-through.
+	require.NoError(t, s.setAgentStatusAndMirror(ctx, agentID, domain.AgentBusy))
+	require.Equal(t, []domain.AgentStatus{domain.AgentBusy}, f.statusWrites, "busy pass-through must write busy")
+
+	// Now force the check to error too: still passes through, turn untouched.
+	f.statusWrites = nil
+	f.failBudgetCheck = true
+	require.NoError(t, s.setAgentStatusAndMirror(ctx, agentID, domain.AgentBusy))
+	require.Equal(t, []domain.AgentStatus{domain.AgentBusy}, f.statusWrites, "unverifiable + already busy must still pass through")
+
+	agent, err := f.GetAgent(ctx, agentID)
+	require.NoError(t, err)
+	require.Equal(t, domain.AgentBusy, agent.Status)
+	_ = squadID
+}
+
+// T3 (chokepoint half): a forced check error refuses the idle→busy
+// transition — fail closed. Nothing is written; the agent stays idle.
+func TestIdleToBusyRefusedWhenBudgetUnverifiable(t *testing.T) {
+	base := storage.NewMemoryStore()
+	f := &budgetErrStore{MemoryStore: base}
+	s := &Server{store: f}
+	ctx := context.Background()
+	userID := mustUser(t, base, "failclosed@example.com")
+	_, agentID := seedSquadAgent(t, base, userID, "failclosed")
+
+	f.failBudgetCheck = true
+	require.NoError(t, s.setAgentStatusAndMirror(ctx, agentID, domain.AgentBusy))
+	require.Empty(t, f.statusWrites, "refused transition must not write any status")
+
+	agent, err := f.GetAgent(ctx, agentID)
+	require.NoError(t, err)
+	require.Equal(t, domain.AgentIdle, agent.Status, "agent must remain idle")
+
+	// Idle transitions (the end-of-turn path) are never gated by budget.
+	require.NoError(t, s.setAgentStatusAndMirror(ctx, agentID, domain.AgentIdle))
+	require.Equal(t, []domain.AgentStatus{domain.AgentIdle}, f.statusWrites)
+}
+
+// T1/T3 wake-path: with the check forced to fail, wake refuses pre-warm with
+// the distinct verification-failure reason (not the block reason).
+func TestWakeRefusedWhenBudgetUnverifiable(t *testing.T) {
+	handler, store := newFailingBudgetFixture(t)
+	ctx := context.Background()
+	ownerID := userIDFor(t, handler, authOwner)
+	_, agentID := seedSquadAgent(t, store.MemoryStore, ownerID, "wakeunver")
+
+	store.failBudgetCheck = true
+	var out map[string]any
+	doJSONAuth(t, handler, authOwner, http.MethodPost, "/api/v1/agents/"+agentID+"/wake", nil, http.StatusOK, &out)
+	require.Equal(t, false, out["waking"])
+	require.Equal(t, budgetVerificationFailedNotice, out["reason"])
+
+	agent, err := store.GetAgent(ctx, agentID)
+	require.NoError(t, err)
+	require.Equal(t, domain.AgentIdle, agent.Status, "refused wake must leave the agent idle")
+}
+
+// newFailingBudgetFixture is newBudgetFixture with the fail-capable store
+// wrapper injected so HTTP-level tests can force budget-check errors.
+func newFailingBudgetFixture(t *testing.T) (http.Handler, *budgetErrStore) {
+	t.Helper()
+	cfg := testConfig()
+	cfg.AuthMode = config.AuthOIDC
+	cfg.OIDCAdminGroups = []string{platformAdminGroup}
+	store := &budgetErrStore{MemoryStore: storage.NewMemoryStore()}
+	handler := NewWithDependencies(cfg, store, headerOIDC{
+		authOwner: {Issuer: testIssuer, Subject: "own-1", Email: "owner@example.com", EmailVerified: true, Name: "Owner"},
+		authAdmin: {Issuer: testIssuer, Subject: "adm-1", Email: adminEmail, EmailVerified: true, Name: "Admin", Groups: []string{platformAdminGroup}},
+		authAlice: {Issuer: testIssuer, Subject: "alice-1", Email: aliceEmail, EmailVerified: true, Name: "Alice"},
+	}, &fakeCRWriter{}, nil)
+	return handler, store
 }

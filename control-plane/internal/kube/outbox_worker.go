@@ -263,17 +263,22 @@ func upsertAgentFromOutbox(ctx context.Context, store storage.KubernetesOutboxSt
 	// fan-out without redeploying Helm. 0 on the agent means "follow the
 	// platform setting".
 	payload.Agent.IdleTimeoutSec = deriveEffectiveIdleTimeout(ctx, store, payload.Agent.IdleTimeoutSec)
-	// S-203 WP3: a budget-blocked owner's agents get a zero idle timeout
-	// so the operator scales the pod to zero the moment desiredActive
-	// goes false (end of turn) instead of holding it idle-warm. A busy
-	// agent still mirrors desiredActive=true, so this never kills a
-	// mid-turn pod. A failed check keeps the normal timeout (fail-open on
-	// CR sync, same posture as the other derivations).
+	// S-203 WP3 / S-319 (WI-2, fail closed): a budget-blocked owner's
+	// agents get a zero idle timeout so the operator scales the pod to
+	// zero the moment desiredActive goes false (end of turn) instead of
+	// holding it idle-warm. A failed block check ALSO zeroes the timeout:
+	// this is a money control and must not fail open. Zeroing cannot
+	// interrupt a running turn — the operator's desiredReplicas() returns
+	// 1 whenever Spec.DesiredActive is true, BEFORE any idle-timeout
+	// logic runs, so a zero timeout only affects pods whose agent is
+	// already inactive (worst case: an idle pod stays scaled down and
+	// cold-starts later; never a killed mid-turn pod).
 	if checker, ok := store.(budgetBlockChecker); ok {
 		blocked, err := checker.IsAgentBudgetBlocked(ctx, payload.Agent.ID, time.Now().UTC().Format("2006-01"))
 		if err != nil {
-			slog.Warn("budget enforcement: block check failed; keeping normal idle timeout",
+			slog.Warn("budget enforcement: block check failed; failing closed with zero idle timeout",
 				"agent", payload.Agent.ID, "error", err)
+			payload.Agent.IdleTimeoutSec = 0
 		} else if blocked {
 			payload.Agent.IdleTimeoutSec = 0
 		}
