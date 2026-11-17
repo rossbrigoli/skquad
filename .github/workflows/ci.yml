@@ -747,19 +747,29 @@ jobs:
           '
       - name: npm audit web (all deps incl. dev, high+ critical)
         working-directory: web
-        # S-217: full audit including dev deps. One documented exclusion:
-        # GHSA-vfj7-8cjw-p6xm (braces <=3.0.3, stack-exhaustion DoS) has NO
-        # patched release as of 2026-10-08 — every version of eslint-config-next
-        # (through 16.5.0-canary.3) pulls fast-glob -> micromatch 4.0.8 ->
-        # braces ^3.0.3, and braces' latest release (3.0.3) is itself in the
-        # vulnerable range, so no bump or override can fix it. Dev-only chain,
-        # never ships in the runtime image. REMOVE this exclusion as soon as a
-        # patched braces lands upstream.
+        # S-217: full audit including dev deps. Documented exclusions:
+        # 1) GHSA-vfj7-8cjw-p6xm (braces <=3.0.3, stack-exhaustion DoS) has NO
+        #    patched release as of 2026-10-08 — every version of eslint-config-next
+        #    (through 16.5.0-canary.3) pulls fast-glob -> micromatch 4.0.8 ->
+        #    braces ^3.0.3, and braces' latest release (3.0.3) is itself in the
+        #    vulnerable range, so no bump or override can fix it. Dev-only chain,
+        #    never ships in the runtime image. REMOVE this exclusion as soon as a
+        #    patched braces lands upstream.
+        # 2) GHSA-fc5q-39xc-vjpf / CVE-2026-112366 (picomatch <=4.0.7, ReDoS via
+        #    single-branch repeated extglobs, published 2026-10-19) has NO patched
+        #    release (GitHub DB: first_patched_version = none). Pulled only by the
+        #    dev toolchain (vite/vitest/fdir/micromatch/eslint-plugin-next); the
+        #    matcher runs on repo-controlled glob patterns at build/lint time, not
+        #    on untrusted input, and picomatch never ships in the runtime image.
+        #    REMOVE this exclusion as soon as a patched picomatch lands upstream.
         run: |
           npm audit --audit-level=high --package-lock-only --json > /tmp/npm-audit-s217.json || true
           node -e '
             const a = require("/tmp/npm-audit-s217.json");
-            const IGNORE = ["GHSA-vfj7-8cjw-p6xm"]; // braces, unpatched (S-217)
+            const IGNORE = [
+              "GHSA-vfj7-8cjw-p6xm", // braces, unpatched (S-217)
+              "GHSA-fc5q-39xc-vjpf", // picomatch, unpatched (added 2026-11-18, GO-2026-6859 CI pass)
+            ];
             const bad = [];
             for (const v of Object.values(a.vulnerabilities || {})) {
               for (const via of (v.via || [])) {
