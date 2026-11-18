@@ -112,3 +112,59 @@ func TestTTLCachesFetches(t *testing.T) {
 		t.Fatalf("TTL cache should collapse 3 lookups to 1 fetch, got %d", got)
 	}
 }
+
+func TestHostQualificationOfHostlessGlobs(t *testing.T) {
+	// Live CP convention: git grants carry host-less repos_allow
+	// ("rossbrigoli/*") because the git resource is host-scoped via
+	// config.base_url. GitReposAllow must qualify them so they match
+	// the canonical "host/org/repo" form used by govern.
+	c := serve(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(snapshotBody("a1", []Grant{{
+			ResourceID:   "git1",
+			ResourceType: "git",
+			Config:       json.RawMessage(`{"base_url":"https://github.com"}`),
+			Constraints:  json.RawMessage(`{"allow_push":true,"repos_allow":["rossbrigoli/*","rossbrigoli/k3s-cluster"]}`),
+		}}))
+	})
+	globs, err := c.GitReposAllow(context.Background(), "a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"github.com/rossbrigoli/*", "github.com/rossbrigoli/k3s-cluster"}
+	if len(globs) != len(want) {
+		t.Fatalf("got %v want %v", globs, want)
+	}
+	for i := range want {
+		if globs[i] != want[i] {
+			t.Fatalf("glob[%d]=%q want %q", i, globs[i], want[i])
+		}
+	}
+}
+
+func TestHostQualificationIdempotentAndNoHost(t *testing.T) {
+	// Already-qualified globs must not be double-prefixed; a grant with
+	// no usable config host leaves globs untouched (default-deny kept
+	// against canonical host-prefixed candidates).
+	c := serve(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(snapshotBody("a1", []Grant{
+			{
+				ResourceID:   "git1",
+				ResourceType: "git",
+				Config:       json.RawMessage(`{"base_url":"https://github.com"}`),
+				Constraints:  json.RawMessage(`{"repos_allow":["github.com/rossbrigoli/*"]}`),
+			},
+			{
+				ResourceID:   "git2",
+				ResourceType: "git",
+				Constraints:  json.RawMessage(`{"repos_allow":["rossbrigoli/other"]}`),
+			},
+		}))
+	})
+	globs, err := c.GitReposAllow(context.Background(), "a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(globs) != 2 || globs[0] != "github.com/rossbrigoli/*" || globs[1] != "rossbrigoli/other" {
+		t.Fatalf("got %v", globs)
+	}
+}

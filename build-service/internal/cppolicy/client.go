@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -34,8 +35,40 @@ var ErrPolicyUnavailable = errors.New("policy_unavailable")
 type Grant struct {
 	ResourceID   string          `json:"resource_id"`
 	ResourceType string          `json:"resource_type"`
+	Config       json.RawMessage `json:"config,omitempty"`
 	Constraints  json.RawMessage `json:"constraints,omitempty"`
 	Ceiling      json.RawMessage `json:"ceiling,omitempty"`
+}
+
+// grantHost extracts the canonical git host from a git grant's
+// config.base_url ("https://github.com" -> "github.com"). The CP git
+// grant convention is HOST-LESS globs ("rossbrigoli/*") because the
+// git resource itself is host-scoped; build-service canonicalizes repos
+// to "host/org/repo", so grant globs must be qualified with the
+// grant's host before matching. Returns "" when absent/unparsable —
+// callers then leave globs unqualified, which cannot match a canonical
+// host-prefixed repo (default-deny preserved).
+func grantHost(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var cfg struct {
+		BaseURL string `json:"base_url"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil || strings.TrimSpace(cfg.BaseURL) == "" {
+		return ""
+	}
+	raw2 := strings.TrimSpace(cfg.BaseURL)
+	u, err := url.Parse(raw2)
+	if err == nil && u.Host != "" {
+		return strings.ToLower(u.Host)
+	}
+	// Bare "github.com[/...]" without scheme: url.Parse parks it in Path.
+	h := strings.ToLower(strings.Trim(raw2, "/"))
+	if i := strings.Index(h, "/"); i >= 0 {
+		h = h[:i]
+	}
+	return h
 }
 
 type snapshot struct {
@@ -84,6 +117,7 @@ func (c *Client) GitReposAllow(ctx context.Context, agentID string) ([]string, e
 		if g.ResourceType != "git" {
 			continue
 		}
+		host := grantHost(g.Config)
 		var layer struct {
 			ReposAllow *[]string `json:"repos_allow"`
 		}
@@ -109,7 +143,13 @@ func (c *Client) GitReposAllow(ctx context.Context, agentID string) ([]string, e
 			}
 		}
 		if effective != nil {
-			out = append(out, *effective...)
+			for _, glob := range *effective {
+				g := strings.TrimSpace(glob)
+				if host != "" && !strings.HasPrefix(strings.ToLower(g), host+"/") {
+					g = host + "/" + strings.TrimPrefix(g, "/")
+				}
+				out = append(out, g)
+			}
 		}
 	}
 	return out, nil
