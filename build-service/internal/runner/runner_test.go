@@ -238,3 +238,14 @@ func TestBuildJobSubdirDockerfileUsesContextSubPath(t *testing.T) {
 		t.Fatalf("dockerfile must be rebased onto the sub-path context: %q", joined)
 	}
 }
+
+func TestBuildJobDigestFileTargetsTerminationLog(t *testing.T) {
+	j, err := BuildJob(spec(), testCfg())
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	joined := strings.Join(j.Spec.Template.Spec.Containers[0].Args, " ")
+	if !strings.Contains(joined, "--digest-file=/dev/termination-log") {
+		t.Fatalf("digest must be written to the termination log: %q", joined)
+	}
+}

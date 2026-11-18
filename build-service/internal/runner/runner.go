@@ -131,6 +131,11 @@ func BuildJob(spec Spec, cfg *config.Config) (*batchv1.Job, error) {
 	args = append(args,
 		fmt.Sprintf("--dockerfile=%s", dockerfile),
 		fmt.Sprintf("--destination=%s", spec.Destination),
+		// kaniko has no built-in termination-log writer (v1.23.2 only
+		// exposes --digest-file); point the digest at the container's
+		// termination log so StatusFromJob can surface it (MIG-8 e2e
+		// 2026-11-19: succeeded builds reported no digest).
+		"--digest-file="+corev1.TerminationMessagePathDefault,
 		// NOTE: no --termination-log-path flag — kaniko's executor has
 		// never had one (unknown flag -> immediate Job failure, found in
 		// the MIG-8 live e2e 2026-11-19). Kaniko writes the
