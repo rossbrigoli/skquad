@@ -137,6 +137,10 @@ func TestBuildJobShape(t *testing.T) {
 	if pod.Volumes[0].Secret == nil || pod.Volumes[0].Secret.SecretName != "agent-builds-registry-creds" {
 		t.Fatal("registry secret volume wrong")
 	}
+	items := pod.Volumes[0].Secret.Items
+	if len(items) != 1 || items[0].Key != ".dockerconfigjson" || items[0].Path != "config.json" {
+		t.Fatalf("dockerconfigjson key must be mapped to config.json for kaniko, got %+v", items)
+	}
 	if c.Resources.Requests.Cpu().String() != "500m" {
 		t.Fatalf("cpu request wrong: %v", c.Resources.Requests)
 	}

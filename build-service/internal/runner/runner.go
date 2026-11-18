@@ -212,6 +212,15 @@ func BuildJob(spec Spec, cfg *config.Config) (*batchv1.Job, error) {
 							Secret: &corev1.SecretVolumeSource{
 								SecretName:  cfg.RegistrySecret,
 								DefaultMode: int32Ptr(0o400),
+								// A kubernetes.io/dockerconfigjson Secret stores its
+								// payload under the ".dockerconfigjson" key, but kaniko
+								// only reads /kaniko/.docker/config.json. Map the key
+								// explicitly or kaniko pushes anonymously (MIG-8 e2e:
+								// Docker Hub UNAUTHORIZED on blobs/uploads).
+								Items: []corev1.KeyToPath{{
+									Key:  ".dockerconfigjson",
+									Path: "config.json",
+								}},
 							},
 						},
 					}},
