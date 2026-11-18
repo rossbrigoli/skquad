@@ -101,9 +101,12 @@ func BuildJob(spec Spec, cfg *config.Config) (*batchv1.Job, error) {
 		fmt.Sprintf("--git=repo=https://%s.git,revision=%s", spec.Repo, spec.Revision),
 		fmt.Sprintf("--dockerfile=%s", spec.Dockerfile),
 		fmt.Sprintf("--destination=%s", spec.Destination),
-		// Write the pushed image digest to the termination message so the
-		// service can return a content address to the agent.
-		"--termination-log-path=/dev/termination-log",
+		// NOTE: no --termination-log-path flag — kaniko's executor has
+		// never had one (unknown flag -> immediate Job failure, found in
+		// the MIG-8 live e2e 2026-11-19). Kaniko writes the
+		// {"imageID":"…@sha256:…"} termination message to the container's
+		// terminationMessagePath, which BuildJob sets to the default
+		// /dev/termination-log with TerminationMessageReadFile.
 	}
 	for k, v := range spec.BuildArgs {
 		args = append(args, fmt.Sprintf("--build-arg=%s=%s", k, v))
