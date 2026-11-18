@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -48,6 +49,7 @@ type Spec struct {
 	Principal   string
 	Repo        string // canonical host/org/repo
 	Revision    string
+	Ref         string // resolved git ref (full ref name from the probe, e.g. refs/heads/main); empty for full-SHA revisions
 	Dockerfile  string
 	Destination string
 	BuildArgs   map[string]string
@@ -97,9 +99,36 @@ func BuildJob(spec Spec, cfg *config.Config) (*batchv1.Job, error) {
 	if !BuildIDPattern.MatchString(spec.ID) {
 		return nil, fmt.Errorf("invalid build id %q", spec.ID)
 	}
+	// kaniko's git build context: git://<repo>.git#<ref>. The --git flag
+	// alone does NOT set the source (found in the MIG-8 live e2e
+	// 2026-11-19: "error resolving dockerfile path" because kaniko built
+	// from the empty local context). Fragment resolution mirrors kaniko's
+	// buildcontext/git.go: full SHA -> fetch+checkout; full refs/* ->
+	// clone that ref; bare name -> assume refs/heads/<name> (govern's
+	// probe normally supplies the full ref, including refs/tags/*).
+	ref := spec.Ref
+	if ref == "" {
+		ref = spec.Revision
+	}
+	fragment := ref
+	if !strings.HasPrefix(ref, "refs/") && !isFullSHA(ref) {
+		fragment = "refs/heads/" + ref
+	}
 	args := []string{
-		fmt.Sprintf("--git=repo=https://%s.git,revision=%s", spec.Repo, spec.Revision),
-		fmt.Sprintf("--dockerfile=%s", spec.Dockerfile),
+		fmt.Sprintf("--context=git://%s.git#%s", spec.Repo, fragment),
+	}
+	// A Dockerfile in a repo subdirectory needs that directory as the
+	// build context sub-path: COPY lines in per-component Dockerfiles
+	// (e.g. build-service/Dockerfile doing COPY go.mod) are relative to
+	// the component dir, not the monorepo root. Mirrors
+	// `docker build -f <dir>/Dockerfile <dir>`.
+	dockerfile := spec.Dockerfile
+	if dir := path.Dir(dockerfile); dir != "." && dir != "/" {
+		args = append(args, "--context-sub-path="+dir)
+		dockerfile = path.Base(dockerfile)
+	}
+	args = append(args,
+		fmt.Sprintf("--dockerfile=%s", dockerfile),
 		fmt.Sprintf("--destination=%s", spec.Destination),
 		// NOTE: no --termination-log-path flag — kaniko's executor has
 		// never had one (unknown flag -> immediate Job failure, found in
@@ -107,7 +136,7 @@ func BuildJob(spec Spec, cfg *config.Config) (*batchv1.Job, error) {
 		// {"imageID":"…@sha256:…"} termination message to the container's
 		// terminationMessagePath, which BuildJob sets to the default
 		// /dev/termination-log with TerminationMessageReadFile.
-	}
+	)
 	for k, v := range spec.BuildArgs {
 		args = append(args, fmt.Sprintf("--build-arg=%s=%s", k, v))
 	}
@@ -376,3 +405,17 @@ func SanitizeLabel(s string) string { return sanitizeLabel(s) }
 func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 func int64Ptr(i int64) *int64 { return &i }
+
+// isFullSHA reports a 40-hex commit sha (mirrors gitcheck.isFullSHA;
+// kept local so the runner stays decoupled from the probe package).
+func isFullSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
