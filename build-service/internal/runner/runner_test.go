@@ -216,3 +216,25 @@ func TestSanitizeLabel(t *testing.T) {
 		t.Fatalf("empty-after-sanitize must become unknown: %q", got)
 	}
 }
+
+func TestBuildJobSubdirDockerfileUsesContextSubPath(t *testing.T) {
+	s := spec()
+	s.Dockerfile = "build-service/Dockerfile"
+	j, err := BuildJob(s, testCfg())
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	joined := strings.Join(j.Spec.Template.Spec.Containers[0].Args, " ")
+	for _, want := range []string{
+		"--context=git://github.com/rossbrigoli/skquad.git#refs/heads/main",
+		"--context-sub-path=build-service",
+		"--dockerfile=Dockerfile",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("args missing %q in %q", want, joined)
+		}
+	}
+	if strings.Contains(joined, "--dockerfile=build-service/Dockerfile") {
+		t.Fatalf("dockerfile must be rebased onto the sub-path context: %q", joined)
+	}
+}

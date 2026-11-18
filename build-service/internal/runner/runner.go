@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -113,9 +114,22 @@ func BuildJob(spec Spec, cfg *config.Config) (*batchv1.Job, error) {
 	if !strings.HasPrefix(ref, "refs/") && !isFullSHA(ref) {
 		fragment = "refs/heads/" + ref
 	}
+	dockerfile := spec.Dockerfile
 	args := []string{
 		fmt.Sprintf("--context=git://%s.git#%s", spec.Repo, fragment),
-		fmt.Sprintf("--dockerfile=%s", spec.Dockerfile),
+	}
+	// When the Dockerfile lives in a repo subdirectory, retarget the build
+	// context at that directory so COPY paths inside the Dockerfile resolve
+	// (MIG-8 live e2e 2026-11-19: "lstat /kaniko/buildcontext/go.mod:
+	// no such file or directory" for build-service/Dockerfile). Kaniko
+	// scopes the context with --context-sub-path and then expects
+	// --dockerfile relative to that sub-path.
+	if dir := path.Dir(dockerfile); dir != "." && dir != "/" {
+		args = append(args, "--context-sub-path="+dir)
+		dockerfile = path.Base(dockerfile)
+	}
+	args = append(args,
+		fmt.Sprintf("--dockerfile=%s", dockerfile),
 		fmt.Sprintf("--destination=%s", spec.Destination),
 		// NOTE: no --termination-log-path flag — kaniko's executor has
 		// never had one (unknown flag -> immediate Job failure, found in
@@ -123,7 +137,7 @@ func BuildJob(spec Spec, cfg *config.Config) (*batchv1.Job, error) {
 		// {"imageID":"…@sha256:…"} termination message to the container's
 		// terminationMessagePath, which BuildJob sets to the default
 		// /dev/termination-log with TerminationMessageReadFile.
-	}
+	)
 	for k, v := range spec.BuildArgs {
 		args = append(args, fmt.Sprintf("--build-arg=%s=%s", k, v))
 	}
