@@ -67,12 +67,25 @@ func TestLoadRejectsMissingFields(t *testing.T) {
 	}
 }
 
-func TestDestinationsMustEndWithSlash(t *testing.T) {
+func TestDestinationsNonSlashPrefixAccepted(t *testing.T) {
+	// Docker Hub personal namespaces are 2-level repos only, so the
+	// agent-builds- prefix deliberately does not end in '/'.
 	body := replaceOnce(t, validYAML,
 		`  - "ghcr.io/rossbrigoli/agent-builds/"`,
-		`  - "ghcr.io/rossbrigoli"`)
-	if _, err := Load(write(t, body)); err == nil {
-		t.Fatal("destination prefix without trailing slash must be rejected")
+		`  - "docker.io/brigss007/agent-builds-"`)
+	if _, err := Load(write(t, body)); err != nil {
+		t.Fatalf("non-slash-terminated prefix must be accepted: %v", err)
+	}
+}
+
+func TestDestinationsRejectBlankEntries(t *testing.T) {
+	for _, entry := range []string{`""`, `"   "`, `"/"`} {
+		body := replaceOnce(t, validYAML,
+			`  - "ghcr.io/rossbrigoli/agent-builds/"`,
+			`  - `+entry)
+		if _, err := Load(write(t, body)); err == nil {
+			t.Fatalf("blank/bare-slash entry %s must be rejected", entry)
+		}
 	}
 }
 

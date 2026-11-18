@@ -44,8 +44,11 @@ type Config struct {
 	// CPPolicyTimeoutSeconds bounds each CP fetch.
 	CPPolicyTimeoutSeconds int `json:"cp_policy_timeout_seconds"`
 	// DestinationsAllow are global destination prefixes (e.g.
-	// "ghcr.io/rossbrigoli/agent-builds/"). A request destination must
-	// start with one of these AND with one of the principal's prefixes.
+	// "ghcr.io/rossbrigoli/agent-builds/" or, for Docker Hub 2-level
+	// personal repos, "docker.io/brigss007/agent-builds-"). A request
+	// destination must start with one of these AND with one of the
+	// principal's prefixes. Prefixes need not end in '/'; matching is a
+	// plain strings.HasPrefix on the tagless repository path.
 	DestinationsAllow []string `json:"destinations_allow"`
 	// GitHostsAllow is the SSRF floor for ls-remote probes: only these
 	// canonical git hosts may be probed (e.g. ["github.com"]).
@@ -105,8 +108,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: destinations_allow must not be empty (default-deny)")
 	}
 	for _, d := range c.DestinationsAllow {
-		if strings.TrimSpace(d) == "" || d == "/" || !strings.HasSuffix(d, "/") {
-			return fmt.Errorf("config: destinations_allow entry %q must be a non-empty prefix ending in '/'", d)
+		if strings.TrimSpace(d) == "" || d == "/" {
+			return fmt.Errorf("config: destinations_allow entry %q must be a non-empty repository prefix", d)
 		}
 	}
 	if len(c.GitHostsAllow) == 0 {
