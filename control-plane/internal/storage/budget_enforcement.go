@@ -48,6 +48,15 @@ type BudgetEnforcementStore interface {
 	// IsAgentBudgetBlocked reports whether the agent's squad owner is
 	// effectively blocked in the given period.
 	IsAgentBudgetBlocked(ctx context.Context, agentID, period string) (bool, error)
+	// ExpirePendingChatMessagesForSquad expires (never deletes) all
+	// pending user→agent chat messages addressed to agents of the given
+	// squad, stamping terminal_reason (S-320 / S-203 WP3-R2 WI-5: a
+	// newly-created budget block must not leave pending chat rows that
+	// can resurrect as a surprise turn when the budget is later raised).
+	// Returns the number of rows expired. Task rows are a different
+	// table and are deliberately untouched — task queues stay visible
+	// while an owner is blocked (WI-6).
+	ExpirePendingChatMessagesForSquad(ctx context.Context, squadID, reason string) (int, error)
 }
 
 // budgetBlockColumn maps an enforcement source to its block column.
@@ -194,6 +203,22 @@ func (p *PostgresStore) ClearBudgetBlocksBySource(ctx context.Context, source st
 	return ids, nil
 }
 
+func (p *PostgresStore) ExpirePendingChatMessagesForSquad(ctx context.Context, squadID, reason string) (int, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE messages m
+		SET status = 'expired', terminal_reason = $2
+		FROM agents a
+		WHERE m.to_agent_id = a.id
+		  AND a.squad_id = $1::uuid
+		  AND m.status = 'pending'
+		  AND m.from_type = 'user'
+	`, squadID, reason)
+	if err != nil {
+		return 0, mapPgErr(err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (p *PostgresStore) IsAgentBudgetBlocked(ctx context.Context, agentID, period string) (bool, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT EXISTS (
@@ -293,6 +318,25 @@ func (m *MemoryStore) ClearBudgetBlocksBySource(_ context.Context, source string
 		}
 	}
 	return ids, nil
+}
+
+func (m *MemoryStore) ExpirePendingChatMessagesForSquad(_ context.Context, squadID, reason string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	expired := 0
+	for _, msg := range m.messages {
+		if msg.Status != domain.MessagePending || msg.FromType != "user" {
+			continue
+		}
+		agent, ok := m.agents[msg.ToAgentID]
+		if !ok || agent.SquadID != squadID {
+			continue
+		}
+		msg.Status = domain.MessageExpired
+		msg.TerminalReason = reason
+		expired++
+	}
+	return expired, nil
 }
 
 func (m *MemoryStore) IsAgentBudgetBlocked(_ context.Context, agentID, period string) (bool, error) {

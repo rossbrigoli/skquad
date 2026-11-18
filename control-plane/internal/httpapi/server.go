@@ -5203,6 +5203,17 @@ func (s *Server) createAgentChatMessage(w http.ResponseWriter, r *http.Request) 
 		s.writeAttachmentError(w, err)
 		return
 	}
+	// S-320 / S-203 WP3-R2 (WI-4): reject budget-blocked sends BEFORE
+	// creating the message row. Previously the row was created, the busy
+	// transition was silently refused at the chokepoint, and the client
+	// still got 201 Created — the message vanished into a pending void.
+	// Now: blocked ⇒ 402 typed body, unverifiable ⇒ 503 retry, allowed
+	// ⇒ unchanged path. The chokepoint stays as enforcement; this check
+	// produces the response.
+	if rej := s.checkBudgetForSend(r.Context(), target.ID); rej != nil {
+		writeBudgetSendRejection(w, rej)
+		return
+	}
 	created, err := s.store.CreateMessage(s.pendingUserAuditCtx(r, "message.create", "message", "", target.SquadID, nil), &domain.Message{
 		FromType:      "user",
 		FromID:        u.ID,
@@ -6755,6 +6766,13 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	if blocking, err := s.store.UnsatisfiedDependencies(r.Context(), task.ID); err == nil {
 		task.BlockedByCount = len(blocking)
 	}
+	// S-320 / WI-6: assignment to a blocked agent stays allowed (the
+	// queue is legitimately visible ahead of a budget reset); surface
+	// the assignee's budget-block state so the UI can badge it. Only a
+	// confirmed block sets the flag — unverifiable is not "blocked".
+	if task.AssigneeAgentID != "" && s.checkAgentBudget(r.Context(), task.AssigneeAgentID) == BudgetBlocked {
+		task.BlockedBudget = true
+	}
 	writeJSON(w, http.StatusOK, task)
 }
 
@@ -6834,6 +6852,12 @@ func (s *Server) createTaskMessage(w http.ResponseWriter, r *http.Request) {
 	attachments, err := s.resolveUploadAttachments(r, task.SquadID, req.Attachments)
 	if err != nil {
 		s.writeAttachmentError(w, err)
+		return
+	}
+	// S-320 / WI-4: same pre-create rejection as the chat send path —
+	// the task-page composer is a user-facing message-creation path too.
+	if rej := s.checkBudgetForSend(r.Context(), task.AssigneeAgentID); rej != nil {
+		writeBudgetSendRejection(w, rej)
 		return
 	}
 	created, err := s.store.CreateMessage(s.pendingUserAuditCtx(r, "task.message", "task", task.ID, task.SquadID, nil), &domain.Message{

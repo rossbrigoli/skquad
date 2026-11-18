@@ -6,9 +6,12 @@ package httpapi
 // concurrent evaluation idempotency, and the scheduling guard.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -600,4 +603,286 @@ func newFailingBudgetFixture(t *testing.T) (http.Handler, *budgetErrStore) {
 		authAlice: {Issuer: testIssuer, Subject: "alice-1", Email: aliceEmail, EmailVerified: true, Name: "Alice"},
 	}, &fakeCRWriter{}, nil)
 	return handler, store
+}
+
+// ---------------------------------------------------------------------------
+// S-320 / S-203 WP3-R2: typed blocked-send rejection + pending-message
+// hygiene (WI-4/WI-5/WI-6) — T2, T4, T5, T6, T7
+// ---------------------------------------------------------------------------
+
+// chatHistoryCount counts an agent's message rows (side-effect probe: a
+// rejected send must NOT create a row).
+func chatHistoryCount(t *testing.T, store *storage.MemoryStore, agentID string) int {
+	t.Helper()
+	history, err := store.ListAgentMessageHistory(context.Background(), agentID)
+	require.NoError(t, err)
+	return len(history)
+}
+
+// outboxCount counts k8s outbox events (the CR-write queue: a rejected
+// send must not enqueue anything that could start a pod).
+func outboxCount(t *testing.T, store *storage.MemoryStore) int {
+	t.Helper()
+	events, err := store.ListKubernetesOutbox(context.Background(), "", 1000)
+	require.NoError(t, err)
+	return len(events)
+}
+
+// doAuthRaw performs an authenticated JSON request and returns the raw
+// recorder so budget-rejection tests can assert status + typed body.
+func doAuthRaw(t *testing.T, handler http.Handler, authorization, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var payload []byte
+	if body != nil {
+		var err error
+		payload, err = json.Marshal(body)
+		require.NoError(t, err)
+	}
+	req := httptest.NewRequest(method, path, bytes.NewReader(payload))
+	if body != nil {
+		req.Header.Set(headerContentType, jsonContentType)
+	}
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func decodeBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	return body
+}
+
+// T2 (block-next-turn, the send-path half): the cap was crossed and the
+// turn completed — the NEXT chat send must be rejected 402 BEFORE any
+// message row, outbox/CR write, or pod start. We assert the ABSENCE of
+// side effects, not just the status code.
+func TestBlockedChatSendRejectedBeforeAnySideEffects(t *testing.T) {
+	handler, store := newBudgetFixture(t)
+	ctx := context.Background()
+	ownerID := userIDFor(t, handler, authOwner)
+	squadID, agentID := seedSquadAgent(t, store, ownerID, "sendrej")
+	require.NoError(t, store.SetUserBudget(ctx, ownerID, 10, "admin"))
+	spend(t, store, squadID, agentID, 12)
+	s := &Server{store: store}
+	require.NoError(t, s.evaluateUserBudget(ctx, ownerID, time.Now().UTC(), domain.PlatformBudgets{}))
+	require.True(t, blockedNow(t, store, ownerID))
+
+	beforeMsgs := chatHistoryCount(t, store, agentID)
+	beforeOutbox := outboxCount(t, store)
+
+	rec := doAuthRaw(t, handler, authOwner, http.MethodPost, "/api/v1/agents/"+agentID+"/chat", map[string]any{
+		"message": "hello?",
+	})
+	require.Equal(t, http.StatusPaymentRequired, rec.Code)
+	body := decodeBody(t, rec)
+	require.Equal(t, budgetStopNotice, body["code"])
+	require.Equal(t, domain.BudgetSourceUser, body["source"])
+	require.Equal(t, currentBudgetPeriod(time.Now()), body["period"])
+	require.InDelta(t, 12.0, body["spent_usd"].(float64), 0.001)
+	require.InDelta(t, 10.0, body["cap_usd"].(float64), 0.001)
+	require.Equal(t, budgetUnblockRaiseBudget, body["unblock_action"])
+	require.Contains(t, body["message"], "nothing was lost")
+
+	// Absence of side effects: no message row, no outbox event, agent
+	// untouched (idle — no pod start requested anywhere).
+	require.Equal(t, beforeMsgs, chatHistoryCount(t, store, agentID), "rejected send must not create a message row")
+	require.Equal(t, beforeOutbox, outboxCount(t, store), "rejected send must not enqueue any CR/outbox work")
+	agent, err := store.GetAgent(ctx, agentID)
+	require.NoError(t, err)
+	require.Equal(t, domain.AgentIdle, agent.Status)
+}
+
+// T4 (typed rejection ≠ exhaustion): a forced check failure on the send
+// path returns 503 budget_verification_failed with a message that does
+// not claim exhaustion, and creates no row; recovery admits the send.
+func TestSendUnverifiableTypedDistinctFromExhaustion(t *testing.T) {
+	handler, store := newFailingBudgetFixture(t)
+	ctx := context.Background()
+	ownerID := userIDFor(t, handler, authOwner)
+	_, agentID := seedSquadAgent(t, store.MemoryStore, ownerID, "unverrej")
+
+	store.failBudgetCheck = true
+	rec := doAuthRaw(t, handler, authOwner, http.MethodPost, "/api/v1/agents/"+agentID+"/chat", map[string]any{
+		"message": "anyone there?",
+	})
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	body := decodeBody(t, rec)
+	require.Equal(t, budgetVerificationFailedNotice, body["code"])
+	require.NotEqual(t, budgetStopNotice, body["code"])
+	require.Contains(t, body["message"], "could not be verified")
+	require.NotContains(t, body["message"], "exhausted")
+	require.Equal(t, 0, chatHistoryCount(t, store.MemoryStore, agentID), "unverifiable send must not create a row")
+
+	// Recovery: with the outage cleared the same send is admitted.
+	store.failBudgetCheck = false
+	var created domain.Message
+	doJSONAuth(t, handler, authOwner, http.MethodPost, "/api/v1/agents/"+agentID+"/chat",
+		map[string]any{"message": "retry after recovery"}, http.StatusCreated, &created)
+	require.Equal(t, 1, chatHistoryCount(t, store.MemoryStore, agentID))
+	_ = ctx
+}
+
+// T5 (period boundary): a block from period N must not reject sends in
+// period N+1 — the stale row simply doesn't block.
+func TestSendAdmittedInNewPeriodAfterPriorBlock(t *testing.T) {
+	handler, store := newBudgetFixture(t)
+	ctx := context.Background()
+	ownerID := userIDFor(t, handler, authOwner)
+	_, agentID := seedSquadAgent(t, store, ownerID, "periodb")
+
+	stalePeriod := time.Now().UTC().AddDate(0, -1, 0).Format("2006-01")
+	_, err := store.SetBudgetBlock(ctx, ownerID, stalePeriod, domain.BudgetSourceUser, true)
+	require.NoError(t, err)
+	require.False(t, blockedNow(t, store, ownerID), "stale-period row must not block")
+
+	var created domain.Message
+	doJSONAuth(t, handler, authOwner, http.MethodPost, "/api/v1/agents/"+agentID+"/chat",
+		map[string]any{"message": "new month, new budget"}, http.StatusCreated, &created)
+	require.Equal(t, domain.MessagePending, created.Status)
+}
+
+// T6 (dual-source independence): a platform-blocked user who raises
+// their personal budget stays blocked, and the rejection visibly reports
+// source=platform with the admin-contact unblock action.
+func TestPlatformBlockSurvivesPersonalRaise(t *testing.T) {
+	handler, store := newBudgetFixture(t)
+	ctx := context.Background()
+	ownerID := userIDFor(t, handler, authOwner)
+	squadID, agentID := seedSquadAgent(t, store, ownerID, "dualsrc")
+	s := &Server{store: store}
+	now := time.Now().UTC()
+
+	// Personal block first.
+	require.NoError(t, store.SetUserBudget(ctx, ownerID, 10, "admin"))
+	spend(t, store, squadID, agentID, 12)
+	require.NoError(t, s.evaluateUserBudget(ctx, ownerID, now, domain.PlatformBudgets{}))
+	require.True(t, blockedNow(t, store, ownerID))
+
+	// Platform limit added below the existing spend → platform block too.
+	limit := 5.0
+	require.NoError(t, store.SetPlatformBudgetSetting(ctx, domain.PlatformSettingBudgetPlatformMonthlyLimitUSD, &limit, "admin"))
+	require.NoError(t, s.evaluatePlatformBudget(ctx, now, domain.PlatformBudgets{PlatformMonthlyLimitUSD: &limit}))
+
+	// User raises their personal budget well above spend and re-evaluates:
+	// the personal flag clears, the platform flag stands.
+	require.NoError(t, store.SetUserBudget(ctx, ownerID, 500, "admin"))
+	require.NoError(t, s.evaluateUserBudget(ctx, ownerID, now, domain.PlatformBudgets{PlatformMonthlyLimitUSD: &limit}))
+	block, err := store.GetBudgetBlock(ctx, ownerID)
+	require.NoError(t, err)
+	require.False(t, block.BlockedByUser, "personal raise must clear the user flag")
+	require.True(t, block.BlockedByPlatform, "platform flag must survive the personal raise")
+
+	rec := doAuthRaw(t, handler, authOwner, http.MethodPost, "/api/v1/agents/"+agentID+"/chat", map[string]any{
+		"message": "I raised my budget, surely I can send now?",
+	})
+	require.Equal(t, http.StatusPaymentRequired, rec.Code)
+	body := decodeBody(t, rec)
+	require.Equal(t, budgetStopNotice, body["code"])
+	require.Equal(t, domain.BudgetSourcePlatform, body["source"])
+	require.Equal(t, budgetUnblockContactAdmin, body["unblock_action"])
+	require.Contains(t, body["message"], "platform")
+	require.Contains(t, body["message"], "administrator")
+	require.Contains(t, body["message"], "nothing was lost")
+}
+
+// T7 (expiry): when the block is created, pending chat rows to the
+// user's agents become expired (never deleted) with reason
+// expired_budget, task rows survive untouched, and the sweep is
+// auditable.
+func TestPendingChatExpiresOnBlockTaskSurvives(t *testing.T) {
+	handler, store := newBudgetFixture(t)
+	ctx := context.Background()
+	ownerID := userIDFor(t, handler, authOwner)
+	squadID, agentID := seedSquadAgent(t, store, ownerID, "expiry")
+
+	// In good standing: a chat send queues, and a task is assigned to
+	// the same agent.
+	var chat domain.Message
+	doJSONAuth(t, handler, authOwner, http.MethodPost, "/api/v1/agents/"+agentID+"/chat",
+		map[string]any{"message": "pending before the block"}, http.StatusCreated, &chat)
+	var task domain.Task
+	doJSONAuth(t, handler, authOwner, http.MethodPost, "/api/v1/squads/"+squadID+"/board/tasks",
+		map[string]any{"title": "queued work"}, http.StatusCreated, &task)
+	doJSONAuth(t, handler, authOwner, http.MethodPatch, pathTasksPrefix+task.ID,
+		map[string]any{"assignee_agent_id": agentID}, http.StatusOK, &task)
+
+	// Block creation through the normal evaluation path.
+	require.NoError(t, store.SetUserBudget(ctx, ownerID, 10, "admin"))
+	spend(t, store, squadID, agentID, 12)
+	s := &Server{store: store}
+	require.NoError(t, s.evaluateUserBudget(ctx, ownerID, time.Now().UTC(), domain.PlatformBudgets{}))
+	require.True(t, blockedNow(t, store, ownerID))
+
+	// Chat row: expired with reason, still present (audit preserved).
+	// (The task-assignment thread note may also be expired — same
+	// pending user→agent class; the task row itself is the durable
+	// queue entry and survives.)
+	gotChat, err := store.GetMessage(ctx, chat.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.MessageExpired, gotChat.Status)
+	require.Equal(t, budgetExpiredChatReason, gotChat.TerminalReason)
+
+	// Task row survives, still assigned — queues stay visible (WI-6).
+	gotTask, err := store.GetTask(ctx, task.ID)
+	require.NoError(t, err)
+	require.Equal(t, agentID, gotTask.AssigneeAgentID)
+
+	// Audit trail: the sweep recorded one budget.chat_expired entry.
+	audit, err := store.ListAudit(ctx, squadID, 50)
+	require.NoError(t, err)
+	found := false
+	for _, e := range audit {
+		if e.Action == "budget.chat_expired" {
+			found = true
+			require.Equal(t, "system", e.ActorType)
+			require.Contains(t, string(e.Metadata), budgetExpiredChatReason)
+			require.Contains(t, string(e.Metadata), "expired_messages")
+		}
+	}
+	require.True(t, found, "expiry sweep must be auditable")
+
+	// And a fresh send after the block is rejected with no new row.
+	before := mustHistory(t, store, agentID)
+	rec := doAuthRaw(t, handler, authOwner, http.MethodPost, "/api/v1/agents/"+agentID+"/chat",
+		map[string]any{"message": "post-block send"})
+	require.Equal(t, http.StatusPaymentRequired, rec.Code)
+	require.Len(t, mustHistory(t, store, agentID), len(before))
+}
+
+func mustHistory(t *testing.T, store *storage.MemoryStore, agentID string) []*domain.Message {
+	t.Helper()
+	h, err := store.ListAgentMessageHistory(context.Background(), agentID)
+	require.NoError(t, err)
+	return h
+}
+
+// WI-6: task detail surfaces blocked_budget when the assignee's owner
+// is blocked; assignment itself stays allowed.
+func TestTaskDetailSurfacesAssigneeBudgetBlock(t *testing.T) {
+	handler, store := newBudgetFixture(t)
+	ctx := context.Background()
+	ownerID := userIDFor(t, handler, authOwner)
+	squadID, agentID := seedSquadAgent(t, store, ownerID, "wibadge")
+
+	var task domain.Task
+	doJSONAuth(t, handler, authOwner, http.MethodPost, "/api/v1/squads/"+squadID+"/board/tasks",
+		map[string]any{"title": "ahead of budget reset"}, http.StatusCreated, &task)
+	doJSONAuth(t, handler, authOwner, http.MethodPatch, pathTasksPrefix+task.ID,
+		map[string]any{"assignee_agent_id": agentID}, http.StatusOK, &task)
+
+	var detail map[string]any
+	doJSONAuth(t, handler, authOwner, http.MethodGet, pathTasksPrefix+task.ID, nil, http.StatusOK, &detail)
+	require.NotContains(t, detail, "blocked_budget", "unblocked assignee: flag omitted (omitempty convention)")
+
+	// Block the owner; assignment stays (already applied) and the detail
+	// now carries the badge.
+	_, err := store.SetBudgetBlock(ctx, ownerID, currentBudgetPeriod(time.Now()), domain.BudgetSourceUser, true)
+	require.NoError(t, err)
+	doJSONAuth(t, handler, authOwner, http.MethodGet, pathTasksPrefix+task.ID, nil, http.StatusOK, &detail)
+	require.Equal(t, true, detail["blocked_budget"])
 }
