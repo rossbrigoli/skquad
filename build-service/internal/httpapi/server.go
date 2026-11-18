@@ -103,6 +103,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		Principal:   p.ID,
 		Repo:        dec.Repo,
 		Revision:    req.Revision,
+		Ref:         dec.RefMatch,
 		Dockerfile:  req.Dockerfile,
 		Destination: req.Destination,
 		BuildArgs:   req.BuildArgs,

@@ -36,9 +36,50 @@ func spec() Spec {
 		Principal:   "sherlock",
 		Repo:        "github.com/rossbrigoli/skquad",
 		Revision:    "main",
+		Ref:         "refs/heads/main",
 		Dockerfile:  "Dockerfile",
 		Destination: "ghcr.io/rossbrigoli/agent-builds/skquad:demo-1",
 		BuildArgs:   map[string]string{"VERSION": "0.1.0"},
+	}
+}
+
+func TestBuildJobContextRefForms(t *testing.T) {
+	// Full SHA revision (probe skipped -> Ref empty): fragment is the SHA.
+	sha := "6e9f14bcb48f7daf5a706d77ad2c491220d65698"
+	s := spec()
+	s.Revision = sha
+	s.Ref = ""
+	job, err := BuildJob(s, testCfg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "--context=git://github.com/rossbrigoli/skquad.git#" + sha
+	if !strings.Contains(strings.Join(job.Spec.Template.Spec.Containers[0].Args, " "), want) {
+		t.Fatalf("sha fragment missing: %v", job.Spec.Template.Spec.Containers[0].Args)
+	}
+	// Tag ref passes through unchanged.
+	s2 := spec()
+	s2.Revision = "v1.2.3"
+	s2.Ref = "refs/tags/v1.2.3"
+	job2, err := BuildJob(s2, testCfg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want2 := "--context=git://github.com/rossbrigoli/skquad.git#refs/tags/v1.2.3"
+	if !strings.Contains(strings.Join(job2.Spec.Template.Spec.Containers[0].Args, " "), want2) {
+		t.Fatalf("tag ref missing: %v", job2.Spec.Template.Spec.Containers[0].Args)
+	}
+	// Bare name falls back to refs/heads/.
+	s3 := spec()
+	s3.Ref = ""
+	s3.Revision = "dev"
+	job3, err := BuildJob(s3, testCfg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want3 := "--context=git://github.com/rossbrigoli/skquad.git#refs/heads/dev"
+	if !strings.Contains(strings.Join(job3.Spec.Template.Spec.Containers[0].Args, " "), want3) {
+		t.Fatalf("bare-name fallback missing: %v", job3.Spec.Template.Spec.Containers[0].Args)
 	}
 }
 
@@ -81,7 +122,7 @@ func TestBuildJobShape(t *testing.T) {
 	}
 	joined := strings.Join(c.Args, " ")
 	for _, want := range []string{
-		"--git=repo=https://github.com/rossbrigoli/skquad.git,revision=main",
+		"--context=git://github.com/rossbrigoli/skquad.git#refs/heads/main",
 		"--dockerfile=Dockerfile",
 		"--destination=ghcr.io/rossbrigoli/agent-builds/skquad:demo-1",
 		"--build-arg=VERSION=0.1.0",
