@@ -5242,12 +5242,23 @@ func (s *Server) wakeAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"waking": false, "status": string(target.Status)})
 		return
 	}
-	// S-203 WP3: budget-blocked owners cannot pre-warm their agents.
-	if s.agentBudgetBlocked(r.Context(), target.ID) {
+	// S-203 WP3 / S-319: budget-blocked owners cannot pre-warm their
+	// agents, and an unverifiable check also refuses (fail closed). The
+	// refusal is typed: confirmed block vs verification failure are
+	// distinct reasons so the client can retry the latter.
+	switch s.checkAgentBudget(r.Context(), target.ID) {
+	case BudgetBlocked:
 		writeJSON(w, http.StatusOK, map[string]any{
 			"waking": false,
 			"status": string(target.Status),
 			"reason": budgetStopNotice,
+		})
+		return
+	case BudgetUnverifiable:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"waking": false,
+			"status": string(target.Status),
+			"reason": budgetVerificationFailedNotice,
 		})
 		return
 	}
@@ -7405,15 +7416,21 @@ func (s *Server) syncDependentsFromTaskChange(ctx context.Context, taskID string
 }
 
 func (s *Server) setAgentStatusAndMirror(ctx context.Context, agentID string, status domain.AgentStatus) error {
-	// S-203 WP3: a budget-blocked owner's agents never *start*. A busy
-	// heartbeat from an already-running (busy) agent is allowed through —
-	// the pod is mid-turn and must not be killed; it tears down at end of
-	// turn via the idle mirror with the blocked idle-timeout override.
-	if status == domain.AgentBusy && s.agentBudgetBlocked(ctx, agentID) {
-		agent, err := s.store.GetAgent(ctx, agentID)
-		if err == nil && agent.Status != domain.AgentBusy {
-			log.Printf("budget-enforce: refused busy transition for agent %s (owner over budget)", agentID)
-			return nil
+	// S-203 WP3 / S-319 (fail closed): a budget-blocked owner's agents
+	// never *start*, and a failed block check refuses the idle→busy
+	// transition too. NEVER-INTERRUPT GUARDRAIL: an already-busy agent
+	// passes through regardless of verdict — the pod is mid-turn and must
+	// not be killed; it tears down at end of turn via the idle mirror
+	// with the blocked idle-timeout override. The pass-through requires
+	// positively confirming the current status is busy; if the status
+	// cannot be read we refuse (fail closed) rather than assume.
+	if status == domain.AgentBusy {
+		if verdict := s.checkAgentBudget(ctx, agentID); verdict != BudgetAllowed {
+			agent, err := s.store.GetAgent(ctx, agentID)
+			if err != nil || agent.Status != domain.AgentBusy {
+				log.Printf("budget-enforce: refused busy transition for agent %s (verdict %d, fail closed)", agentID, verdict)
+				return nil
+			}
 		}
 	}
 	return s.store.SetAgentStatus(ctx, agentID, status)

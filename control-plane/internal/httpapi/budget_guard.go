@@ -399,20 +399,46 @@ func (s *Server) sweepBudgets(ctx context.Context) {
 	}
 }
 
-// agentBudgetBlocked is the cheap scheduling check shared by the start
-// paths. A storage failure fails OPEN for reads of unknown state only at
-// the notification layer; here it must not silently start a pod for a
-// possibly-blocked owner, so callers treat err as "not blocked" but
-// log — matching the best-effort posture of the rest of enforcement.
-func (s *Server) agentBudgetBlocked(ctx context.Context, agentID string) bool {
+// budgetVerdict is the three-state result of the scheduling budget
+// check (S-319 / S-203 WP3-R1, plan WI-1). A check failure is typed
+// distinctly from a confirmed block: "could not verify" is not "exhausted"
+// — different user message, different metric, different operator urgency.
+type budgetVerdict int
+
+const (
+	// BudgetAllowed: owner is verifiably not blocked.
+	BudgetAllowed budgetVerdict = iota
+	// BudgetBlocked: an explicit block row exists for the current period.
+	BudgetBlocked
+	// BudgetUnverifiable: the store check errored. Start paths treat
+	// this like blocked (fail closed) — this is a money control and must
+	// not fail open.
+	BudgetUnverifiable
+)
+
+// checkAgentBudget is the cheap scheduling check shared by the start
+// paths. S-319: a storage failure no longer fails open. It returns
+// BudgetUnverifiable so callers refuse *new* starts (idle→busy, wake,
+// pre-warm) while the already-busy pass-through in
+// setAgentStatusAndMirror keeps its never-interrupt guarantee: an
+// admitted turn is never disturbed by a check error.
+func (s *Server) checkAgentBudget(ctx context.Context, agentID string) budgetVerdict {
 	blocked, err := s.store.IsAgentBudgetBlocked(ctx, agentID, currentBudgetPeriod(time.Now()))
 	if err != nil {
-		log.Printf("budget-enforce: block check failed for agent %s: %v", agentID, err)
-		return false
+		log.Printf("budget-enforce: block check failed for agent %s (fail-closed as unverifiable): %v", agentID, err)
+		return BudgetUnverifiable
 	}
-	return blocked
+	if blocked {
+		return BudgetBlocked
+	}
+	return BudgetAllowed
 }
 
 // budgetStopNotice is appended to API responses that refuse to start an
-// agent because of budget enforcement.
+// agent because of a confirmed budget block.
 const budgetStopNotice = "budget_blocked"
+
+// budgetVerificationFailedNotice is returned when the budget check
+// itself failed, so the client can distinguish "blocked" from "could not
+// verify, retry" (S-319 / plan §3: typed distinct from exhaustion).
+const budgetVerificationFailedNotice = "budget_verification_failed"

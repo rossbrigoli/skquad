@@ -6,6 +6,7 @@ package kube
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -81,4 +82,49 @@ func TestUpsertAgentFromOutboxZeroIdleTimeoutWhenOwnerBlocked(t *testing.T) {
 // key) so the kube-side check and the enforcement writes agree.
 func currentBudgetPeriod() string {
 	return time.Now().UTC().Format("2006-01")
+}
+
+// failingBudgetChecker forces IsAgentBudgetBlocked to error, simulating a
+// storage outage at CR-sync time (S-319 / plan WI-2, T3).
+type failingBudgetChecker struct {
+	*storage.MemoryStore
+}
+
+func (f *failingBudgetChecker) IsAgentBudgetBlocked(_ context.Context, _, _ string) (bool, error) {
+	return false, errors.New("forced block check failure (test)")
+}
+
+// T3 (CR-sync half): a failed block check must fail CLOSED — the CR gets
+// IdleTimeoutSec=0 exactly like a confirmed block. The old fail-open posture
+// ("keep normal idle timeout") is a money-control leak. Safe because the
+// operator never scales down a pod whose desiredActive is true (asserted
+// operator-side in TestDesiredReplicasNeverInterruptsActiveAgent).
+func TestUpsertAgentFromOutboxZeroIdleTimeoutWhenBlockCheckFails(t *testing.T) {
+	ctx := context.Background()
+	base := storage.NewMemoryStore()
+	store := &failingBudgetChecker{MemoryStore: base}
+	user, err := store.UpsertUser(ctx, &domain.User{Email: "checkfail-owner@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	squad, err := store.CreateSquad(ctx, &domain.Squad{Name: "CheckFail Squad", OwnerID: user.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := store.CreateAgent(ctx, &domain.Agent{SquadID: squad.ID, Name: "Worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writer := &captureAgentWriter{}
+	p := *agent
+	if err := upsertAgentFromOutbox(ctx, store, writer, &domain.KubernetesOutboxPayload{Agent: &p}); err != nil {
+		t.Fatal(err)
+	}
+	if len(writer.agents) != 1 {
+		t.Fatalf("expected 1 captured agent, got %d", len(writer.agents))
+	}
+	if writer.agents[0].IdleTimeoutSec != 0 {
+		t.Fatalf("check-error idle timeout = %d, want 0 (fail closed)", writer.agents[0].IdleTimeoutSec)
+	}
 }
