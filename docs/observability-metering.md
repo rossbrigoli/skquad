@@ -28,6 +28,7 @@
 | Source | Metrics |
 |--------|---------|
 | **API server** | request rate, latency, error rate, active sessions. |
+| **Control plane — budget enforcement** | blocks created, rejected turns per site, check errors per fail-closed site, accepted overrun, fan-out drain (see ADR-0017). Served at `GET /metrics` on the control-plane HTTP router (internal trust class). |
 | **LLM gateway** | requests, tokens (in/out), cost, latency, errors, per provider/model. |
 | **Operator** | reconcile rate, scale-up/down latency, time-at-zero, wake count, errors. |
 | **Agent pods** | task duration, LLM calls, tool calls, memory size, idle/busy time. |
@@ -50,7 +51,18 @@ skquad_agent_task_errors_total{agent, squad}
 skquad_agent_task_timeouts_total{agent, squad}
 skquad_agent_inbox_messages_total{agent, squad, result}
 skquad_agent_state{agent, squad}  # 0=idle, 1=busy
+
+# Budget enforcement (S-321, control-plane /metrics — ADR-0017)
+budget_blocks_created_total{source}
+turns_rejected_budget_total{source,site}   # site=send|wake|chokepoint
+budget_check_errors_total{site}           # site=admission|crsync
+budget_overrun_dollars{source}           # histogram
+budget_fanout_remirror_duration_seconds  # histogram
 ```
+
+> The `budget_check_errors_total` alert rule (sustained non-zero =
+> outage-driven blocking) is specified in ADR-0017 and lives in the
+> platform monitoring stack, not this repo.
 
 The current runtime exposes dependency-free Prometheus text at `/metrics` and a
 JSON snapshot at `/status`. The implemented counters cover readiness,

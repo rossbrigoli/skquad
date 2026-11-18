@@ -17,6 +17,14 @@ the format: **Context → Decision → Consequences → Alternatives Considered*
 | [0008](0008-languages.md) | Language & Runtime Choices | Accepted |
 | [0009](0009-workspace-as-git.md) | Workspace-as-Git | Accepted |
 | [0010](0010-ai-model-binding.md) | AI Model Binding — grants → bindings → gateway allow-list | Accepted |
+| [0011](0011-layered-prompt-system.md) | Layered Prompt System (Platform / Organization / Squad / Agent) | Accepted |
+| [0012](0012-builtin-platform-tools.md) | Built-in Platform Tools (exec, web_fetch, web_search) | Accepted |
+| [0013](0013-tool-gateway.md) | Dedicated Tool Gateway for Governed Agent Egress | Accepted |
+| [0013](0013-embedder-runtime-selection.md) | Embedder Runtime Selection (CUDA / Vulkan / CPU) — shares 0013 with Tool Gateway (pre-existing numbering collision) | Accepted |
+| [0014](0014-browser-as-a-service.md) | Browser-as-a-Service (quarantined Playwright MCP) | Accepted |
+| [0015](0015-three-party-grant-model.md) | Three-Party Grant Model with No-Escalation Invariant | Accepted |
+| [0016](0016-agent-driven-board-transitions.md) | Agent-Driven Board Transitions with Agent-Decided Review | Accepted |
+| [0017](0017-budget-admission-control.md) | Budget Enforcement Is Admission Control, Not Interruption | Accepted |
 
 > **ADR-0010 drill (2026-09-25, S-114):** live fallback drill confirmed
 > primary→fallback failover and metering (`model_used`), and confirmed the L1

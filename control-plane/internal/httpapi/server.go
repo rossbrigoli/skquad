@@ -21,6 +21,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/rossbrigoli/skquad/control-plane/internal/auth"
 	"github.com/rossbrigoli/skquad/control-plane/internal/breakglass"
@@ -30,6 +31,7 @@ import (
 	"github.com/rossbrigoli/skquad/control-plane/internal/embeddings"
 	"github.com/rossbrigoli/skquad/control-plane/internal/grantlint"
 	"github.com/rossbrigoli/skquad/control-plane/internal/kube"
+	"github.com/rossbrigoli/skquad/control-plane/internal/metrics"
 	"github.com/rossbrigoli/skquad/control-plane/internal/promptcompo"
 	"github.com/rossbrigoli/skquad/control-plane/internal/search"
 	"github.com/rossbrigoli/skquad/control-plane/internal/storage"
@@ -625,6 +627,10 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 
 	r := chi.NewRouter()
 	r.Get("/healthz", s.health)
+	// S-321 / WI-9: Prometheus scrape endpoint (S-203 WP3-R3). Same
+	// internal trust class as /healthz — cluster-internal scrape only;
+	// never route this path through the public ingress.
+	r.Handle("/metrics", promhttp.HandlerFor(metrics.Registry, promhttp.HandlerOpts{}))
 
 	// TG-2: internal policy read API for the tool gateway (design §5.1.5).
 	// No app-layer auth by contract (the TG-1 gateway client sends none) —
@@ -5211,6 +5217,7 @@ func (s *Server) createAgentChatMessage(w http.ResponseWriter, r *http.Request) 
 	// ⇒ unchanged path. The chokepoint stays as enforcement; this check
 	// produces the response.
 	if rej := s.checkBudgetForSend(r.Context(), target.ID); rej != nil {
+		recordBudgetSendRejection(rej)
 		writeBudgetSendRejection(w, rej)
 		return
 	}
@@ -5259,6 +5266,8 @@ func (s *Server) wakeAgent(w http.ResponseWriter, r *http.Request) {
 	// distinct reasons so the client can retry the latter.
 	switch s.checkAgentBudget(r.Context(), target.ID) {
 	case BudgetBlocked:
+		// S-321 / WI-9: refused pre-warm counts as a rejected turn.
+		metrics.TurnsRejectedBudget.WithLabelValues(s.budgetBlockSourceForAgent(r.Context(), target.ID), "wake").Inc()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"waking": false,
 			"status": string(target.Status),
@@ -6857,6 +6866,7 @@ func (s *Server) createTaskMessage(w http.ResponseWriter, r *http.Request) {
 	// S-320 / WI-4: same pre-create rejection as the chat send path —
 	// the task-page composer is a user-facing message-creation path too.
 	if rej := s.checkBudgetForSend(r.Context(), task.AssigneeAgentID); rej != nil {
+		recordBudgetSendRejection(rej)
 		writeBudgetSendRejection(w, rej)
 		return
 	}
@@ -7453,6 +7463,12 @@ func (s *Server) setAgentStatusAndMirror(ctx context.Context, agentID string, st
 			agent, err := s.store.GetAgent(ctx, agentID)
 			if err != nil || agent.Status != domain.AgentBusy {
 				log.Printf("budget-enforce: refused busy transition for agent %s (verdict %d, fail closed)", agentID, verdict)
+				// S-321 / WI-9: confirmed blocks at the chokepoint
+				// count as rejected turns (unverifiable is already in
+				// budget_check_errors_total via checkAgentBudget).
+				if verdict == BudgetBlocked {
+					metrics.TurnsRejectedBudget.WithLabelValues(s.budgetBlockSourceForAgent(ctx, agentID), "chokepoint").Inc()
+				}
 				return nil
 			}
 		}

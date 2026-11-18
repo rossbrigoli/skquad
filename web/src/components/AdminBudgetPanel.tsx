@@ -129,6 +129,13 @@ export function PlatformBudgetForm({
           />
           <span className="field-hint">Optional hard cap for the whole platform; clear for unlimited.</span>
         </label>
+        {payload.platform.platform_overrun_usd != null ? (
+          <div className="notice error" role="alert">
+            Platform is over its monthly limit by{" "}
+            {formatMoney(payload.platform.platform_overrun_usd)} — new turns are
+            blocked platform-wide until the limit is raised or the period resets.
+          </div>
+        ) : null}
       </div>
       <div style={{ display: "flex", gap: "var(--space-3)", alignItems: "center", marginTop: "var(--space-2)" }}>
         <button type="button" className="btn btn-primary" onClick={save} disabled={saving}>
@@ -200,7 +207,7 @@ function UserBudgetRow({
         {user.remaining_usd != null ? (
           <span className={overClass ?? "entity-meta"}>
             {user.over_budget
-              ? `Over by ${formatMoney(user.mtd_cost - (user.monthly_budget_usd ?? 0))}`
+              ? `Over by ${formatMoney(user.overrun_usd ?? user.mtd_cost - (user.monthly_budget_usd ?? 0))}`
               : `${formatMoney(user.remaining_usd)} left`}
           </span>
         ) : (

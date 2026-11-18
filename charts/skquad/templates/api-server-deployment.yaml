@@ -22,6 +22,12 @@ spec:
         checksum/breakglass-secret: {{ include (print $.Template.BasePath "/breakglass-secret.yaml") . | sha256sum | quote }}
         # S-152/BT-5a: roll the api-server when the search provider keys change.
         checksum/search-secret: {{ include (print $.Template.BasePath "/search-secret.yaml") . | sha256sum | quote }}
+        # S-321 (WP3R-3): /metrics is served by the api-server (ADR-0017).
+        # Scrape annotations let the platform prometheus (k3s-cluster monitoring,
+        # kubernetes-pods job) pick up the budget series without extra config.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
       labels:
         {{- include "skquad.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api-server

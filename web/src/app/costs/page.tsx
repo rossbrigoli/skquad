@@ -128,7 +128,12 @@ function CostTabContent({
 
       <h2 className="section-title">This month vs my budget</h2>
       <div className="card chart-card">
-        <BudgetBar spend={summary.mtd_cost} budget={budget?.monthly_budget_usd} currency={currency} />
+        <BudgetBar
+          spend={summary.mtd_cost}
+          budget={budget?.monthly_budget_usd}
+          currency={currency}
+          overrunUsd={budget?.overrun_usd}
+        />
       </div>
 
       <div className="chart-header">
