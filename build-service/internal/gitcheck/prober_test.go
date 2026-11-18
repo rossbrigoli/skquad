@@ -100,3 +100,31 @@ func TestMatchRevision(t *testing.T) {
 		}
 	}
 }
+
+func TestListRefsSpaceSeparatedWireFormat(t *testing.T) {
+	// The real git smart-HTTP ref advertisement uses SPACE (0x20)
+	// between oid and refname (verified against GitHub + kernel.org,
+	// 2026-11-19). A TAB-only parser silently yields zero refs.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+		// pkt-line framing: service header, flush, refs, flush.
+		w.Write([]byte("001e# service=git-upload-pack\n0000"))
+		// 40 sha + 1 SP + 4 "HEAD" + 1 NUL + 9 "multi_ack" + 1 LF = 56 payload + 4 = 60 = 0x3c
+		w.Write([]byte("003c6e9f14bcb48f7daf5a706d77ad2c491220d65698 HEAD\x00multi_ack\n"))
+		// 40 sha + 1 SP + 15 "refs/heads/main" + 1 LF = 57 payload + 4 = 61 = 0x3d
+		w.Write([]byte("003d6e9f14bcb48f7daf5a706d77ad2c491220d65698 refs/heads/main\n"))
+		w.Write([]byte("0000"))
+	}))
+	defer srv.Close()
+	p := NewHTTPProber(2 * time.Second)
+	refs, err := p.ListRefs(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 2 {
+		t.Fatalf("want 2 refs, got %d: %v", len(refs), refs)
+	}
+	if ok, ref := MatchRevision(refs, "main"); !ok || ref != "refs/heads/main" {
+		t.Fatalf("main match: %v %s", ok, ref)
+	}
+}

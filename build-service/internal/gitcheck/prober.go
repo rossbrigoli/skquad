@@ -60,9 +60,14 @@ func (p *HTTPProber) ListRefs(ctx context.Context, httpsURL string) (map[string]
 	}
 	refs := map[string]string{}
 	for _, ln := range lines {
-		// Each ref line: "<sha>\t<refname>" (capabilities are NUL-attached
-		// to the first line and stripped by ParsePktLines).
-		sha, rest, ok := strings.Cut(ln, "\t")
+		// Each ref line: "<sha> <refname>" — the git wire format uses a
+		// SPACE (0x20) between oid and refname (protocol-common.txt;
+		// verified against GitHub/kernel.org 2026-11-19). TAB is tolerated
+		// as a fallback for lenient servers.
+		sha, rest, ok := strings.Cut(ln, " ")
+		if !ok {
+			sha, rest, ok = strings.Cut(ln, "\t")
+		}
 		if !ok || len(sha) < 40 {
 			continue
 		}
