@@ -48,6 +48,7 @@ type Spec struct {
 	Principal   string
 	Repo        string // canonical host/org/repo
 	Revision    string
+	Ref         string // resolved git ref (full ref name from the probe, e.g. refs/heads/main); empty for full-SHA revisions
 	Dockerfile  string
 	Destination string
 	BuildArgs   map[string]string
@@ -97,8 +98,23 @@ func BuildJob(spec Spec, cfg *config.Config) (*batchv1.Job, error) {
 	if !BuildIDPattern.MatchString(spec.ID) {
 		return nil, fmt.Errorf("invalid build id %q", spec.ID)
 	}
+	// kaniko's git build context: git://<repo>.git#<ref>. The --git flag
+	// alone does NOT set the source (found in the MIG-8 live e2e
+	// 2026-11-19: "error resolving dockerfile path" because kaniko built
+	// from the empty local context). Fragment resolution mirrors kaniko's
+	// buildcontext/git.go: full SHA -> fetch+checkout; full refs/* ->
+	// clone that ref; bare name -> assume refs/heads/<name> (govern's
+	// probe normally supplies the full ref, including refs/tags/*).
+	ref := spec.Ref
+	if ref == "" {
+		ref = spec.Revision
+	}
+	fragment := ref
+	if !strings.HasPrefix(ref, "refs/") && !isFullSHA(ref) {
+		fragment = "refs/heads/" + ref
+	}
 	args := []string{
-		fmt.Sprintf("--git=repo=https://%s.git,revision=%s", spec.Repo, spec.Revision),
+		fmt.Sprintf("--context=git://%s.git#%s", spec.Repo, fragment),
 		fmt.Sprintf("--dockerfile=%s", spec.Dockerfile),
 		fmt.Sprintf("--destination=%s", spec.Destination),
 		// NOTE: no --termination-log-path flag — kaniko's executor has
@@ -376,3 +392,17 @@ func SanitizeLabel(s string) string { return sanitizeLabel(s) }
 func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 func int64Ptr(i int64) *int64 { return &i }
+
+// isFullSHA reports a 40-hex commit sha (mirrors gitcheck.isFullSHA;
+// kept local so the runner stays decoupled from the probe package).
+func isFullSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
