@@ -76,6 +76,38 @@ var okRefs = map[string]string{
 
 // --- allow path ---------------------------------------------------------------
 
+func TestNonSlashPrefixDestinationMatching(t *testing.T) {
+	// Docker Hub 2-level repos: prefix "docker.io/brigss007/agent-builds-"
+	// (no trailing slash) must allow agent-builds-* repos and deny others.
+	v := NewValidator(Deps{
+		Policy:                    nil,
+		Prober:                    fakeProber{refs: okRefs},
+		Active:                    fakeActive{},
+		GitHostsAllow:             []string{"github.com"},
+		DestinationsAllow:         []string{"docker.io/brigss007/agent-builds-"},
+		MaxConcurrentPerPrincipal: 2,
+		MaxPerHourPerPrincipal:    5,
+	})
+	p := principal()
+	p.DestinationsAllow = []string{"docker.io/brigss007/agent-builds-"}
+	req := goodRequest()
+	req.Revision = "0123456789abcdef0123456789abcdef01234567" // full sha: no probe/policy needed
+	req.Destination = "docker.io/brigss007/agent-builds-skquad:tag-1"
+	if d := v.Validate(context.Background(), p, req); !d.Allowed {
+		t.Fatalf("non-slash prefix should allow agent-builds-*: %+v", d)
+	}
+	req.Destination = "docker.io/brigss007/other:tag-1"
+	if d := v.Validate(context.Background(), p, req); d.Allowed || d.Code != CodeDestinationDenied {
+		t.Fatalf("non-matching repo must be denied, got %+v", d)
+	}
+	// Guard against double-slash/normalization surprises: a deeper path
+	// under the prefix still matches via plain HasPrefix.
+	req.Destination = "docker.io/brigss007/agent-builds-deep/nested:tag-1"
+	if d := v.Validate(context.Background(), p, req); !d.Allowed {
+		t.Fatalf("nested path under non-slash prefix should match HasPrefix: %+v", d)
+	}
+}
+
 func TestAllowHappyPath(t *testing.T) {
 	v := baseValidator(fakePolicy{globs: []string{"github.com/rossbrigoli/*"}}, fakeProber{refs: okRefs}, fakeActive{})
 	d := v.Validate(context.Background(), principal(), goodRequest())
