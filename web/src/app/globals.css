@@ -1884,12 +1884,83 @@ button.squad-tab.active {
 }
 
 .chat-composer {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: var(--space-2);
   padding: var(--space-3);
   border-top: 1px solid var(--line);
   background: var(--surface);
+}
+
+/* Slash-command autocomplete: dropdown pinned above the composer. The
+   list is registry-driven (GET /agents/{id}/commands); Tab/Enter
+   completes, Enter-again runs, Esc dismisses. */
+.slash-suggest {
+  position: absolute;
+  bottom: 100%;
+  left: var(--space-3);
+  right: var(--space-3);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.18);
+}
+
+.slash-suggest-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.slash-suggest-item:first-child {
+  border-top: none;
+}
+
+.slash-suggest-item.active {
+  background: var(--accent-soft);
+}
+
+.slash-suggest-name {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.slash-suggest-desc {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink-muted);
+}
+
+.slash-suggest-flag {
+  font-size: var(--text-xs);
+  color: #d35454;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.slash-suggest-hint {
+  padding: 4px var(--space-3);
+  border-top: 1px solid var(--line);
+  background: var(--surface-sunken);
+  color: var(--ink-faint);
+  font-size: 11px;
+  user-select: none;
 }
 
 .chat-composer textarea {

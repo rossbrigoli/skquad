@@ -196,6 +196,21 @@ vi.mock("../../../../../lib/useApi", () => ({
 }));
 
 vi.mock("../../../../../lib/api", () => ({
+  apiGet: async (path: string) => {
+    // Slash-command registry (GET /agents/{id}/commands) — mirrors the
+    // control-plane slash_commands.go payload.
+    if (path.endsWith("/commands")) {
+      return {
+        agent_id: "ag1",
+        commands: [
+          { name: "reset", description: "Reset the chat thread", destructive: true },
+          { name: "restart", description: "Restart the agent", destructive: true },
+          { name: "wake", description: "Wake the agent now", destructive: false },
+        ],
+      };
+    }
+    return {};
+  },
   apiPost: async (path: string, _token: string, body: unknown) => {
     env.posts.push({ path, body });
     if (env.postThrow) throw env.postThrow;
@@ -1409,6 +1424,101 @@ describe("branch coverage extras 2", () => {
       expect(
         screen.getByText("Thread reset · 0 earlier message(s) archived to memory"),
       ).toBeInTheDocument(),
+    );
+  });
+});
+
+// Slash-command autocomplete (card: "Autocomplete / Suggest chat slash
+// commands"). The registry comes from apiGet(/agents/ag1/commands) — see
+// the lib/api mock. Suggestions appear on "/", narrow as the token is
+// typed, Tab completes, Enter runs an exact command, Esc dismisses.
+describe("slash command autocomplete", () => {
+  const box = () => screen.getByPlaceholderText(/Message coder/) as HTMLTextAreaElement;
+
+  it('typing "/" opens the dropdown with all registry commands', async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(box(), "/");
+    const listbox = await screen.findByRole("listbox", { name: "Slash commands" });
+    expect(within(listbox).getByText("/reset")).toBeInTheDocument();
+    expect(within(listbox).getByText("/restart")).toBeInTheDocument();
+    expect(within(listbox).getByText("/wake")).toBeInTheDocument();
+    expect(within(listbox).getAllByText("destructive")).toHaveLength(2);
+  });
+
+  it("narrows suggestions as the token is typed", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(box(), "/re");
+    const listbox = await screen.findByRole("listbox", { name: "Slash commands" });
+    const options = within(listbox).getAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual([
+      expect.stringContaining("/reset"),
+      expect.stringContaining("/restart"),
+    ]);
+  });
+
+  it("Tab completes the highlighted command without sending anything", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(box(), "/re");
+    await screen.findByRole("listbox", { name: "Slash commands" });
+    await userEvent.keyboard("{Tab}");
+    expect(box().value).toBe("/reset ");
+    expect(env.posts.some((p) => p.path.endsWith("/chat"))).toBe(false);
+    expect(screen.queryByRole("listbox", { name: "Slash commands" })).toBeNull();
+  });
+
+  it("arrow keys move the highlight", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(box(), "/");
+    const listbox = await screen.findByRole("listbox", { name: "Slash commands" });
+    const options = within(listbox).getAllByRole("option");
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+    await userEvent.keyboard("{ArrowDown}");
+    const after = within(screen.getByRole("listbox", { name: "Slash commands" })).getAllByRole("option");
+    expect(after[1]).toHaveAttribute("aria-selected", "true");
+    await userEvent.keyboard("{ArrowUp}{ArrowUp}");
+    const wrapped = within(screen.getByRole("listbox", { name: "Slash commands" })).getAllByRole("option");
+    expect(wrapped[2]).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("Enter on a partial token completes it instead of running it", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(box(), "/w");
+    await screen.findByRole("listbox", { name: "Slash commands" });
+    await userEvent.keyboard("{Enter}");
+    expect(box().value).toBe("/wake ");
+    expect(env.posts.some((p) => p.path.endsWith("/wake"))).toBe(false);
+  });
+
+  it("Enter on an exact command runs it even with the dropdown open", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(box(), "/wake");
+    await screen.findByRole("listbox", { name: "Slash commands" });
+    await userEvent.keyboard("{Enter}");
+    await vi.waitFor(() =>
+      expect(env.posts.some((p) => p.path === "/agents/ag1/wake")).toBe(true),
+    );
+    expect(screen.getByText("Wake requested.")).toBeInTheDocument();
+    expect(box().value).toBe("");
+  });
+
+  it("Escape dismisses the dropdown but keeps the draft", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(box(), "/");
+    await screen.findByRole("listbox", { name: "Slash commands" });
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox", { name: "Slash commands" })).toBeNull();
+    expect(box().value).toBe("/");
+  });
+
+  it("unknown slash text is sent as a normal message", async () => {
+    render(<AgentProfilePage />);
+    await userEvent.type(box(), "/frobnicate");
+    expect(screen.queryByRole("listbox", { name: "Slash commands" })).toBeNull();
+    await userEvent.keyboard("{Enter}");
+    await vi.waitFor(() =>
+      expect(
+        env.posts.some((p) => p.path.endsWith("/chat") && JSON.stringify(p.body).includes("/frobnicate")),
+      ).toBe(true),
     );
   });
 });

@@ -814,6 +814,9 @@ func newServer(cfg *config.Config, store Store, deps serverDeps) http.Handler {
 			// S-309: bulk memory import (owner-only, trusted provenance).
 			r.Post("/agents/{agentID}/memory/import", s.importAgentMemory)
 			r.Post("/agents/{agentID}/wake", s.wakeAgent)
+			// Composer autocomplete: discoverable slash commands (see
+			// slash_commands.go — the registry is the source of truth).
+			r.Get("/agents/{agentID}/commands", s.listAgentChatCommands)
 			r.Post("/agents/{agentID}/identity", s.createAgentIdentity)
 			r.Post("/agents/{agentID}/identity/rotate", s.rotateAgentIdentity)
 			r.Get("/agents/{agentID}/permissions", s.listAgentPermissions)
