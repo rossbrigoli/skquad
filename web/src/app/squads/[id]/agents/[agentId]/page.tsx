@@ -61,6 +61,14 @@ import { MAX_MESSAGE_ATTACHMENTS, extractPastedImages, messageAttachments, valid
 import { apiUploadImage } from "../../../../../lib/api";
 import { agentStatus } from "../../../../../lib/status";
 import { THINKING_LEVELS, resolveThinkingLevel, thinkingLevelLabel, type ThinkingLevel } from "../../../../../lib/thinking";
+import {
+  fetchSlashCommands,
+  filterSlashCommands,
+  LEGACY_COMPOSER_COMMANDS,
+  matchSlashCommand,
+  slashQuery,
+  type SlashCommand,
+} from "../../../../../lib/slashCommands";
 import type { AIModel } from "../../../../../lib/aimodels";
 import {
   bindingWarnings,
@@ -503,12 +511,13 @@ function AgentChatSection(props: {
   readonly onCloseSidePanel: () => void;
   readonly onSlashReset: () => void;
   readonly onSlashRestart: () => void;
+  readonly onSlashWake: () => void;
 }) {
   const {
     agent, agentId, squadId, token, messages, chatNote, llmLabel,
     thinkingLevel, thinkingBusy, onThinkingLevelChange, onSent,
     taskThread, taskIndex, live, stalled, onOpenTaskThread, onCloseSidePanel,
-    onSlashReset, onSlashRestart,
+    onSlashReset, onSlashRestart, onSlashWake,
   } = props;
   const agentName = agent?.name ?? "agent";
   const agentDisplayName = agent?.name ?? "this agent";
@@ -548,6 +557,7 @@ function AgentChatSection(props: {
         }
         onSlashReset={onSlashReset}
         onSlashRestart={onSlashRestart}
+        onSlashWake={onSlashWake}
         // S-185: task lists ride inside the chat scroll area (they
         // used to sit below the chat and push the page past the
         // fold). S-169's "reachable without crowding" intent holds.
@@ -770,6 +780,14 @@ export default function AgentProfilePage() {
             onOpenTaskThread={setTaskThread}
             onCloseSidePanel={() => setTaskThread(null)}
             onSlashReset={() => setConfirmReset(true)}
+            onSlashWake={() => {
+              // Slash "/wake": same endpoint as wake-on-typing, but the
+              // user asked explicitly — report it in the chat note.
+              setChatNote("Wake requested.");
+              apiPost(`/agents/${agentId}/wake`, token, {}).catch((err) =>
+                setChatNote(errMsg(err, "wake failed")),
+              );
+            }}
             onSlashRestart={() => setConfirmRestart(true)}
           />
         ) : null}
@@ -1311,6 +1329,7 @@ function ChatThread({
   onShowTaskThread,
   onSlashReset,
   onSlashRestart,
+  onSlashWake,
 }: {
   readonly messages: Message[];
   readonly agentName: string;
@@ -1341,8 +1360,36 @@ function ChatThread({
   // dialog + action; the composer only routes the command.
   readonly onSlashReset: () => void;
   readonly onSlashRestart: () => void;
+  // Slash "wake": pokes the agent pod immediately (same endpoint the
+  // wake-on-typing warm-up uses), reported through the chat note.
+  readonly onSlashWake: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  // Slash-command autocomplete. The command list is fetched from the
+  // control-plane registry (GET /agents/{id}/commands) so commands added
+  // later appear in suggestions without a frontend change; if the fetch
+  // fails we fall back to the legacy hardcoded pair so exact-match
+  // execution (S-304) keeps working. dismissedQuery holds the token the
+  // user pressed Escape on so the dropdown stays shut for that draft.
+  const [slashCmds, setSlashCmds] = useState<SlashCommand[]>([]);
+  const [cmdIndex, setCmdIndex] = useState(0);
+  const [dismissedQuery, setDismissedQuery] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Load the command registry once per agent/token. Errors are silent by
+  // design: no registry just means no dropdown, and exact-match execution
+  // still works through the legacy fallback.
+  useEffect(() => {
+    let alive = true;
+    fetchSlashCommands(agentId, token)
+      .then((cmds) => {
+        if (alive) setSlashCmds(cmds);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [agentId, token]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // S-175: stop button — suppress the pending-turn indicator from the
@@ -1401,6 +1448,23 @@ function ChatThread({
     if (!node) return;
     node.style.height = "auto";
     node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
+  }
+
+  // Suggestions only cover a bare "/token" draft (see slashQuery): the
+  // dropdown lists registry commands matching what has been typed so far.
+  const slashQ = slashQuery(draft);
+  const visibleCmds = slashQ !== null ? filterSlashCommands(slashCmds, slashQ) : [];
+  const suggestOpen = slashQ !== null && visibleCmds.length > 0 && slashQ !== dismissedQuery;
+  const safeCmdIndex = Math.min(cmdIndex, Math.max(visibleCmds.length - 1, 0));
+
+  function completeSlashCommand(cmd: SlashCommand) {
+    setDraft(`/${cmd.name} `);
+    setDismissedQuery(null);
+    const node = textareaRef.current;
+    if (node) {
+      node.focus();
+      autoGrow(node);
+    }
   }
 
   const sideOpen = openSubagent !== null || sidePanel != null;
@@ -1483,7 +1547,28 @@ function ChatThread({
           send();
         }}
       >
+        {suggestOpen ? (
+          <div className="slash-suggest" role="listbox" aria-label="Slash commands">
+            {visibleCmds.map((c, i) => (
+              <button
+                key={c.name}
+                type="button"
+                role="option"
+                aria-selected={i === safeCmdIndex}
+                className={`slash-suggest-item${i === safeCmdIndex ? " active" : ""}`}
+                onMouseEnter={() => setCmdIndex(i)}
+                onClick={() => completeSlashCommand(c)}
+              >
+                <span className="slash-suggest-name">/{c.name}</span>
+                <span className="slash-suggest-desc">{c.description}</span>
+                {c.destructive ? <span className="slash-suggest-flag">destructive</span> : null}
+              </button>
+            ))}
+            <div className="slash-suggest-hint">Tab completes · Enter runs · ↑↓ navigate · Esc dismisses</div>
+          </div>
+        ) : null}
         <textarea
+          ref={textareaRef}
           value={draft}
           rows={1}
           disabled={generating}
@@ -1514,6 +1599,42 @@ function ChatThread({
               : `Message ${agentName}… (/reset, /restart)`
           }
           onKeyDown={(e) => {
+            // While the suggestion dropdown is open: arrows navigate, Tab
+            // or Enter completes the highlighted command into the box
+            // (a second Enter sends it, which executes it), Escape
+            // dismisses the dropdown for the current token.
+            if (suggestOpen) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setCmdIndex((i) => (i + 1) % visibleCmds.length);
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setCmdIndex((i) => (i - 1 + visibleCmds.length) % visibleCmds.length);
+                return;
+              }
+              if (e.key === "Tab") {
+                e.preventDefault();
+                completeSlashCommand(visibleCmds[safeCmdIndex]);
+                return;
+              }
+              if (e.key === "Enter" && !e.shiftKey) {
+                // A fully-typed exact command falls through and runs
+                // (S-304 semantics); a partial token is completed first.
+                const highlighted = visibleCmds[safeCmdIndex];
+                if (highlighted && highlighted.name.toLowerCase() !== slashQ) {
+                  e.preventDefault();
+                  completeSlashCommand(highlighted);
+                  return;
+                }
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setDismissedQuery(slashQ);
+                return;
+              }
+            }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               send();
@@ -1653,11 +1774,16 @@ function ChatThread({
     // S-304: slash commands in the composer. A lone "/reset" or
     // "/restart" (no attachments) runs the corresponding agent action
     // via the parent's confirm flow instead of sending a chat message.
-    const command = draft.trim().toLowerCase();
-    if (pendingAttachments.length === 0 && (command === "/reset" || command === "/restart")) {
+    // The known-command list is now registry-driven (with a legacy
+    // fallback when the registry fetch failed), so new control-plane
+    // chat commands execute without touching this branch.
+    const knownCmds = slashCmds.length > 0 ? slashCmds : LEGACY_COMPOSER_COMMANDS;
+    const cmd = pendingAttachments.length === 0 ? matchSlashCommand(draft, knownCmds) : null;
+    if (cmd) {
       setDraft("");
-      if (command === "/reset") onSlashReset();
-      else onSlashRestart();
+      if (cmd.name === "reset") onSlashReset();
+      else if (cmd.name === "restart") onSlashRestart();
+      else if (cmd.name === "wake") onSlashWake();
       return;
     }
     // S-194: an image with no text is still a message (the runtime
